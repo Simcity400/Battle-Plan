@@ -1,3 +1,4 @@
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useId, useMemo,  useRef, useState } from 'react';
@@ -192,15 +193,18 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const axisOffset = track.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const parts = useSeriesParts(runtime.client, track.source, track.branch.id, SHARE, tag, { firstHour: extent[0], lastHour: extent[1] }, active);
-  const names = useProduct<FuelBranchesReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: extent[1] } }, active, validateFuelBranches, track.source);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = gate.span(extent[0], extent[1]);
+  const parts = useSeriesParts(runtime.client, track.source, track.branch.id, SHARE, tag, span, active);
+  const namesAt = gate.recorded(extent[1]);
+  const names = useProduct<FuelBranchesReply>(runtime.client, namesAt === null ? null : { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: namesAt } }, active, validateFuelBranches, track.source);
   const consumerNames = names.data?.consumerNames ?? [];
   const keys = useMemo(() => (parts.data?.parts ?? []).map(part => ({ tag, part: part.part })).sort((a, b) => Number(a.part) - Number(b.part)), [parts.data, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
-  const series = useKeyedSeries(runtime.client, runtime.clock, keys.length ? { source: track.source, branch: track.branch, family: SHARE, keys,
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, keys.length ? { source: track.source, branch: track.branch, family: SHARE, keys,
     partBits: parts.data?.partBits ?? 32, within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null,
-  following ? null : playhead ?? extent[1], hoverHour, following, active, root);
+  following ? null : gate.hour, gate.recorded(hoverHour), following, active, root);
   useDiagnostics(onDiagnostics, names.data?.warnings ?? NO_WARNINGS);
   const lines = useMemo(() => keys.map((key, index) => ({ key, color: tokens.categories[index % tokens.categories.length],
     name: branchName(consumerNames, Number(key.part)) })), [keys, tokens.categories, consumerNames]);

@@ -10,7 +10,8 @@ import { loadProduct, loadTransientProduct } from '../../dashboard/products';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
-import { recordedHour, type CoveredBranch } from '../../dashboard/regionTime';
+import type { CoveredBranch, GatedHour, GatedParams } from '../../dashboard/regionTime';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { validateMeasureStates } from '../country-measure/measureSeriesData';
 import type { LiveShares } from '../../charts/share';
@@ -24,9 +25,9 @@ import type { SupplyAt } from './supplyHealthData';
 
 const NO_RUNS: ShareRun[] = [];
 
-export function useSupplySeries(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
+export function useSupplySeries(client: DashboardClient, clock: PlaybackController, gate: SeriesGate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
   tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, active: boolean,
-  reads: readonly { tag: string; hour: number }[], following = false, root: { readonly current: Element | null } = { current: null }, axisOffset = 0) {
+  reads: readonly { tag: string; hour: GatedHour }[], following = false, root: { readonly current: Element | null } = { current: null }, axisOffset = 0) {
   const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, tags, within && [...within]]);
@@ -38,9 +39,9 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const held = useTiles(client, lane(SHARE_MEASURES[2]), active, following);
   const total = useTiles(client, lane(DIVISIONS), active, following);
   const store = useMemo(() => source ? followStore(client, source, clock, axisOffset) : null, [client, clock, source, axisOffset]);
-  const headQuery = (measure: string) => following && active && enabled ? { product: 'series-state', params: { branchId,
-    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags]);
+  const headQuery = (measure: string) => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId,
+    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
+  const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags, gate.follow]);
   const answered = useRef(new Set<() => void>()).current;
   const told = useCallback(() => { for (const listener of [...answered]) listener(); }, [answered]);
   const followed = [useFollow(store, queries[0], root, told), useFollow(store, queries[1], root, told), useFollow(store, queries[2], root, told)];
@@ -68,13 +69,10 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const missing = useMemo(() => new Map(tags.map(tag => [tag, none.lines?.get(tag)?.missing ?? [] as MissingSpan[]])), [tags, none.lines]);
   const drawn = none.lines !== null && strained.lines !== null && held.lines !== null && total.lines !== null;
   const divisions = useMemo(() => new Map(tags.map(tag => [tag, mostDivisions(total.lines?.get(tag)?.summary)])), [tags, total.lines]);
-  const request = (product: string, measure: string, params: Record<string, unknown>) => ({ sourceId: source!.id, revision: source!.revision,
+  const request = (product: string, measure: string, params: GatedParams) => ({ sourceId: source!.id, revision: source!.revision,
     product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } });
   const content = useContentRevision(client);
-  const asked = useMemo(() => [...new Map(reads.flatMap(read => {
-    const hour = recordedHour(branch && { branch }, read.hour);
-    return hour === null ? [] : [[`${read.tag}\u0000${hour}`, { tag: read.tag, hour }] as const];
-  })).values()], [JSON.stringify(reads), branch]);
+  const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read] as const)).values()], [JSON.stringify(reads)]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,
     asked, JSON.stringify(asked), active, (at, signal, _publish, restart) => Promise.all(STATES.map(measure =>
       loadProduct(client, request('series-state', measure, { reads: at }), signal, validateMeasureStates, source, restart)
@@ -87,13 +85,15 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
     if (!enabled || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { countries: tags.map(countryFromKey), measures: STATES.slice(1), key, from,
-      firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }), controller.signal).then(reply => {
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { countries: tags.map(countryFromKey), measures: STATES.slice(1), key,
+      from: gate.within(from), ...range }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active, enabled]);
+  }, [owner, active, enabled, gate.span, gate.within]);
   const states = stateRead.data;
   const at = useCallback((tag: string, hour: number): SupplyAt => supplyAt(states, tag, Math.floor(hour)), [states]);
   const retry = () => { setFailure(undefined); none.retry(); strained.retry(); held.retry(); total.retry(); stateRead.retry(); };

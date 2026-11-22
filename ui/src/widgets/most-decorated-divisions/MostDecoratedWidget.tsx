@@ -104,7 +104,12 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Division service record"
       day={shownHour === null ? '' : formatDateTime(shownHour)} canFollow anchor={anchor}
       onClose={() => dispatch({ type: 'close' })}
-      onPin={drill.breakdown && track && shownHour !== null ? () => runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, shownHour, drill.follow)) : undefined}
+      onPin={drill.breakdown && track && drillControl.time() ? () => {
+        const time = drillControl.time();
+        const history = time?.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
+        const kept = history ? drillControl.time(history) : time;
+        if (kept) runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, kept));
+      } : undefined}
       main={main}>
       {drill.breakdown && track && <RecordView runtime={runtime} widget={widget} trackId={track.id} division={drill.breakdown} time={drillTime} show="both"
         log={RECORD_LOG} active={active} onDiagnostics={onDiagnostics} onAnswered={setAnswered} />}

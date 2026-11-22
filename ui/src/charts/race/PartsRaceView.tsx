@@ -1,3 +1,5 @@
+import { useGate, type Gate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import type { ComponentType } from 'react';
@@ -81,7 +83,7 @@ function followedRows(answer: FollowedAnswer | undefined): string {
   return names.sort().join(',');
 }
 
-function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<string, OptionValue>>, runtime: WidgetProps['runtime'],
+function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<string, OptionValue>>, runtime: WidgetProps['runtime'], gate: Pick<Gate, 'span'>,
   track: ReturnType<WidgetProps['runtime']['tracks']['find']>, params: ForceParams | null, active: boolean) {
   const totals = config.totals?.(options) ?? null;
   const ranked = params?.top != null;
@@ -98,22 +100,23 @@ function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<stri
       : { key, from: next.from, to: next.to, width: next.width });
   }, [key, ranked, tiles.onView]);
   const viewKey = view?.key === key ? JSON.stringify([view.from, view.to, view.width]) : null;
-  const latest = useRef({ view, params, track }); latest.current = { view, params, track };
+  const latest = useRef({ view, params, track, gate }); latest.current = { view, params, track, gate };
   useEffect(() => {
-    const { view: shown, params: asked, track: bound } = latest.current;
-    if (!active || !ranked || !totals || !bound || !asked || !shown || !viewKey) return;
+    const { view: shown, params: asked, track: bound, gate: held } = latest.current;
+    const range = shown ? held.span(shown.from, shown.to) : null;
+    if (!active || !ranked || !totals || !bound || !asked || !shown || !viewKey || !range) return;
     const controller = new AbortController();
     const { branchId, top } = asked;
     void loadProduct(runtime.client, { sourceId: bound.source.id, revision: bound.source.revision, product: 'series-summary',
-      params: { branchId, family: { kind: totals.kind, measure: totals.measure }, top, from: shown.from, to: shown.to, width: shown.width } },
-    controller.signal, value => {
+      params: { branchId, family: { kind: totals.kind, measure: totals.measure }, top, from: range.firstHour, to: range.lastHour, width: shown.width } },
+    controller.signal, (value: unknown) => {
       const lines = chartSummaryLines<{ tag: string; summary: ChartSummary; missing: MissingSpan[] }>((value as { lines?: unknown } | null)?.lines,
         line => typeof line.tag === 'string' && Array.isArray(line.missing));
       if (!lines) throw Error('The force summary is malformed.');
       return lines;
     }, bound.source).then(found => { if (!controller.signal.aborted) setRanking({ key, lines: new Map(found.map(line => [line.tag, scaleSummary(line.summary, factor)])), unrecorded: unrecordedReason(found) }); }, () => {});
     return () => controller.abort();
-  }, [active, ranked, key, viewKey, factor, runtime.client, totals?.kind, totals?.measure]);
+  }, [active, ranked, key, viewKey, factor, runtime.client, totals?.kind, totals?.measure, gate.span]);
   const summaries = useMemo(() => ranked ? ranking?.key === key ? ranking.lines : new Map<string, ChartSummary>()
     : new Map([...(tiles.lines?.values() ?? [])].map(line => [line.tag, scaleSummary(line.summary, factor)])), [ranked, ranking, key, tiles.lines, factor]);
   const unrecorded = ranked ? ranking?.key === key ? ranking.unrecorded : null : tiles.unrecorded;
@@ -134,6 +137,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     pausedKey(view === 'race' ? followedAnswer.current?.() ?? liveRef.current?.structure() ?? missingKey.current(hour) : missingKey.current(hour), hour,
       runtime.clock.getSnapshot().playing));
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
@@ -198,8 +202,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   useLayoutEffect(() => { if (anchor.current !== rootElement) setRoot(anchor.current); });
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const followQuery = useMemo(() => liveRaceView && params && !split ? { product: config.product, params } : null,
-    [liveRaceView, JSON.stringify(params), split, config.product]);
+  const followQuery = useMemo(() => liveRaceView && params && !split ? gate.follow({ product: config.product, params }) : null,
+    [liveRaceView, JSON.stringify(params), split, config.product, gate.follow]);
   const sticky = useRef<StickyMembers | null>(null);
   const followKey = followQuery ? canonical(followQuery) : '';
   const top = resolved.top ?? null;
@@ -226,7 +230,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       .map(entry => ({ ...entry, hour })), () => 0, hour => missingKey.current(hour)) : null;
   }, [liveRaceView, followedHead, followed.entry, runtime.clock, axisOffset, resolved, slots, model, split, formatValue]);
   liveRef.current = live;
-  const lines = useRaceLines(config, options, runtime, track, params, active && view === 'lines');
+  const lines = useRaceLines(config, options, runtime, gate, track, params, active && view === 'lines');
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
   const lineTags = useMemo(() => [...new Set([...(model?.tags ?? []), ...lines.summaries.keys()])], [model, lines.summaries]);
@@ -323,14 +327,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
         dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
       }} />
   </div> : breakdown;
+  const pinTime = drillControl.time();
   return <div className="parts-race" ref={anchor}>
     <DrillHost drill={{ ...drillControl, open: drillOpen }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={partsLabel} day={breakdownFollows && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)}
       canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && breakdownTag ? () => runtime.addWidgetBelow(widget.id, selection
-        ? pinNativeCountryParts(widget, track, selection, drillAt, drill.follow, partsLabel)
-        : pinCountryParts(widget, track, breakdownTag, drillAt, originHour, drill.follow, partsLabel)) : undefined}
+      onPin={track && breakdownTag && pinTime ? () => runtime.addWidgetBelow(widget.id, selection
+        ? pinNativeCountryParts(widget, track, selection, pinTime, partsLabel)
+        : pinCountryParts(widget, track, breakdownTag, pinTime, originHour, partsLabel)) : undefined}
       main={<CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open}
       options={chartOptions} view={view} extent={extent}
       playhead={playhead} moment={moment} slots={slots} ranked={shownEntries ?? entries} liveRanked={live ?? undefined} lines={drawnLines}

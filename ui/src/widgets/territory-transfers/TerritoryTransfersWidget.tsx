@@ -203,9 +203,10 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const drillLabel = drillCountry == null ? null : balances.find(row => row.key === drillCountry)?.side ?? drillRows.find(row => row.to.key === drillCountry)?.to
     ?? drillRows.find(row => row.from?.key === drillCountry)?.from ?? null;
   const pin = () => {
-    const spec = pinnedBreakdown(widget, TRANSFER_BREAKDOWN, track.id);
-    const offset = drillAt - track.branch.firstHour;
-    runtime.addWidgetBelow(widget.id, { ...spec, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
+    const time = drillControl.time();
+    if (!time) return;
+    const spec = pinnedBreakdown(widget, TRANSFER_BREAKDOWN, track.id, time);
+    runtime.addWidgetBelow(widget.id, { ...spec,
       options: { ...spec.options, scope, conference: conference == null ? '' : conferenceToken(campaignKey, track.branch.id, conference.id),
         selection: transferSelectionToken(campaignKey, track.branch.id, [], Number.isFinite(rangeFrom) ? rangeFrom - track.branch.firstHour : null, drillCountry) } });
   };

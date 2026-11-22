@@ -1,3 +1,4 @@
+import { useCampaignGate } from '../../dashboard/regionGate';
 import { useCallback, useMemo } from 'react';
 import MeasureRace from '../../charts/race/MeasureRace';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
@@ -20,8 +21,9 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const view = (['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race') as RaceView;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const race = view === 'race' && options.show !== 'breakdown';
-  const names = useProduct(runtime.client, !race && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
-    params: { branchId: track.branch.id, hour: track.branch.lastHour } } : null, active, validateNuclearArsenal, track?.source);
+  const end = useCampaignGate(runtime, widget, active && !race).hour;
+  const names = useProduct(runtime.client, !race && track && end !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
+    params: { branchId: track.branch.id, hour: end } } : null, active, validateNuclearArsenal, track?.source);
   const strict = useHeadProduct(runtime, useGate(runtime, widget), 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
   const head = withHeld(strict);
   const metadata = race ? head.data : names.data, shown = race ? strict.data : names.data;

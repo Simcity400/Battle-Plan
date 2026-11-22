@@ -54,7 +54,7 @@ const tracks = branches.map((held, index) => ({ id: held.id, roleId: held.id, la
 const runtime = { tracks, campaignTracks: [], defaultRoleId: null, clock, client, maps: new MapViewsStore(client as never, clock), onMapBranch() {}, alignment: 'anchors',
   nativeHidden: false, addWidgetBelow() {}, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false } as unknown as WidgetRuntime;
 
-export interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean }
+export interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean; dated: boolean }
 let mounted: Mounted[] = [];
 const renders = new Map<string, number>();
 const counted = (id: string) => () => { renders.set(id, (renders.get(id) ?? 0) + 1); };
@@ -89,7 +89,7 @@ Object.assign(window, { outsideFixture: {
     await Promise.all(definitions.map(definition => loadWidgetRenderer(definition.kind)));
     clock.seek(hour);
     mounted = definitions.map((definition, index) => ({ id: `widget-${definition.kind}`, kind: definition.kind, track: index % 2 ? 'late' : 'early',
-      follows: definition.timeModes.includes('follow') }));
+      follows: definition.timeModes.includes('follow'), dated: definition.playsBackDated === true && definition.timeModes.includes('follow') }));
     const specs = mounted.map(item => {
       const made = createWidget(item.kind, item.track, item.id);
       return { ...made, campaign: 'tracks', trackIds: [item.track], time: item.follows ? { mode: 'follow' } : made.time } as WidgetSpec;

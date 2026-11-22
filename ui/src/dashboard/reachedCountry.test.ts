@@ -1,7 +1,8 @@
+import { datedToken } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryIdentityHistory } from '../generated/dashboard';
-import { readDatedCountry, datedCountryToken } from './datedCountry.ts';
+import { readDatedCountry } from './datedCountry.ts';
 import { choiceAt, resolveChoice, settleChoice } from './reachedCountry.ts';
 
 const histories: CountryIdentityHistory[] = [
@@ -25,7 +26,7 @@ test('a choice follows the identity holding its tag at the hour it was made, thr
 
 test('the binding is the stored dated choice, so it survives reloads', () => {
   const selection = choiceAt('c', '1', 0, 'GER', 50);
-  assert.deepEqual(readDatedCountry(datedCountryToken(selection), 'c', '1', { kind: 'tags', tags: ['GER'] }), selection);
+  assert.deepEqual(readDatedCountry(datedToken(selection), 'c', '1', { kind: 'tags', tags: ['GER'] }), selection);
 });
 
 test('a tag naming no country at the choice hour rebinds to its only identity, else asks which', () => {

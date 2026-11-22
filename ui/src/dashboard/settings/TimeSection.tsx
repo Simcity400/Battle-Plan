@@ -2,7 +2,8 @@ import { Segmented } from '../../components/Segmented';
 import { SettingLabel } from './SettingLabel';
 import DateTimePicker from '../../components/DateTimePicker';
 import { formatDateTime } from '../calendar';
-import { pinTime } from '../model';
+import { pinNow } from '../regionGate';
+import { axisHour } from '../regionTime';
 import type { BoundTrack, WidgetSpec, WidgetTime } from '../model';
 import type { WidgetRuntime } from '../definitions';
 
@@ -22,8 +23,8 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   const choose = (mode: WidgetTime['mode']) => {
     if (mode === 'follow' || mode === 'campaign') onChange({ mode });
     else if (mode === 'pin') {
-      const pin = pinTime({ ...effective, time: { mode: 'follow' } }, runtime.tracks, runtime.clock.getSnapshot().position);
-      if (pin.mode === 'pin' && Object.keys(pin.windows).length) onChange(pin);
+      const pin = pinNow(effective, runtime.tracks, axisHour(runtime.clock));
+      if (pin) onChange(pin);
     }
     else if (reference) onChange({ mode: 'range', firstOffset: 0, lastOffset: reference.branch.lastHour - reference.branch.firstHour });
   };

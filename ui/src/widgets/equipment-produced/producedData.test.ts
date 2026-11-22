@@ -1,3 +1,4 @@
+import { gatedHour } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lineRuns, mergeProducedWindows, producedAt, producedModel, producedRankHour, producedRequest, producedWindows, raceEntries, rankProduced, seriesModel, seriesRuns,
@@ -47,18 +48,18 @@ test('the race ranks known values greatest first and leaves out unknown ones, an
 test('a malformed reply is refused, and a request ranks a top N at a fixed hour', () => {
   assert.throws(() => validateProducedReply(reply([{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[0, 10, null]]) }])), /malformed/);
   assert.throws(() => validateProducedReply(reply([{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[5, 10, 1], [8, 12, 2]]) }])), /malformed/);
-  assert.deepEqual(producedRequest('1', { tags: [], top: 10 }, 99.7, 'units', 'day', ['infantry_equipment'], false),
+  assert.deepEqual(producedRequest('1', { tags: [], top: 10 }, gatedHour(99), 'units', 'day', ['infantry_equipment'], false),
     { branchId: '1', count: 'units', measure: 'day', types: ['infantry_equipment'], refits: false, countries: [], top: 10, rankHour: 99 });
-  assert.deepEqual(producedRequest('1', { tags: ['AAA'] }, 99, 'ic', 'total', [], true),
+  assert.deepEqual(producedRequest('1', { tags: ['AAA'] }, gatedHour(99), 'ic', 'total', [], true),
     { branchId: '1', count: 'ic', measure: 'total', types: [], refits: true, countries: ['AAA'] });
 });
 
 test('a followed top N is ranked at the hour shown when paused or sought, and kept while playing, never at the branch end', () => {
-  assert.equal(producedRankHour('follow', 1942, false, 1947, 1947), 1942, 'a seek ranks at its hour, not the end of the recording');
-  assert.equal(producedRankHour('follow', 1950, true, 1942, 1947), 1942, 'playing asks nothing: the ranking stands');
-  assert.equal(producedRankHour('follow', 1942, true, null, 1947), 1942);
-  assert.equal(producedRankHour('pin', 1900, false, null, 1947), 1900);
-  assert.equal(producedRankHour('range', null, false, null, 1947), 1947, 'a range ranks at its last hour');
+  assert.equal(producedRankHour(true, gatedHour(1942), false, gatedHour(1947)), 1942, 'a seek ranks at its hour, not the end of the recording');
+  assert.equal(producedRankHour(true, gatedHour(1950), true, gatedHour(1942)), 1942, 'playing asks nothing: the ranking stands');
+  assert.equal(producedRankHour(true, gatedHour(1942), true, null), 1942);
+  assert.equal(producedRankHour(false, gatedHour(1900), false, null), 1900);
+  assert.equal(producedRankHour(true, null, true, gatedHour(1942)), null, 'outside the recording nothing is ranked, not even the held ranking');
 });
 
 const windowReply = (window: number, firstHour: number, lastHour: number, lines: EquipmentProducedReply['lines'], reads: number[], observations: number[]): EquipmentProducedReply =>

@@ -3,8 +3,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { FOLLOW, pickedAt, regionFollows, SPEC, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
-import type { BoundTrack } from '../../dashboard/model';
+import { at, FOLLOW, regionFollows, SPEC, type GatedTime, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
 
 export interface Breakdown { id: string; label: string }
 export interface DrillState { breakdown: string | null; spec: boolean; follow: boolean; hour: number | null }
@@ -30,8 +29,8 @@ export function reduceDrill<S extends DrillState>(state: S, action: DrillAction)
   }
 }
 
-export function drillAction(drill: DrillState, track: Pick<BoundTrack, 'branch'> | undefined): RegionAction {
-  return drill.spec ? SPEC : drill.follow ? FOLLOW : pickedAt(track, drill.hour);
+export function drillAction(drill: DrillState): RegionAction {
+  return drill.spec ? SPEC : drill.follow ? FOLLOW : at(drill.hour ?? Number.NaN);
 }
 
 export function drillFollows(parent: Region, drill: DrillState): boolean {
@@ -58,9 +57,11 @@ export function breakdownVariants(title: string, fields: readonly OptionField[])
   return choiceVariants(fields.find(field => field.key === 'show'), choice => breakdownTitle(title, choice.label));
 }
 
-export function pinnedBreakdown(source: WidgetSpec, breakdown: Breakdown, trackId: string): WidgetSpec {
+export type PinnedSpec = WidgetSpec & { time: GatedTime };
+
+export function pinnedBreakdown(source: WidgetSpec, breakdown: Breakdown, trackId: string, time: GatedTime): PinnedSpec {
   const base = createWidget(source.kind, trackId);
-  return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time: source.time,
+  return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
     contentScale: source.contentScale, title: breakdownTitle(source.title, breakdown.label),
     options: { ...source.options, show: breakdown.id } };
 }

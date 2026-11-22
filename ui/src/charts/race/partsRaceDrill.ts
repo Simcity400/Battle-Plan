@@ -1,4 +1,5 @@
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../drill/drillState.ts';
+import type { GatedTime } from '../../dashboard/regionTime';
+import { CLOSED, pinnedBreakdown, reduceDrill, type PinnedSpec } from '../drill/drillState.ts';
 import type { DrillAction, DrillState } from '../drill/drillState';
 import { shownRuns } from './lines.ts';
 import type { Run, Span } from '../series';
@@ -85,10 +86,6 @@ export function partsRaceDrillBands(model: PartsRaceModel, tag: string, membersh
   });
 }
 
-export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
-  hour: number, follow: boolean, label: string): WidgetSpec {
-  const pinned = pinnedBreakdown(source, { id: 'breakdown', label }, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
-  return { ...pinned, countries: { kind: 'tags', tags: [tag] },
-    time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
+export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id'>, tag: string, time: GatedTime, label: string): PinnedSpec {
+  return { ...pinnedBreakdown(source, { id: 'breakdown', label }, track.id, time), countries: { kind: 'tags', tags: [tag] } };
 }

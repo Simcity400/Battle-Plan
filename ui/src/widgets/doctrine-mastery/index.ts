@@ -1,3 +1,4 @@
+import { useCampaignGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -12,8 +13,9 @@ import type { DoctrineMasteryReply } from '../../generated/dashboard';
 function useDoctrineChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const { data } = useProduct<DoctrineMasteryReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'doctrine-mastery',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: track.branch.lastHour } } : null, true, validateDoctrineMastery, track?.source);
+  const end = useCampaignGate(runtime, widget).hour;
+  const { data } = useProduct<DoctrineMasteryReply>(runtime.client, track && tag && end !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'doctrine-mastery',
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: end } } : null, true, validateDoctrineMastery, track?.source);
   const image = useSpriteArtwork(runtime, track, (data?.folders ?? []).map(folder => doctrineSprite(folder.icon)), true);
   return { folders: (data?.folders ?? []).map(folder => ({ value: setToken(folder.id), label: folderName(folder), icon: image(doctrineSprite(folder.icon)) })) };
 }

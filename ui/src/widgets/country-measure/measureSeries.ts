@@ -15,12 +15,13 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
 import { useTiles } from '../../dashboard/tiles/useTiles';
-import { recordedHour, type CoveredBranch } from '../../dashboard/regionTime';
+import type { CoveredBranch, GatedHour, GatedParams } from '../../dashboard/regionTime';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 
 export type MeasureFamily = string;
 
-export function useMeasureSeries(client: DashboardClient, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
-  family: MeasureFamily, measure: string, tags: readonly string[], headHour: number | null, hoverHour: number | null, active: boolean,
+export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
+  family: MeasureFamily, measure: string, tags: readonly string[], headHour: GatedHour | null, hoverHour: GatedHour | null, active: boolean,
   withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean) {
   const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
@@ -36,7 +37,7 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     if (view.to < view.from) return;
     tileView(view);
   }, [tileView]);
-  const request = (product: string, params: Record<string, unknown>) => ({ sourceId: source!.id, revision: source!.revision, product,
+  const request = (product: string, params: GatedParams) => ({ sourceId: source!.id, revision: source!.revision, product,
     params: { branchId, family: { kind: family, measure }, ...params } });
   const content = useContentRevision(client);
   const readLines = tiles.read;
@@ -48,7 +49,7 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     return marked.current.marks.get(tag) ?? null;
   }, [readLines]);
   const tileDecimals = tiles.lines?.values().next().value?.decimals;
-  const hours = [...new Set([headHour, hoverHour].map(hour => recordedHour(branch && { branch }, hour)).filter(hour => hour !== null))];
+  const hours = [...new Set([headHour, hoverHour].filter(hour => hour !== null))];
   const reads = tags.flatMap(tag => hours.map(hour => ({ tag, hour })));
   const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
@@ -58,13 +59,15 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     if (!enabled || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }),
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), key, from: gate.within(from), ...range }),
       controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active, enabled]);
+  }, [owner, active, enabled, gate.span, gate.within]);
   const lines = useMemo(() => reachedLines(tags, stateRead.data), [owner, stateRead.data]);
   const retry = () => { setFailure(undefined); tiles.retry(); stateRead.retry(); };
   const stateError = stateRead.errorKey === JSON.stringify(reads) ? stateRead.error : undefined;

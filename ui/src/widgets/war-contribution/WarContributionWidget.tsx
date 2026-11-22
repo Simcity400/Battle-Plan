@@ -79,11 +79,13 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     live.set(group && !group.reason ? contributionItems(contributionRows(group), shownAs, looks, muted) : NO_ITEMS);
     shown(reply.hour);
   }, [groupOf, live, shown]);
-  const head = useHeadProduct<WarContributionsReply>(runtime, useGate(runtime, widget), 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<WarContributionsReply>(runtime, gate, 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
     active, validate: validateWarContributions, paint, structure: reply => contributionStructure(groupOf(reply), reply.available),
   });
-  const ended = useProduct<WarContributionsReply>(runtime.client, track && war && !going ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-contributions', params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: readHour } } : null, active, validateWarContributions, track?.source);
+  const endedAt = gate.recorded(readHour);
+  const ended = useProduct<WarContributionsReply>(runtime.client, track && war && !going && endedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'war-contributions', params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: endedAt } } : null, active, validateWarContributions, track?.source);
   const reply = going ? head.data : ended.data;
   const error = going ? head.error : ended.error;
   const current = reply && war && war.firstHour <= reply.hour && reply.hour <= war.lastHour ? reply : undefined;

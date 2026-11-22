@@ -1,3 +1,6 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
+import { coverageOf } from '../../dashboard/widgetTime';
 import { useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ChipSet } from '../../components/ChipSet';
@@ -30,6 +33,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const follow = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const window = track && !follow ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const firstHour = widget.time.mode === 'range' && window && track ? Math.max(Math.floor(window.firstHour), track.branch.firstHour) : track?.branch.firstHour ?? 0;
   const cut: LogCut = follow ? { follow: true, offset: track?.axisOffset ?? 0 }
@@ -67,7 +71,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
-  const parent = !follow && widget.time.mode !== 'campaign' && !window ? <WidgetState kind="outside" />
+  const parent = gate.outside ? <WidgetState kind="outside" read={coverageOf(gate.outside)} />
     : needsGroups && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : tags !== null && tags !== undefined && !tags.length ? <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} /> : null;
   if (parent && !drillOpen) return parent;
@@ -76,7 +80,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
       selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
     {tags === undefined ? <WidgetState kind="loading" label="Loading market activity…" />
       : !stableKinds.length ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
-        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} firstHour={firstHour} cut={cut} active={active} label="Market ledger"
+        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} span={track ? gate.span(firstHour, track.branch.lastHour) : null} cut={cut} active={active} label="Market ledger"
           density={log.density} months={log.months} animate={log.animate} onOpen={open} />}
   </div>;
   return <div ref={anchor} className="market-ledger-host">

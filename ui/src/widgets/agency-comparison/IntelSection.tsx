@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import { dayLabel } from '../../charts/draw';
@@ -23,7 +25,8 @@ export default function IntelSection({ widget, runtime, active, hour, playing }:
   const [group, setGroup] = useState('All intel');
   const asked = useRef<number | null>(null);
   if (hour !== null && (!playing || asked.current === null)) asked.current = hour;
-  const at = asked.current;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const at = gate.recorded(asked.current);
   const validate = useMemo(() => (value: unknown) => {
     const data = validateIntelDetails(value);
     if (data.hour !== at || (country !== null && data.country !== country) || (viewer !== null && data.viewer !== viewer)) throw new Error('The intel reply belongs to another selection.');

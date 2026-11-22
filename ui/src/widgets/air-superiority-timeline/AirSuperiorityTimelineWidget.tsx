@@ -1,3 +1,4 @@
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -49,8 +50,10 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const firstHour = track ? widget.time.mode === 'range' && window ? window.firstHour : track.branch.firstHour : 0;
   const lastHour = !track || !window ? 0 : widget.time.mode === 'campaign' ? track.branch.lastHour : Math.min(window.lastHour, track.branch.lastHour);
   const beforeBranch = !!track && lastHour < firstHour;
-  const params = useMemo(() => track && window && !beforeBranch && !needsViewpoint ? { branchId: track.branch.id, firstHour, lastHour, ...airParams(mode),
-    ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, beforeBranch, needsViewpoint, firstHour, lastHour, mode, options.regionCount]);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = !beforeBranch ? gate.span(firstHour, lastHour) : null;
+  const params = useMemo(() => track && window && span && !needsViewpoint ? { branchId: track.branch.id, ...span, ...airParams(mode),
+    ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, span?.firstHour, span?.lastHour, needsViewpoint, mode, options.regionCount]);
   const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'air-superiority-ranking', params } : null, RANKING_MOVES, active, validateAirRanking, track?.source);
   const regionsKey = ranking.data ? JSON.stringify(ranking.data.rows.map(row => [row.region, regionLabel({ id: row.region, name: row.name })])) : null;
@@ -60,14 +63,14 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const tileRegions = useStickyMembers(tileScope, regionNames, stickyLimit(Math.max(1, Number(options.regionCount) || regionNames.length)));
   const regionIds = useMemo(() => tileRegions.map(Number).sort((a, b) => a - b), [tileRegions]);
   const tiling = useMemo(() => viewTiles(firstHour, lastHour), [firstHour, lastHour]);
-  const tileParams = useMemo(() => track && params && regionIds.length ? { branchId: track.branch.id, firstHour, ...airParams(mode), regions: regionIds } : null,
-    [track, params, regionIds, firstHour, mode]);
+  const tileParams = useMemo(() => track && params && span && regionIds.length ? { branchId: track.branch.id, firstHour: span.firstHour, ...airParams(mode), regions: regionIds } : null,
+    [track, params, regionIds, span?.firstHour, mode]);
   const identity = track && tileParams ? JSON.stringify([track.source.id, track.source.revision, tileParams]) : null;
   const tileRequest = useCallback((tile: number) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
-    params: { ...tileParams!, lastHour: tile * STEP + STEP - 1, tile } }), [track, tileParams]);
+    params: { ...tileParams!, lastHour: gate.within(tile * STEP + STEP - 1)!, tile } }), [track, tileParams, gate.within]);
   const tiles = useProductWindows<AirTimelineReply>(runtime.client, identity, tileRequest, tiling.whole, active, validateAirTimeline, track?.source);
   const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-superiority-timeline', params: { ...tileParams, lastHour, tile: tiling.cut } } : null, active, validateAirTimeline, track?.source);
+    product: 'air-superiority-timeline', params: { ...tileParams, lastHour: span!.lastHour, tile: tiling.cut } } : null, active, validateAirTimeline, track?.source);
   const order = useMemo(() => [...tiling.whole, ...(tiling.cut === null ? [] : [tiling.cut])], [tiling]);
   const replies = useMemo(() => order.map(tile => tile === tiling.cut ? cut.data : tiles.data.get(tile)), [order, tiling.cut, cut.data, tiles.data]);
   const spans = useMemo(() => order.map(tile => ({ firstHour: Math.max(firstHour, tile * STEP), lastHour: Math.min(lastHour, tile * STEP + STEP - 1) })), [order, firstHour, lastHour]);
@@ -75,7 +78,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const hasData = data !== undefined;
   const heading = following && hasData && !needsViewpoint && regions.length > 0;
   const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
-  const head = useHeadProduct<AirSuperiorityReply>(runtime, useGate(runtime, widget), 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
+  const head = useHeadProduct<AirSuperiorityReply>(runtime, gate, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);

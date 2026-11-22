@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -92,6 +94,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
   const pinned = options.view === 'breakdown';
   const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const gate = useGate(runtime, widget, SPEC, active);
   const drill = drillControl.state, dispatchDrill = drillControl.dispatch;
   const drillFollowing = drill.breakdown !== null && drill.follow;
   const liveRef = useRef<LiveArmy | null>(null);
@@ -150,8 +153,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const followQuery = useMemo(() => liveRaceView && track && !byType && (resolved.top != null || resolved.tags.length)
-    ? { product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) } : null,
-  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor]);
+    ? gate.follow({ product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) }) : null,
+  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor, gate.follow]);
   const followed = useFollow(store, followQuery, root, useCallback((entry: FollowEntry) => {
     liveRef.current?.wake();
     for (const wake of [...woken]) wake();
@@ -174,7 +177,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     viewport.current = { key: viewportKey, range: { firstHour: Math.floor(x[0]), lastHour: Math.ceil(x[1]) } };
     windowsCheck.current();
   }, [viewportKey]);
-  const prepared = usePreparedArmy(runtime.client, track, track && metadata.data ? armySizeRequest(track.branch.id, resolved, measure, countFor, false) : null,
+  const prepared = usePreparedArmy(runtime.client, gate, track, track && metadata.data ? armySizeRequest(track.branch.id, resolved, measure, countFor, false) : null,
     metadata.data, active && view === 'lines', widget.time.mode === 'follow');
   const [reachedHour, setReachedHour] = useState<number | null>(null);
   const dense = view === 'lines' && prepared.dense;
@@ -384,7 +387,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason={!savedSelection ? 'Saved country unavailable.'
         : 'Country unavailable at this time.'} />, countrySlot) : null;
-  const breakdown = <ArmyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
+  const breakdown = <ArmyBreakdown runtime={runtime} gate={pinned ? gate : drillControl.gate} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && state === undefined && choices === null && !unchosen ? countrySlot : null}
     headerSelection={hasOrigin || drillTag === null ? savedSelection : { tag: drillTag, hour: originHour }}
     playhead={drillPlayhead} tag={drillTag} hour={drillAt} measure={measure} countFor={countFor} manifest={metadata.data}
@@ -438,12 +441,12 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
           swatch: country(tag), short: true, countryFlag: label };
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
+  const pinTime = drillControl.time();
   return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
     <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
       title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && pinTag ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(
-        widget, track, pinTag, drillFollowing ? Math.floor(runtime.clock.getHour()) + track.axisOffset : drillAt, originHour, measure, drill.follow)) : undefined}
+      onPin={track && pinTag && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinTag, pinTime, originHour, measure)) : undefined}
       main={main}>
       {choice}
     </DrillHost>

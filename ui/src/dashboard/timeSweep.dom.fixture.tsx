@@ -46,9 +46,10 @@ const pending = new Promise<never>(() => {});
 const requests: string[] = [];
 const asked: { product: string; hour: number }[] = [];
 const reply = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
+const POINT = (key: string) => key === 'hour' || key === 'reads' || key.endsWith('Hour') && key !== 'firstHour' && key !== 'lastHour';
 const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? value.flatMap(item => hoursIn(item, key))
   : value && typeof value === 'object' ? Object.entries(value).flatMap(([name, item]) => hoursIn(item, name))
-  : typeof value === 'number' && key === 'hour' ? [value] : [];
+  : typeof value === 'number' && POINT(key) ? [value] : [];
 const makeClient = (replies: Replies) => ({
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params?: unknown }) => {
@@ -171,7 +172,7 @@ Object.assign(window, { timeSweep: {
     clock.setSpeed(speed);
     clock.setPlaying(true);
     await new Promise<void>(resolve => setTimeout(resolve, ms));
-    const playing = { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
+    const playing = { hour: clock.getHour(), advancing: clock.getSnapshot().playing, states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
     clock.setPlaying(false);
     await settle();
     return { playing, paused: { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) } };

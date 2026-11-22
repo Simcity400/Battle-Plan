@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useMemo, useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
@@ -46,6 +48,7 @@ const VANISHED = 3;
 
 export default function DivisionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
@@ -78,14 +81,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const kinds = useMemo(() => shownKinds(events), [events]);
   const losses = manifest.data?.lossesAvailable === true;
   const facets = useMemo(() => divisionFacets(losses ? kinds : kinds.filter(kind => kind === 'created'), templates, tags), [kinds, losses, templates, tags]);
-  const spec = useMemo<LogSpec | null>(() => track && manifest.data?.available && !waiting && facets[0].values.length
-    ? { source: track.source, branchId: track.branch.id, log: 'division-events', product: 'division-log', facets, firstHour: first, lastHour: last } : null,
-  [track, manifest.data?.available, waiting, facets, first, last]);
+  const logSpan = gate.span(first, last);
+  const spec = useMemo<LogSpec | null>(() => track && logSpan && manifest.data?.available && !waiting && facets[0].values.length
+    ? { source: track.source, branchId: track.branch.id, log: 'division-events', product: 'division-log', facets, ...logSpan } : null,
+  [track, manifest.data?.available, waiting, facets, logSpan?.firstHour, logSpan?.lastHour]);
   const list = useLogPages<DivisionLogEntry>(runtime.client, runtime.clock, spec, cut, active, divisionEntry);
   const counted = useMemo(() => [...(options.totals === true ? facets[0].values : []), VANISHED], [options.totals, facets]);
   const countRequests = useMemo(() => spec ? counted.map(kind => ({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
     params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], countries: [] }, ...facets.slice(1)],
-      from: first, to: last, binHours: countBinHours(first, last) } })) : [], [spec, counted, facets, first, last]);
+      from: spec.firstHour, to: spec.lastHour, binHours: countBinHours(first, last) } })) : [], [spec, counted, facets, first, last]);
   const validateCounts = useCallback((value: unknown) => validateLogCounts(value, first, last), [first, last]);
   const kindCounts = useProducts<LogCounts>(runtime.client, countRequests, active, validateCounts, track?.source);
   const until = cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : cut.hour;

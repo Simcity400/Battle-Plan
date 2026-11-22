@@ -194,7 +194,7 @@ test('Follow schedules the current and newest focus first while every time mode 
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const props = { widget: { id: 'priority', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign', playerCountryId: null, countries: [] } } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const completionPairs = completed.map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? 100 }));
     const render = () => renderToStaticMarkup(createElement(Widget, props));
     for (const mode of ['follow', 'pin', 'campaign'] as const) {

@@ -299,7 +299,9 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         onPin={airActor && !airChoices && airAt >= from && airAt <= end ? () => {
           if (!active || airPickRef.current !== airPickOwner) return;
           const current = index && ledgerCountryAt(index, airActor.tag, from, airAt, airActor.identity);
-          runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, current?.tag ?? airActor.tag, airActor.identity, from, airAt, airFollowing));
+          const span = widget.time.mode === 'range' ? airControl.gate.span(from, airAt) : null;
+          const time = widget.time.mode === 'range' ? span && airControl.time(span, 'range') : airControl.time();
+          if (time) runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, current?.tag ?? airActor.tag, airActor.identity, time));
         } : undefined} main={main}>
         {airChoices ? <div className="military-air-ledger">
           <p className="drill-empty">Choose a country for this moment.</p>
@@ -326,9 +328,11 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         if (!active || airPickRef.current !== airPickOwner) return;
         const pinned = createWidget('bombing-damage-breakdown', track.id);
         const pinnedTag = index && ledgerCountryAt(index, drill.tag, from, shown, drill.identity)?.tag || drill.tag;
+        const span = widget.time.mode === 'range' ? bombingControl.gate.span(from, shown) : null;
+        const time = widget.time.mode === 'range' ? span && bombingControl.time(span, 'range') : bombingControl.time();
+        if (!time) return;
         runtime.addWidgetBelow(widget.id, { ...pinned, campaign: widget.campaign, trackIds: widget.trackIds, countries: { kind: 'tags', tags: [pinnedTag] },
-          time: widget.time.mode === 'range' ? { mode: 'range', firstOffset: from - track.branch.firstHour, lastOffset: shown - track.branch.firstHour }
-            : drill.hour === null ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: shown - track.branch.firstHour, lastOffset: shown - track.branch.firstHour } } },
+          time,
           contentScale: widget.contentScale, options: { direction: drill.dealt ? 'dealt' : 'taken',
             holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, pinnedTag, drill.identity]) } });
       } : undefined} main={main}>

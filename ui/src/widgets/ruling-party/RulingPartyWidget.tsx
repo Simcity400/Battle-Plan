@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
@@ -41,7 +42,7 @@ import './rulingParty.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
-import { SPEC, pickedAt } from '../../dashboard/regionTime';
+import { SPEC, at as pickAt } from '../../dashboard/regionTime';
 
 const NO_WARNINGS: string[] = [];
 export const EVENT_PAGE = 128;
@@ -57,6 +58,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const slots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
   const live = widget.time.mode === 'follow';
   const following = live || widget.time.mode === 'pin';
+  const gate = useGate(runtime, widget, SPEC, active);
   const window = track && !live ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const changes = useMemo(() => data ? partyChangeHours(data) : [], [data]);
@@ -80,7 +82,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const list = useMemo(() => rulingFirst(ordered, rulingShown), [ordered, rulingShown]);
   const spec = useMemo(() => track && keys.length ? { source: track.source, branch: track.branch, family: POPULARITY_FAMILY, keys,
     partBits: POPULARITY_PART_BITS, lastHour: track.branch.lastHour } : null, [track?.source, track?.branch.id, track?.branch.lastHour, keys]);
-  const popularity = useKeyedSeries(runtime.client, runtime.clock, spec, live ? null : head, hover, live, active, root);
+  const popularity = useKeyedSeries(runtime.client, runtime.clock, gate, spec, live ? null : gate.recorded(head), gate.recorded(hover), live, active, root);
   const names = useMemo(() => {
     const names = new Map((data?.ideologies ?? []).map(ideology => [ideology.token, contentTitle(ideology.name, ideology.token, 'Ideology name unavailable')]));
     for (const band of ordered) names.set(band.token, band.name);
@@ -132,16 +134,17 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       setHover(hour);
       setKeyboard(previous => ({ index, hour, revision: (previous?.revision ?? 0) + 1 }));
     };
-    if (!track || !keys.length) { land(local); return; }
+    const range = gate.span(bounds[0], bounds[1]);
+    if (!track || !keys.length || !range) { land(local); return; }
     void loadTransientProduct<{ hour: unknown }>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
-      params: { branchId: track.branch.id, family: POPULARITY_FAMILY, lines: keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })), key, from,
-        firstHour: bounds[0], lastHour: bounds[1] } }, controller.signal).then(reply => {
+      params: { branchId: track.branch.id, family: POPULARITY_FAMILY, lines: keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })), key,
+        from: gate.within(from), ...range } }, controller.signal).then(reply => {
       const remote = typeof reply.hour === 'number' && Number.isSafeInteger(reply.hour) ? reply.hour : null;
       const forward = key === 'Home' || key === 'ArrowRight';
       const candidates = [local, remote].filter((hour): hour is number => hour !== null && (from === null || hour !== from));
       land(candidates.length ? (forward ? Math.min(...candidates) : Math.max(...candidates)) : null);
     }).catch(() => land(local));
-  }, [markHours, index, track, keys, runtime.client]);
+  }, [markHours, index, track, keys, runtime.client, gate.span, gate.within]);
   const headValue = (band: Band | undefined, hour: number): string | null | undefined => {
     if (!band || !data) return undefined;
     const followed = popularity.followed;
@@ -219,7 +222,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     .filter(row => row.hour >= shownPage.cluster.firstHour && row.hour <= shownPage.cluster.lastHour) : [];
   return <div className="ruling-party" ref={root}>
     {header}
-    <CountryPeople runtime={runtime} widget={widget} track={track} tag={tag} time={hover === null ? SPEC : pickedAt(track, hover)} active={active} view="politics" onWarnings={setPeopleWarnings} />
+    <CountryPeople runtime={runtime} widget={widget} track={track} tag={tag} time={hover === null ? SPEC : pickAt(hover)} active={active} view="politics" onWarnings={setPeopleWarnings} />
     { }
     <Legend label="Parties" items={list.map(band => {
       const value = headValue(band, head);

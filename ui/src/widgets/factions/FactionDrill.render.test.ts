@@ -22,7 +22,9 @@ test('a dissolved faction shows no power projection kept from its last reply', a
     '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({ hovered: null, rowProps: () => ({}), descriptionId: key => key });',
   });
   try {
-    const props = { runtime: { client: {} }, widget: { id: 'factions', kind: 'factions', trackIds: ['main'], time: { mode: 'campaign' }, options: {} },
+    const clock = { getHour: () => 150, getSnapshot: () => ({ playing: false, position: 150, hoursPerSecond: 0, sequence: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} };
+    const tracks = [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign', countries: [] } }, branch: { ...BRANCH, gaps: [] } }];
+    const props = { runtime: { client: {}, tracks, clock }, widget: { id: 'factions', kind: 'factions', trackIds: ['main'], time: { mode: 'campaign' }, options: {} },
       track: { source: { id: 'source', revision: '1' }, branch: BRANCH }, view, names: [], at: 150, active: true, gaps: [], onBack() {} };
     const markup = renderToStaticMarkup(createElement(module.default, props));
     assert.match(markup, /This faction was dissolved/);

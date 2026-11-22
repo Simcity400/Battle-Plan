@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -83,8 +85,10 @@ export default function FactionDrill({ runtime, widget, track, view, names, at, 
   }), [live, manifest]);
 
   const [describing, setDescribing] = useState<{ goal: string; hour: number } | null>(null);
-  const described = useProduct<FactionGoalRewardsReply>(runtime.client, describing ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'faction-goal-rewards', params: { branchId: track.branch.id, faction: view.id, goal: describing.goal, hour: describing.hour } } : null,
+  const gate = useGate(runtime, widget, SPEC, active);
+  const describedAt = gate.recorded(describing?.hour);
+  const described = useProduct<FactionGoalRewardsReply>(runtime.client, describing && describedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'faction-goal-rewards', params: { branchId: track.branch.id, faction: view.id, goal: describing.goal, hour: describedAt } } : null,
   active && describing !== null, validateFactionGoalRewards, track.source);
   const rewards = useCallback((definition: FactionGoalDefinition): RewardState | null => {
     if (!definition.token || describing?.goal !== definition.token) return null;

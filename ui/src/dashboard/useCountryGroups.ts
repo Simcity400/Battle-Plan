@@ -1,11 +1,11 @@
 import { type Failure, asFailure } from './queryError.ts';
 import { useEffect, useState } from 'react';
-import { useContentRevision } from './contentRevision';
+import { useContentRevision } from './contentRevision.ts';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
-import { loadCountryGroups } from './products';
-import { inFrame } from './frameUpdates';
+import { loadCountryGroups } from './products.ts';
+import { inFrame } from './frameUpdates.ts';
 
 export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true) {
   const { client } = runtime;

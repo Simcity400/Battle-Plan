@@ -1,3 +1,4 @@
+import { gatedParams } from './gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RECORDED_KIND, RECORDED_VERSION, RecordedClient, recordedRefusal, remapMessage } from './recorded.ts';
@@ -55,7 +56,7 @@ test('the recorded client answers a request the app made, whatever order its par
   client.at = 6;
   client.windowEnd = 12;
   const signal = new AbortController().signal;
-  const ask = (product: string, params: unknown) => client.product<unknown>({ sourceId: 'here', revision: 'now', product, params }, signal);
+  const ask = (product: string, params: unknown) => client.product<unknown>({ sourceId: 'here', revision: 'now', product, params: gatedParams(params) }, signal);
   const reply = await ask('series-state', { family: { measure: 'pp', kind: 'country' }, hour: 10 });
   assert.deepEqual(reply, { sourceId: 'here', revision: 'now', product: 'series-state', data: { states: [1] } }, 'answered under this page\'s source');
   await assert.rejects(ask('wars', { hour: 10 }), (error: unknown) => error instanceof RefusedError && /not recorded/.test(error.message), 'a recorded refusal is refused again');

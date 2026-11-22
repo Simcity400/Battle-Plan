@@ -1,3 +1,4 @@
+import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -40,10 +41,10 @@ export function useProducedTypes(runtime: WidgetRuntime, track: BoundTrack | und
   return useProduct<ProducedTypesReply>(runtime.client, request, active, validateTypesReply, track?.source);
 }
 
-export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: number | null,
+export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: GatedHour | null,
   measure: Measure, refits: boolean, active: boolean) {
   const request = track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-at',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: Math.floor(hour), measure, refits } } : null;
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits } } : null;
   return useProduct<ProducedAtReply>(runtime.client, request, active, validateAtReply, track?.source);
 }
 

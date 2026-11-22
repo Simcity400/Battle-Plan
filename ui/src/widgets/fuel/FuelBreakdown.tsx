@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -45,8 +46,8 @@ function partRows(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn',
   return { values, parts, total: Number(values.total) / Number(values.scale), totalText: formatFuelPart(values.total, values.scale, digits) };
 }
 
-export default function FuelBreakdown({ runtime, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, ...chart }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
+export default function FuelBreakdown({ runtime, gate, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, ...chart }: {
+  runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
   campaign: string; aliases?: ReadonlyMap<string, readonly Span[]>;
   selection: FuelRecipientSelection | null; onSelection: (selection: FuelRecipientSelection | null) => void;
 } & DrillChart) {
@@ -57,7 +58,7 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
     const at = ids.findIndex(([, part]) => part === id);
     return at < 0 ? undefined : tokens.categories[at % tokens.categories.length];
   }, [ids, tokens.categories]);
-  const at = useFuelAt(runtime, widget, track, tag, hour, follows, chart.active, useCallback(reply => partsStructure(reply, measure), [measure]));
+  const at = useFuelAt(runtime, widget, tag, hour, follows, chart.active, useCallback(reply => partsStructure(reply, measure), [measure]));
   const reply = at.data;
   useEffect(() => { shown(at.shownAt()); });
   const live = useMemo<LiveDrillParts>(() => mapLive(at.live, value => {
@@ -71,10 +72,11 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   useEffect(() => { setConsumer(null); }, [chart.pickOwner]);
   const consumer = selected?.consumer ?? pickedConsumer;
   const basis = selected?.basis ?? (reply?.read?.day?.awards ? readBasis(track.branch.id, tag, reply.read) : null);
-  const series = usePartSeries(runtime, track, FUEL_DAYS, ids.map(([name]) => name), tag, undefined, chart.active);
+  const series = usePartSeries(runtime, gate, track, FUEL_DAYS, ids.map(([name]) => name), tag, undefined, chart.active);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverHour } } : null, chart.active, validateCountryFuel, track.source);
+  const hoverAt = gate.recorded(hoverHour);
+  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } } : null, chart.active, validateCountryFuel, track.source);
   const amountAt = useCallback((id: string, transfer: boolean) => (when: number) => {
     const held = hovered.data && hoverHour === Math.floor(when) ? hovered.data : reply && hour === Math.floor(when) ? reply : null;
     if (!held?.read) return held ? held.missing ?? 'Not recorded' : 'Loading…';
@@ -91,8 +93,9 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
       missingAt: amountAt(id, transfer) } satisfies BreakdownSeries };
   }), [ids, series.summaries, reply, rows, color, tokens.muted, amountAt, measure]);
   const own = parts.filter(part => !part.transfer && part.summary), incoming = parts.filter(part => part.transfer && part.summary);
-  const awards = useProduct<FuelAwardsReply>(runtime.client, basis && measure === 'burn' && consumer !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basis.hour } } : null,
+  const basisAt = gate.recorded(basis?.hour);
+  const awards = useProduct<FuelAwardsReply>(runtime.client, basis && basisAt !== null && measure === 'burn' && consumer !== null ? { sourceId: track.source.id,
+    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt } } : null,
   chart.active, validateFuelAwards, track.source);
   const recipients = awards.data && basis && awards.data.readHour === basis.hour && awards.data.tag === basis.tag ? awards.data : null;
   const recipient = selected && recipients?.recipients.find(part => part.key === selected.key);
@@ -119,7 +122,7 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
       <strong>{recipient?.recordedName ?? selected.name ?? 'Name unavailable'}</strong>
       <p className="drill-empty">{reply?.consumerNames[selected.consumer] ?? 'Consumer'}</p>
       {!sameFuelActor(selected.basis, reply?.read) && <p className="drill-empty">Country unavailable at this time.</p>}
-      <RecipientHistory runtime={runtime} track={track} basis={selected.basis} recipientKey={selected.key} name={recipient?.recordedName ?? selected.name}
+      <RecipientHistory runtime={runtime} gate={gate} track={track} basis={selected.basis} recipientKey={selected.key} name={recipient?.recordedName ?? selected.name}
         hour={hour} detailHours={detailHours} chart={{ ...chart, within }} />
     </> : consumer !== null && measure === 'burn' ? <>
       <button type="button" className="button small quiet" onClick={() => setConsumer(null)}>All fuel sources and consumers</button>
@@ -151,17 +154,18 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   </div>;
 }
 
-function RecipientHistory({ runtime, track, basis, recipientKey, name, hour, detailHours, chart }: {
-  runtime: WidgetRuntime; track: BoundTrack; basis: FuelBasis; recipientKey: string; name: string | null; hour: number | null; detailHours: number; chart: HistoryChart;
+function RecipientHistory({ runtime, gate, track, basis, recipientKey, name, hour, detailHours, chart }: {
+  runtime: WidgetRuntime; gate: Gate; track: BoundTrack; basis: FuelBasis; recipientKey: string; name: string | null; hour: number | null; detailHours: number; chart: HistoryChart;
 }) {
   const tokens = useChartTokens();
   const end = Math.max(chart.extent[0], Math.min(chart.extent[1], hour ?? chart.extent[1]));
   const start = Math.max(chart.extent[0], end - detailHours + 1);
   const [visible, onViewChange] = useDetailView(start, end, detailHours);
   const wanted = detailWindows(chart.extent, visible, hour, detailHours);
-  const windows = useProductWindows<FuelAwardHistoryReply>(runtime.client, JSON.stringify([track.source.id, track.source.revision, basis, recipientKey]),
+  const basisAt = gate.recorded(basis.hour);
+  const windows = useProductWindows<FuelAwardHistoryReply>(runtime.client, basisAt === null ? null : JSON.stringify([track.source.id, track.source.revision, basis, recipientKey]),
     window => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-award-history',
-      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basis.hour, window, recipientKey } }),
+      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, recipientKey } }),
     wanted, chart.active, validateFuelAwardHistory, track.source);
   const runs = useMemo(() => joinedRuns([...windows.data.values()].map(reply => reply.runs)), [windows.data]);
   const amount = (at: number) => {

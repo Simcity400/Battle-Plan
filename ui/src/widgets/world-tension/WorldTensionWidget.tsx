@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -43,7 +45,7 @@ import TensionChart from './TensionChart';
 import { addedAt, contributionCell, contributorName, eventBadges, eventGroup, eventsThrough, layerContributions, layerUnits, otherUnits, percent, percentOf,
   validateThreatEvents, validateWorldTension, worldCells } from './tensionData.ts';
 import './worldTension.css';
-import { pickedAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { at as pickAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -63,10 +65,8 @@ export default function WorldTensionWidget(props: WidgetProps) {
   return <TensionView {...props} />;
 }
 
-export function pinTensionDrill(source: WidgetSpec, trackId: string, firstHour: number, hour: number, follow: boolean): WidgetSpec {
-  const pinned = pinnedBreakdown(source, TENSION_BREAKDOWN, trackId);
-  const offset = Math.floor(hour) - firstHour;
-  return { ...pinned, time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [trackId]: { firstOffset: offset, lastOffset: offset } } } };
+export function pinTensionDrill(source: WidgetSpec, trackId: string, time: GatedTime): PinnedSpec {
+  return pinnedBreakdown(source, TENSION_BREAKDOWN, trackId, time);
 }
 
 function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
@@ -90,7 +90,8 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
   useEffect(() => { drillControl.close(); }, [resetKey]);
   const drawn = useRef<{ count: number; keep: (tag: string) => boolean; all: boolean }>({ count, keep: () => true, all: true });
-  const head = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget), 'world-tension', track ? PARAMS : null, {
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<WorldTensionReply>(runtime, gate, 'world-tension', track ? PARAMS : null, {
     active, validate: validateWorldTension,
     structure: reply => JSON.stringify([drawn.current.all ? reply.contributions : layerContributions(reply.contributions, drawn.current.count, drawn.current.keep),
       reply.contributions.length, reply.unnamed, reply.missing, reply.warnings]),
@@ -104,7 +105,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     active: active && picks, validate: validateWorldTension,
   });
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hovered = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget, hoverHour === null ? SPEC : pickedAt(track, hoverHour)), 'world-tension', track && hoverHour !== null ? PARAMS : null, {
+  const hovered = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget, hoverHour === null ? SPEC : pickAt(hoverHour)), 'world-tension', track && hoverHour !== null ? PARAMS : null, {
     active: active && hoverHour !== null, validate: validateWorldTension,
   });
   const listHour = head.at ?? Math.floor(playhead ?? extent[1]);
@@ -231,7 +232,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   if (head.error && !head.data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const breakdownReply = drillFollows || drill.spec ? head : picked;
   const breakdownHour = drillAt;
-  const breakdown = <TensionBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent} playhead={playhead}
+  const breakdown = <TensionBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} options={options} extent={extent} playhead={playhead}
     following={breakdownReply === head && following} hour={breakdownHour} read={drillCoverage} reply={breakdownReply === head ? everyContribution : breakdownReply.data} live={breakdownReply.live}
     error={breakdownReply.error}
     onRetry={breakdownReply.retry} looks={looks} colour={colourOf} otherColour={otherColour} layers={stableLayers} events={events.data?.events ?? []}
@@ -241,7 +242,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     <p className="drill-empty">{breakdownHour === null ? '' : formatDateTime(breakdownHour)} {following && !drillControl.following
       && <button type="button" className="button small" onClick={drillControl.follow}>Follow playback</button>}</p>{drillControl.outside ? <WidgetState kind="outside" read={drillCoverage} /> : breakdown}</div>;
   const main = !head.data ? <WidgetState kind="loading" label="Loading world tension…" /> : <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
-    <TensionChart runtime={runtime} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')} options={options}
+    <TensionChart runtime={runtime} gate={gate} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')} options={options}
       label="World tension and the countries that generated it" extent={extent} playhead={playhead} following={following} layers={stableLayers}
       colours={stableLayers.map(layer => colourOf(layer.tag))} otherColour={otherColour} share={share} live={head.read === 'followed' ? head.live : null}
       badges={options.markers !== false ? badgeList : undefined} tooltip={tooltip} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))}
@@ -269,7 +270,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   return <div ref={rootRef} style={{ height: '100%' }}>
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={TENSION_BREAKDOWN.label}
       day={breakdownHour === null ? '' : formatDateTime(breakdownHour)} canFollow={following}
-      onPin={breakdownHour === null ? undefined : () => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, track.branch.firstHour, breakdownHour, drillControl.following))}
+      onPin={!drillControl.time() ? undefined : () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, time)); }}
       main={main}>{breakdown}</DrillHost>
   </div>;
 }

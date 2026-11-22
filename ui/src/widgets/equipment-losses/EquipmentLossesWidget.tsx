@@ -118,9 +118,10 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   } : null, [track, selectedCountry, actorSpans, options.landSource]);
   const following = drill.breakdown === null ? followView : drillControl.following;
   const pinnedDetail = !following && drill.breakdown !== null ? drill.hour : null;
-  const product = useLossHistory(runtime.client, track, selection, requestedView,
+  const gate = useGate(runtime, widget);
+  const product = useLossHistory(runtime.client, drill.breakdown === null ? gate : drillControl.gate, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
-  const head = useHeadProduct<LossHeadReply>(runtime, useGate(runtime, widget), 'equipment-loss-head',
+  const head = useHeadProduct<LossHeadReply>(runtime, gate, 'equipment-loss-head',
     followView && selection ? { country: selection.country, identity: selection.identity } : null,
     { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
   const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);
@@ -323,8 +324,11 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   return <div ref={rootRef} className="equipment-losses">{countryHeader}{catalogueNotice}
     {saved ? detail : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'}
     title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} canFollow={followView && view.from == null}
-    onPin={detailView ? () => runtime.addWidgetBelow(widget.id,
-      pinLosses(widget, track, tag, following && headLive ? headLive.hour() : detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
+    onPin={detailView && drillControl.time() ? () => {
+      const span = view.from != null ? drillControl.gate.span(view.from, detailView.hour) : null;
+      const time = view.from != null ? span && drillControl.time(span, 'range') : drillControl.time();
+      if (time) runtime.addWidgetBelow(widget.id, pinLosses(widget, track, tag, time, selected ? [...selected] : null, selectedCountry));
+    } : undefined}
     anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
 }
 

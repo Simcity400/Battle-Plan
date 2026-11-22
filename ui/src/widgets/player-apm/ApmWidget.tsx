@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../../charts/TimeChart';
@@ -64,13 +66,14 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const paused = options.showPausedActions === true;
   const players = options.group === 'player';
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headKey = query.head ? JSON.stringify(query.head) : null;
-  const headQuery = useMemo(() => following && active && track && query.head ? apmHeadQuery(query.head, track.branch, TRAILING_HOURS) : null,
-    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey]);
+  const headQuery = useMemo(() => following && active && track && query.head ? gate.follow(apmHeadQuery(query.head, track.branch, TRAILING_HOURS)) : null,
+    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey, gate.follow]);
   const woken = useMemo(() => new Set<() => void>(), []);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => {
@@ -88,8 +91,9 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const current = (row: ApmSeries): ApmValue => (entryRef.current ? apmHeadRows(entryRef.current.answer).find(held => held.id === row.id)?.summary : undefined) ?? row.summary;
 
   const tiled = graph && headEntry !== null;
-  const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
-    params: { ...query.head, registry: false, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour, buckets: 1 } } : null, active, validateApm, track?.source);
+  const branchSpan = track ? gate.span(track.branch.firstHour, track.branch.lastHour) : null;
+  const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head && branchSpan ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
+    params: { ...query.head, registry: false, ...branchSpan, buckets: 1 } } : null, active, validateApm, track?.source);
   const ids = useMemo(() => branchSeries.data?.series.map(series => series.id) ?? [], [branchSeries.data]);
   const tileSeries = (value: string) => tiled && track && query.head && ids.length ? { source: track.source, branchId: track.branch.id, lastHour: track.branch.lastHour, tags: ids,
     family: { kind: 'player-apm', group: query.head.group, tags: query.head.tags, membership: query.head.membership, players: query.head.players, value } } : null;

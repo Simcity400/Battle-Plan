@@ -1,3 +1,4 @@
+import { gatedParams } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadProduct } from './products.ts';
@@ -75,7 +76,7 @@ test('replies that follow the hour never push out those that do not, and either 
   const asked: string[] = [];
   const client = { product: async (request: ProductRequest) => { asked.push(JSON.stringify(request.params)); return { ...request, data: { at: request.params } }; } } as unknown as DashboardClient;
   const plain = { id: 'hour-cache', revision: '1' } as DashboardSource;
-  const at = (params: unknown): ProductRequest => ({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-catalogue', params });
+  const at = (params: unknown): ProductRequest => ({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-catalogue', params: gatedParams(params) });
   const signal = () => new AbortController().signal;
   await loadProduct(client, at({ whole: true }), signal());
   for (let hour = 0; hour < 300; hour++) await loadProduct(client, at({ hour }), signal(), undefined, undefined, false, undefined, undefined, true);

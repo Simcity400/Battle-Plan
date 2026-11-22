@@ -1,5 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { recordedHour } from '../../dashboard/regionTime.ts';
+import { axisAt, OUTSIDE_MESSAGE, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
+import { useGate } from '../../dashboard/regionGate.ts';
+import GateState from '../../dashboard/GateState';
 import { countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { HeadProduct } from '../../dashboard/headProduct';
@@ -120,7 +122,7 @@ export interface MeasureRaceProps extends Pick<WidgetProps, 'widget' | 'runtime'
   note?: string;
   parts?: MeasureParts;
   split?: boolean;
-  details?: (tag: string, hour: number, following: boolean) => ReactNode;
+  details?: (tag: string, hour: number, following: boolean, at: GatedHour | null) => ReactNode;
   positiveOnly?: boolean;
   breakdown?: boolean;
   second?: RankedMeasure;
@@ -163,7 +165,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const tags = lineMix ? mixTags : resolved.tags;
   const slots = top ?? Math.max(1, tags.length);
   const following = widget.time.mode === 'follow';
-  const pinned = widget.time.mode === 'pin';
+  const gate = useGate(runtime, widget, SPEC, active);
   const pinnedParts = !!parts && options.show === 'breakdown';
   const raceView = pinnedParts || (view === 'mix' && !!parts) ? null : view === 'race' ? 'race' : 'lines';
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
@@ -172,8 +174,8 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const asked = top == null && tags.length > 0;
   const racing = raceView === 'race' || (!!parts && raceView === null && top != null);
   const followQuery = useMemo(() => !arsenal && active && following && track && (top != null || asked) && (racing || asked)
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: measure, ...(top != null && racing ? { top } : { reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) }) } } : null,
-  [active, following, track?.branch.id, measure, top, asked, tags, racing, !!arsenal]);
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: measure, ...(top != null && racing ? { top } : { reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) }) } }) : null,
+  [active, following, track?.branch.id, measure, top, asked, tags, racing, !!arsenal, gate.follow]);
   const live = useRef<ReturnType<typeof liveRace> | null>(null);
   const sticky = useRef<StickyMembers | null>(null);
   const followKey = followQuery ? canonical(followQuery) : '';
@@ -187,7 +189,8 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const followedHead = followsHead(followed) && followed.entry !== null;
   const playbackHour = useFallbackHour(runtime.clock, active && following && !followedHead && !arsenal);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const playhead = window && (following || pinned) ? window.lastHour : null;
+  const askHour = following ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
+  const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
   const axisOffset = track?.axisOffset ?? 0;
@@ -224,10 +227,10 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null);
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
   useEffect(() => raceHead?.subscribe(() => live.current?.wake()), [raceHead]);
-  const rankRequest = !arsenal && racing && track && !entry && (top != null || asked) && recordedHour(track, moment) !== null ? {
+  const rankRequest = !arsenal && racing && track && !entry && (top != null || asked) && askHour !== null ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: top != null ? { branchId: track.branch.id, family: measure, hour: moment, top }
-      : { branchId: track.branch.id, family: measure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: moment })) },
+    params: top != null ? { branchId: track.branch.id, family: measure, hour: askHour, top }
+      : { branchId: track.branch.id, family: measure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: askHour })) },
   } : null;
   const ranked = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour', 'reads'], active,
     top != null ? validateRankReply : value => value as SeriesStateReply, track?.source);
@@ -235,15 +238,15 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     ? stateEntries(ranked.data.states.filter(state => !member || member(countryKey(state.country), moment)), ranked.data.decimals, format, moment, slots) : [],
   [ranked.data, member, moment, slots, format]);
   const rankedTags = useMemo(() => unsplit.map(item => item.tag), [unsplit]);
-  const askedParts = usePartStates(runtime.client, track?.source, track?.branch.id, parts, rankedTags, moment, active && partsRead && !entry);
+  const askedParts = usePartStates(runtime.client, track?.source, track?.branch.id, parts, rankedTags, askHour, active && partsRead && !entry);
   const selection = useMemo(() => ({ top, tags, membership, split: splitting }), [top, tags, membership, splitting]);
   const entries = useMemo(() => arsenal?.data ? arsenalRows(arsenal.data, arsenal.at ?? moment, selection) : decorate(unsplit, askedParts.values),
     [arsenal?.data, arsenal?.at, moment, selection, decorate, unsplit, askedParts.values]);
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const onReach = useCallback((hour: number | null) => { setHoverHour(hour); onHover?.(hour); }, [onHover]);
-  const series = useMeasureSeries(runtime.client, track?.source, track?.branch, measure.kind, measure.measure, raceView === 'lines' && asked ? tags : [],
-    followedHead ? null : moment, hoverHour, active && raceView === 'lines', false, membership ?? undefined, lastHour, following);
+  const series = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, measure.kind, measure.measure, raceView === 'lines' && asked ? tags : [],
+    followedHead ? null : askHour, gate.recorded(hoverHour), active && raceView === 'lines', false, membership ?? undefined, lastHour, following);
   const lineEntry = raceView === 'lines' && followedHead ? followed.entry : null;
   useEffect(() => {
     if (!lineEntry) return;
@@ -252,11 +255,15 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   }, [lineEntry, tags, series.head, decimals]);
   const content = useContentRevision(runtime.client, raceView === 'lines' && top != null);
   const [chartView, setChartView] = useState<{ key: string; from: number; to: number; width: number } | null>(null);
-  const rankedKey = track && top != null ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, measure, top, content]) : null;
+  const rankedKey = track && top != null && gate.open ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, measure, top, content]) : null;
   const shownView = chartView?.key === rankedKey ? chartView : null;
   const rankedLines = useViewReply(raceView === 'lines' ? rankedKey : null, shownView, JSON.stringify([shownView?.from, shownView?.to, shownView?.width]), active,
-    (at, signal) => loadProduct(runtime.client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
-      params: { branchId: track!.branch.id, family: measure, top, from: at.from, to: at.to, width: at.width } }, signal, validateRankedLines, track!.source));
+    (at, signal) => {
+      const range = gate.span(at.from, at.to);
+      return range ? loadProduct(runtime.client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
+        params: { branchId: track!.branch.id, family: measure, top, from: range.firstHour, to: range.lastHour, width: at.width } }, signal, validateRankedLines, track!.source)
+        : Promise.reject(new Error(OUTSIDE_MESSAGE));
+    });
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
     if (next.to < next.from) return;
     if (top == null) { series.onSummaryView(next); return; }
@@ -265,12 +272,12 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   }, [top, rankedKey, series.onSummaryView]);
   const lineTags = useMemo(() => top == null ? tags : (rankedLines.data?.lines ?? []).filter(line => !positiveOnly || holds(line.summary)).map(line => line.tag),
     [top, tags, rankedLines.data, positiveOnly]);
-  const seconds = useMeasureSeries(runtime.client, track?.source, track?.branch, secondMeasure?.kind ?? measure.kind, secondMeasure?.measure ?? measure.measure,
+  const seconds = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, secondMeasure?.kind ?? measure.kind, secondMeasure?.measure ?? measure.measure,
     raceView === 'lines' && secondMeasure ? lineTags : [], null, null, active && raceView === 'lines' && !!secondMeasure, false,
     top == null ? membership ?? undefined : undefined, lastHour, following);
   const secondQuery = useMemo(() => active && following && track && secondMeasure && raceView === 'lines' && asked
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: secondMeasure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [active, following, track?.branch.id, secondMeasure, raceView, asked, tags]);
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: secondMeasure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null,
+  [active, following, track?.branch.id, secondMeasure, raceView, asked, tags, gate.follow]);
   const secondFollowed = useFollow(store, secondQuery, root, () => {}, followedRows);
   const secondEntry = secondMeasure && followsHead(secondFollowed) && secondFollowed.entry !== null ? secondFollowed.entry : null;
   useEffect(() => {
@@ -302,11 +309,13 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const mixTag = parts && raceView === null ? mixCountry(widget.countries, fallbackTag, shownEntries()) : null;
   const breakdownTag = drill.breakdown ?? mixTag;
   const breakdownFollows = drill.breakdown == null ? following : drillControl.following;
-  const breakdownHour = Math.floor(drill.breakdown != null ? (breakdownFollows ? moment : drillControl.hour) ?? moment : moment);
+  const breakdownGate = drill.breakdown != null ? drillControl.gate : gate;
+  const breakdownAt = breakdownFollows ? null : breakdownGate.hour;
+  const breakdownHour = Math.floor(breakdownAt ?? moment);
   const breakdownTags = useMemo(() => breakdownTag ? [breakdownTag] : [], [breakdownTag]);
   const breakdownHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
   const breakdownOn = active && !!breakdownTag && breakdownFollows;
-  const breakdownAsked = usePartStates(runtime.client, track?.source, track?.branch.id, parts, breakdownTags, breakdownHour, active && !!breakdownTag && !breakdownFollows);
+  const breakdownAsked = usePartStates(runtime.client, track?.source, track?.branch.id, parts, breakdownTags, breakdownAt, active && !!breakdownTag && !breakdownFollows);
   const [breakdownName] = useKeyTagsAt(runtime, track, breakdownTags, clockHour => breakdownFollows && track
     ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? breakdownHour : breakdownHour, breakdownFollows, active && !!breakdownTag);
   const anchor = useRef<HTMLDivElement | null>(null);
@@ -328,7 +337,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const state = (() => {
     if (arsenal?.error) return <WidgetState kind="error" failure={arsenal.error} onRetry={arsenal.retry} />;
     if (!track) return <WidgetState kind="empty" icon={icon} message={`Load a campaign to see ${label.toLowerCase()}.`} />;
-    if ((widget.time.mode === 'range' || pinned) && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (gate.outside) return <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;
     if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
@@ -359,13 +368,13 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
       rows: [{ label, value: valueAt(tag) ?? 'Not recorded', tone: valueAt(tag) === null ? 'muted' : undefined, strong: partRows.length > 0 }, ...partRows],
       ...(note ? { note } : {}) }];
   };
-  const breakdownOf = (tag: string, picked: boolean) => track && parts ? <><PartsBreakdown runtime={runtime} track={track} active={active} options={options} parts={parts}
+  const breakdownOf = (tag: string, picked: boolean) => track && parts ? <><PartsBreakdown runtime={runtime} gate={breakdownGate} at={breakdownAt} track={track} active={active} options={options} parts={parts}
     tag={tag} name={breakdownName ?? 'Country name unavailable'} extent={extent} playhead={playhead} hour={breakdownHour} head={breakdownFollows ? breakdownHead : null}
     values={breakdownAsked.values?.get(tag)} totalLabel={label} format={formatValue} error={breakdownAsked.error} onRetry={breakdownAsked.retry}
-    onPick={picked ? drillControl.pick : undefined} />{details?.(tag, breakdownHour, breakdownFollows)}</> : null;
+    onPick={picked ? drillControl.pick : undefined} />{details?.(tag, breakdownHour, breakdownFollows, breakdownAt)}</> : null;
   const follows = parts && track ? <>
-    <PartFollows store={store} branchId={track.branch.id} tags={partsRead ? followedTags : []} on={active && partsRead && !!entry} root={root} head={raceHead!} />
-    <PartFollows store={store} branchId={track.branch.id} tags={breakdownTags} on={breakdownOn} root={root} head={breakdownHead!} />
+    <PartFollows store={store} gate={gate} branchId={track.branch.id} tags={partsRead ? followedTags : []} on={active && partsRead && !!entry} root={root} head={raceHead!} />
+    <PartFollows store={store} gate={breakdownGate} branchId={track.branch.id} tags={breakdownTags} on={breakdownOn} root={root} head={breakdownHead!} />
   </> : null;
 
   const attachRoot = useCallback((element: HTMLDivElement | null) => { setRoot(element); anchor.current = element; arsenal?.root(element); }, [arsenal?.root]);
@@ -373,7 +382,8 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     return <div className="parts-race" ref={attachRoot}>{follows}
       {pinnedParts && countrySlot && track ? createPortal(<DatedCountryChip label={breakdownTag ? headerLabels.labelAt(breakdownHour)(breakdownTag) : null}
         hour={breakdownHour} live={breakdownFollows ? headDate : undefined} reason={breakdownTag ? null : 'Choose a country in the widget settings.'} />, countrySlot) : null}
-      {!track ? state : !breakdownTag ? <WidgetState kind="empty" icon={icon} message="Choose a country in the widget settings." /> : breakdownOf(breakdownTag, false)}
+      {!track ? state : !breakdownTag ? <WidgetState kind="empty" icon={icon} message="Choose a country in the widget settings." />
+        : breakdownGate.outside ? <GateState gate={breakdownGate} loading={`Loading ${label.toLowerCase()}…`} /> : breakdownOf(breakdownTag, false)}
       {children}
     </div>;
   }
@@ -400,12 +410,13 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
       raceEmptyState: false, resetTimeView: true }}
     tooltip={tooltip} />;
   if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
+  const pinTime = drillControl.time();
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
   return <div className="parts-race" ref={attachRoot}>{follows}
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={drillTitle}
       day={dayLabel(breakdownHour)} canFollow={following}
       returnFocus=".country-race-chart canvas"
-      onPin={drill.breakdown && (!isSlotKey(drill.breakdown) || breakdownName) ? () => runtime.addWidgetBelow(widget.id, { ...pinnedBreakdown(widget, { id: 'breakdown', label: parts.label }, track.id),
+      onPin={drill.breakdown && (!isSlotKey(drill.breakdown) || breakdownName) && pinTime ? () => runtime.addWidgetBelow(widget.id, { ...pinnedBreakdown(widget, { id: 'breakdown', label: parts.label }, track.id, pinTime),
         countries: { kind: 'tags', tags: [isSlotKey(drill.breakdown!) ? breakdownName! : drill.breakdown!] } }) : undefined}
       main={race(drill.breakdown == null || options.drill === 'popout')}>
       {drill.breakdown ? breakdownOf(drill.breakdown, true) : null}

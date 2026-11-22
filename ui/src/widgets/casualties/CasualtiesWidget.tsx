@@ -110,10 +110,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const family = (measure: string) => ({ kind: FAMILY, measure });
+  const gate = useGate(runtime, widget, SPEC, active);
 
   const rankQuery = useMemo(() => active && following && track && top != null
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: family(RANK), top: Math.min(top, 1500) } } : null,
-  [active, following, track?.branch.id, top]);
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(RANK), top: Math.min(top, 1500) } }) : null,
+  [active, following, track?.branch.id, top, gate.follow]);
   const sticky = useRef<StickyMembers | null>(null);
   const rankKey = rankQuery ? canonical(rankQuery) : '';
   const rankShape = useCallback((answer: FollowedAnswer | undefined) => {
@@ -125,8 +126,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : tags, [top, ranked.entry, ranked.structure, tags]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, membersKey]);
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
+  const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, membersKey, gate.follow]);
   const read = useCallback((entry: FollowEntry) => entry, []);
   const measured = [
     useLiveFollow(store, queries[0], root, read, answered),
@@ -140,7 +141,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const followed = [dealt, taken, unknown, partial];
   const followedHead = lives.every(live => live !== undefined);
 
-  const gate = useGate(runtime, widget, SPEC, active);
   const moment = gate.hour;
 
   const asked = !followedHead && track && gate.open && moment !== null;

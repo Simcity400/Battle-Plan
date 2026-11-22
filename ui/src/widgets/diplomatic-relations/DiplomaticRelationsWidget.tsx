@@ -33,7 +33,8 @@ import { noMembersAt, resolveCountries } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC } from '../../dashboard/regionTime.ts';
+import { SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
+import type { Gate } from '../../dashboard/regionGate';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
@@ -53,8 +54,8 @@ const NO_WARNINGS: string[] = [];
 const OPINIONS = { kind: 'relation-opinions', measure: 'opinion' } as const;
 const NO_DOMAIN: OpinionDomain = { low: 0, high: 0, settled: false };
 
-function PairHistory({ runtime, track, pair: chosen, hour, active, following }: Pick<WidgetProps, 'runtime' | 'active'> & {
-  track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>; pair: ChosenPair; hour: number | null; following: boolean;
+function PairHistory({ runtime, gate, track, pair: chosen, hour, active, following }: Pick<WidgetProps, 'runtime' | 'active'> & {
+  gate: Gate; track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>; pair: ChosenPair; hour: GatedHour | null; following: boolean;
 }) {
   const clock = runtime.clock, axisOffset = track.axisOffset;
   const liveHead = useMemo(() => following ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => clock.subscribeFrame(changed) }
@@ -62,8 +63,8 @@ function PairHistory({ runtime, track, pair: chosen, hour, active, following }: 
   const root = useRef<HTMLDivElement>(null);
   const keys = useMemo(() => pairKeys(chosen), [chosen]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour, axisOffset: track.axisOffset },
-    hour, hoverHour, false, active, root);
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, { source: track.source, branch: track.branch, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour, axisOffset: track.axisOffset },
+    hour, gate.recorded(hoverHour), false, active, root);
   const looks = useHolderLooks(runtime.client, track, useMemo(() => pairHolders(chosen), [chosen]), active, useChartTokens());
   const label = (index: number) => looks.name(index ? 'second' : 'first');
   const colour = (index: number) => looks.colour(index ? 'second' : 'first');
@@ -104,10 +105,10 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const resolved = track ? resolveCountries(widget.countries, [defaultCountryKey(track) ?? ''].filter(Boolean), groups.data, track.branch.lastHour, Number.MAX_SAFE_INTEGER) : null;
   const top = resolved?.top ?? null;
   const [rankRoot, setRankRoot] = useState<HTMLDivElement | null>(null);
-  const ranked = useTopCountries({ widget, runtime, active }, track, top, options.topMeasure, useMemo(() => ({ current: rankRoot }), [rankRoot]));
-  const memberSet = gate.members?.countries;
-  const members = useMemo(() => hour === null || memberSet === undefined ? NO_TAGS : (resolved?.tags ?? []).filter(tag => memberSet === null || memberSet.has(tag)),
-    [resolved?.tags.join(','), memberSet, hour]);
+  const ranked = useTopCountries({ widget, runtime, active }, gate, track, top, options.topMeasure, useMemo(() => ({ current: rankRoot }), [rankRoot]));
+  const includes = gate.members?.includes;
+  const members = useMemo(() => hour === null || !includes ? NO_TAGS : (resolved?.tags ?? []).filter(includes),
+    [resolved?.tags.join(','), includes, hour]);
   const tags = top === null ? members : ranked.tags ?? NO_TAGS;
   const opinions = useHeadProduct(runtime, gate, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { countries: tags.map(countryFromKey) } : null,
     { active, validate: validateRelations, structure: relationsStructure });
@@ -168,6 +169,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const diagnostics = useMemo(() => !data ? (opinions.error ? [opinions.error.message] : NO_WARNINGS) : data.warnings, [data, opinions.error]);
   useDiagnostics(onDiagnostics, diagnostics);
   const drillOpen = drill.breakdown != null && picked != null;
+  const pinTime = drillControl.time();
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="handshake" message="Load a campaign to see opinions." />;
     const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
@@ -175,7 +177,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
       if (groupFailure && !groups.data) return groupFailure;
       if (resolved?.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
       return <>{groupFailure}{savedPair
-        ? <PairHistory runtime={runtime} track={track} pair={savedPair} hour={hour} active={active} following={widget.time.mode === 'follow'} />
+        ? <PairHistory runtime={runtime} gate={gate} track={track} pair={savedPair} hour={hour} active={active} following={widget.time.mode === 'follow'} />
         : <WidgetState kind="empty" message="Choose a pair: click a cell in a Diplomatic relations matrix and pin it." />}</>;
     }
     const none = resolved && hour !== null ? noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour) : null;
@@ -206,10 +208,10 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
         { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />);
     return <div ref={element => { anchor.current = element; opinions.root(element); }} className="diplomatic-relations" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>{state ? null : groupFailure}
       <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Pair history" day={drillControl.hour === null ? '' : dayLabel(drillControl.hour)} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }}
-        onPin={picked ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id);
+        onPin={picked && pinTime ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id, pinTime);
           runtime.addWidgetBelow(widget.id, { ...pinned, title: `${label(picked.first, picked.hour).name} and ${label(picked.second, picked.hour).name} opinions`, options: { ...pinned.options, pair: setToken(pairToken(picked)) } }); } : undefined}
         main={main}>
-        {picked && <PairHistory runtime={runtime} track={track} pair={picked} hour={drillControl.hour} active={active} following={drillControl.following} />}
+        {picked && <PairHistory runtime={runtime} gate={drillControl.gate} track={track} pair={picked} hour={drillControl.hour} active={active} following={drillControl.following} />}
       </DrillHost>
     </div>;
   })();

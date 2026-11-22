@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useMemo } from 'react';
@@ -10,7 +12,7 @@ import { resolveCountries } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useProduct, useFollowedProduct } from '../../dashboard/products';
 import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
-import type { ApmParams, ApmReply } from '../../generated/dashboard';
+import type { ApmReply } from '../../generated/dashboard';
 import { GRAPH_OPTIONS, TABLE_APM_OPTIONS } from './definition';
 import { playerNames, validateApm } from './apmData';
 
@@ -34,6 +36,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   followed = false) {
   const playbackHour = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow' && !followed);
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
   const identity = JSON.stringify([track?.source.id, track?.branch.id, widget.time]);
   const options = resolveOptions(graph ? GRAPH_OPTIONS : TABLE_APM_OPTIONS, widget.options);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -60,8 +63,9 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   const known = firstHour !== null && lastHour !== null && (asked?.known(firstHour, lastHour) ?? true);
   const membershipGap = resolved?.unobserved.some(span => firstHour !== null && lastHour !== null && span.firstHour <= lastHour && firstHour <= span.lastHour);
   const reason = resolved?.reason ?? (membershipGap ? 'Country group membership was not recorded throughout this period.' : null);
-  const params: ApmParams | null = !followed && track && firstHour !== null && lastHour !== null && firstHour <= lastHour && known && !reason ? {
-    branchId: track.branch.id, group: options.group === 'player' ? 'player' : 'country', registry: false, firstHour, lastHour,
+  const span = firstHour !== null && lastHour !== null ? gate.span(firstHour, lastHour) : null;
+  const params = !followed && track && span && known && !reason ? {
+    branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, registry: false, ...span,
     tags: asked?.tags ?? null, players: contentSet(options.players).map(contentKey),
     membership: asked?.membership ? [...asked.membership.values()].flat() : null,
     buckets: graph ? Math.max(1, Math.min(4096, Math.ceil(view?.width ?? 1024))) : 1,

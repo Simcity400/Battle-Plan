@@ -43,7 +43,8 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === 'pair';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<IntelCoverageReply>(runtime, useGate(runtime, widget), 'intel-network-coverage', track && !saved ? PARAMS : null,
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<IntelCoverageReply>(runtime, gate, 'intel-network-coverage', track && !saved ? PARAMS : null,
     { active, validate: validateIntelCoverage, structure: coverageStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;
@@ -100,7 +101,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
-  if (saved) return head.outside ? <WidgetState kind="outside" read={head} /> : <PairHistory {...props} pair={null} hour={hour} />;
+  if (saved) return head.outside ? <WidgetState kind="outside" read={head} /> : <PairHistory {...props} pair={null} gate={gate} hour={gate.hour} />;
   if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   if (filtered && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
@@ -128,13 +129,15 @@ export default function IntelCoverageWidget(props: WidgetProps) {
       title={pair ? `${pairLabels(pair.owner).name} → ${pairLabels(pair.target).name}` : PAIR.label}
       day={drillAt === null ? '' : dayLabel(drillAt)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={pair ? () => {
-        const pinned = pinnedBreakdown(widget, PAIR, track.id);
+      onPin={pair && drillControl.time() ? () => {
+        const time = drillControl.time();
+        if (!time) return;
+        const pinned = pinnedBreakdown(widget, PAIR, track.id, time);
         const saved = pairOptions(pair);
         pinned.options = { ...pinned.options, owner: setToken(saved.owner), target: setToken(saved.target) };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
-      {pair && <PairHistory {...props} pair={pair} hour={drillAt ?? hour} />}
+      {pair && <PairHistory {...props} pair={pair} gate={drillControl.gate} hour={drillControl.hour} />}
     </DrillHost>
   </div>;
 }

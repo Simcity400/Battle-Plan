@@ -167,15 +167,6 @@ export function recordingEndTime(meta: { timeModes: readonly WidgetTime['mode'][
   return { mode: 'pin', windows };
 }
 
-export function pinTime(widget: WidgetSpec, tracks: BoundTrack[], position: number): WidgetTime {
-  const windows: Record<string, OffsetWindow> = {};
-  for (const track of widgetTracks(widget, tracks)) {
-    const window = resolveWindow(widget, track, tracks, position);
-    if (window) windows[track.id] = { firstOffset: window.firstHour - track.branch.firstHour, lastOffset: window.lastHour - track.branch.firstHour };
-  }
-  return { mode: 'pin', windows };
-}
-
 export function migrateWidget(widget: WidgetSpec): WidgetSpec {
   const definition = widgetDefinition(widget.kind);
   if (!definition?.migrate || widget.configVersion >= definition.version) return widget;

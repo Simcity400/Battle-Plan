@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -49,6 +51,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const product = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
@@ -88,7 +91,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   useEffect(() => { if (!following) shown(data ? at : null); }, [following, data, at, shown]);
   const until = () => following ? trackHour(clock.getHour()) ?? at : at;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hourParams = track && hoverHour !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverHour } : null;
+  const hoverAt = gate.recorded(hoverHour);
+  const hourParams = track && hoverAt !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverAt } : null;
   const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'war-losses', params: hourParams } : null, active, validateWarLosses, track?.source);
   const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,

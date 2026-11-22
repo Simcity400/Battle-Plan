@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
@@ -110,6 +112,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const live = widget.time.mode === 'follow';
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(adapter.definition.options ?? [], widget.options);
   const view = options.view === 'biggest' ? 'biggest' : 'log';
@@ -177,8 +180,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     : following ? structureHour : hourAt(runtime.clock.getHour());
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const rankingRequest = track && hour !== null && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, firstHour: Math.min(first, hour), lastHour: hour, topN, measure,
+  const rankingSpan = hour !== null ? gate.span(Math.min(first, hour), hour) : null;
+  const rankingRequest = track && rankingSpan && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
+    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
       countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
   const ranking = useProduct<Ranking>(runtime.client, rankingRequest,
     active && inBranch && view === 'biggest' && match.ready && !match.reason && manifest.data?.available === true, adapter.validateRanking);

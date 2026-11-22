@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { countryValueAt, countryValueMix, countryValuePartsReply, countryValueSegmentAt, countryValuesModel, rankCountryValues } from '../../charts/race/countryValues.ts';
 import type { CountryValueAt, CountryValuesModel } from '../../charts/race/countryValues';
 import { clipToSpans } from '../../charts/series.ts';
@@ -85,8 +87,7 @@ export function armyDrillNumbers(reply: ArmySizeReply): ArmySizeReply {
 }
 
 export function pinArmyDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
-  hour: number, originHour: number, measure: ArmyMeasure, follow: boolean): WidgetSpec {
-  const pin = pinPartsRace({ ...widget, time: follow ? { mode: 'follow' } : widget.time, options: { ...widget.options, measure, drillOriginHour: originHour } },
-    track, tag, hour, follow, 'Army breakdown');
+  time: GatedTime, originHour: number, measure: ArmyMeasure): PinnedSpec {
+  const pin = pinPartsRace({ ...widget, options: { ...widget.options, measure, drillOriginHour: originHour } }, track, tag, time, 'Army breakdown');
   return { ...pin, options: normaliseArmyOptions(pin.options) };
 }

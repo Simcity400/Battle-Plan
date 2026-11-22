@@ -330,7 +330,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   return <div className="casualty-pairs" ref={anchor}>{groupFailure}
     {pinned ? body : <DrillHost drill={drillControl} runtime={runtime} subject={open} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Casualty pairs"
       day={drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} canFollow
-      onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}
+      onPin={selectedIds.length && drillControl.time() ? () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, time)); } : undefined}
       onClose={() => { dispatch({ type: 'close' }); setDetail(null); }}
       returnFocus=".chord-chart canvas" anchor={anchor} main={main}>{body}</DrillHost>}
     {menu.menu}

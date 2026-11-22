@@ -18,7 +18,8 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
   onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget, time), MARKET, { countries: [...tags].sort().map(countryFromKey) },
+  const gate = useGate(runtime, widget, time);
+  const head = useHeadProduct<MarketLendLeaseReply>(runtime, gate, MARKET, { countries: [...tags].sort().map(countryFromKey) },
     { active, validate: validateMarketReply });
   useEffect(() => {
     onAnswered?.(head.at ?? undefined);
@@ -30,7 +31,7 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
   const data = { ...head.data, hour: head.at };
   const following = time.kind === 'follow' || time.kind === 'spec' && widget.time.mode === 'follow';
   return <div ref={head.root} style={{ display: 'contents' }}><TradeMarketView data={data} selected={selected} values={head.live.read()}
-    deliveries={<MarketOccurrences runtime={runtime} track={track} kinds={DELIVERY_KINDS} tags={tags} firstHour={track.branch.firstHour}
+    deliveries={<MarketOccurrences runtime={runtime} track={track} kinds={DELIVERY_KINDS} tags={tags} span={gate.span(track.branch.firstHour, track.branch.lastHour)}
       cut={following ? { follow: true, offset: track.axisOffset } : { follow: false, hour: data.hour }} active={active} label="Deliveries"
       density="compact" months={false} animate={false} />} /></div>;
 }

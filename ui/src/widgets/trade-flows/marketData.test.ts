@@ -1,3 +1,4 @@
+import { gatedHour } from '../../test-support/gated.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rawAmount, validateMarketReply, marketRequest, marketLendLeaseWaits } from './marketData.ts';
@@ -32,7 +33,7 @@ test('market unavailable collections remain unknown and malformed nested values 
 test.skip('market requests preserve source, revision, date and unlimited country demand', () => {
   const track = { source: { id: 'source', revision: 'revision' }, branch: { id: '4' } };
   const tags = Array.from({ length: 5000 }, (_, id) => `X${id}`);
-  const request = marketRequest(track as Parameters<typeof marketRequest>[0], 7.8, tags);
+  const request = marketRequest(track as Parameters<typeof marketRequest>[0], gatedHour(7), tags);
   assert.equal(request.product, 'market-lendlease');
   assert.equal((request.params as { hour: number }).hour, 7);
   assert.equal((request.params as { tags: string[] }).tags.length, 5000);

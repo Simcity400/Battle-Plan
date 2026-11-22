@@ -38,7 +38,8 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const valueId = useId();
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<DoctrineMasteryReply>(runtime, useGate(runtime, widget), 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<DoctrineMasteryReply>(runtime, gate, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const drawn = withHeld(head), holding = drawn !== head;
@@ -61,8 +62,9 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     [data, JSON.stringify(chosen)]);
   const hourShown = () => drawn.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
-  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
+  const describedAt = gate.recorded(describing?.hour);
+  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing && describedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describedAt } } : null,
   active && describing !== null, validateDoctrineRewards, track?.source);
   const menu = useContextMenu('Doctrine mastery');
   const tracks = useMemo(() => new Map<string, { folder: MasteryFolder; item: MasteryTrack }>(shown.flatMap(folder =>

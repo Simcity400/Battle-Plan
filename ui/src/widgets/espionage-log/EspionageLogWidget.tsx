@@ -85,7 +85,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const paint = useCallback((reply: EspionageOperationsReply) => { latest.current = reply; paintOperations(root.current, reply); }, []);
   const structure = useCallback((reply: EspionageOperationsReply) => underWayStructure(reply, order), [order]);
   const params = useMemo(() => track ? {} : null, [track]);
-  const head = useHeadProduct<EspionageOperationsReply>(runtime, useGate(runtime, widget), 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<EspionageOperationsReply>(runtime, gate, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
   if (head.data && head.read !== 'followed') latest.current = head.data;
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? pinned ?? lastHour;
@@ -98,17 +99,20 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const serverRole = tagged && role !== 'either' ? role : null;
   const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
     ...(serverRole ? [{ name: serverRole, values: [], countries: fallback.map(countryFromKey) }] : [])], [tokens, serverRole, fallback]);
-  const spec = useMemo<LogSpec | null>(() => track && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',
-    product: 'espionage-log', ...(facets.length ? { facets } : {}), firstHour: from ?? track.branch.firstHour, lastHour: track.branch.lastHour } : null,
-  [track, tokens, facets, from]);
+  const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
+  const spec = useMemo<LogSpec | null>(() => track && logSpan && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',
+    product: 'espionage-log', ...(facets.length ? { facets } : {}), ...logSpan } : null,
+  [track, tokens, facets, logSpan?.firstHour, logSpan?.lastHour]);
   const cut: LogCut = live ? { follow: true, offset: track?.axisOffset ?? 0 } : { follow: false, hour: widget.time.mode === 'campaign' ? null : pinned };
   const log = useLogPages<OperationItem>(runtime.client, runtime.clock, spec, cut, active, completionRow);
   const pageFilter = useMemo(() => needsGroups && !serverRole ? { ...filter, types: null, from: null } : null, [needsGroups, serverRole, filter]);
   const pages = useMemo(() => filteredPages(log.pages, pageFilter), [log.pages, pageFilter]);
 
   const endedTo = live || widget.time.mode === 'campaign' ? lastHour : pinned ?? lastHour;
-  const ended = useProduct<EspionageEndedReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
-    params: { branchId: track.branch.id, from, to: endedTo } } : null, active, validateEnded, track?.source);
+  const endedAt = gate.within(endedTo);
+  const endedFrom = from === null ? null : gate.within(from);
+  const ended = useProduct<EspionageEndedReply>(runtime.client, track && endedAt !== null && (from === null || endedFrom !== null) ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
+    params: { branchId: track.branch.id, from: endedFrom, to: endedAt } } : null, active, validateEnded, track?.source);
   const offset = track?.axisOffset ?? 0;
   const endedHours = useMemo(() => ended.data ? ended.data.operations.map(operation => operation.byHour).reverse() : [], [ended.data]);
   const endedEnd = useCallback((clockHour: number) => {
@@ -134,7 +138,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   const [tipRow, setTipRow] = useState<LogRow<OperationItem> | null>(null);
   const [detail, setDetail] = useState<{ key: string; value: OperationDetail } | null>(null);
-  const detailHour = tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null;
+  const detailHour = gate.within(tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null);
   const detailKey = tipRow?.item.id && detailHour !== null ? JSON.stringify([tipRow.item.id, detailHour]) : null;
   useEffect(() => {
     if (!active || !track || !tipRow?.item.id || detailHour === null || !detailKey) return;

@@ -1,3 +1,4 @@
+import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo } from 'react';
 import MeasureRace from '../../charts/race/MeasureRace';
@@ -17,7 +18,7 @@ const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
 const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
-  tag: string; hour: number; types: readonly string[]; mode: ReturnType<typeof countMode> }) {
+  tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode> }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'factory-parts',
     params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null;
@@ -43,6 +44,6 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
   const label = `Factories, ${COUNT_MODES.find(item => item.value === mode)!.label.toLowerCase()}`;
   return <MeasureRace widget={widget} runtime={runtime} active={active} countrySlot={countrySlot} measure={measure} decimals={0} view={view} options={options}
     label={label} icon="factory" format={format} formatValue={formatValue} onWarnings={onWarnings} parts={parts} split={options.split === true}
-    details={(tag, hour, following) => following ? null
-      : <FactoryDetails widget={widget} runtime={runtime} active={active} tag={tag} hour={hour} types={types} mode={mode} />} />;
+    details={(tag, _hour, following, at) => following || at === null ? null
+      : <FactoryDetails widget={widget} runtime={runtime} active={active} tag={tag} hour={at} types={types} mode={mode} />} />;
 }

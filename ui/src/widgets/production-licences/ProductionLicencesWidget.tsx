@@ -35,7 +35,7 @@ import { COUNTRY, OPTIONS } from './definition';
 import { countryLicences, groupReasonAt, licencePairs, licenceRevision, licencesAt, pickedTag, PRODUCTION_LICENCES, slotOf, validateLicences } from './licencesData';
 import type { LicenceRow, LicenceWidth, PickedCountry } from './licencesData';
 import './productionLicences.css';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
@@ -132,10 +132,10 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     setPicked({ slot: slotOf(data, tag), tag });
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, follow: drillControl.followsAt(hour) });
   };
-  const drillRegion = drillControl.region;
-  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null) ?? hour;
-  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillAt } } : null;
+  const drillHour = drillControl.hour;
+  const drillAt = drillHour ?? hour;
+  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track && drillHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillHour } } : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
   const drillData = ownDay ? own.data : data;
   const drillTag = drillData && picked ? pickedTag(drillData, picked) : null;

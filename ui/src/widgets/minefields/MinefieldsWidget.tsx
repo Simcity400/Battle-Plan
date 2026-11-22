@@ -152,10 +152,12 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
   const menu = useContextMenu('Minefields');
   const tags = region.owners.map(owner => owner.tag);
-  const history = useProduct(runtime.client, tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
-    params: { branchId: track.branch.id, region: Number(region.region), countries: tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
+  const gate = useGate(runtime, widget, time);
+  const span = gate.span(track.branch.firstHour, track.branch.lastHour);
+  const history = useProduct(runtime.client, tags.length && span ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
+    params: { branchId: track.branch.id, region: Number(region.region), countries: tags, ...span } } : null,
   active, validateHistory, track.source);
-  const reports = useHeadProduct<MinefieldReportsReply>(runtime, useGate(runtime, widget, time), 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
+  const reports = useHeadProduct<MinefieldReportsReply>(runtime, gate, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
   const namedAt = reports.at;
   const reportTags = useMemo(() => namedAt === null || !reports.data ? [] : [...new Set(reports.data.reports.flatMap(report => [report.victim, report.mineOwner])
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);

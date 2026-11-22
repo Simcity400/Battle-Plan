@@ -1,3 +1,4 @@
+import { gatedTime } from '../../test-support/gated.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerWidgets } from '../../dashboard/definitions.ts';
@@ -12,7 +13,7 @@ import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000, gaps: [] } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ trackIds: ['wide'], time }) as unknown as WidgetSpec;
 const drillAt = (state: DrillState, playhead: number, time: WidgetSpec['time'] = { mode: 'follow' }) =>
-  regionHour({ widget: widget(time), action: drillAction(state, WIDE) }, WIDE, [WIDE], axisAt(playhead));
+  regionHour({ widget: widget(time), action: drillAction(state) }, WIDE, [WIDE], axisAt(playhead));
 
 test('one reducer for every drill: open, pick, follow and close, with a saved breakdown reading its widget time until the user acts', () => {
   const followed = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000, follow: true });
@@ -54,7 +55,7 @@ test('the drill settings are ordinary options, and a pinned breakdown shows it a
   assert.deepEqual(setOption([show], undefined, 'show', 'income'), { show: 'income' });
   const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'tracks', trackIds: ['t2'],
     countries: { kind: 'tags', tags: ['GER', 'ITA'] }, time: { mode: 'follow' }, contentScale: 125, options: { drill: 'popout' } };
-  const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main');
+  const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main', gatedTime({ mode: 'follow' }));
   assert.notEqual(pinned.id, source.id);
   assert.equal(pinned.title, 'Political power: Daily income');
   assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
@@ -98,7 +99,7 @@ test('each breakdown is its own catalogue card, titled as Pin as widget titles i
     { key: 'show=spending', initial: { title: 'Political power: Spending that day', options: { show: 'spending' } } }]);
   const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'default', trackIds: ['t'],
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, contentScale: 100 };
-  assert.equal(pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 't').title, variants[0].initial.title);
+  assert.equal(pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 't', gatedTime({ mode: 'follow' })).title, variants[0].initial.title);
   assert.equal(breakdownTitle('Political power', 'Daily income'), 'Political power: Daily income');
   assert.deepEqual(breakdownVariants('Political power', [DRILL_OPTION]), [], 'a widget without a Show setting has no breakdown cards');
 });

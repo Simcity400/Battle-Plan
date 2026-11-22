@@ -12,7 +12,10 @@ import { useHeldFailure } from './heldFailures.ts';
 import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
-import { recordedHour, type CoveredBranch } from './regionTime.ts';
+import type { CoveredBranch, GatedHour, GatedParams, GatedWindow } from './regionTime.ts';
+import type { Gate } from './regionGate';
+
+export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within'>;
 import { followStore } from './follow/connection.ts';
 import { rowAmount } from './follow/painters.ts';
 import { followsHead, useFollow } from './follow/useFollow.ts';
@@ -41,15 +44,15 @@ const NO_PAINT = () => {};
 
 const keyedLane = (spec: KeyedSeriesSpec) => `${spec.source.id}|${spec.source.revision}|${spec.branch.id}|${JSON.stringify(spec.family)}|keyed`;
 
-export function useKeyedSeries(client: DashboardClient, clock: PlaybackController, spec: KeyedSeriesSpec | null, headHour: number | null,
-  hoverHour: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
+export function useKeyedSeries(client: DashboardClient, clock: PlaybackController, gate: SeriesGate, spec: KeyedSeriesSpec | null, headHour: GatedHour | null,
+  hoverHour: GatedHour | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
   const enabled = !!spec && spec.keys.length > 0;
   const ids = useMemo(() => spec?.keys.map(keyId) ?? [], [spec?.keys]);
   const ownerKey = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branch.id, spec.family, ids, spec.within && [...spec.within]]) : null;
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const latest = useRef(spec); latest.current = spec;
-  const request = (product: string, params: Record<string, unknown>): ProductRequest => ({ sourceId: spec!.source.id, revision: spec!.source.revision,
+  const request = (product: string, params: GatedParams): ProductRequest => ({ sourceId: spec!.source.id, revision: spec!.source.revision,
     product, params: { branchId: spec!.branch.id, family: spec!.family, ...params } });
 
   const tileKey = spec ? JSON.stringify([ownerKey, spec.lastHour, spec.marks === true]) : null;
@@ -98,14 +101,14 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   }, [lines]);
 
   const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
-  const headQuery = useMemo(() => following && active && enabled ? { product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
-    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [following, active, enabled, ownerKey]);
+  const headQuery = useMemo(() => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
+    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null,
+  [following, active, enabled, ownerKey, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const headFollowed = following && followsHead(followed);
   const content = useContentRevision(client);
   const reads = (spec?.keys ?? []).flatMap(key => {
-    const hours = new Set([headFollowed ? null : headHour, hoverHour].map(hour => recordedHour(spec ?? undefined, hour)).filter(hour => hour !== null));
+    const hours = new Set([headFollowed ? null : headHour, hoverHour].filter(hour => hour !== null));
     return [...hours].map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
   });
   const stateRead = useViewRead<typeof reads, KeyedStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
@@ -133,13 +136,15 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     if (!held || !held.keys.length || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
     void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { lines: held.keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })),
-      key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }), controller.signal).then(reply => {
+      key, from: gate.within(from), ...range }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active]);
+  }, [owner, active, gate.span, gate.within]);
 
   const unrecorded = useMemo(() => unrecordedReason(tiles?.key === tileKey ? tiles.lines : null), [tiles, tileKey]);
   const reached = useMemo(() => reachedKeyLines(spec?.keys ?? [], stateRead.data), [owner, stateRead.data]);
@@ -156,7 +161,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
 }
 
 export function useSeriesParts(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
-  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: HourSpan | null, active: boolean) {
+  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: GatedWindow | null, active: boolean) {
   const request = source && branchId && family && tag && span ? { sourceId: source.id, revision: source.revision, product: 'series-parts',
     params: { branchId, family, countries: [countryFromKey(tag)], from: span.firstHour, to: span.lastHour } } : null;
   const validate = useCallback((value: unknown) => validateSeriesParts(value, tag ?? ''), [tag]);

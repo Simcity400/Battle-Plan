@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -38,8 +40,10 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const request = track && inBranch && match.ready && !match.reason ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'combat-log-history', params: { branchId: track.branch.id, hour: hour!, countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const at = gate.recorded(hour);
+  const request = track && inBranch && at !== null && match.ready && !match.reason ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'combat-log-history', params: { branchId: track.branch.id, hour: at, countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
   const state = useProduct<Reply>(runtime.client, request, active, validateCombatLog, track?.source);
   const shown = useShownHour();
   shown(state.data?.hour ?? null);

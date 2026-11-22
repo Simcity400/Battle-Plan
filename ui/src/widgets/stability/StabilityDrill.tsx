@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Segmented } from '../../components/Segmented';
 import DrillParts from '../../charts/drill/DrillParts';
@@ -26,9 +27,9 @@ import type { MeasureParts, StabilityPart } from './types';
 
 export const MEASURE_NAMES: Record<Measure, string> = { stability: 'Stability', warSupport: 'War support' };
 
-export default function StabilityDrill({ client, clock, source, branch, lastHour, tag, measure, onMeasure, hour, following, liveHead, onPick,
+export default function StabilityDrill({ client, clock, gate, source, branch, lastHour, tag, measure, onMeasure, hour, following, liveHead, onPick,
   onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, within, onDiagnostics }: {
-  client: DashboardClient; clock: PlaybackController; source: DashboardSource; branch: CoveredBranch & { id: string }; lastHour: number;
+  client: DashboardClient; clock: PlaybackController; gate: Gate; source: DashboardSource; branch: CoveredBranch & { id: string }; lastHour: number;
   tag: string | null;
   playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
@@ -42,7 +43,7 @@ export default function StabilityDrill({ client, clock, source, branch, lastHour
   const viewport = useViewportHeight();
   const root = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
-  const parts = useStabilityParts(client, clock, source, branch, tag, within, extent, lastHour, measure, hour, hover, following, active, root);
+  const parts = useStabilityParts(client, clock, gate, source, branch, tag, within, extent, lastHour, measure, hour, hover, following, active, root);
   const shownParts = useMemo<MeasureParts>(() => partsWithin(partsWithin(parts.geometry, [{ firstHour: extent[0], lastHour: extent[1] }]), within),
     [parts.geometry, within, extent[0], extent[1]]);
   const named = (part: StabilityPart) => parts.ready ? partName(part, measure)

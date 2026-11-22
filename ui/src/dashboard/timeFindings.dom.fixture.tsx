@@ -1,4 +1,4 @@
-import { createElement } from 'react';
+import { createElement, useId, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import '../widgets';
@@ -9,7 +9,7 @@ import type { BoundTrack, WidgetSpec } from './model';
 import { PlaybackController } from './playback';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
-import { datedCountryToken } from './datedCountry';
+import { datedToken } from '../test-support/gated.ts';
 import { subjectToken } from './chosen';
 import { dayLabel } from '../charts/draw';
 
@@ -28,14 +28,24 @@ console.error = (...args: unknown[]) => { errors.push(args.map(item => item inst
 
 const FIRST = 100, LAST = 109;
 type Reply = (hour: number | null, params: Record<string, unknown>) => unknown;
-interface Ask { product: string; hour: number | null; params: Record<string, unknown> | null }
+interface Ask { product: string; hour: number | null; hours: number[]; params: Record<string, unknown> | null }
+const hoursIn = (params: Record<string, unknown> | null): number[] => !params ? [] : Object.entries(params).flatMap(([key, value]) =>
+  key === 'reads' && Array.isArray(value) ? value.flatMap(read => typeof read === 'number' ? [read] : typeof read?.hour === 'number' ? [read.hour] : [])
+    : (key === 'hour' || key.endsWith('Hour') || key === 'from' || key === 'to') && typeof value === 'number' ? [value] : []);
+const follows = new Map<string, string | null>();
 const state = {
-  asks: [] as Ask[], options: [] as [string, unknown][], replies: {} as Record<string, Reply>, failures: new Set<string>(),
+  asks: [] as Ask[], options: [] as [string, unknown][], pins: [] as unknown[], replies: {} as Record<string, Reply>, failures: new Set<string>(),
   groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>,
 };
 const capture = (name: string) => (props: Record<string, unknown>) => { state.props[name] = props; return createElement('p', { 'data-stub': name }, String(props.label ?? props.title ?? name)); };
 Object.assign(globalThis, { __finding: {
   capture,
+  useFollow: (_store: unknown, query: unknown) => {
+    const id = useId();
+    useLayoutEffect(() => { follows.set(id, query ? JSON.stringify(query) : null); });
+    useLayoutEffect(() => () => { follows.delete(id); }, [id]);
+    return undefined;
+  },
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
@@ -53,7 +63,7 @@ const client = {
     if (request.product === 'follow-clock' || request.product === 'unfollow') return answer(request, null);
     const params = request.params ?? null;
     const hour = typeof params?.hour === 'number' ? params.hour : null;
-    state.asks.push({ product: request.product, hour, params });
+    state.asks.push({ product: request.product, hour, hours: hoursIn(params), params });
     if (state.failures.has(request.product)) throw new Error(`${request.product} failed`);
     if (request.product === 'country-groups') return state.groups ? answer(request, state.groups) : pending;
     const reply = state.replies[request.product];
@@ -73,7 +83,8 @@ const runtimeOf = (gaps: { firstHour: number; lastHour: number; reason: string }
   const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch: source.metadata.branches[0], axisOffset: 0,
     selectedTag: 'GER', selectedSlot: null } as unknown as BoundTrack;
   return { campaignTracks: [track], defaultRoleId: 'primary', tracks: [track], clock, maps: new MapViewsStore(client as never, clock), onMapBranch() {}, client,
-    alignment: 'calendar', nativeHidden: false, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false, addWidgetBelow() {} } as unknown as WidgetRuntime;
+    alignment: 'calendar', nativeHidden: false, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false,
+    addWidgetBelow(_id: string, spec: unknown) { state.pins.push(JSON.parse(JSON.stringify(spec))); } } as unknown as WidgetRuntime;
 };
 
 const turn = async () => {
@@ -87,7 +98,8 @@ const read = () => {
   const element = host();
   const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-popout:has(.drill-body)');
   return { text: element?.textContent ?? '', drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
-    asks: state.asks.splice(0), options: state.options.splice(0),
+    asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
+    follows: [...follows.values()].filter((query): query is string => query !== null),
     buttons: [...element?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label') ?? button.textContent ?? ''), errors: errors.splice(0) };
 };
 
@@ -98,13 +110,13 @@ const replyOf = (body: string): Reply => new Function('hour', 'params', `return 
 
 Object.assign(window, { findings: {
   subjectToken: (handle: string) => subjectToken('campaign', handle),
-  identityToken: (originOffset: number) => datedCountryToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset }),
+  identityToken: (originOffset: number) => datedToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset }),
   day: (hour: number) => dayLabel(hour),
   async preload(kinds: string[]) { await Promise.all(kinds.map(kind => loadWidgetRenderer(kind))); },
   async mount(scene: Scene) {
     root?.unmount();
     document.body.replaceChildren();
-    Object.assign(state, { asks: [], options: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
+    Object.assign(state, { asks: [], options: [], pins: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
       failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids });
     clock.setPlaying(false);
     clock.seek(scene.hour);
@@ -130,11 +142,18 @@ Object.assign(window, { findings: {
     const button = [...host()?.querySelectorAll('button') ?? []].find(item => (item.getAttribute('aria-label') ?? item.textContent ?? '').includes(label));
     button?.click(); await settle(); return { pressed: !!button, ...read() };
   },
+  async expand(selector: string) {
+    const details = host()?.querySelector<HTMLDetailsElement>(selector);
+    if (details) { details.open = true; details.dispatchEvent(new Event('toggle')); }
+    await settle(); return { expanded: !!details, ...read() };
+  },
   async call(name: string, method: string, ...args: unknown[]) {
     const fn = state.props[name]?.[method] as ((...values: unknown[]) => unknown) | undefined;
     if (!fn) return { called: false, ...read() };
     fn(...args); await settle(); return { called: true, ...read() };
   },
+  prop: (name: string, key: string) => { const value = state.props[name]?.[key]; return value === undefined || typeof value === 'object' || typeof value === 'function' ? null : value; },
+  stateLabel: (name: string) => (state.props[name]?.state as { props?: { label?: unknown } } | undefined)?.props?.label ?? null,
   props: (name: string) => {
     const props = state.props[name];
     return props ? JSON.parse(JSON.stringify(props, (_key, value) => typeof value === 'function' ? undefined : value)) : null;

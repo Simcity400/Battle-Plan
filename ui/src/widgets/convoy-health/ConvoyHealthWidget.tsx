@@ -38,7 +38,8 @@ import type { ConvoyRow } from './convoyData';
 import { DETAILS, OPTIONS } from './definition';
 import './convoyHealth.css';
 import type { ConvoyHealthReply, ConvoyView } from '../../generated/dashboard';
-import {  regionFollows } from '../../dashboard/regionTime.ts';
+import { regionFollows, SPEC } from '../../dashboard/regionTime.ts';
+import { useGate } from '../../dashboard/regionGate';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -75,8 +76,10 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const liveHead = useLiveHead(runtime, track, following, widget.id);
   const playhead = following && track ? Math.floor(runtime.clock.getSnapshot().position + track.axisOffset) : pinnedHour;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
-    params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: extent[0], to: extent[1] } } : null;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = gate.span(extent[0], extent[1]);
+  const request = track && tag && span ? { sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
+    params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: span.firstHour, to: span.lastHour } } : null;
   const { data, error, retry } = useProduct<ConvoyHealthReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const drillControl = useDrill(runtime, useRegion(widget));

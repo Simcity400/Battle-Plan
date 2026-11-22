@@ -1,3 +1,4 @@
+import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ContentRevision, contentRevision } from './contentRevision.ts';
@@ -111,7 +112,7 @@ test('content becoming available re-requests successful but empty replies at the
     calls++;
     return { ...request, data: { name: ready ? 'Current country' : null } };
   } } as unknown as DashboardClient;
-  const request = { sourceId: 'same', revision: 'same', product: 'country-styles', params: { branchId: '1', hour: 200, tags: ['ABC'] } };
+  const request = { sourceId: 'same', revision: 'same', product: 'country-styles', params: { branchId: '1', hour: gatedHour(200), tags: ['ABC'] } };
   const signal = () => new AbortController().signal;
   const revision = contentRevision(client);
   revision.observe({ game: '', user: '', contentReady: false });

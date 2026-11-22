@@ -1,3 +1,4 @@
+import { followQuery } from '../../test-support/gated.ts';
 import { useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CELL, rowKeys } from './message.ts';
@@ -28,7 +29,7 @@ function Measure({ query, count, tags }: { query: Record<string, unknown>; count
   renders[count]++;
   const host = useRef<HTMLDivElement>(null);
   const cells = useRef<TextCell[]>([]);
-  useFollow(store, query, host, entry => paintMeasure(entry.answer, cells.current, 5, 0));
+  useFollow(store, followQuery(query), host, entry => paintMeasure(entry.answer, cells.current, 5, 0));
   return <div ref={host} data-widget={count} style={{ minHeight: '20px' }}>
     {tags.map((tag, at) => <span key={tag} data-tag={tag} ref={element => { if (element) cells.current[at] = textCell(element); }} />)}
   </div>;
@@ -38,7 +39,7 @@ function Army() {
   renders.army++;
   const host = useRef<HTMLDivElement>(null);
   const rows = useRef<{ bar: BarCell; value: TextCell }[]>([]);
-  const { structure } = useFollow(store, ARMY, host, entry => paintArmy(entry.answer, rows.current, 0, 0), rowKeys);
+  const { structure } = useFollow(store, followQuery(ARMY), host, entry => paintArmy(entry.answer, rows.current, 0, 0), rowKeys);
   const keys = structure ? structure.split(',') : [];
   rows.current.length = keys.length;
   return <div ref={host} data-widget="army" style={{ minHeight: '20px' }}>
@@ -53,7 +54,7 @@ const SWAP = { kind: 'series', series: 'country-measure', measure: 'stability', 
 function Swapping({ loaded }: { loaded: boolean }) {
   const [element, setElement] = useState<Element | null>(null);
   const target = useMemo(() => ({ current: element }), [element]);
-  useFollow(store, SWAP, target, () => {});
+  useFollow(store, followQuery(SWAP), target, () => {});
   return loaded ? <section ref={setElement} data-widget="swap" style={{ minHeight: '20px' }} /> : <div ref={setElement} data-widget="swap" style={{ minHeight: '20px' }} />;
 }
 
@@ -61,7 +62,7 @@ const CONTENTS = { kind: 'series', series: 'country-measure', measure: 'warSuppo
 function Contents({ loaded }: { loaded: boolean }) {
   const [element, setElement] = useState<Element | null>(null);
   const target = useMemo(() => ({ current: element }), [element]);
-  useFollow(store, CONTENTS, target, () => {});
+  useFollow(store, followQuery(CONTENTS), target, () => {});
   return <div ref={setElement} data-widget="contents" style={{ display: 'contents' }}>
     {loaded ? <section style={{ minHeight: '20px' }} /> : <p style={{ minHeight: '20px' }}>Loading</p>}
   </div>;
@@ -115,7 +116,7 @@ export const fixture = {
     await settle();
   },
   async receiveTimes(rounds: number) {
-    const ids = Array.from({ length: 50 }, (_, at) => store.acquire({ receive: at }).entry.id);
+    const ids = Array.from({ length: 50 }, (_, at) => store.acquire(followQuery({ receive: at })).entry.id);
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: {
       keys: Array.from({ length: 16 }, (_, row) => BigInt(row + at)), columns: 1,
       values: Array.from({ length: 16 }, (_, row) => BigInt((row + round) * 100_000)), names: Array.from({ length: 16 }, (_, row) => `T${row}`) } }))));
@@ -134,7 +135,7 @@ export const fixture = {
     const ids: number[] = [];
     const many = document.body.appendChild(document.createElement('div'));
     for (let at = 0; at < 500; at++) {
-      const handle = store.acquire({ many: at });
+      const handle = store.acquire(followQuery({ many: at }));
       ids.push(handle.entry.id);
       const span = many.appendChild(document.createElement('span'));
       spans.push(span);
@@ -155,7 +156,7 @@ export const fixture = {
     return { passes: [...passes], delivered, last: spans[499]!.textContent, bytes: message(0, ids.map((id, at) => ({ id, answer: series([BigInt(at) * 100_000n]) }))).length };
   },
   async paintTable(rows: number, rounds: number) {
-    const handle = store.acquire({ table: rows });
+    const handle = store.acquire(followQuery({ table: rows }));
     const table = document.body.appendChild(document.createElement('table'));
     const cells = Array.from({ length: rows }, (_, row) => {
       const tr = table.appendChild(document.createElement('tr'));

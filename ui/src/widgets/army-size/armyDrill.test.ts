@@ -1,3 +1,4 @@
+import { gatedTime } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryValuesModel } from '../../charts/race/countryValues.ts';
@@ -95,7 +96,7 @@ test('Army breakdown options and pin preserve the shown battalion measure and br
   assert.equal(sectionFields(OPTIONS, 'options', breakdown).some(field => field.key === 'measure'), true);
   assert.equal(sectionFields(OPTIONS, 'options', breakdown).some(field => field.key === 'view'), true);
   const pinned = pinArmyDrill(widget, { id: 'main', branch: { firstHour: 100 } } as Parameters<typeof pinArmyDrill>[1],
-    'opaque country', 123, 101, 'battalions', false);
+    'opaque country', gatedTime({ mode: 'pin', windows: { main: { firstOffset: 23, lastOffset: 23 } } }), 101, 'battalions');
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['opaque country'] });
   assert.deepEqual(pinned.time, { mode: 'pin', windows: { main: { firstOffset: 23, lastOffset: 23 } } });
   assert.equal(pinned.options?.measure, 'battalions');
@@ -141,7 +142,7 @@ test('Pin as widget saves actual Follow after leaving a saved pin', () => {
   const widget = { ...createWidget('army-size', 'main', 'army'),
     time: { mode: 'pin' as const, windows: { main: { firstOffset: 2, lastOffset: 2 } } } };
   const pinned = pinArmyDrill(widget, { id: 'main', branch: { firstHour: 100 } } as Parameters<typeof pinArmyDrill>[1],
-    'opaque country', 123, 101, 'strength', true);
+    'opaque country', gatedTime({ mode: 'follow' }), 101, 'strength');
   assert.deepEqual(pinned.time, { mode: 'follow' });
   assert.equal(pinned.options?.drillOriginHour, 101);
 });

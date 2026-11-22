@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { answersKey } from '../../dashboard/countryKey.ts';
 import { useMemo } from 'react';
 import { failureText } from '../../dashboard/queryError.ts';
@@ -19,16 +20,16 @@ import { useProducedAt } from './useProduced';
 const ROW_HEIGHT = 40;
 const IC_DECIMALS = 5;
 
-export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow }: {
-  runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null; narrow: NarrowTable;
+export default function ProducedDrillTable({ runtime, gate, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow }: {
+  runtime: WidgetRuntime; gate: Pick<Gate, 'recorded'>; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null; narrow: NarrowTable;
   measure: Measure; refits: boolean; count: Count; chartType: string | null; onChart: (type: string) => void;
   chartTitle: string; chartKey: readonly { id: string; label: string; color?: string; value: number | null }[];
 }) {
   const alias = tagAt(hour);
-  const at = useProducedAt(runtime, track, alias, alias ? hour : null, measure, refits, active);
+  const at = useProducedAt(runtime, track, alias, alias ? gate.recorded(hour) : null, measure, refits, active);
   const reply = at.data && answersKey(at.data.asked, alias) && at.data.hour === Math.floor(hour) ? at.data : undefined;
   const rows = useMemo(() => reply ? typeRows(reply) : null, [reply]);
-  const pictures = useProducedArtwork(runtime, track, alias ?? tag, reply?.read ?? null, active);
+  const pictures = useProducedArtwork(runtime, track, alias ?? tag, gate.recorded(reply?.read), active);
   const since = reply?.observation ?? null;
   const columns = useMemo<TableColumn<TypeRow>[]>(() => [
     { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.label,

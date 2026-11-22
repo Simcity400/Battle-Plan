@@ -219,11 +219,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   return <div ref={anchor} className="casualty-breakdown" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     {pinned ? detailBody : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Recorded losses"
       day={dayShown} canFollow
-      onPin={pinTag && runtime.addWidgetBelow ? () => {
-        const pin = pinnedBreakdown(widget, DETAIL, track.id);
-        const offset = Math.floor(detailHour) - track.branch.firstHour;
-        runtime.addWidgetBelow?.(widget.id, { ...pin, countries: { kind: 'tags', tags: [pinTag] },
-          time: drillControl.following ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } });
+      onPin={pinTag && drillControl.time() ? () => {
+        const time = drillControl.time();
+        if (!time) return;
+        const pin = pinnedBreakdown(widget, DETAIL, track.id, time);
+        runtime.addWidgetBelow(widget.id, { ...pin, countries: { kind: 'tags', tags: [pinTag] } });
       } : undefined}
       anchor={anchor} main={main}>{detailBody}</DrillHost>}
     {menu.menu}

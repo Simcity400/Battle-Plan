@@ -1,3 +1,4 @@
+import type { GatedHour } from '../../dashboard/regionTime';
 import type { CountryRef } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
@@ -73,20 +74,19 @@ export function validateProducedReply(data: unknown): ProducedData {
 }
 
 export interface ProducedRequest {
-  branchId: string; countries: CountryRef[]; top?: number; rankHour?: number;
+  branchId: string; countries: CountryRef[]; top?: number; rankHour?: GatedHour;
   count: Count; measure: Measure; types: string[]; refits: boolean;
 }
 
-export function producedRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, rankHour: number, count: Count,
-  measure: Measure, types: readonly string[], refits: boolean): ProducedRequest {
+export function producedRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, rankHour: GatedHour | null, count: Count,
+  measure: Measure, types: readonly string[], refits: boolean): ProducedRequest | null {
   const common = { branchId, count, measure, types: [...types], refits };
-  return resolved.top != null ? { ...common, countries: [], top: resolved.top, rankHour: Math.floor(rankHour) } : { ...common, countries: resolved.tags.map(countryFromKey) };
+  if (resolved.top == null) return { ...common, countries: resolved.tags.map(countryFromKey) };
+  return rankHour === null ? null : { ...common, countries: [], top: resolved.top, rankHour };
 }
 
-export function producedRankHour(mode: string, playhead: number | null, playing: boolean, held: number | null, viewLast: number): number {
-  if (mode === 'pin' && playhead != null) return playhead;
-  if (mode === 'follow' && playhead != null) return playing && held != null ? held : playhead;
-  return viewLast;
+export function producedRankHour(following: boolean, at: GatedHour | null, playing: boolean, held: GatedHour | null): GatedHour | null {
+  return at === null ? null : following && playing && held !== null ? held : at;
 }
 
 export interface ValueAt { value: number | null; reason: ProducedUnknown | null; index: number; stretch: number }

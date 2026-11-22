@@ -38,7 +38,7 @@ import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, exp
 import type { ExperienceBranch } from './experienceData';
 import { summaryEnd } from '../country-measure/measureData';
 import './experience.css';
-import { SPEC, pickedAt, recordedHour } from '../../dashboard/regionTime.ts';
+import { SPEC, at as pickAt, recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_PAINT = () => {};
@@ -72,12 +72,13 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const gate = useGate(runtime, widget, SPEC, active);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
   const followed = {
-    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
-    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
-    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
+    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
+    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
+    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
   };
   const entryOf = (branch: ExperienceBranch) => followsHead(followed[branch]) ? followed[branch].entry : null;
   const heads = { army: entryOf('army'), navy: entryOf('navy'), air: entryOf('air') };
@@ -85,11 +86,11 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]);
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
-  const card = useHeadProduct(runtime, useGate(runtime, widget, hover === null ? SPEC : pickedAt(track, hover)), 'country-experience', track && first ? { country: countryFromKey(first)} : null,
+  const card = useHeadProduct(runtime, useGate(runtime, widget, hover === null ? SPEC : pickAt(hover)), 'country-experience', track && first ? { country: countryFromKey(first)} : null,
     { active, validate: validateExperienceReply, structure: experienceStructure });
   const setRoots = useCallback((element: HTMLDivElement | null) => { setRoot(element); card.root(element); }, [card.root]);
   const styleAt = Math.max(extent[0], Math.min(moment, extent[1]));
-  const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
+  const styles = useCountryLineStyles(runtime.client, gate, track, resolved.tags, styleAt, active);
   const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => resolved.tags.map(tag => ({ tag, hour: styleAt })), [resolved.tags, styleAt]), active);
   const single = resolved.tags.length === 1;
   const lines = useMemo(() => experienceLines(resolved.tags, branches, single,

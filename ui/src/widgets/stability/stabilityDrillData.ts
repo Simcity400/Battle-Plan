@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pickLines } from '../../charts/linePick.ts';
 import type { ChartPick } from '../../charts/pick';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
@@ -34,8 +36,6 @@ export function stabilityPickAction(pick: StabilityPick, open: boolean, followsA
   return open ? { type: 'pick', hour: pick.hour } : { type: 'open', breakdown: 'parts', hour: pick.hour, follow: pick.tag !== null && followsAt(pick.hour) };
 }
 
-export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, firstHour: number,
-  tag: string, hour: number, following: boolean): WidgetSpec {
-  return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] }, time: following ? { mode: 'follow' }
-    : { mode: 'pin', windows: { [trackId]: { firstOffset: Math.floor(hour) - firstHour, lastOffset: Math.floor(hour) - firstHour } } } }, breakdown, trackId);
+export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, tag: string, time: GatedTime): PinnedSpec {
+  return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] } }, breakdown, trackId, time);
 }

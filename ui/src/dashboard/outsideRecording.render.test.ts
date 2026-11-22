@@ -66,7 +66,8 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
       useHeadProduct: gated,
       usePartSeries: () => ({ summaries: [], onSummaryView() {}, error: undefined, retry() {}, owner: null }),
     };
-    const drawn = markup(createElement(Breakdown, { runtime: { tracks: [shortTrack], client: {}, clock }, widget, track: shortTrack, tag: 'GER', hour: null, follows: true,
+    const shut = { recorded: () => null, within: () => null, span: () => null, follow: () => null };
+    const drawn = markup(createElement(Breakdown, { runtime: { tracks: [shortTrack], client: {}, clock }, gate: shut, widget, track: shortTrack, tag: 'GER', hour: null, follows: true,
       digits: 2, campaign: 'campaign', selection: null, onSelection() {}, level: null, onLevel() {}, active: true, pickOwner: {}, extent: [100, 109], branchStart: 100,
       within: undefined, detailHours: 24, onPick() {}, onContextMenu() {} }));
     assert.ok(drawn.includes(OUTSIDE) && !drawn.includes('data-state="loading"'), `following playback at 110, the drill is outside its track: ${drawn}`);
@@ -77,12 +78,12 @@ test('on a track aligned 100 hours later, following playback at axis hour 8 read
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/useCountryGroups.ts': wrapped('useCountryGroups'), '/charts/useChartTokens.ts': TOKENS });
   try {
     const { default: Widget } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/training-queue/TrainingQueueWidget.tsx');
-    const { datedCountryToken } = await load<typeof import('./datedCountry.ts')>('/ui/src/dashboard/datedCountry.ts');
+    const { boundCountryToken } = await load<typeof import('./datedCountry.ts')>('/ui/src/dashboard/datedCountry.ts');
     const aligned = track(100, 109, 100);
     const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
       unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 105 }] }] };
     host.__stub = { useHeadProduct: gated, useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
-    const country = datedCountryToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset: 0 });
+    const country = boundCountryToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset: 0 } as Parameters<typeof boundCountryToken>[0]);
     const render = (time: Record<string, unknown>) => markup(createElement(Widget, { widget: { id: 'queue', kind: 'training-queue', trackIds: ['main'],
       countries: { kind: 'tags', tags: ['GER'] }, time, options: { country } }, runtime: { tracks: [aligned], client: {}, clock: clockAt({ firstHour: 0, lastHour: 9 }, 8) },
       active: true, onDiagnostics() {}, setOption() {}, headerSlot: null }));

@@ -1,6 +1,7 @@
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { resolveWindow } from './model.ts';
+import { useGate } from './regionGate.ts';
+import { SPEC } from './regionTime.ts';
 import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
@@ -41,8 +42,10 @@ export function validateRaidLog(value: unknown): RaidLogReply {
 
 export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, catalogue = false) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const range = track && !catalogue && widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, 0) : null;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
+  const gate = useGate(runtime, widget, SPEC, active);
+  const ranged = !catalogue && widget.time.mode === 'range';
+  const range = ranged ? gate.window : null;
+  const request = track && (!ranged || range) ? { sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
     params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } } : null;
   return { track, ...useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source) };
 }

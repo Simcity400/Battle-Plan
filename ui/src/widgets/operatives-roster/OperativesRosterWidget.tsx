@@ -60,17 +60,19 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     painted.current = paintedRows(reply);
     paintRoster(root.current, painted.current);
   }, []);
-  const head = useHeadProduct<OperativesRosterReply>(runtime, useGate(runtime, widget), 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct<OperativesRosterReply>(runtime, gate, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
   const unheldSlots = useSlotTags(runtime.client, track, active && !!head.data?.unheld.some(isSlotKey));
-  const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? head.hour : null;
+  const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? gate.recorded(head.hour) : null;
   const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } } : null, active, validateDeparted, track?.source);
   const tenureHour = useRef<number | null>(null);
-  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureHour.current !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureHour.current } } : null,
+  const tenureAt = gate.recorded(tenureHour.current);
+  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureAt !== null ? { sourceId: track.source.id,
+    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureAt } } : null,
     active, validateTenures, track?.source);
   const tenures = tenuresAsked.data;
   if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;

@@ -14,7 +14,7 @@ import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { coverageOf, useReadsRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
-import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type Region, type TrackHour } from './regionTime.ts';
+import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type GatedParams, type Region, type TrackHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
@@ -114,12 +114,13 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
   return held && held.client === client && held.subject === subject && eligible(held.hour) ? held : null;
 }
 
-export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: string, wanted: Readonly<Record<string, unknown>> | null,
+export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: string, wanted: GatedParams | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
   const { active, validate, structure, paint } = options;
   const { region, track } = gate;
   const params = gate.open ? wanted : null;
-  const { follows, hourAt } = useMemo(() => headRead(region, track, runtime.tracks), [region, track, runtime.tracks]);
+  const follows = regionFollows(region);
+  const hourAt = gate.hourAt;
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
   const paramsKey = params ? canonical(params) : null;
@@ -127,8 +128,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: s
   const root = useCallback((next: Element | null) => { if (next) setElement(screenHolder(next)); }, []);
   const target = useMemo(() => ({ current: element }), [element]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
-    [following, product, paramsKey, track?.branch.id]);
+  const query = useMemo(() => following ? gate.follow({ ...params, panel: product, branchId: track!.branch.id }) : null,
+    [following, product, paramsKey, track?.branch.id, gate.follow]);
   const latest = useRef({ validate, structure, paint });
   latest.current = { validate, structure, paint };
   const shape = useCallback((_answer: FollowedAnswer | undefined, entry: FollowEntry) => {
@@ -181,12 +182,14 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: s
     ? { data: askedHeld.data, hour: askedHeld.hour, through: askedHeld.hour, live: repliedCells(askedHeld.data) } : undefined, [askedHeld]);
   const live = pushed && panelLive ? panelLive : askedLive;
   if (followed.status === 'unavailable' && followed.reason) headFallbacks.set(product, followed.reason);
-  const exactRead = perfLog && track && params ? (at: number) => {
+  const exactRead = perfLog && track && params ? (asked: number) => {
+    const at = gate.recorded(asked);
+    if (at === null) return Promise.reject(new Error('This hour was not recorded.'));
     const request = { sourceId: track.source.id, revision: track.source.revision, product, params: { ...params, branchId: track.branch.id, hour: at } };
     return perfLog!.exactOnce(JSON.stringify(request), async () => (await runtime.client.product(request, new AbortController().signal)).data);
   } : undefined;
-  const committedHour = entry?.hour;
-  useRecordedRows(product, exactRead && pushed && data !== undefined && committedHour !== undefined ? {
+  const committedHour = entry?.hour ?? null;
+  useRecordedRows(product, exactRead && pushed && data !== undefined && committedHour !== null ? {
     hour: committedHour, rows: () => recordedPanelRows(product, data),
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);

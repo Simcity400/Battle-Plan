@@ -1,3 +1,5 @@
+import type { GatedHour } from '../../dashboard/regionTime';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../TimeChart';
@@ -58,6 +60,8 @@ export interface PartsBreakdownProps {
   tag: string; name: string;
   extent: [number, number]; playhead: number | null;
   hour: number;
+  gate: SeriesGate;
+  at: GatedHour | null;
   head: PartsHead | null;
   values: PartValues | undefined;
   totalLabel: string; total?: number | null;
@@ -66,19 +70,19 @@ export interface PartsBreakdownProps {
   onPick?: (hour: number) => void;
 }
 
-export default function PartsBreakdown({ runtime, track, active, options, parts, tag, name, extent, playhead, hour, head, values,
+export default function PartsBreakdown({ runtime, gate, at, track, active, options, parts, tag, name, extent, playhead, hour, head, values,
   totalLabel, total, format, error, onRetry, onPick }: PartsBreakdownProps) {
   const tokens = useChartTokens();
   const shown = useShownHour();
   const following = head !== null;
   const lines = useMemo(() => new PartLines(), []);
-  const span = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
+  const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
   const keyedFamily = parts.kind === 'keyed' ? parts.family as unknown as Record<string, unknown> : null;
   const held = useSeriesParts(runtime.client, track.source, track.branch.id, keyedFamily, keyedFamily ? tag : null, keyedFamily ? span : null, active);
   const keys = useMemo(() => keyedFamily ? (held.data?.parts ?? []).map(part => ({ tag, part: part.part })) : [], [keyedFamily, held.data, tag]);
   const root = useRef<HTMLDivElement>(null);
-  const keyed = useKeyedSeries(runtime.client, runtime.clock, keyedFamily && keys.length ? { source: track.source, branch: track.branch, family: keyedFamily,
-    keys, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, following ? null : hour, null, following, active, root);
+  const keyed = useKeyedSeries(runtime.client, runtime.clock, gate, keyedFamily && keys.length ? { source: track.source, branch: track.branch, family: keyedFamily,
+    keys, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, following ? null : at, null, following, active, root);
   const items = useMemo(() => parts.kind === 'measures' ? drawnItems(parts.items).map(item => ({ id: item.id, label: item.label }))
     : keys.map(key => ({ id: key.part, label: parts.name(key.part) })), [parts, keys]);
   const colours = useMemo(() => partColours(items, tokens.categories), [items, tokens.categories]);

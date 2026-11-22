@@ -1,6 +1,7 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DashboardClient, ProductRequest } from '../../dashboard/client';
+import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { loadProduct, loadTransientProduct, useProduct } from '../../dashboard/products.ts';
@@ -24,7 +25,7 @@ export const leafPart = (key: string) => (BigInt(key) & ((1n << PART_BITS) - 1n)
 
 export interface LossSelection { branchId: string; country: LossesParams['country']; landSource: LossesParams['landSource']; identity?: LossesParams['identity'] }
 
-export function useLossHistory(client: DashboardClient, track: BoundTrack | undefined, selection: LossSelection | null,
+export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within'>, track: BoundTrack | undefined, selection: LossSelection | null,
   view: LossWindow | null, exact: readonly number[], active: boolean, open: boolean) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, selection, view?.first, view?.end, view?.from]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
@@ -50,16 +51,19 @@ export function useLossHistory(client: DashboardClient, track: BoundTrack | unde
   const reads = view ? [...new Set([view.first, view.end, ...exact,
     ...(view.from == null ? [] : [view.from - 1]),
     ...(reachedHover === null || reachedHover < view.first || reachedHover > view.end ? [] : [reachedHover])])]
-    .filter(hour => Number.isInteger(hour) && hour >= view.first - 1 && hour <= view.end).sort((a, b) => a - b) : [];
-  const request: ProductRequest<LossesParams> | null = track && selection && view ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-losses', params: { ...selection, from, to, width: Math.max(1, Math.round(geometry?.width ?? 64)), reads } } : null;
+    .filter(hour => Number.isInteger(hour) && hour >= view.first - 1 && hour <= view.end).sort((a, b) => a - b)
+    .flatMap(hour => { const read = gate.within(hour); return read === null ? [] : [read]; }) : [];
+  const fromAt = gate.within(from), toAt = gate.within(to);
+  const request = track && selection && view && fromAt !== null && toAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'equipment-losses', params: { ...selection, from: fromAt, to: toAt, width: Math.max(1, Math.round(geometry?.width ?? 64)), reads } } : null;
   const read = useProduct(client, request, active, validateLossesReply, track?.source);
   const exactAt = useCallback(async (hour: number) => {
     if (!active || !track || !request) return null;
     const controller = new AbortController(); picks.current.add(controller);
     try {
+      const asked = gate.within(hour);
       const reply = await loadProduct(client, { ...request, params: { ...request.params,
-        reads: [...new Set([...request.params.reads, Math.floor(hour)])].sort((a, b) => a - b) } }, controller.signal, validateLossesReply, track.source);
+        reads: [...new Set([...request.params.reads, ...(asked === null ? [] : [asked])])].sort((a, b) => a - b) } }, controller.signal, validateLossesReply, track.source);
       return controller.signal.aborted || alive.current !== owner ? null : reply;
     } catch (failure) {
       if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) });
@@ -80,9 +84,11 @@ export function useLossHistory(client: DashboardClient, track: BoundTrack | unde
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(before => ({ owner, hour, revision: (before?.revision ?? 0) + 1 }));
     };
     if (!leaves.length) { land(ships); return; }
+    const firstAt = gate.within(firstHour), lastAt = gate.within(lastHour);
+    if (firstAt === null || lastAt === null) { land(ships); return; }
     void loadTransientProduct<{ hour: unknown }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
       params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ country: selection.country, part: leafPart(leaf) })),
-        key, from: origin, firstHour, lastHour } }, controller.signal).then(reply => {
+        key, from: gate.within(origin), firstHour: firstAt, lastHour: lastAt } }, controller.signal).then(reply => {
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The equipment-loss navigation is malformed.');
       land(nearest(key, reply.hour as number | null, ships));
     }).catch(failure => { if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) }); });

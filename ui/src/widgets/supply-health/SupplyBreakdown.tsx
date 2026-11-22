@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -31,9 +32,9 @@ import { useSupplySeries } from './supplySeries';
 import { useSupplyHead } from './supplyHead';
 import type { supplyCountrySelection } from './SupplyCountryChip';
 
-export default function SupplyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, identities, extent, playhead, liveHead, dayText,
+export default function SupplyBreakdown({ runtime, gate, track, active, options, countrySlot, headerSelection, identities, extent, playhead, liveHead, dayText,
   tag, hour, originHour, following, pinned, onPick, onFollow, onWarnings }: {
-  runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
+  runtime: WidgetRuntime; gate: Gate; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
   countrySlot: HTMLElement | null; headerSelection: ReturnType<typeof supplyCountrySelection>;
   identities: readonly CountryIdentityHistory[] | null;
   extent: [number, number]; playhead: number | null;
@@ -52,15 +53,16 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const spans = identitySpans.get(tag ?? '') ?? [];
   const tags = useMemo(() => tag ? [tag] : [], [tag]);
   const within = useMemo(() => tag ? new Map([[tag, spans]]) : undefined, [tag, spans]);
-  const reads = useMemo(() => tag ? [...(liveHead ? [] : [{ tag, hour: Math.floor(hour) }]), ...(tipHour === null ? [] : [{ tag, hour: tipHour }])] : [],
-    [tag, hour, tipHour, liveHead]);
-  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
+  const headAt = gate.recorded(hour), tipAt = gate.recorded(tipHour);
+  const reads = useMemo(() => tag ? [...(liveHead || headAt === null ? [] : [{ tag, hour: headAt }]), ...(tipAt === null ? [] : [{ tag, hour: tipAt }])] : [],
+    [tag, headAt, tipAt, liveHead]);
+  const supply = useSupplySeries(runtime.client, runtime.clock, gate, track?.source, track?.branch, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
     liveHead !== undefined, root, track?.axisOffset);
   const { error, retry } = supply;
   useEffect(() => { onWarnings(error ? [`Supply could not be loaded: ${error.message}`] : []); return () => onWarnings([]); }, [error, onWarnings]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const colors = useMemo(() => [tokens.error, tokens.warning, tokens.positive], [tokens.error, tokens.warning, tokens.positive]);
-  const head = useSupplyHead(store, liveHead !== undefined && active, track?.branch.id, tag, root, colors);
+  const head = useSupplyHead(store, gate, liveHead !== undefined && active, track?.branch.id, tag, root, colors);
   const actor = countryDrillTagAt(identitySpans, hour);
   const runs = useMemo(() => tag ? clipToSpans(clipToSpans(supply.sharesOf(tag), spans), [{ firstHour: extent[0], lastHour: extent[1] }]) : [],
     [supply.shares, tag, spans, extent[0], extent[1]]);

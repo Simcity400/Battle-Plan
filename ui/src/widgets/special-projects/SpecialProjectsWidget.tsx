@@ -149,7 +149,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = withHeld(useHeadProduct(runtime, useGate(runtime, widget), 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+  const gate = useGate(runtime, widget);
+  const live = withHeld(useHeadProduct(runtime, gate, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateSpecialProjectsReply, structure: projectStructure }));
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
@@ -189,7 +190,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }) ?? [], [data, labelHour, resolved.memberships]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
-  const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
+  const boundedAt = gate.recorded(at);
+  const bounded = useProducts<SpecialProjectsReply>(runtime.client, boundedAt === null ? [] : requests.map(r => ({ ...r, params: { ...r.params, hour: boundedAt } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
   const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
   const detailWarnings = useRef<readonly string[]>([]);

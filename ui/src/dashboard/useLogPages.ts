@@ -11,6 +11,7 @@ import { inFrame } from './frameUpdates.ts';
 import type { PlaybackController } from './playback';
 import { loadProduct, useProduct } from './products.ts';
 import { asFailure } from './queryError.ts';
+import type { GatedHour } from './regionTime';
 
 export interface LogSpec {
   source: DashboardSource;
@@ -18,8 +19,8 @@ export interface LogSpec {
   log: string;
   facets?: readonly FacetFilter[];
   scope?: readonly MembershipRun[];
-  firstHour: number;
-  lastHour: number;
+  firstHour: GatedHour;
+  lastHour: GatedHour;
   product?: string;
 }
 

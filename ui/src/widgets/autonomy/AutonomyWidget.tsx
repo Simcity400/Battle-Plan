@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -114,8 +116,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
-  const series = useMeasureSeries(runtime.client, track?.source, track?.branch, 'autonomy', 'progress', tags,
-    following && !followsClock ? head : null, hoverHour, active, false, within, lastHour, followsClock);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const series = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, 'autonomy', 'progress', tags,
+    following && !followsClock ? gate.recorded(head) : null, gate.recorded(hoverHour), active, false, within, lastHour, followsClock);
   const axisOffset = track?.axisOffset ?? 0;
   const tilesLanded = series.subscribe;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => {
@@ -125,8 +128,8 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const store = useMemo(() => track ? followStore(runtime.client, track.source, clock, track.axisOffset) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const headQuery = useMemo(() => followsClock && active && track && tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]);
+  const headQuery = useMemo(() => followsClock && active && track && tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null, [followsClock, active, track?.branch.id, tags, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;
   const places = series.decimals;
@@ -135,7 +138,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     return () => stops.forEach(stop => stop());
   }, [entry, places, tags, series.head]);
   useShownEachFrame(clock, () => data ? liveHead ? Math.min(liveHead.read(), lastHour) : head : null);
-  const hovered = hoverHour === null ? null : Math.floor(hoverHour);
+  const hovered = gate.recorded(hoverHour);
   const scoreRequest = (measure: string) => track && hovered !== null && tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
   const scores = useProduct<MeasureStates>(runtime.client, scoreRequest('score'), active, validateMeasureStates, track?.source);

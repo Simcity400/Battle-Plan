@@ -1,3 +1,4 @@
+import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -68,7 +69,7 @@ function pendingTransport() {
   } };
 }
 const query = (product: string, sourceId = 'scheduler-source'): import('./client').ProductRequest => ({
-  sourceId, revision: 'v1', product, params: { branchId: '1', tag: 'Synthetic country', hour: 100, tokens: ['synthetic-focus'] },
+  sourceId, revision: 'v1', product, params: { branchId: '1', tag: 'Synthetic country', hour: gatedHour(100), tokens: ['synthetic-focus'] },
 });
 
 test('actual browser transport reserves focus capacity while five histories wait and eventually returns every history', async () => {

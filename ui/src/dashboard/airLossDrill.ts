@@ -1,3 +1,5 @@
+import type { GatedTime } from './regionTime';
+import type { PinnedSpec } from '../charts/drill/drillState';
 import { clipToSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import { pinPartsRace } from '../charts/race/partsRaceDrill.ts';
@@ -39,10 +41,8 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
     runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('airLosses')) }));
 }
 
-export function pinAirLossDrill(source: WidgetSpec, track: BoundTrack, tag: string, identity: string, from: number, hour: number,
-  follow: boolean): WidgetSpec {
-  const pinned = pinPartsRace(follow ? { ...source, time: { mode: 'follow' } } : source, track, tag, hour, follow, 'Loss causes');
-  return { ...pinned, time: source.time.mode === 'range' ? { mode: 'range', firstOffset: from - track.branch.firstHour,
-    lastOffset: Math.floor(hour) - track.branch.firstHour } : pinned.time,
+export function pinAirLossDrill(source: WidgetSpec, track: BoundTrack, tag: string, identity: string, time: GatedTime): PinnedSpec {
+  const pinned = pinPartsRace(source, track, tag, time, 'Loss causes');
+  return { ...pinned,
     options: { ...pinned.options, holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, tag, identity]) } };
 }

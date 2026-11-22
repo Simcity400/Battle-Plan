@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
@@ -55,9 +56,9 @@ export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, a
   return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply, track?.source) };
 }
 
-export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | undefined, key: string | null, group: string, hour: number | null, detailHours: number, active: boolean) {
+export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, gate: Pick<Gate, 'within'>, tag: string | undefined, key: string | null, group: string, hour: number | null, detailHours: number, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const start = hour == null ? null : windowOf(detailHours, hour) * detailHours;
+  const start = hour == null ? null : gate.within(windowOf(detailHours, hour) * detailHours);
   const request = track && tag && key && start != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
     params: { branchId: track.branch.id, country: countryFromKey(tag), key, group, hour: start } } : null;
   return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
@@ -105,7 +106,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
   const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
   const breakdownHour = pinned ? clockHour : regionAt;
-  const breakdown = useLineBreakdown(runtime, widget, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
+  const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
   useDiagnostics(onDiagnostics, warnings);

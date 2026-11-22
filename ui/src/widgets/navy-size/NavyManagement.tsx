@@ -9,12 +9,12 @@ import { useGate } from '../../dashboard/regionGate';
 import WidgetState from '../../components/WidgetState';
 import { amountKey, amountText, managementStructure, validateNavalManagement } from './navalManagementData';
 import './navyManagement.css';
-import { FOLLOW, pickedAt } from '../../dashboard/regionTime.ts';
+import { FOLLOW, at as pickAt } from '../../dashboard/regionTime.ts';
 
 export default function NavyManagement({ runtime, widget, track, tag, hour, following, active }: PartsRaceDetailProps) {
   const [open, setOpen] = useState(false);
   const spec = useMemo(() => ({ ...widget, trackIds: [track.id] }), [widget, track.id]);
-  const head = useHeadProduct(runtime, useGate(runtime, spec, following ? FOLLOW : pickedAt(track, hour)), 'naval-management', open ? { country: countryFromKey(tag) } : null,
+  const head = useHeadProduct(runtime, useGate(runtime, spec, following ? FOLLOW : pickAt(hour ?? Number.NaN)), 'naval-management', open ? { country: countryFromKey(tag) } : null,
     { active: active && open, validate: validateNavalManagement, structure: managementStructure });
   const data = head.data;
   const texts = useMemo<LiveTexts>(() => ({ text: key => amountText(head.live.read(), key, data), subscribe: head.live.subscribe }), [head.live, data]);

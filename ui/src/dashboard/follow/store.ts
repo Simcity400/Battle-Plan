@@ -5,7 +5,8 @@ import { busy } from '../../shell/busy.ts';
 import { engine } from '../../engine/frame.ts';
 import type { FollowedAnswer, FollowedPanel } from './message.ts';
 
-export type FollowQuery = Readonly<Record<string, unknown>>;
+import type { FollowQuery } from '../regionTime';
+export type { FollowQuery };
 
 export interface FollowTransport {
   follow(id: number, query: FollowQuery): Promise<Availability> | void;

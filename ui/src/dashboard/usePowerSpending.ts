@@ -10,6 +10,8 @@ import { categoryChoices, ledgerOf, spendingChunks, spendingSpan, validatePowerS
 export { SPENDING_CHUNK_HOURS, spendingChunks, structureAt, structureHours, structureParts } from './powerSpending.ts';
 import type { PowerCurrency, SpendingSelection } from './powerSpending';
 import { useCountryGroups } from './useCountryGroups.ts';
+import { useGate } from './regionGate.ts';
+import { SPEC } from './regionTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 
@@ -34,11 +36,14 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
   }, [match.matches, selected]);
   const tags = useMemo(() => !match.ready ? [] : selected.membership === null ? resolved.tags : [...new Set(selected.membership.map(run => run.tag))],
     [match.ready, selected, resolved.tags]);
-  const span = track ? spendingSpan(widget, track, runtime.tracks) : null;
-  const requests = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).map(([from, to]) => ({
-    sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from, to } }))) : [],
-  [track?.source.id, track?.source.revision, track?.branch.id, tags, currency, span?.firstHour, span?.lastHour]);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = track && gate.open ? spendingSpan(widget, track, runtime.tracks) : null;
+  const requests = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).flatMap(([from, to]) => {
+    const chunk = gate.span(from, to);
+    return chunk ? [{ sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
+      params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from: chunk.firstHour, to: chunk.lastHour } }] : [];
+  })) : [],
+  [track?.source.id, track?.source.revision, track?.branch.id, tags, currency, span?.firstHour, span?.lastHour, gate.span]);
   const replies = useProducts<PowerSpendingReply>(runtime.client, requests, active, validatePowerSpending, track?.source);
   const ledgers = useMemo(() => {
     if (!replies.data) return undefined;

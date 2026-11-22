@@ -33,7 +33,7 @@ import type { ComparisonProps } from '../../dashboard/CountryComparisons';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import { datedCountryToken, readDatedCountry } from '../../dashboard/datedCountry';
+import { readDatedCountry } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -56,8 +56,8 @@ import type { Balance, LineAt, RowOrder } from './resourceData';
 import ResourceBreakdown from './ResourceBreakdown';
 import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
-import {  regionFollows } from '../../dashboard/regionTime.ts';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { regionFollows, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const SUPPLY = { kind: RESOURCE_BALANCE, measure: 'supply' } as const;
@@ -104,7 +104,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const tokens = useChartTokens();
   const menu = useContextMenu('Resource actions');
   const anchor = useRef<HTMLDivElement>(null);
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [resourceId, setResourceId] = useState<number>();
@@ -118,11 +118,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); }, [track.source.id, track.source.revision, track.branch.id, tag, options.show]);
 
   const shown = !!saved || drill.breakdown !== null;
-  const drillTime = drillControl.region.action;
-  const drillRegion = useRegion(widget, drillTime);
-  const drillFollows = regionFollows(drillRegion);
-  const drillAt = useRegionHour(runtime, drillRegion, active && shown);
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget, drillTime), RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
+  const drillFollows = regionFollows(drillControl.region);
+  const drillAt = drillControl.hour;
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillControl.gate, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
     { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
@@ -149,7 +147,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
       : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
-            : <ResourceBreakdown runtime={runtime} track={track} active={active} tag={tag} resource={picked} data={drillData} live={breakdown.live}
+            : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} tag={tag} resource={picked} data={drillData} live={breakdown.live}
               hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
               hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
@@ -165,6 +163,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     {menu.menu}
   </div>;
 
+  const pinTime = drillControl.time();
+  const pinExtent = drillControl.gate.span(extent[0], extent[1]);
+  const country = pinExtent && drillControl.bind(tag, pinExtent);
   const main = options.view === 'time'
     ? <ResourcesOverTime {...props} extent={extent} playhead={playhead} liveHead={liveHead} onPick={open} />
     : <ResourceBars {...props} onPick={open} />;
@@ -172,14 +173,10 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} canFollow={following}
       onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={picked && dayAt !== null ? () => {
-        const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id);
-        const origin = dayAt - track.branch.firstHour;
+      onPin={picked && pinTime && country ? () => {
+        const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id, pinTime);
         pinned.countries = { kind: 'tags', tags: [tag] };
-        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])),
-          resourceCountry: datedCountryToken({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, originOffset: origin,
-            extent: [extent[0] - track.branch.firstHour, extent[1] - track.branch.firstHour] }) };
-        pinned.time = drillFollows ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: origin, lastOffset: origin } } };
+        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])), resourceCountry: country };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
       <div ref={breakdown.root}>
@@ -332,12 +329,15 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
+  const gate = useGate(runtime, widget, SPEC, active);
+  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, gate, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
     structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
-  const request = (hour: number) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } });
-  const sizes = useProduct(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag), from: extent[0], to: extent[1] } }, active, validateResourceSizes, track.source);
-  const hovered = useProduct(runtime.client, hoverHour === null ? null : request(Math.floor(hoverHour)), active, validateResourceBalance, track.source);
+  const request = (hour: GatedHour) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } });
+  const sized = gate.span(extent[0], extent[1]);
+  const sizes = useProduct(runtime.client, sized ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag), from: sized.firstHour, to: sized.lastHour } } : null, active, validateResourceSizes, track.source);
+  const hoverAt = gate.recorded(hoverHour);
+  const hovered = useProduct(runtime.client, hoverAt === null ? null : request(hoverAt), active, validateResourceBalance, track.source);
   useDiagnostics(onDiagnostics, atHead.data ? [...atHead.data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
   const resources = useMemo(() => atHead.data?.resources ?? [], [atHead.data]);
   const storedText = typeof options.resources === 'string' ? options.resources : '';
@@ -349,9 +349,9 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
   const spec = (family: typeof SUPPLY | typeof DEMAND) => keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
     within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null;
-  const head = following ? null : playhead ?? extent[1];
-  const supply = useKeyedSeries(runtime.client, runtime.clock, spec(SUPPLY), head, hoverHour, following, active, root);
-  const demand = useKeyedSeries(runtime.client, runtime.clock, spec(DEMAND), head, hoverHour, following, active, root);
+  const head = following ? null : gate.hour;
+  const supply = useKeyedSeries(runtime.client, runtime.clock, gate, spec(SUPPLY), head, hoverAt, following, active, root);
+  const demand = useKeyedSeries(runtime.client, runtime.clock, gate, spec(DEMAND), head, hoverAt, following, active, root);
   const lines = useMemo(() => chosenInfo.map((resource, index) => ({ resource, key: keys[index], color: tokens.categories[index % tokens.categories.length] })),
     [chosenInfo, keys, tokens.categories]);
   const partners = useMemo(() => hoverHour === null ? [] : [...new Set(hovered.data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour: Math.floor(hoverHour) })),

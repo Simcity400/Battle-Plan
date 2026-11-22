@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CountryPicker from '../../components/CountryPicker';
@@ -45,12 +46,14 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const readHour = useCallback((): number | null => regionHour({ widget, action: SPEC }, track, runtime.tracks, axisHour(runtime.clock)),
     [widget, track, runtime.tracks, runtime.clock]);
   const mixOutside = useRegionOutside(runtime, useRegion(widget), active && view === 'mix');
+  const gate = useGate(runtime, widget, SPEC, active);
   const settled = useTransitionValue(view === 'mix' && !playing ? runtime.clock.subscribe : null, readHour);
   const held = useRef(settled);
   if (!playing) held.current = settled;
   const choiceHour = held.current;
-  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track && choiceHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
+  const choiceAt = gate.recorded(choiceHour);
+  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track && choiceAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceAt, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const candidates = useMemo(() => choiceHour === null ? [] : (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
@@ -73,8 +76,9 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     asked.current = at;
     queueMicrotask(() => setDetailHour(at));
   }, []);
-  const request = track && detailHour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
-    params: { branchId: track.branch.id, hour: detailHour, countries: [], collaboration } } : null;
+  const detailAt = gate.recorded(detailHour);
+  const request = track && detailAt !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
+    params: { branchId: track.branch.id, hour: detailAt, countries: [], collaboration } } : null;
   const read = useProduct<OccupationDetailReply>(runtime.client, request, active, validateOccupationDetail, track?.source);
   const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
     [read.data, detailHour]);

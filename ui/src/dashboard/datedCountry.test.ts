@@ -1,11 +1,12 @@
+import { datedToken } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryDrillTagAt } from './countryIdentity.ts';
-import { chosenDatedCountry, datedCountrySpans, datedCountryToken, readDatedCountry } from './datedCountry.ts';
+import { chosenDatedCountry, datedCountrySpans, readDatedCountry } from './datedCountry.ts';
 
 test('dated choices bind one native holder through renames and reject reuse, gaps and conflicting aliases', () => {
   const pick = { campaign: 'c', branch: 'b', tag: 'X', originOffset: 5 };
-  const token = datedCountryToken(pick);
+  const token = datedToken(pick);
   assert.deepEqual(readDatedCountry(token, 'c', 'b', { kind: 'tags', tags: ['X'] }), pick);
   assert.equal(readDatedCountry(token, 'other', 'b'), null);
   assert.equal(readDatedCountry(token, 'c', 'other'), null);
@@ -41,6 +42,6 @@ test('a choice with nothing saved is its automatic one: the widget’s own count
   assert.equal(chosenDatedCountry('', 'c', 'b', one, undefined, 100, 200, 150), null);
   assert.equal(chosenDatedCountry('', 'c', 'b', one, 'GER', 100, 200, 201), null, 'an hour outside the branch');
   const saved = { campaign: 'c', branch: 'b', tag: 'GER', originOffset: 7 };
-  assert.deepEqual(chosenDatedCountry(datedCountryToken(saved), 'c', 'b', one, 'ENG', 100, 200, 150), saved);
-  assert.equal(chosenDatedCountry(datedCountryToken({ ...saved, branch: 'other' }), 'c', 'b', one, 'GER', 100, 200, 150), null, 'a saved choice of another branch is not replaced by a guess');
+  assert.deepEqual(chosenDatedCountry(datedToken(saved), 'c', 'b', one, 'ENG', 100, 200, 150), saved);
+  assert.equal(chosenDatedCountry(datedToken({ ...saved, branch: 'other' }), 'c', 'b', one, 'GER', 100, 200, 150), null, 'a saved choice of another branch is not replaced by a guess');
 });

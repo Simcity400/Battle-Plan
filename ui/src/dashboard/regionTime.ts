@@ -5,8 +5,25 @@ declare const TRACK: unique symbol;
 declare const AXIS: unique symbol;
 export type TrackHour = number & { readonly [TRACK]: 'track' };
 export type AxisHour = number & { readonly [AXIS]: 'axis' };
+declare const GATED: unique symbol;
+export type GatedHour = TrackHour & { readonly [GATED]: 'gated' };
+export interface GatedWindow { firstHour: GatedHour; lastHour: GatedHour }
+declare const PINNED: unique symbol;
+export type GatedTime = ({ mode: 'follow' } | { mode: 'pin'; windows: Record<string, { firstOffset: number; lastOffset: number }> }
+  | { mode: 'range'; firstOffset: number; lastOffset: number }) & { readonly [PINNED]: 'gated' };
+declare const FOLLOWED: unique symbol;
+export type FollowQuery = Readonly<Record<string, unknown>> & { readonly [FOLLOWED]: 'gated' };
+export type GatedParams = {
+  readonly [key: string]: unknown;
+  readonly [key: `${string}Hour`]: GatedHour | null | undefined;
+  readonly hour?: GatedHour | null;
+  readonly from?: GatedHour | null;
+  readonly to?: GatedHour | null;
+  readonly reads?: readonly ({ readonly hour: GatedHour } | GatedHour)[];
+  readonly hours?: readonly GatedHour[];
+};
 
-export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: TrackHour | null };
+export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
 export interface Region { widget: WidgetSpec; action: RegionAction }
 export interface Outside { message: string; detail: string | undefined }
 export interface RegionTime { hour: TrackHour | null; window: HourWindow | null; follows: boolean; outside: Outside | null }
@@ -58,15 +75,7 @@ export function recordedHour(track: Branch | undefined, hour: number | null | un
   return coverageAt(track, hour).hour;
 }
 
-export function axisHourOf(track: Pick<BoundTrack, 'axisOffset'>, hour: TrackHour): AxisHour {
-  return hour - track.axisOffset as AxisHour;
-}
-
-export const at = (hour: TrackHour | null): RegionAction => ({ kind: 'at', hour });
-
-export function pickedAt(track: Branch | undefined, hour: number | null | undefined): RegionAction {
-  return at(recordedHour(track, hour));
-}
+export const at = (hour: number): RegionAction => ({ kind: 'at', hour: Math.floor(hour) });
 
 export function regionFollows(region: Region): boolean {
   return region.action.kind === 'follow' || region.action.kind === 'spec' && region.widget.time.mode === 'follow';
@@ -79,7 +88,7 @@ export function regionWindow(region: Region, track: BoundTrack | undefined, trac
   const { widget, action } = region;
   if (action.kind === 'spec') return resolveWindow(widget, track, tracks as BoundTrack[], axis);
   if (action.kind === 'follow') return resolveWindow(followed(widget), track, tracks as BoundTrack[], axis);
-  return action.hour === null ? null : resolveWindow(followed(widget), track, tracks as BoundTrack[], axisHourOf(track, action.hour));
+  return Number.isFinite(action.hour) ? resolveWindow(followed(widget), track, tracks as BoundTrack[], action.hour - track.axisOffset) : null;
 }
 
 export function regionHour(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): TrackHour | null {

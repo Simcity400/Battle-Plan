@@ -56,13 +56,14 @@ import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
 import { fuelConsumptionLevelToken, fuelConsumptionToken, readFuelConsumption, readFuelConsumptionLevel } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
-import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
+import { fuelCountrySpans, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
 import { COUNTRY_FUEL, FUEL_DAYS, QUANTITY_SCALE, formatFuel, fuelDecimals, fuelTooltips, stripBars, stripNote, validateCountryFuel } from './fuelData';
 import { fuelExtentToken, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
 import type { CountryFuelReply } from '../../generated/dashboard';
-import { recordedHour } from '../../dashboard/regionTime.ts';
+import { axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { useGate } from '../../dashboard/regionGate';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 
 const STRIP_SHARE = 0.28;
@@ -90,6 +91,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const single = tags.length === 1;
   const membership = countries.membership ?? undefined;
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const saved = BREAKDOWNS.find(item => item.id === options.show);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
@@ -97,10 +99,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const shown = useShownHour();
   const headTags = following && active && track && !saved ? tags : null;
   const branchId = track?.branch.id;
-  const fuelQuery = useMemo(() => headTags?.length ? { product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [headTags, branchId]);
-  const capacityQuery = useMemo(() => headTags?.length && showCapacity ? { product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [headTags, branchId, showCapacity]);
+  const fuelQuery = useMemo(() => headTags?.length ? gate.follow({ product: 'series-state', params: { branchId,
+    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null, [headTags, branchId, gate.follow]);
+  const capacityQuery = useMemo(() => headTags?.length && showCapacity ? gate.follow({ product: 'series-state', params: { branchId,
+    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null, [headTags, branchId, showCapacity, gate.follow]);
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
@@ -114,20 +116,22 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
   const head = playhead ?? extent[1];
+  const headAt = following ? gate.hourAt(axisAt(clockHour)) : gate.hour;
   const lastHour = track?.branch.lastHour ?? 0;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const live = following && !saved;
-  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : head, hoverHour, active && !saved,
+  const hoverAt = gate.recorded(hoverHour);
+  const fuel = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : headAt, hoverAt, active && !saved,
     false, membership, lastHour, live);
-  const capacity = useMeasureSeries(runtime.client, showCapacity ? track?.source : undefined, track?.branch, COUNTRY_FUEL, 'capacity', tags,
-    capacityHead ? null : head, hoverHour, active && !saved && showCapacity, false, membership, lastHour, live);
+  const capacity = useMeasureSeries(runtime.client, gate, showCapacity ? track?.source : undefined, track?.branch, COUNTRY_FUEL, 'capacity', tags,
+    capacityHead ? null : headAt, hoverAt, active && !saved && showCapacity, false, membership, lastHour, live);
   const withStrip = single && options.strip !== false && !saved;
-  const gain = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripGain', tags, null, null,
+  const gain = useMeasureSeries(runtime.client, gate, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripGain', tags, null, null,
     active && withStrip, false, membership, lastHour, live);
-  const burn = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripBurn', tags, null, null,
+  const burn = useMeasureSeries(runtime.client, gate, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripBurn', tags, null, null,
     active && withStrip, false, membership, lastHour, live);
   useEffect(() => { if (!fuelHead && !saved) shown(tags.length && tags.every(tag => fuel.hourLoaded(tag, Math.floor(head))) ? head : null); });
-  const styles = useCountryLineStyles(runtime.client, track, tags, Math.floor(head), active && !single && !saved);
+  const styles = useCountryLineStyles(runtime.client, gate, track, tags, Math.floor(head), active && !single && !saved);
   const colours = useMemo(() => countryLineColours(tags, styles.known, tokens.surface, tokens.countryColours === 'fixed'), [tags, styles.known, tokens]);
   const colourOf = useCallback((tag: string, of: 'fuel' | 'capacity') => single ? (of === 'fuel' ? tokens.accent : tokens.muted) : colours.get(tag) ?? tokens.muted,
     [single, tokens.accent, tokens.muted, colours]);
@@ -193,7 +197,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const chartData = useMemo<ChartData>(() => ({ revision: () => [fuel.revision(), capacity.revision(), gain.revision(), burn.revision()],
     subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
-  const hoverAt = recordedHour(track, hoverHour);
   const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } })) : [], [track, hoverAt, tags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
@@ -339,14 +342,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: drillTag ? membership?.get(drillTag) ?? null : null, detailHours: DETAIL_HOURS,
     onPick: (hour: number) => { setDrillOwner(pickOwner); drillControl.pick(hour); },
     onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) } : null;
-  const parentState = !track ? state : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
-    : pending ? <WidgetState kind="loading" label="Loading fuel…" /> : undefined;
   const breakdown = at === null && track ? <WidgetState kind="outside" read={drillCoverage} />
-    : invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? (saved ? undefined : parentState) ?? (track && chart && drillTag
+    : invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? (track && chart && drillTag
     ? drillMeasure === 'consumption'
-      ? <FuelConsumptionBreakdown runtime={runtime} widget={widget} track={track} tag={drillTag} hour={drillFollows ? null : at} follows={drillFollows} digits={digits}
+      ? <FuelConsumptionBreakdown runtime={runtime} gate={drillControl.gate} widget={widget} track={track} tag={drillTag} hour={drillFollows ? null : at} follows={drillFollows} digits={digits}
         campaign={campaign} aliases={identitySpans ?? undefined} selection={heldConsumption} onSelection={setConsumption} level={heldLevel} onLevel={setLevel} {...chart} />
-      : <FuelBreakdown runtime={runtime} widget={widget} track={track} tag={drillTag} measure={drillMeasure} hour={drillFollows ? null : at} follows={drillFollows}
+      : <FuelBreakdown runtime={runtime} gate={drillControl.gate} widget={widget} track={track} tag={drillTag} measure={drillMeasure} hour={drillFollows ? null : at} follows={drillFollows}
         digits={digits} campaign={campaign} aliases={identitySpans ?? undefined} selection={heldRecipient} onSelection={setRecipient} {...chart} />
     : <p className="drill-empty">{selectedCountry ? 'Country unavailable at this time.' : 'Choose a country from the drawn lines for this moment.'}</p>);
   const headerReason = at === null ? 'This time is outside the recording.' : invalidSaved ? 'Choose a country again.' : !selectedCountry ? 'Country unavailable at this time.' : !catalogue.data ? 'Loading country…'
@@ -358,6 +359,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     label={headerReady && shownTag && at !== null ? headerLabelAt(at)(shownTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
   const notices = groupRefreshError ? <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} /> : null;
 
+  const pinTime = drillControl.time();
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}{notices}
     {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
@@ -369,11 +371,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)}
     canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })}
     main={main}
-    onPin={drillTag && track && !actorState && at !== null ? () => {
-      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? drillTag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id);
-      if (!drill.follow && at !== null) pinned.time = { mode: 'pin', windows: { [track.id]: { firstOffset: at - track.branch.firstHour, lastOffset: at - track.branch.firstHour } } };
-      if (drill.follow) pinned.time = { mode: 'follow' };
-      pinned.options = { ...pinned.options, fuelCountry: selectedCountry ? fuelCountryToken(selectedCountry) : '',
+    onPin={drillTag && track && !actorState && pinTime ? () => {
+      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? drillTag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id, pinTime);
+      pinned.options = { ...pinned.options, fuelCountry: selectedCountry ? drillControl.bind(selectedCountry.tag) ?? '' : '',
         fuelRecipient: heldRecipient ? fuelRecipientToken(heldRecipient) : '', fuelConsumption: heldConsumption ? fuelConsumptionToken(heldConsumption) : '',
         fuelConsumptionLevel: heldLevel ? fuelConsumptionLevelToken(heldLevel) : '', fuelExtent: fuelExtentToken(campaign, track.branch.id, extent) };
       runtime.addWidgetBelow(widget.id, pinned);

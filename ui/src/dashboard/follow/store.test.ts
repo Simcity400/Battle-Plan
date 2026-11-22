@@ -1,3 +1,4 @@
+import { followQuery } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, cellState, cellValue, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
@@ -43,8 +44,8 @@ function cell() {
 test('two widgets share one follow and the last unfollow sends unfollow', () => {
   const transport = fakeTransport();
   const store = new FollowStore(transport, manualFrames().schedule);
-  const first = store.acquire({ table: 2, columns: [3], keys: ['100'] });
-  const second = store.acquire({ keys: ['100'], columns: [3], table: 2 });
+  const first = store.acquire(followQuery({ table: 2, columns: [3], keys: ['100'] }));
+  const second = store.acquire(followQuery({ keys: ['100'], columns: [3], table: 2 }));
   assert.equal(first.entry, second.entry, 'one entry for one query however its keys are ordered');
   assert.deepEqual(transport.sent, ['follow 1 {"table":2,"columns":[3],"keys":["100"]}']);
   first.release();
@@ -52,14 +53,14 @@ test('two widgets share one follow and the last unfollow sends unfollow', () => 
   assert.equal(transport.sent.length, 1, 'a holder remains');
   second.release();
   assert.deepEqual(transport.sent.slice(1), ['unfollow 1']);
-  const again = store.acquire({ table: 2, columns: [3], keys: ['100'] });
+  const again = store.acquire(followQuery({ table: 2, columns: [3], keys: ['100'] }));
   assert.equal(again.entry.id, 2, 'a new follow after the last one ended');
 });
 
 test('a seek that keeps what covers its hour leaves the choice to the worker, whose coverage is current', () => {
   const transport = fakeTransport();
   const store = new FollowStore(transport, manualFrames().schedule);
-  const { entry } = store.acquire({ product: 'series-state', params: { branchId: '1' } });
+  const { entry } = store.acquire(followQuery({ product: 'series-state', params: { branchId: '1' } }));
   const answer = parseFollowed(message(10, [{ id: entry.id, answer: one(1n, 7n) }], false, 9, 1)).answers[0]!.answer;
   transport.reading({ id: entry.id, hour: 10, through: 10, coverage: { start: 10, through: 10 }, seek: 0, answer });
   store.seek('1', 40);
@@ -70,7 +71,7 @@ test('a seek that keeps what covers its hour leaves the choice to the worker, wh
   store.seek('1');
   assert.equal(entry.answer, undefined, 'a seek that keeps nothing clears at once');
 
-  const { entry: drawn } = store.acquire({ panel: 'nuclear-arsenal', branchId: '1' });
+  const { entry: drawn } = store.acquire(followQuery({ panel: 'nuclear-arsenal', branchId: '1' }));
   const landed = () => drawn.landed;
   const step = (hour: number) => transport.reading({ id: drawn.id, hour, through: hour, coverage: { start: hour, through: hour }, seek: 2,
     panel: { data: { hour }, refused: null }, values: new Map([['GER:total', hour]]) });
@@ -96,7 +97,7 @@ test('a painter runs at most once a frame and only when its version moved', () =
   const transport = fakeTransport();
   const frames = manualFrames();
   const store = new FollowStore(transport, frames.schedule);
-  const handle = store.acquire({ q: 1 });
+  const handle = store.acquire(followQuery({ q: 1 }));
   const painted: number[] = [];
   store.painter(handle.entry, entry => painted.push(entry.hour));
   assert.equal(frames.run(), 0);
@@ -117,7 +118,7 @@ test('an off-screen widget is not painted and catches up when shown', () => {
   const transport = fakeTransport();
   const frames = manualFrames();
   const store = new FollowStore(transport, frames.schedule);
-  const handle = store.acquire({ q: 1 });
+  const handle = store.acquire(followQuery({ q: 1 }));
   const shown: bigint[] = [], hidden: bigint[] = [];
   const value = (into: bigint[]) => (entry: { answer: FollowedAnswer | undefined }) => {
     if (entry.answer?.kind === 'rows') into.push(cellValue(entry.answer, 0));
@@ -145,7 +146,7 @@ test('one message lands in every entry it names, parsed once, and 500 painters t
   const store = new FollowStore(transport, frames.schedule);
   const slots: ReturnType<typeof cell>[] = [];
   for (let id = 1; id <= 500; id++) {
-    const handle = store.acquire({ q: id });
+    const handle = store.acquire(followQuery({ q: id }));
     const slot = cell();
     slots.push(slot);
     store.painter(handle.entry, entry => paintMeasure(entry.answer, [slot.cell], 5, 0));

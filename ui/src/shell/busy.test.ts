@@ -1,3 +1,4 @@
+import { followQuery } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { busy, busyCount, busyKinds, busyPreparing, busyWait, inBackground } from './busy.ts';
@@ -74,7 +75,7 @@ test('a followed answer is in flight until painted, and a seek clears it', () =>
   const transport = fakeTransport();
   const frames = manualFrames();
   const store = new FollowStore(transport, frames.schedule);
-  const handle = store.acquire({ product: 'series-state', params: { branchId: '7', tags: ['GER'] } });
+  const handle = store.acquire(followQuery({ product: 'series-state', params: { branchId: '7', tags: ['GER'] } }));
   store.painter(handle.entry, () => {});
   transport.deliver(message(24, [{ id: 1, answer: one(100n, 5n) }]));
   assert.equal(busyKinds().follow, 1, 'an answer landed and is not yet painted');

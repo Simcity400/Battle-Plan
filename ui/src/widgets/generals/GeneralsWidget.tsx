@@ -142,8 +142,11 @@ export default function GeneralsWidget(props: WidgetProps) {
   return <div ref={anchor} className="generals-widget"><DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown != null} mode={options.drill === 'popout' ? 'popout' : 'inline'}
     title="General career" day={drillAt === null ? '' : formatDateTime(drillAt)} canFollow anchor={anchor}
     onClose={() => { if (currentOwner.current === owner) dispatch({ type: 'close' }); }}
-    onPin={drill.breakdown && track && drillAt !== null ? () => {
-      if (currentOwner.current === owner) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, drillAt, drill.follow));
+    onPin={drill.breakdown && track && drillControl.time() ? () => {
+      const time = drillControl.time();
+      const history = time?.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
+      const kept = history ? drillControl.time(history) : time;
+      if (currentOwner.current === owner && kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, kept));
     } : undefined} main={<div ref={head.root} className="generals-main">{body()}</div>}>
     {drill.breakdown && <CareerView {...props} time={drillRegion.action}
       reference={drill.breakdown} onPick={h => {

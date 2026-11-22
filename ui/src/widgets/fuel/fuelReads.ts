@@ -1,3 +1,4 @@
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -7,7 +8,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { FOLLOW, pickedAt } from '../../dashboard/regionTime';
+import { FOLLOW, at as pickAt } from '../../dashboard/regionTime';
 import type { Failure } from '../../dashboard/queryError';
 import type { CountryFuelReply, HourSpan } from '../../generated/dashboard';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
@@ -24,11 +25,11 @@ export interface FuelAt extends ReadCoverage {
   shownAt: () => number | null;
 }
 
-export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack, tag: string | null, hour: number | null, follows: boolean,
+export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, hour: number | null, follows: boolean,
   active: boolean, structure: (reply: CountryFuelReply) => string): FuelAt {
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
   const paint = useCallback((reply: CountryFuelReply) => live.set(reply), [live]);
-  const head = useHeadProduct<CountryFuelReply>(runtime, useGate(runtime, widget, follows ? FOLLOW : pickedAt(track, hour)), COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
+  const head = useHeadProduct<CountryFuelReply>(runtime, useGate(runtime, widget, follows ? FOLLOW : pickAt(hour ?? Number.NaN)), COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateCountryFuel, structure, paint });
   useEffect(() => { live.set(head.data); }, [live, head.data]);
   return { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: follows, shownAt: head.shownAt,
@@ -38,11 +39,11 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: Bou
 
 export const MOST_PARTS = 8;
 
-export function usePartSeries(runtime: WidgetRuntime, track: BoundTrack, kind: string, measures: readonly (string | null)[], tag: string | null,
+export function usePartSeries(runtime: WidgetRuntime, gate: SeriesGate, track: BoundTrack, kind: string, measures: readonly (string | null)[], tag: string | null,
   within: ReadonlyMap<string, readonly HourSpan[]> | undefined, active: boolean) {
   const args = (at: number) => {
     const measure = measures[at] ?? null;
-    return [runtime.client, measure && tag ? track.source : undefined, track.branch, kind, measure ?? '', tag ? [tag] : [],
+    return [runtime.client, gate, measure && tag ? track.source : undefined, track.branch, kind, measure ?? '', tag ? [tag] : [],
       null, null, active && !!measure && !!tag, false, within, track.branch.lastHour, false] as const;
   };
   const s0 = useMeasureSeries(...args(0)), s1 = useMeasureSeries(...args(1)), s2 = useMeasureSeries(...args(2)), s3 = useMeasureSeries(...args(3));

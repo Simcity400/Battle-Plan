@@ -31,7 +31,7 @@ test('the merged air View adapts rendering, controls and new pins to the shared 
       assert.equal(view.family, 'airLosses');
       view.setOption!('show', 'breakdown');
       assert.deepEqual(options.at(-1), ['view', 'breakdown']);
-      view.runtime.addWidgetBelow('air', { ...props.widget, options: { show: 'breakdown', view: 'lines', causes: 'mod_cause' } });
+      view.runtime.addWidgetBelow('air', { ...props.widget, time: { mode: 'follow' } as never, options: { show: 'breakdown', view: 'lines', causes: 'mod_cause' } });
       assert.deepEqual((pins.at(-1) as WidgetProps['widget']).options, { view: 'breakdown', causes: 'mod_cause' });
     }
   } finally { await vite.close(); delete globals.__airViewAdapter; }

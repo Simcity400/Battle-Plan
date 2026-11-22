@@ -89,7 +89,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     dispatch({ type: 'open', breakdown: PARTNERS.id, hour, follow: drillControl.followsAt(hour) });
   };
   const shownPick = picked && picked.branch === track?.branch.id ? picked : null;
-  const drillRegion = useRegion(widget, drillAction(shownPick ? drill : CLOSED, track));
+  const drillRegion = useRegion(widget, drillAction(shownPick ? drill : CLOSED));
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null && !!shownPick);
   const at = drillAt ?? hour;
 

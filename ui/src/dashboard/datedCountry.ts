@@ -7,7 +7,9 @@ import { contentKey, setToken } from './options.ts';
 import { object, signed32 } from './validation.ts';
 
 export interface DatedCountrySelection { campaign: string; branch: string; tag: string; originOffset: number; extent?: [number, number] }
-export const datedCountryToken = (selection: DatedCountrySelection) => setToken(JSON.stringify(selection));
+declare const BOUND: unique symbol;
+export type BoundCountry = DatedCountrySelection & { readonly [BOUND]: 'gated' };
+export const boundCountryToken = (selection: BoundCountry) => setToken(JSON.stringify(selection));
 
 export function readDatedCountry(token: unknown, campaign: string, branch: string, countries?: CountrySelection): DatedCountrySelection | null {
   if (typeof token !== 'string' || !token) return null;

@@ -9,6 +9,7 @@ import type { Alignment, BoundTrack, CountrySelection, DashboardTemplate, TrackS
 import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
+import type { GatedTime } from './regionTime';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -24,7 +25,7 @@ export interface WidgetRuntime {
   recordings: ReplayFile[];
   assignCampaign: (widgetId: string, chosen: string | null) => Promise<void>;
   requestSeek: (trackId: string, rawHour: number) => boolean;
-  addWidgetBelow: (sourceId: string, widget: WidgetSpec) => void;
+  addWidgetBelow: (sourceId: string, widget: WidgetSpec & { time: GatedTime }) => void;
 }
 
 export interface WidgetProps {

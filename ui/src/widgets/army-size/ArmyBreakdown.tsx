@@ -1,3 +1,5 @@
+import type { Gate } from '../../dashboard/regionGate';
+import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureText } from '../../dashboard/queryError.ts';
@@ -71,9 +73,9 @@ export function BreakdownHeader({ runtime, track, active, countrySlot, live, hou
       : !actor ? 'Country unavailable at this time.' : null)} />, countrySlot);
 }
 
-export default function ArmyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, extent, playhead, tag, hour: givenHour, measure, countFor,
+export default function ArmyBreakdown({ runtime, gate, track, active, options, countrySlot, headerSelection, extent, playhead, tag, hour: givenHour, measure, countFor,
   manifest, following, pinned, originHour, onPick, onFollow, onWarnings }: {
-  runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
+  runtime: WidgetRuntime; gate: Gate; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
   countrySlot: HTMLElement | null; headerSelection: ReturnType<typeof armyCountrySelection>;
   extent: [number, number]; playhead: number | null; tag: string | null; hour: number; measure: ArmyMeasure;
   countFor: ArmyAttribution; originHour: number; manifest: ArmySizeReply | undefined; following: boolean; pinned: boolean;
@@ -131,19 +133,21 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const selected = useMemo(() => data && tag ? armyDrillIdentityReply(data, tag, originHour) : null, [data, tag, originHour]);
   const identitySpans = useMemo(() => countryDrillSpans(data?.series ?? [], tag ?? '', originHour), [data, tag, originHour]);
   const actor = countryDrillTagAt(identitySpans, hour);
-  const rosterAt = (at: number, of: string) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
+  const rosterAt = (at: GatedHour, of: string) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
     params: { branchId: track!.branch.id, country: countryFromKey(of), hour: at } });
-  const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor ? rosterAt(hour, actor) : null, active, rosterReply, track?.source);
+  const heldAt = gate.recorded(hour);
+  const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor && heldAt !== null ? rosterAt(heldAt, actor) : null, active, rosterReply, track?.source);
   const [rosterElement, setRosterElement] = useState<HTMLElement | null>(null);
   const rosterRoot = useMemo(() => ({ current: rosterElement }), [rosterElement]);
   const rosterStore = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const rosterQuery = useMemo(() => live && actor && track ? { panel: 'template-roster', branchId: track.branch.id, country: countryFromKey(actor)} : null,
-    [live, actor, track?.branch.id]);
+  const rosterQuery = useMemo(() => live && actor && track ? gate.follow({ panel: 'template-roster', branchId: track.branch.id, country: countryFromKey(actor)}) : null,
+    [live, actor, track?.branch.id, gate.follow]);
   const followedRoster = useFollow(rosterStore, rosterQuery, rosterRoot, NO_PAINT, panelStructure);
   const rosterPushed = followsHead(followedRoster);
   const liveRoster = useFrameProduct<Roster>(runtime.client, runtime.clock, live && !rosterPushed, at => {
     const of = countryDrillTagAt(identitySpans, Math.floor(at) + offset);
-    return of ? { key: `${of}|${Math.floor(at)}`, request: rosterAt(Math.floor(at) + offset, of) } : null;
+    const asked = gate.recorded(Math.floor(at) + offset);
+    return of && asked !== null ? { key: `${of}|${Math.floor(at)}`, request: rosterAt(asked, of) } : null;
   }, rosterReply, track?.source, sameSections);
   const pushedRoster = useMemo(() => {
     const { data, error } = panelReply(followedRoster.entry?.panel, rosterReply);

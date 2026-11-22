@@ -1,3 +1,5 @@
+import type { Gate } from '../../dashboard/regionGate';
+import { OUTSIDE_MESSAGE } from '../../dashboard/regionTime';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -48,8 +50,8 @@ function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string
     retry: () => { setState(undefined); setAttempt(count => count + 1); } };
 }
 
-export function usePreparedArmy(client: DashboardClient, track: BoundTrack | undefined, params: ArmySizeParams | null, manifest: ArmySizeReply | undefined, active: boolean,
-  live = false) {
+export function usePreparedArmy(client: DashboardClient, gate: Pick<Gate, 'span' | 'within'>, track: BoundTrack | undefined, params: ArmySizeParams | null,
+  manifest: ArmySizeReply | undefined, active: boolean, live = false) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, params]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
   const alive = useRef(owner); alive.current = owner;
@@ -72,9 +74,12 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   const shown = view?.key === key && ranked ? view : null;
   const incoming = useViewReply<{ from: number; to: number; width: number }, { series: (ArmyLine & { missing: MissingSpan[] })[] }>(
     track && params ? JSON.stringify([key, content]) : null, shown, JSON.stringify([shown?.from, shown?.to, shown?.width]), active,
-    (at, signal) => loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
+    (at, signal) => {
+      const range = gate.span(at.from, at.to);
+      if (!range) return Promise.reject(new Error(OUTSIDE_MESSAGE));
+      return loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
       params: { branchId: params!.branchId, family: { kind: 'army-size', measure: params!.measure, countFor: params!.countFor, top: params!.top },
-        countries: params!.countries, from: at.from, to: at.to, width: at.width } }, signal, value => {
+        countries: params!.countries, from: range.firstHour, to: range.lastHour, width: at.width } }, signal, (value: unknown) => {
       const lines = (value as { series?: unknown } | null)?.series;
       const keyed = Array.isArray(lines) ? lines.map(line => line && typeof line === 'object' && (typeof line.country === 'string' || typeof line.country === 'number')
         ? (({ country, ...rest }) => ({ ...rest, tag: countryKey(country) }))(line) : line) : lines;
@@ -82,7 +87,8 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
         line => typeof line.tag === 'string' && Array.isArray(line.missing));
       if (!series) throw Error('The army summary is malformed.');
       return { ...value as object, series };
-    }, track!.source));
+    }, track!.source);
+    });
   const fromTiles = !ranked;
   const lines = useMemo<ArmyLine[] | undefined>(() => fromTiles
     ? tiles.lines ? [...tiles.lines.values()].map(line => ({ tag: line.tag, summary: line.summary, identities: identityRuns(line.parts) })) : undefined
@@ -117,9 +123,11 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
     setNavigationError(undefined);
     navigation.current?.abort();
     const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
+    const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
+    if (!range) return;
     void loadTransientProduct<{ hour: number | null }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change', params: { branchId: params.branchId,
       family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, countries: params.countries,
-      key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) } }, controller.signal).then(value => {
+      key: action, from: gate.within(from), ...range } }, controller.signal).then(value => {
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: value.hour, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); }).finally(() => pending.current.delete(controller));
   }, [owner, active]);

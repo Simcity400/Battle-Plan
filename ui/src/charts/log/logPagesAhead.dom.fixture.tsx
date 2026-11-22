@@ -1,3 +1,4 @@
+import { gatedHour } from '../../test-support/gated.ts';
 import { Profiler, useMemo, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -28,7 +29,7 @@ class Clock {
   private readonly frames = new Set<() => void>();
   private readonly anchors = new Set<() => void>();
   getSnapshot = () => ({ position: this.position, hour: Math.floor(this.position), fraction: 0, playing: this.playing, hoursPerSecond: this.hoursPerSecond,
-    sequence: 0, seekSequence: 0, bounds: { firstHour: 0, lastHour: HOURS - 1 } });
+    sequence: 0, seekSequence: 0, bounds: { firstHour: gatedHour(0), lastHour: gatedHour(HOURS - 1) } });
   getHour = () => Math.floor(this.position);
   getMotion = () => this.playing ? this.hoursPerSecond : undefined;
   positionAt = () => this.position;
@@ -82,7 +83,7 @@ const CUT: LogCut = { follow: true, offset: 0 };
 const CAMPAIGN: LogCut = { follow: false, hour: null };
 
 function PagedLog({ at, active = true, density = 'comfortable', cut = CUT }: { at: Clock; active?: boolean; density?: 'comfortable' | 'compact'; cut?: LogCut }) {
-  const spec = useMemo<LogSpec>(() => ({ source, branchId: '1', log: 'feed', firstHour: 0, lastHour: HOURS - 1 }), []);
+  const spec = useMemo<LogSpec>(() => ({ source, branchId: '1', log: 'feed', firstHour: gatedHour(0), lastHour: gatedHour(HOURS - 1) }), []);
   useSyncExternalStore(at.subscribe, () => at.playing);
   const list = useLogPages(client, at as never, spec, cut, active, toRow, 64);
   said.error = list.error?.message ?? null; said.retry = list.retry;

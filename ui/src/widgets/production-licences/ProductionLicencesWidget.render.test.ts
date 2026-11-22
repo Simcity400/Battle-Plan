@@ -26,7 +26,8 @@ test('licences load until the groups come; with no licence, a group with no memb
     '/charts/flow/FlowDiagram.tsx': 'export default props => props.message;',
   });
   try {
-    const props = { widget: { id: 'production-licences', kind: 'production-licences', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'pin' }, options: {} },
+    const props = { widget: { id: 'production-licences', kind: 'production-licences', trackIds: ['main'], countries: humansBy('hour'),
+      time: { mode: 'pin', windows: { main: { firstOffset: BRANCH.lastHour - BRANCH.firstHour, lastOffset: BRANCH.lastHour - BRANCH.firstHour } } }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [], campaignKey: 'campaign' } }, branch: { ...BRANCH, gaps: [] } }],
         client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false, position: BRANCH.lastHour }), subscribeFrame: () => () => {} } },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean }
+interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean; dated: boolean }
 interface Frame { hour: number; widgets: Record<string, { state: string; renders: number }> }
 const OUTSIDE = 'unavailable: This time is outside the recording.';
 const NOT_PLAYING = "isn't playing back yet";
@@ -17,7 +17,8 @@ test('every registered widget kind through the production host, half on a track 
     assert.ok(within.hour > 95 && within.hour <= 100 && crossed.hour > 101 && after.hour > crossed.hour, `one frame crosses both ends: ${within.hour}, ${crossed.hour}, ${after.hour}`);
     assert.deepEqual(rendered(within), [], `a frame inside every widget’s state renders nothing at ${within.hour}`);
     assert.deepEqual(rendered(after), [], `a frame after the crossing renders nothing at ${after.hour}`);
-    const dated = mounted.filter(item => !crossed.widgets[item.id].state.includes(NOT_PLAYING));
+    const dated = mounted.filter(item => item.dated);
+    assert.deepEqual(dated.filter(item => crossed.widgets[item.id].state.includes(NOT_PLAYING)).map(item => item.kind), [], 'every widget the registry plays back dated plays back');
     assert.ok(dated.some(item => item.track === 'early') && dated.some(item => item.track === 'late'), `widgets playing back dated on both tracks: ${dated.map(item => item.kind)}`);
     const wrong = dated.flatMap(item => {
       const before = within.widgets[item.id].state, at = crossed.widgets[item.id].state;

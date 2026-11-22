@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import { runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
@@ -77,20 +79,16 @@ export function readLossSelection(value: unknown, campaign: string, branch: stri
   } catch { return undefined; }
 }
 
-export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, hour: number, following: boolean,
-  from: number | null | undefined, keys: readonly string[] | null, country?: DrillCountry | null): WidgetSpec {
-  const pinned = pinnedBreakdown(widget, DETAIL, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
+export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, time: GatedTime,
+  keys: readonly string[] | null, country?: DrillCountry | null): PinnedSpec {
+  const pinned = pinnedBreakdown(widget, DETAIL, track.id, time);
   const options = { ...pinned.options };
   delete options.lossSelection;
   delete options.lossCountry;
   if (country) options.lossCountry = JSON.stringify(country);
   const pinnedTag = country?.tag ?? tag;
   if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: pinnedTag, keys });
-  return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] },
-    time: from != null ? { mode: 'range', firstOffset: from - track.branch.firstHour, lastOffset: offset }
-      : following ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
-    options };
+  return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] }, options };
 }
 
 export function lossSegments(model: StackModel, first: number, last: number, hoursPerPixel: number) {

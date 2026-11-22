@@ -1,3 +1,4 @@
+import { gatedTime } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { stackEdges } from '../../charts/stack.ts';
@@ -328,17 +329,17 @@ test('campaign drill Follow uses the actual aligned clock; day pick and Pin pres
     countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 500, lastOffset: 6000 }, options: { measure: 'total', drill: 'popout' } };
   const selection = { kind: 'node', side: 'source', holders: [identity(7)] } as const;
   const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'contributions', hour: 9999, follow: true });
-  const at = (state: typeof opened, clock: number) => regionHour({ widget: source, action: drillAction(state, track) }, track, [track], clock as AxisHour);
+  const at = (state: typeof opened, clock: number) => regionHour({ widget: source, action: drillAction(state) }, track, [track], clock as AxisHour);
   assert.equal(at(opened, 3000.8), 4000);
   const picked = reduceDrill(opened, { type: 'pick', hour: 5500.8 });
   assert.equal(at(picked, 3500), 5500);
   assert.equal(at(reduceDrill(picked, { type: 'follow' }), 3600), 4600);
-  const pinned = pinContributions(source, track, selection, 5500.8, false, [2500, 8000]);
+  const pinned = pinContributions(source, track, selection, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } }), [2500, 8000]);
   assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
   assert.deepEqual(readSelection(pinned.options?.tradeSelection, tradeContext(track)), selection);
   assert.deepEqual(contributionExtent(pinned.options?.tradeExtent, { firstHour: 20_000 }), [20_500, 26_000]);
   assert.equal(pinned.options?.measure, 'total');
-  assert.deepEqual(pinContributions(source, track, selection, 5500, true, [2500, 8000]).time, { mode: 'follow' });
+  assert.deepEqual(pinContributions(source, track, selection, gatedTime({ mode: 'follow' }), [2500, 8000]).time, { mode: 'follow' });
 });
 
 test('a country view saves one native holder, selects both its sides and pins for that country', () => {
@@ -351,7 +352,7 @@ test('a country view saves one native holder, selects both its sides and pins fo
   const data = decodeTrade(reply(3));
   assert.deepEqual(selectedContributors(data.flows, selection).map(flow => flow.key), [data.flows[1].key]);
   assert.equal(selectedContributors(data.flows, { kind: 'country', holder: identity(3) }).length, 3);
-  const pinned = pinContributions(source, track, selection, 5000, false, [2000, 9999], 'Country 00001');
+  const pinned = pinContributions(source, track, selection, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 3000, lastOffset: 3000 } } }), [2000, 9999], 'Country 00001');
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['Country 00001'] }, 'the pin reads and names that country');
   assert.equal(pinned.title, 'Trade flows: Country trade');
   assert.equal(pinned.options?.show, 'contributions');

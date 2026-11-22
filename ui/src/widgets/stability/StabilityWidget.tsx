@@ -77,8 +77,9 @@ import type { StabilityPick } from './stabilityDrillData';
 import './stability.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { busyWait } from '../../shell/busy.ts';
-import {  SPEC, FOLLOW, pickedAt } from '../../dashboard/regionTime.ts';
-import { coverageOf, useRegion, useRegionHour, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { axisAt, SPEC, FOLLOW, at as pickAt, type GatedHour } from '../../dashboard/regionTime.ts';
+import { useGate, useRegionGate } from '../../dashboard/regionGate';
+import { coverageOf, useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
@@ -129,6 +130,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const setLocalHour = (hour: number | null) => setLocalPick({ owner: bindingOwner, hour });
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
+  const gate = useGate(runtime, widget, SPEC, active);
   const [focused, setFocused] = useState(false);
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
@@ -140,10 +142,10 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const headQuery = (measure: Measure) => following && active && track && resolved.tags.length && !pinnedMeasure ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: FAMILY, measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  const stabilityQuery = useMemo(() => headQuery('stability'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]);
-  const warQuery = useMemo(() => headQuery('warSupport'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]);
+  const headQuery = (measure: Measure) => following && active && track && resolved.tags.length && !pinnedMeasure ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+    family: { kind: FAMILY, measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
+  const stabilityQuery = useMemo(() => headQuery('stability'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure, gate.follow]);
+  const warQuery = useMemo(() => headQuery('warSupport'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure, gate.follow]);
   const reportShown = useShownHour();
   const stabilityFollowed = useFollow(store, stabilityQuery, root, useCallback((entry: FollowEntry) => reportShown(shownThrough(entry)), [reportShown]));
   const warFollowed = useFollow(store, warQuery, root, NO_PAINT);
@@ -153,6 +155,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = playhead ?? extent[1];
+  const headAt = following ? gate.hourAt(axisAt(clockHour)) : gate.hour;
   const axisOffset = track?.axisOffset ?? 0;
   const clockHead = useMemo(() => ({ read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame }),
     [runtime.clock, axisOffset]);
@@ -160,10 +163,11 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const dayText = useMemo(() => liveTexts(runtime.clock, () => Math.floor(clockHead.read()), hour => new Map([['day', dayLabel(hour)]])), [runtime.clock, clockHead]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const membership = resolved.membership ?? undefined;
-  const stability = useMeasureSeries(runtime.client, track?.source, track?.branch, FAMILY, 'stability', resolved.tags,
-    headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.stability !== false, false, membership, lastHour, following);
-  const warSupport = useMeasureSeries(runtime.client, track?.source, track?.branch, FAMILY, 'warSupport', resolved.tags,
-    headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
+  const hoverAt = gate.recorded(hoverHour);
+  const stability = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, FAMILY, 'stability', resolved.tags,
+    headFollowed ? null : headAt, hoverAt, active && !pinnedMeasure && options.stability !== false, false, membership, lastHour, following);
+  const warSupport = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, FAMILY, 'warSupport', resolved.tags,
+    headFollowed ? null : headAt, hoverAt, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
   const series = { stability, warSupport } as const;
   const decimals = stability.decimals ?? warSupport.decimals ?? 0;
   const stabilityEntry = headFollowed ? stabilityFollowed.entry : null;
@@ -182,7 +186,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const identityHour = useIdentityHour(runtime.client, track, resolved.tags, runtime.clock, active && following,
     hour => track ? trackHourOf(widget, track, runtime.tracks, hour) : null);
   const styleAt = Math.floor(following && identityHour !== null ? identityHour : playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour));
-  const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
+  const styles = useCountryLineStyles(runtime.client, gate, track, resolved.tags, styleAt, active);
   const lineByMeasure = useMemo(() => ({ stability: new Map(stability.lines.map(line => [line.tag, line])), warSupport: new Map(warSupport.lines.map(line => [line.tag, line])) }),
     [stability.lines, warSupport.lines]);
   const lookSegments = useCallback((tag: string, hour: number) => runAt(lineByMeasure.stability.get(tag)?.runs ?? [], hour)?.segmentFirstHour
@@ -246,9 +250,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     } }, kinds),
   [markerSources, namesAt, focusText.read, kinds]);
 
-  const breakdownRequest = (hour: number | null) => track && single && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour: Math.floor(hour) } } : null;
-  const hovered = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(!pinnedMeasure ? hoverHour : null), active, validateBreakdown, track?.source);
+  const breakdownRequest = (hour: GatedHour | null) => track && single && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour } } : null;
+  const hovered = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(!pinnedMeasure ? hoverAt : null), active, validateBreakdown, track?.source);
   const retries = useRef(0);
   useEffect(() => { retries.current = 0; }, [hoverHour, single]);
   const retryHovered = useRef(hovered.retry); retryHovered.current = hovered.retry;
@@ -256,8 +260,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     if (!hovered.error || hoverHour === null || !active || retries.current >= BREAKDOWN_RETRIES) return;
     return busyWait(() => { retries.current += 1; retryHovered.current(); }, BREAKDOWN_RETRY_MS * 2 ** retries.current);
   }, [hovered.error, hoverHour, active]);
-  const readsRequest = track && lines.length > 1 ? { sourceId: track.source.id, revision: track.source.revision, product: 'stability-reads',
-    params: { branchId: track.branch.id, from: Math.floor(extent[0]), to: Math.floor(extent[1]) } } : null;
+  const readsSpan = gate.span(extent[0], extent[1]);
+  const readsRequest = track && lines.length > 1 && readsSpan ? { sourceId: track.source.id, revision: track.source.revision, product: 'stability-reads',
+    params: { branchId: track.branch.id, from: readsSpan.firstHour, to: readsSpan.lastHour } } : null;
   const inputReads = useProduct<StabilityReadsReply>(runtime.client, readsRequest, active, validateStabilityReads, track?.source);
   const [spokenAt, setSpokenAt] = useState<number | null>(null);
   useEffect(() => {
@@ -265,7 +270,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     return busyWait(() => setSpokenAt(Math.floor(head)), FOCUS_SETTLE_MS);
   }, [focused, single, head, pinnedMeasure]);
   useEffect(() => setSpokenAt(null), [track?.source.id, track?.source.revision, track?.branch.id, single]);
-  const spoken = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(focused ? spokenAt : null), active, validateBreakdown, track?.source);
+  const spoken = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(focused ? gate.recorded(spokenAt) : null), active, validateBreakdown, track?.source);
 
   const drillAnchor = useRef<HTMLDivElement | null>(null);
   const rootRef = useCallback((element: HTMLDivElement | null) => { drillAnchor.current = element; setRoot(element); }, []);
@@ -277,8 +282,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const drillTag = chosen ? chosen.tag : single;
   const choosingActor = chosen !== null && chosen.tag === null;
   useEffect(() => { dispatchDrill({ type: 'close' }); setActorPick(null); }, [pickOwner]);
-  const pinnedRegion = useRegion(widget, localHour === undefined ? SPEC : localHour === null ? FOLLOW : pickedAt(track, localHour));
-  const pinnedRegionAt = useRegionHour(runtime, pinnedRegion, active && !!pinnedMeasure);
+  const pinnedRegion = useRegion(widget, localHour === undefined ? SPEC : localHour === null ? FOLLOW : pickAt(localHour));
+  const pinnedGate = useRegionGate(runtime, pinnedRegion, active && !!pinnedMeasure);
+  const pinnedRegionAt = pinnedGate.hour;
   const pinnedCoverage = useRegionCoverage(runtime, pinnedRegion);
   const origin = useRef<{ owner: typeof bindingOwner; hour: number } | null>(null);
   if (origin.current?.owner !== bindingOwner) origin.current = null;
@@ -347,7 +353,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   const drill_ = (measure: Measure, onMeasure: ((measure: Measure) => void) | undefined, onPick: (hour: number) => void) =>
-    <StabilityDrill client={runtime.client} clock={runtime.clock} source={track.source} branch={track.branch} lastHour={lastHour}
+    <StabilityDrill client={runtime.client} clock={runtime.clock} gate={pinnedMeasure ? pinnedGate : drillControl.gate} source={track.source} branch={track.branch} lastHour={lastHour}
       tag={shownTag} measure={measure} onMeasure={onMeasure} hour={drillAt} following={drillFollows} liveHead={drillFollows ? clockHead : undefined}
       playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
       within={drillWithin} extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
@@ -479,6 +485,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     {error && <WidgetState kind="error" what="values" failure={error} onRetry={retry} />}
   </div>;
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
+  const pinTime = drillControl.time();
   return <div className="stability" ref={rootRef} onFocus={() => setFocused(true)}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
     {groupNotice}
@@ -486,8 +493,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`}
       day={drillAt == null ? '' : drillFollows ? <LiveText live={dayText} at="day" /> : dayLabel(Math.floor(drillAt))} canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
       returnFocus=".stability-chart canvas" onClose={() => { dispatchDrill({ type: 'close' }); setActorPick(null); }}
-      onPin={selectedCountry && actorSpans && drillAt !== null ? () => runtime.addWidgetBelow(widget.id,
-        pinStabilityDrill({ ...widget, options: { ...widget.options, stabilityCountry: JSON.stringify(selectedCountry) } }, breakdownOf, track.id, track.branch.firstHour, selectedCountry.tag, drillAt, drill.follow)) : undefined}
+      onPin={selectedCountry && actorSpans && pinTime ? () => runtime.addWidgetBelow(widget.id,
+        pinStabilityDrill({ ...widget, options: { ...widget.options, stabilityCountry: JSON.stringify(selectedCountry) } }, breakdownOf, track.id, selectedCountry.tag, pinTime)) : undefined}
       main={main}>
       {choosingActor && chosen && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null}
         selectedTag={null} source={track.source} client={runtime.client} allowedTags={chosen.candidates}

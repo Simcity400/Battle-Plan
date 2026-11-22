@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 const RUNTIME = { clock: { getHour: () => 0 }, tracks: [] } as never;
-const drillOf = (open: boolean, close: () => void = () => {}) => ({ open, following: false, outside: null, follow() {}, pause() {}, close,
+const drillOf = (open: boolean, close: () => void = () => {}) => ({ open, following: false, outside: null, gate: { stage: { stage: 'open' }, country: null }, follow() {}, pause() {}, close,
   region: { widget: { trackIds: [], time: { mode: 'follow' } }, action: { kind: 'spec' } } }) as never;
 
 test('actual queued drill close restores its own focus and preserves a later widget or button', async () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
+import { axisAt } from '../../dashboard/regionTime.ts';
+import type { Gate } from '../../dashboard/regionGate';
 import type { RefObject } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/connection.ts';
@@ -24,7 +25,7 @@ export interface TopCountries {
   retry: () => void;
 }
 
-export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>, track: BoundTrack | undefined,
+export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>, gate: Gate, track: BoundTrack | undefined,
   top: number | null, measure: OptionValue, root: RefObject<Element | null>): TopCountries {
   const asked = top != null;
   const registry = useScoreboardColumns(runtime, track, active && asked);
@@ -35,8 +36,8 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const branchId = track?.branch.id;
   const family = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && family
-    ? { product: 'series-state', params: { branchId, family, top } } : null,
-  [following, branchId, top, family?.kind, family?.measure]);
+    ? gate.follow({ product: 'series-state', params: { branchId, family, top } }) : null,
+  [following, branchId, top, family?.kind, family?.measure, gate.follow]);
   const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
   const entry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
@@ -50,7 +51,7 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const followedText = followed ? structure() : '\u0001';
 
   const playbackHour = useFallbackHour(runtime.clock, following && !followed);
-  const moment = regionHour({ widget, action: SPEC }, track, runtime.tracks, axisAt(playbackHour));
+  const moment = widget.time.mode === 'follow' ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
   const params = !followed && track && rank && moment !== null ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
   const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, 1), []);

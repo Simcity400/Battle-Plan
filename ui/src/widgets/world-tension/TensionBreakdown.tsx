@@ -1,3 +1,4 @@
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Select } from '../../components/Select';
@@ -20,7 +21,7 @@ import { causeAt, contributionCell, contributorName, eventKeys, percent, percent
 import { type ReadCoverage } from '../../dashboard/widgetTime.ts';
 
 export interface TensionBreakdownProps {
-  runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
+  runtime: WidgetRuntime; gate: SeriesGate; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   extent: [number, number]; playhead: number | null; following: boolean;
   hour: number | null; read: ReadCoverage;
   reply: WorldTensionReply | undefined; live: Live<LiveValues<number>>; error?: Failure; onRetry?: () => void;
@@ -32,7 +33,7 @@ export interface TensionBreakdownProps {
   onPick?: (hour: number) => void;
 }
 
-export default function TensionBreakdown({ runtime, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
+export default function TensionBreakdown({ runtime, gate, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
   otherColour, layers, events, tooltip, report, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
   const keys = useMemo(() => eventKeys(events), [events]);
@@ -82,7 +83,7 @@ export default function TensionBreakdown({ runtime, track, active, options, exte
       <p>Its contribution: {added === null ? 'Not yet recorded' : percent(added, scale, 3)}{hour !== null && event.lastRead < hour ? `, as last read on ${dayLabel(event.lastRead)}` : ''}.</p>
     </div>}
     <div className="world-tension-drill-chart">
-      <TensionChart runtime={runtime} track={track} active={active} options={options} label="Country contributions over time" extent={extent} playhead={playhead}
+      <TensionChart runtime={runtime} gate={gate} track={track} active={active} options={options} label="Country contributions over time" extent={extent} playhead={playhead}
         following={following} layers={layers} colours={layers.map(layer => colour(layer.tag))} otherColour={otherColour} share={false}
         live={following ? live : null} tooltip={at => tooltip(at)} marker={hour} onPick={onPick} />
     </div>
