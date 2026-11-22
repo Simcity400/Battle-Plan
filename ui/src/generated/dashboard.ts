@@ -3430,6 +3430,11 @@ export type LossPoint = { hour: number,
  * Exact decimal, in [`LossesReply::amount_scale`] units.
  */
 totalRaw: string, };
+export type ExactLossPoint = { hour: number,
+/**
+ * Exact decimal, in [`LossesReply::amount_scale`] units, or null when absent or unrecorded.
+ */
+totalRaw: string | null, };
 export type LossLeaf = {
 /**
  * Index into [`LossesReply::designs`]; null when the record names none.
@@ -3440,9 +3445,13 @@ design: number | null,
  */
 key: string,
 /**
- * The running total at the end of each bin it changed in, and at each exact hour.
+ * The running total at the end of each bin it changed in.
  */
-points: Array<LossPoint>, lowerBoundFrom: number | null, };
+points: Array<LossPoint>,
+/**
+ * Exact running totals read at requested hours; null when absent or unrecorded.
+ */
+exact: Array<ExactLossPoint>, lowerBoundFrom: number | null, };
 export type LossCause = { source: LossSource, domain: LossDomain, name: LossName,
 /**
  * The Combat Log's attrition column, for reasons 1 to 3.

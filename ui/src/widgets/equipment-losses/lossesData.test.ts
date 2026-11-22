@@ -12,7 +12,7 @@ const ROOT = { id: 'all', label: 'All losses' };
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
 const live = (hour: number) => ({ first: 100, hour, end: 109, campaign: false });
 const whole = { ...live(109), campaign: true };
-const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], lowerBoundFrom: null, ...extra });
+const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], exact: [], lowerBoundFrom: null, ...extra });
 const cause = (extra: Partial<LossCause> = {}): LossCause => ({ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' },
   group: null, loss: true, unknown: null, unknownSpans: [], leaves: [leaf()], ...extra });
 const reply = (): LossesReply => ({
@@ -37,6 +37,8 @@ test('validates the contract and refuses malformed amounts, names, indices, span
     (bad: LossesReply) => { delete (bad.causes[0] as Partial<LossCause>).domain; },
     (bad: LossesReply) => { bad.causes[0].leaves[0].points[0].totalRaw = '1.25'; },
     (bad: LossesReply) => { bad.causes[0].leaves[0].points.reverse(); },
+    (bad: LossesReply) => { bad.causes[0].leaves[0].exact = [{ hour: 100, totalRaw: '1.25' }]; },
+    (bad: LossesReply) => { bad.causes[0].leaves[0].exact = [{ hour: 105, totalRaw: null }, { hour: 100, totalRaw: null }]; },
     (bad: LossesReply) => { bad.designs[0].names.reverse(); },
     (bad: LossesReply) => { bad.ships = [{ signature: 's', listedHour: 100, sinkHour: 99, design: 9, count: 1 }]; },
     (bad: LossesReply) => { delete (bad.causes[0].leaves[0] as Partial<LossLeaf>).key; },
@@ -496,6 +498,41 @@ test('per-run boundaries separate contiguous branch loads, supplemental gaps and
   assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 201, end: 250, campaign: false })).exact, 200000n);
   assert.equal(destructionLegend(data, { first: 100, hour: 250, end: 250, campaign: true }, TOKENS)[0].label, 'Complete');
   assert.deepEqual(destructionCoverageHours(data, 100, 250), { recorded: 50, unknown: 0, reasons: [] });
+});
+
+test('exact read absence overrides a multi-hour chart bin without erasing the later loss', () => {
+  const make = (exactHour: number) => {
+    const data = destruction();
+    data.from = 120;
+    data.to = 130;
+    data.width = 1;
+    data.exactHours = [exactHour];
+    data.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+    data.destructionCoverage = [
+      { firstHour: 121, lastHour: 123, reason: 'supplemental hooks unavailable' },
+      { firstHour: 124, lastHour: 130, reason: null },
+    ];
+    data.causes = [
+      cause({
+        source: { kind: 'destruction', reason: 'land_combat' },
+        unknownSpans: [{ firstHour: 121, lastHour: 130, reason: 'destructionWithheld', detail: 'supplemental hooks unavailable' }],
+        leaves: [leaf({ points: [{ hour: 121, totalRaw: '100000' }], exact: [{ hour: exactHour, totalRaw: null }] })],
+      }),
+    ];
+    return data;
+  };
+
+  const at124 = make(124);
+  assert.equal(validateLossesReply(at124), at124);
+  assert.equal(pointAt(at124.causes[0].leaves[0], 124), null);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 124, end: 130, campaign: false })).exact, null);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+  assert.equal(lossesTotal(lossItems(at124, { first: 120, hour: 130, end: 130, campaign: true })).exact, 100000n);
+
+  const at121 = make(121);
+  assert.equal(pointAt(at121.causes[0].leaves[0], 121), null);
+  assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 121, end: 130, campaign: false })).exact, null);
+  assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {

@@ -22,7 +22,7 @@ function reply(count = 1): LossesReply {
     causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod/cause', template: 'Mod cause', text: 'Mod cause' },
       loss: true, unknown: null, unknownSpans: [], group: null,
       leaves: Array.from({ length: count }, (_, design) => ({ design, key: String(design), lowerBoundFrom: null,
-        points: [{ hour: 100, totalRaw: '100000' }, { hour: 104, totalRaw: '150000' }, { hour: 108, totalRaw: '50000' }] })) }] };
+        points: [{ hour: 100, totalRaw: '100000' }, { hour: 104, totalRaw: '150000' }, { hour: 108, totalRaw: '50000' }], exact: [] })) }] };
 }
 const window = { first: 100, hour: 110, end: 110, campaign: true, from: null };
 const edgeAt = (history: ReturnType<typeof lossHistory>, hour: number) => history.model.edges[history.model.hours.indexOf(hour)];
@@ -156,6 +156,42 @@ test('destruction history resets running totals and range baselines across recor
   assert.deepEqual(edgeAt(contiguous, 100), [{ low: 0, high: 14 }]);
   assert.deepEqual(edgeAt(contiguous, 150), [{ low: 0, high: 2 }]);
   assert.equal(contiguous.model.breakBefore[contiguous.model.hours.indexOf(150)], true);
+});
+
+test('exact read absence inside a multi-hour bin hides future loss at the read hour while keeping the bin loss on the chart', () => {
+  const make = (exactHour: number) => {
+    const data = reply(1);
+    data.from = 120;
+    data.to = 130;
+    data.width = 1;
+    data.exactHours = [exactHour];
+    data.landSource = 'destruction';
+    data.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+    data.destructionCoverage = [
+      { firstHour: 121, lastHour: 123, reason: 'supplemental hooks unavailable' },
+      { firstHour: 124, lastHour: 130, reason: null },
+    ];
+    data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+    data.causes[0].unknownSpans = [{ firstHour: 121, lastHour: 130, reason: 'destructionWithheld', detail: 'supplemental hooks unavailable' }];
+    data.causes[0].leaves[0].points = [{ hour: 121, totalRaw: '100000' }];
+    data.causes[0].leaves[0].exact = [{ hour: exactHour, totalRaw: null }];
+    return data;
+  };
+
+  const at124 = make(124);
+  assert.equal(lossRows(at124, { first: 120, hour: 124, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
+  assert.deepEqual(edgeAt(lossHistory(at124, 124, 124), 124), [{ low: 0, high: 0 }]);
+  const chart124 = lossHistory(at124, 120, 130);
+  assert.deepEqual(edgeAt(chart124, 124), [{ low: 0, high: 0 }]);
+  assert.deepEqual(edgeAt(chart124, 125), [{ low: 0, high: 1 }]);
+
+  const at121 = make(121);
+  assert.equal(lossRows(at121, { first: 120, hour: 121, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
+  const chart121 = lossHistory(at121, 120, 130);
+  assert.equal(edgeAt(chart121, 121), null);
+  assert.deepEqual(edgeAt(chart121, 124), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(at121, 125, 125), 125), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(at121, 130, 130), 130), [{ low: 0, high: 1 }]);
 });
 
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {

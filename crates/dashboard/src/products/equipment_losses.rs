@@ -196,8 +196,10 @@ pub struct LossLeaf {
     pub design: Option<u32>,
     #[doc = " The totals row's key, the live cell `equipment-loss-head` names it by."]
     pub key: String,
-    #[doc = " The running total at the end of each bin it changed in, and at each exact hour."]
+    #[doc = " The running total at the end of each bin it changed in."]
     pub points: Vec<LossPoint>,
+    #[doc = " Exact running totals read at requested hours; null when absent or unrecorded."]
+    pub exact: Vec<ExactLossPoint>,
     pub lower_bound_from: Option<i32>,
 }
 
@@ -208,6 +210,15 @@ pub struct LossPoint {
     pub hour: i32,
     #[doc = " Exact decimal, in [`LossesReply::amount_scale`] units."]
     pub total_raw: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ExactLossPoint {
+    pub hour: i32,
+    #[doc = " Exact decimal, in [`LossesReply::amount_scale`] units, or null when absent or unrecorded."]
+    pub total_raw: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -319,7 +330,8 @@ fn identity(query: &Query<'_>, params: &LossesParams) -> io::Result<LossCountry>
 
 #[derive(Default)]
 struct Leaf {
-    points: BTreeMap<i32, Option<i64>>,
+    points: BTreeMap<i32, i64>,
+    exact: BTreeMap<i32, Option<i64>>,
     incomplete_from: Option<i32>,
 }
 
@@ -479,7 +491,7 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
                     }
                     let leaf = leaves.entry(key).or_default();
                     for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end) {
-                        leaf.points.insert(hour, Some(value));
+                        leaf.points.insert(hour, value);
                     }
                 }
             }
@@ -503,7 +515,7 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
                 } else {
                     found.get(key).map_or(Some(0), |&(total, _)| total)
                 };
-                leaf.points.insert(hour, value);
+                leaf.exact.insert(hour, value);
             }
         }
     }
@@ -562,10 +574,10 @@ fn reply(
                 let proven = domain == Some(LossDomain::Air) || domain == Some(if stockpile { LossDomain::Naval } else { LossDomain::Land });
                 if !proven {
                     if !(stockpile && domain == Some(LossDomain::Land))
-                        && let Some(first) = leaf.points.keys().next()
+                        && let Some(first) = leaf.points.keys().copied().chain(leaf.exact.iter().filter_map(|(&hour, total)| total.map(|_| hour))).min()
                     {
-                        let at = domain_from.entry(source).or_insert(*first);
-                        *at = (*at).min(*first);
+                        let at = domain_from.entry(source).or_insert(first);
+                        *at = (*at).min(first);
                     }
                     continue;
                 }
@@ -611,7 +623,8 @@ fn reply(
                     .map(|(variant, key, leaf)| LossLeaf {
                         design: variant.map(&mut design),
                         key: key.to_string(),
-                        points: leaf.points.iter().filter_map(|(&hour, total)| total.map(|total| LossPoint { hour, total_raw: total.to_string() })).collect(),
+                        points: leaf.points.iter().map(|(&hour, &total)| LossPoint { hour, total_raw: total.to_string() }).collect(),
+                        exact: leaf.exact.iter().map(|(&hour, &total)| ExactLossPoint { hour, total_raw: total.map(|total| total.to_string()) }).collect(),
                         lower_bound_from: lower_bound(leaf),
                     })
                     .collect(),
@@ -673,6 +686,7 @@ impl Product for EquipmentLosses {
             UnknownReason::decl(),
             UnknownSpan::decl(),
             LossPoint::decl(),
+            ExactLossPoint::decl(),
             LossLeaf::decl(),
             LossCause::decl(),
             LossDesignName::decl(),

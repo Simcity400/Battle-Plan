@@ -8,7 +8,7 @@ import type { DrillPart } from '../../charts/drill/parts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { entryAt } from '../../dashboard/reads.ts';
 import type { LossesReply } from '../../generated/dashboard';
-import { causeName, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
+import { binPointAt, causeName, exactPointAt, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import type { DrillCountry } from '../country-measure/drillCountry';
 import { DETAIL } from './definition.ts';
@@ -97,6 +97,61 @@ export function lossSegments(model: StackModel, first: number, last: number, hou
   return shareSegments(model, first, last, hoursPerPixel);
 }
 
+function addLeafSegment(
+  at: (hour: number) => { deltas: Map<string, bigint>; unread: number; runBreak: boolean },
+  key: string,
+  leaf: LossesReply['causes'][number]['leaves'][number],
+  segFirst: number,
+  segLast: number,
+  minHour: number | null,
+  baseline: bigint,
+  resetAtEnd: boolean,
+) {
+  const hasExact = leaf.exact.some(point => point.hour >= segFirst && point.hour <= segLast);
+  let previous = 0n;
+  if (!hasExact) {
+    const initial = pointIn(leaf, segFirst, minHour);
+    previous = initial ? BigInt(initial.totalRaw) - baseline : 0n;
+    if (previous !== 0n) at(segFirst).deltas.set(key, (at(segFirst).deltas.get(key) ?? 0n) + previous);
+    for (const point of leaf.points) {
+      if (point.hour <= segFirst || point.hour > segLast) continue;
+      const next = BigInt(point.totalRaw) - baseline;
+      const event = at(point.hour);
+      event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
+      previous = next;
+    }
+  } else {
+    const hours = new Set<number>([segFirst]);
+    for (const point of leaf.points) {
+      if (point.hour > segFirst && point.hour <= segLast) hours.add(point.hour);
+    }
+    for (const point of leaf.exact) {
+      if (point.hour < segFirst || point.hour > segLast) continue;
+      hours.add(point.hour);
+      if (point.hour < segLast) hours.add(point.hour + 1);
+    }
+    for (const hour of [...hours].sort((a, b) => a - b)) {
+      const exact = exactPointAt(leaf, hour);
+      let next = 0n;
+      if (exact) {
+        next = exact.totalRaw === null ? 0n : BigInt(exact.totalRaw) - baseline;
+      } else {
+        const bin = binPointAt(leaf, hour);
+        next = bin && (minHour === null || bin.hour >= minHour) ? BigInt(bin.totalRaw) - baseline : 0n;
+      }
+      if (next !== previous) {
+        const event = at(hour);
+        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
+        previous = next;
+      }
+    }
+  }
+  if (resetAtEnd && previous !== 0n) {
+    const endEvent = at(segLast + 1);
+    endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
+  }
+}
+
 export function lossHistory(reply: LossesReply, first: number, last: number, from?: number | null,
   selected: ReadonlySet<string> | null = null, countries?: readonly Span[]): { model: StackModel; keys: string[]; labels: string[] } {
   const events = new Map<number, { deltas: Map<string, bigint>; unread: number; runBreak: boolean }>();
@@ -126,33 +181,12 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
           if (segFirst > segLast) continue;
           if (index > 0 && segFirst === run.firstHour) at(segFirst).runBreak = true;
           const baseline = from != null && from > runStart ? BigInt(pointIn(leaf, from - 1, runStart)?.totalRaw ?? '0') : 0n;
-          const initial = pointIn(leaf, segFirst, runStart);
-          let previous = initial ? BigInt(initial.totalRaw) - baseline : 0n;
-          if (previous !== 0n) at(segFirst).deltas.set(key, (at(segFirst).deltas.get(key) ?? 0n) + previous);
-          for (const point of leaf.points) {
-            if (point.hour <= segFirst || point.hour > segLast) continue;
-            const next = BigInt(point.totalRaw) - baseline;
-            const event = at(point.hour);
-            event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
-            previous = next;
-          }
-          if (previous !== 0n) {
-            const endEvent = at(segLast + 1);
-            endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
-          }
+          addLeafSegment(at, key, leaf, segFirst, segLast, runStart, baseline, true);
         }
         continue;
       }
       const baseline = from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
-      let previous = BigInt(pointAt(leaf, first)?.totalRaw ?? '0') - baseline;
-      at(first).deltas.set(key, (at(first).deltas.get(key) ?? 0n) + previous);
-      for (const point of leaf.points) {
-        if (point.hour <= first || point.hour > last) continue;
-        const next = BigInt(point.totalRaw) - baseline;
-        const event = at(point.hour);
-        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
-        previous = next;
-      }
+      addLeafSegment(at, key, leaf, first, last, null, baseline, false);
     }
     if (!included) continue;
     keys.push(key); labels.push(causeName(cause));

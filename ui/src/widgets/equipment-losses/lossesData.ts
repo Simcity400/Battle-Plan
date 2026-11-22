@@ -1,5 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { Coverage, DestructionRun, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
+import type { Coverage, DestructionRun, ExactLossPoint, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
@@ -38,11 +38,15 @@ const isDesign = (design: LossDesign) => object(design) && int(design.variant) &
   && Array.isArray(design.names) && design.names.every((read, index) => object(read) && int(read.firstHour) && text(read.name)
     && typeof read.known === 'boolean'
     && (index === 0 || design.names[index - 1].firstHour < read.firstHour));
+const isExactPoint = (point: ExactLossPoint) => object(point) && int(point.hour)
+  && (point.totalRaw === null || typeof point.totalRaw === 'string' && RAW.test(point.totalRaw));
 const isLeaf = (leaf: LossLeaf, designs: number) => object(leaf)
   && (leaf.design === null || (int(leaf.design) && leaf.design >= 0 && leaf.design < designs))
   && typeof leaf.key === 'string' && (leaf.lowerBoundFrom === null || int(leaf.lowerBoundFrom)) && Array.isArray(leaf.points)
   && leaf.points.every((point, index) => object(point) && int(point.hour) && typeof point.totalRaw === 'string' && RAW.test(point.totalRaw)
-    && (index === 0 || leaf.points[index - 1].hour < point.hour));
+    && (index === 0 || leaf.points[index - 1].hour < point.hour))
+  && Array.isArray(leaf.exact) && leaf.exact.every((point, index) => isExactPoint(point)
+    && (index === 0 || leaf.exact[index - 1].hour < point.hour));
 
 export function validateLossesReply(data: unknown): LossesReply {
   const reply = data as LossesReply;
@@ -93,7 +97,7 @@ export function shipLeaves(ships: readonly ShipListing[], scale: number): LossLe
       total += BigInt(count) * BigInt(scale);
       return { hour, totalRaw: total.toString() };
     });
-    return { design, key: `ships:${design ?? 'none'}`, points, lowerBoundFrom: null };
+    return { design, key: `ships:${design ?? 'none'}`, points, exact: [], lowerBoundFrom: null };
   });
 }
 
@@ -114,18 +118,35 @@ export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLea
     const missing: UnknownSpan[] = [];
     const leaves = cause.leaves.map(leaf => {
       const value = total(leaf);
-      if (value === null) return { ...leaf, points: [] };
+      if (value === null) return { ...leaf, points: [], exact: [] };
       if (typeof value === 'string') {
         missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: value });
         return leaf;
       }
-      return { ...leaf, points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: BigInt(Math.round(value)).toString() }] };
+      const raw = BigInt(Math.round(value)).toString();
+      return {
+        ...leaf,
+        points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: raw }],
+        exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: raw }],
+      };
     });
     return { ...cause, leaves, unknownSpans: missing.length ? [...cause.unknownSpans, missing[0]] : cause.unknownSpans };
   }) };
 }
 
-export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
+export function exactPointAt(leaf: LossLeaf, hour: number): ExactLossPoint | null {
+  let low = 0;
+  let high = leaf.exact.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const found = leaf.exact[middle];
+    if (found.hour === hour) return found;
+    if (found.hour < hour) low = middle + 1; else high = middle - 1;
+  }
+  return null;
+}
+
+export function binPointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   let low = 0;
   let high = leaf.points.length - 1;
   let found: LossPoint | null = null;
@@ -136,8 +157,19 @@ export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   return found;
 }
 
+export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
+  const exact = exactPointAt(leaf, hour);
+  if (exact) return exact.totalRaw === null ? null : { hour: exact.hour, totalRaw: exact.totalRaw };
+  return binPointAt(leaf, hour);
+}
+
 export function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
-  const point = pointAt(leaf, hour);
+  const exact = exactPointAt(leaf, hour);
+  if (exact) {
+    if (exact.totalRaw === null) return null;
+    return minHour === null || exact.hour >= minHour ? { hour: exact.hour, totalRaw: exact.totalRaw } : null;
+  }
+  const point = binPointAt(leaf, hour);
   return point && (minHour === null || point.hour >= minHour) ? point : null;
 }
 
@@ -146,14 +178,21 @@ function weightAt(leaf: LossLeaf, hour: number, from?: number | null, minHour: n
   if (from != null || minHour !== null) {
     const floor = from != null && minHour !== null ? Math.max(from, minHour) : (from ?? minHour!);
     const baseline = from == null ? 0n : BigInt(pointIn(leaf, from - 1, minHour)?.totalRaw ?? '0');
-    return leaf.points.reduce((peak, point) => point.hour < floor || point.hour > hour ? peak
-      : Math.max(peak, Math.abs(Number(BigInt(point.totalRaw) - baseline))), 0);
+    let peak = leaf.points.reduce((best, point) => point.hour < floor || point.hour > hour ? best
+      : Math.max(best, Math.abs(Number(BigInt(point.totalRaw) - baseline))), 0);
+    for (const point of leaf.exact) {
+      if (point.totalRaw === null || point.hour < floor || point.hour > hour) continue;
+      peak = Math.max(peak, Math.abs(Number(BigInt(point.totalRaw) - baseline)));
+    }
+    return peak;
   }
   let steps = peaks.get(leaf);
   if (!steps) {
     steps = [];
     let peak = 0;
-    for (const point of leaf.points) {
+    const all = [...leaf.points, ...leaf.exact.filter((point): point is LossPoint => point.totalRaw !== null)]
+      .sort((a, b) => a.hour - b.hour);
+    for (const point of all) {
       const value = Math.abs(Number(BigInt(point.totalRaw)));
       if (value > peak) { peak = value; steps.push({ firstHour: point.hour, value }); }
     }

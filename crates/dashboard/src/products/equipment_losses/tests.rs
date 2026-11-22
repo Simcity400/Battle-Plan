@@ -723,9 +723,11 @@ fn contiguous_load_with_supplemental_gap_exports_exact_run_boundaries_and_gates_
         .expect("land combat cause");
     assert_eq!(land.leaves.len(), 1);
     let points = &land.leaves[0].points;
-    assert!(points.iter().any(|point| point.hour == 101 && point.total_raw == "500000"), "{points:?}");
-    assert!(!points.iter().any(|point| point.hour == 120), "uncounted startup hour must never receive a synthetic zero or backdated point: {points:?}");
-    assert!(points.iter().any(|point| point.hour == 121 && point.total_raw == "200000"), "{points:?}");
+    let exact = &land.leaves[0].exact;
+    assert!(exact.contains(&ExactLossPoint { hour: 101, total_raw: Some("500000".to_owned()) }), "{exact:?}");
+    assert!(exact.contains(&ExactLossPoint { hour: 120, total_raw: None }), "uncounted startup exact read must stay absent: {exact:?}");
+    assert!(!points.iter().any(|point| point.hour == 120), "uncounted startup hour must never receive a backdated bin point: {points:?}");
+    assert!(exact.contains(&ExactLossPoint { hour: 121, total_raw: Some("200000".to_owned()) }), "{exact:?}");
 }
 
 #[test]
@@ -877,7 +879,7 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
     )
     .unwrap();
 
-    let load_at = |from: i32| {
+    let load_at = |from: i32, width: u32, reads: Vec<i32>| {
         let params = LossesParams {
             branch_id: branch_id.to_string(),
             country: "GER".into(),
@@ -885,14 +887,14 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
             identity: None,
             from,
             to: 130,
-            width: 64,
-            reads: vec![121],
+            width,
+            reads,
         };
         EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
     };
 
-    let spanning = load_at(100);
-    let child_only = load_at(120);
+    let spanning = load_at(100, 64, vec![121]);
+    let child_only = load_at(120, 64, vec![121]);
     for (label, reply) in [("spanning", &spanning), ("child-only", &child_only)] {
         let land = reply
             .causes
@@ -901,30 +903,42 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
             .expect("land combat cause");
         for leaf in &land.leaves {
             assert!(
-                !leaf.points.iter().any(|point| point.hour == 121),
+                leaf.exact.iter().all(|point| point.hour != 121 || point.total_raw.is_none()),
                 "{label} query must not synthesize a measured zero at supplemental-unavailable hour 121: {:?}",
-                leaf.points
+                leaf.exact
             );
         }
     }
-    let spanning_at_121: Vec<_> = spanning
+
+    let coarse_124 = load_at(120, 1, vec![124]);
+    let land_124 = coarse_124
         .causes
         .iter()
         .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
-        .unwrap()
-        .leaves
-        .iter()
-        .filter(|leaf| leaf.points.iter().any(|point| point.hour >= 120 && point.hour <= 121))
-        .collect();
-    let child_at_121: Vec<_> = child_only
+        .expect("land combat cause");
+    assert_eq!(land_124.leaves.len(), 1);
+    assert_eq!(land_124.leaves[0].exact, vec![ExactLossPoint { hour: 124, total_raw: None }]);
+    assert_eq!(land_124.leaves[0].points, vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }]);
+
+    let coarse_121 = load_at(120, 1, vec![121]);
+    let land_121 = coarse_121
         .causes
         .iter()
         .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
-        .unwrap()
-        .leaves
+        .expect("land combat cause");
+    assert_eq!(land_121.leaves.len(), 1);
+    assert_eq!(land_121.leaves[0].exact, vec![ExactLossPoint { hour: 121, total_raw: None }]);
+    assert_eq!(
+        land_121.leaves[0].points,
+        vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }],
+        "exact absence at bin start 121 must not erase the bin's hour-125 loss from the chart"
+    );
+
+    let coarse_125 = load_at(120, 1, vec![125]);
+    let land_125 = coarse_125
+        .causes
         .iter()
-        .filter(|leaf| leaf.points.iter().any(|point| point.hour >= 120 && point.hour <= 121))
-        .collect();
-    assert!(spanning_at_121.is_empty());
-    assert!(child_at_121.is_empty());
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(land_125.leaves[0].exact, vec![ExactLossPoint { hour: 125, total_raw: Some("100000".to_owned()) }]);
 }
