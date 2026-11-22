@@ -132,39 +132,161 @@ fn supply_trucks_follow_boolean_redefinition_and_copy_rules() {
 }
 
 #[test]
-fn unreproduced_stat_fields_are_kept_silently_and_found_through_parents_and_archetypes() {
+fn module_multipliers_and_reliability_scaling_follow_inheritance_duplication_and_validation() {
     let database = read(&[(
         "chassis.txt",
-        "equipments = { root = { is_archetype = yes scaled_by_reliability = { max_strength = 0.5 } }
-            leaf = { archetype = root module_multiply_stats_multiplier = { soft_attack = 0.1 }
-                MODULE_MULTIPLY_STATS_MULTIPLIER = { soft_attack = 0.1 } }
-            child = { parent = leaf }
-            plain = { soft_attack = 1 } }",
+        "equipment_modules = {
+            turret = {
+                add_stats = { soft_attack = 10 reliability = -0.2 }
+                add_average_stats = { air_agility = 20 reliability = 0.4 }
+                multiply_stats = { soft_attack = 0.25 }
+            }
+            engine = {
+                add_average_stats = { air_agility = 10 reliability = 0.0 }
+                multiply_stats = { reliability = 0.1 }
+            }
+         }
+         equipments = {
+            root = {
+                is_archetype = yes
+                soft_attack = 5
+                reliability = 0.5
+                module_add_stats_multiplier = { soft_attack = 0.2 air_agility = -0.5 }
+                module_multiply_stats_multiplier = { soft_attack = 0.6 }
+                scaled_by_reliability = { max_strength = 10 soft_attack = 4 reliability = 0 }
+            }
+            leaf = {
+                module_add_stats_multiplier = { soft_attack = 9 }
+                archetype = root
+                module_add_stats_multiplier = { soft_attack = 0.3 }
+                MODULE_MULTIPLY_STATS_MULTIPLIER = { soft_attack = 0.4 }
+                scaled_by_reliability = {
+                    max_strength = 5
+                    reliability = 1
+                    reliability_factor = 2
+                    carrier_size = 3
+                    build_cost_ic = 4
+                }
+            }
+            child = { parent = leaf soft_attack = 2 }
+         }
+         duplicate_archetypes = {
+            cloned = { archetype = root }
+         }",
     )]);
     assert!(database.lost.is_none(), "{:?}", database.lost);
-    assert!(database.misreads.is_empty(), "{:?}", database.misreads);
-    assert_eq!(
-        named(&database, "leaf").unreproduced_stat_fields,
-        ["module_multiply_stats_multiplier"]
+    for forbidden in [
+        "reliability",
+        "reliability_factor",
+        "carrier_size",
+        "build_cost_ic",
+    ] {
+        assert!(
+            database.misreads.iter().any(|note| {
+                note.contains("equipment leaf")
+                    && note.contains(&format!("'{forbidden}' is not supported in 'scaled_by_reliability'"))
+            }),
+            "{forbidden}: {:?}",
+            database.misreads
+        );
+    }
+    assert!(
+        !database.misreads.iter().any(|note| note.contains("equipment root")),
+        "{:?}",
+        database.misreads
     );
-    let field = |name: &str| {
-        database
-            .unreproduced_stat_field(database.get(name).unwrap())
-            .map(|(field, owner)| (field, String::from_utf8_lossy(owner).into_owned()))
+    let root = named(&database, "root");
+    let leaf = named(&database, "leaf");
+    let child = named(&database, "child");
+    let cloned_leaf = named(&database, "clonedleaf");
+    let soft = stat("soft_attack");
+    let agility = stat("air_agility");
+    let strength = stat("max_strength");
+    assert_eq!(
+        leaf.module_add_stats_multiplier,
+        [
+            StatValue {
+                index: soft,
+                value: 50_000,
+            },
+            StatValue {
+                index: agility,
+                value: -50_000,
+            },
+        ]
+    );
+    assert_eq!(
+        leaf.module_multiply_stats_multiplier,
+        [StatValue {
+            index: soft,
+            value: 100_000,
+        }]
+    );
+    assert_eq!(
+        leaf.scaled_by_reliability,
+        [
+            StatValue {
+                index: strength,
+                value: 1_500_000,
+            },
+            StatValue {
+                index: soft,
+                value: 400_000,
+            },
+            StatValue {
+                index: RELIABILITY_STAT,
+                value: 0,
+            },
+            StatValue {
+                index: RELIABILITY_FACTOR_STAT,
+                value: 0,
+            },
+            StatValue {
+                index: CARRIER_SIZE_STAT,
+                value: 0,
+            },
+            StatValue {
+                index: BUILD_COST_IC_STAT,
+                value: 0,
+            },
+        ]
+    );
+    assert!(child.module_add_stats_multiplier.is_empty());
+    assert!(child.module_multiply_stats_multiplier.is_empty());
+    assert!(child.scaled_by_reliability.is_empty());
+    assert_eq!(
+        cloned_leaf.module_add_stats_multiplier,
+        leaf.module_add_stats_multiplier
+    );
+    assert_eq!(
+        cloned_leaf.module_multiply_stats_multiplier,
+        leaf.module_multiply_stats_multiplier
+    );
+    assert_eq!(cloned_leaf.scaled_by_reliability, leaf.scaled_by_reliability);
+    let turret = database.module_stats("turret").unwrap();
+    let engine = database.module_stats("engine").unwrap();
+    let project = |eq: &Equipment| {
+        let mut comp = StatComponents::base(&eq.stats);
+        comp.apply_module(turret, eq).unwrap();
+        comp.apply_module(engine, eq).unwrap();
+        comp.finish_for(eq).unwrap()
     };
-    assert_eq!(
-        field("root"),
-        Some(("scaled_by_reliability", "root".to_owned()))
-    );
-    assert_eq!(
-        field("leaf"),
-        Some(("module_multiply_stats_multiplier", "leaf".to_owned()))
-    );
-    assert_eq!(
-        field("child"),
-        Some(("module_multiply_stats_multiplier", "leaf".to_owned()))
-    );
-    assert_eq!(field("plain"), None);
+    let root_stats = project(root);
+    let leaf_stats = project(leaf);
+    let child_stats = project(child);
+    assert_eq!(root_stats[RELIABILITY_STAT], 55_000);
+    assert_eq!(root_stats[strength], 550_000);
+    assert_eq!(root_stats[agility], 750_000);
+    assert_eq!(root_stats[soft], 2_688_000);
+    assert_eq!(leaf_stats[RELIABILITY_STAT], 55_000);
+    assert_eq!(leaf_stats[strength], 825_000);
+    assert_eq!(leaf_stats[agility], 750_000);
+    assert_eq!(leaf_stats[soft], 3_330_000);
+    assert_eq!(leaf_stats[BUILD_COST_IC_STAT], 0);
+    assert_eq!(leaf_stats[CARRIER_SIZE_STAT], 0);
+    assert_eq!(child_stats[soft], 1_500_000);
+    assert_eq!(child_stats[agility], 1_500_000);
+    assert_eq!(child_stats[strength], 0);
 }
 
 fn cat(name: &str) -> u64 {

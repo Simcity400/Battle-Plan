@@ -716,3 +716,40 @@ fn a_link_cycle_is_refused_by_name() {
     );
     assert_eq!(bound, Ok([0, 0]), "{misreads:?}");
 }
+
+#[test]
+fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers() {
+    content_reader_core::test_game::enter();
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } } }
+         equipments = {
+            hull = { is_archetype = yes type = convoy reliability = 0.8
+                scaled_by_reliability = { hg_attack = 0.5 }
+                module_add_stats_multiplier = { lg_attack = 0.5 }
+                module_multiply_stats_multiplier = { lg_attack = 1.0 } }
+            hull_1 = { archetype = hull default_modules = { main = gun } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 450_000]));
+    let (bound, misreads) = bound_of(
+        "equipments = {
+            hull = { is_archetype = yes type = convoy reliability = 0.5
+                scaled_by_reliability = { hg_attack = 0.5 sub_attack = -0.25 } }
+            hull_1 = { archetype = hull }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-25_000, 50_000]));
+    let (bound, _) = bound_of(
+        "equipments = {
+            modular_convoy = { type = convoy
+                module_slots = { main = { } }
+                module_add_stats_multiplier = { lg_attack = 0.5 } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("modular_convoy")),
+        "modular convoy with module stat multipliers must be refused by name"
+    );
+}

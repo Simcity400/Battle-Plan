@@ -612,15 +612,15 @@ impl Display {
         scale
     }
 
-    pub fn window(&self, desktops: &[Desktop]) -> Option<(Desktop, Window)> {
-        let display0 = *desktops.first()?;
-        let named = usize::try_from(self.display_index)
-            .ok()
-            .map(|index| desktops.get(index).copied());
-        let (shown_on, found) = match named {
-            Some(Some(desktop)) => (desktop, true),
-            Some(None) => (display0, false),
-            None => (display0, true),
+    pub fn window(&self, desktops: &[Option<Desktop>]) -> Option<(Desktop, Window)> {
+        let display0 = (*desktops.first()?)?;
+        let (shown_on, found) = match usize::try_from(self.display_index) {
+            Ok(index) => match desktops.get(index).copied() {
+                Some(Some(desktop)) => (desktop, true),
+                Some(None) => return None,
+                None => (display0, false),
+            },
+            Err(_) => (display0, true),
         };
         let window = match self.mode {
             DisplayMode::Fullscreen => Window::Fullscreen,
@@ -630,8 +630,8 @@ impl Display {
         Some((shown_on, window))
     }
 
-    pub fn frame(&self, desktops: &[Desktop]) -> Option<[u32; 2]> {
-        let display0 = *desktops.first()?;
+    pub fn frame(&self, desktops: &[Option<Desktop>]) -> Option<[u32; 2]> {
+        let display0 = (*desktops.first()?)?;
         let (shown_on, window) = self.window(desktops)?;
         match (window, self.size) {
             (Window::Borderless, _) => Some(shown_on.virtualised()),
@@ -657,7 +657,7 @@ impl Display {
         width as f32 / logical.max(1) as f32
     }
 
-    pub fn stretch(&self, desktops: &[Desktop]) -> Option<f32> {
+    pub fn stretch(&self, desktops: &[Option<Desktop>]) -> Option<f32> {
         let (shown_on, window) = self.window(desktops)?;
         Some(match window {
             Window::Plain | Window::Borderless => shown_on.dpi_scale(),
@@ -669,8 +669,8 @@ impl Display {
         })
     }
 
-    pub fn screen_scale(&self, desktops: &[Desktop]) -> Option<f32> {
-        let scale = self.effective_gui_scale(*desktops.first()?);
+    pub fn screen_scale(&self, desktops: &[Option<Desktop>]) -> Option<f32> {
+        let scale = self.effective_gui_scale((*desktops.first()?)?);
         Some(self.interface_to_frame(self.frame(desktops)?, scale) * self.stretch(desktops)?)
     }
 }
@@ -686,77 +686,103 @@ fn resolution(value: &str) -> Option<[i32; 2]> {
     ])
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Adapter {
-    pub attached: bool,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub device: Vec<u16>,
     pub primary: bool,
+    pub has_mode: bool,
     pub desktop: Option<Desktop>,
 }
 
-pub fn sdl_order(adapters: &[Adapter]) -> Vec<Desktop> {
-    let attached = || adapters.iter().filter(|adapter| adapter.attached);
-    attached()
-        .filter(|adapter| adapter.primary)
-        .chain(attached().filter(|adapter| !adapter.primary))
-        .filter_map(|adapter| adapter.desktop)
-        .collect()
+pub fn sdl_order(monitors: &[Monitor]) -> Vec<Option<Desktop>> {
+    let mut devices: Vec<&[u16]> = Vec::new();
+    let mut ordered: Vec<Option<Desktop>> = Vec::new();
+    for want_primary in [true, false] {
+        for monitor in monitors
+            .iter()
+            .filter(|monitor| monitor.primary == want_primary && monitor.has_mode)
+        {
+            if let Some(index) = devices
+                .iter()
+                .position(|seen| *seen == monitor.device.as_slice())
+            {
+                ordered[index] = monitor.desktop;
+            } else {
+                devices.push(monitor.device.as_slice());
+                ordered.push(monitor.desktop);
+            }
+        }
+    }
+    ordered
 }
 
 #[cfg(windows)]
-pub fn desktops() -> io::Result<Vec<Desktop>> {
+pub fn desktops() -> io::Result<Vec<Option<Desktop>>> {
     use windows_sys::Win32::{
-        Foundation::POINT,
+        Foundation::{LPARAM, RECT},
         Graphics::Gdi::{
-            DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE,
-            DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW, EnumDisplaySettingsW,
-            MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
+            DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW,
+            GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
         },
         UI::HiDpi::{
             DPI_AWARENESS_PER_MONITOR_AWARE, GetAwarenessFromDpiAwarenessContext, GetDpiForMonitor,
             GetThreadDpiAwarenessContext, MDT_EFFECTIVE_DPI,
         },
     };
-    let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) };
-    if awareness != DPI_AWARENESS_PER_MONITOR_AWARE {
-        return Err(io::Error::other(
-            "Monitor sizes need a per-monitor DPI-aware thread",
-        ));
+    const MONITORINFOF_PRIMARY: u32 = 1;
+    struct State {
+        want_primary: bool,
+        monitors: Vec<Monitor>,
+        error: Option<io::Error>,
     }
-    let mut adapters = Vec::new();
-    for index in 0..64 {
-        let mut device = DISPLAY_DEVICEW {
-            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
-            ..Default::default()
+    unsafe extern "system" fn each(
+        monitor: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> i32 {
+        // SAFETY: `data` points to the `State` stack local alive for `EnumDisplayMonitors`.
+        let state = unsafe { &mut *(data as *mut State) };
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            szDevice: [0; 32],
         };
-        if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == 0 {
-            break;
+        // SAFETY: `info` is initialized with `cbSize = size_of::<MONITORINFOEXW>()`.
+        if unsafe { GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast()) } == 0 {
+            return 1;
         }
-        let attached = device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP != 0;
+        let primary = info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0;
+        if primary != state.want_primary {
+            return 1;
+        }
+        let device_len = info
+            .szDevice
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(info.szDevice.len());
+        let device = info.szDevice[..device_len].to_vec();
         let mut mode = DEVMODEW {
             dmSize: std::mem::size_of::<DEVMODEW>() as u16,
             ..Default::default()
         };
-        let found = unsafe {
-            EnumDisplaySettingsW(device.DeviceName.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
+        // SAFETY: `info.szDevice` is NUL-terminated by `GetMonitorInfoW` and `mode.dmSize` is set.
+        let has_mode = unsafe {
+            EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
         } != 0;
-        let desktop = if attached && found && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0 {
-            let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
-            let monitor = unsafe {
-                MonitorFromPoint(
-                    POINT {
-                        x: position.x,
-                        y: position.y,
-                    },
-                    MONITOR_DEFAULTTONEAREST,
-                )
-            };
+        let desktop = if has_mode && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0 {
             let (mut dpi, mut unused) = (0u32, 0u32);
+            // SAFETY: `monitor` is a live `HMONITOR` from `EnumDisplayMonitors` and outputs are writable.
             let read =
                 unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused) };
             if read != 0 || dpi == 0 {
-                return Err(io::Error::other(format!(
-                    "Could not read the display scale of monitor {index} (0x{read:08x})"
+                state.error = Some(io::Error::other(format!(
+                    "Could not read the display scale of monitor {} (0x{read:08x})",
+                    String::from_utf16_lossy(&device)
                 )));
+                return 0;
             }
             Some(Desktop {
                 physical: [mode.dmPelsWidth, mode.dmPelsHeight],
@@ -765,17 +791,46 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
         } else {
             None
         };
-        adapters.push(Adapter {
-            attached,
-            primary: device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE != 0,
+        state.monitors.push(Monitor {
+            device,
+            primary,
+            has_mode,
             desktop,
         });
+        1
     }
-    Ok(sdl_order(&adapters))
+    // SAFETY: `GetThreadDpiAwarenessContext` and `GetAwarenessFromDpiAwarenessContext` take no pointers.
+    let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) };
+    if awareness != DPI_AWARENESS_PER_MONITOR_AWARE {
+        return Err(io::Error::other(
+            "Monitor sizes need a per-monitor DPI-aware thread",
+        ));
+    }
+    let mut state = State {
+        want_primary: true,
+        monitors: Vec::new(),
+        error: None,
+    };
+    for want_primary in [true, false] {
+        state.want_primary = want_primary;
+        // SAFETY: `state` stays alive and exclusively borrowed for the duration of `EnumDisplayMonitors`.
+        unsafe {
+            EnumDisplayMonitors(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                Some(each),
+                std::ptr::from_mut(&mut state) as LPARAM,
+            );
+        }
+        if let Some(error) = state.error.take() {
+            return Err(error);
+        }
+    }
+    Ok(sdl_order(&state.monitors))
 }
 
 #[cfg(not(windows))]
-pub fn desktops() -> io::Result<Vec<Desktop>> {
+pub fn desktops() -> io::Result<Vec<Option<Desktop>>> {
     Err(io::Error::other("Monitor sizes are only read on Windows"))
 }
 
@@ -1111,7 +1166,7 @@ template_counter=-");
         let game = display(OWNER_SETTINGS, Some(OWNER_PDX)).unwrap();
         assert_eq!(game.size, Some([2560, 1440]));
         assert_eq!(game.mode, DisplayMode::Borderless);
-        let monitors = [OWNER_MONITOR];
+        let monitors = [Some(OWNER_MONITOR)];
         assert_eq!(
             game.window(&monitors),
             Some((OWNER_MONITOR, Window::Borderless))
@@ -1180,10 +1235,10 @@ template_counter=-");
         assert_eq!(game.size, None);
         assert_eq!(game.min_gui, [1280, 720]);
         assert_eq!(game.display_index, -1);
-        assert_eq!(game.screen_scale(&[OWNER_MONITOR]), Some(1.25));
+        assert_eq!(game.screen_scale(&[Some(OWNER_MONITOR)]), Some(1.25));
         let windowed = display("graphics={ gui_scale=2.0 borderless=no }", None).unwrap();
         assert_eq!(windowed.effective_gui_scale(OWNER_MONITOR), 1.6);
-        assert_eq!(windowed.frame(&[OWNER_MONITOR]), Some([2048, 1152]));
+        assert_eq!(windowed.frame(&[Some(OWNER_MONITOR)]), Some([2048, 1152]));
     }
 
     #[test]
@@ -1198,8 +1253,8 @@ template_counter=-");
             (game.mode, game.size),
             (DisplayMode::Windowed, Some([1600, 900]))
         );
-        assert_eq!(game.frame(&[OWNER_MONITOR]), Some([1600, 900]));
-        assert_eq!(game.screen_scale(&[OWNER_MONITOR]), Some(1.25));
+        assert_eq!(game.frame(&[Some(OWNER_MONITOR)]), Some([1600, 900]));
+        assert_eq!(game.screen_scale(&[Some(OWNER_MONITOR)]), Some(1.25));
         let late = r#""Graphics"={
             "fullscreen_resolution"={ value="1920x1080" }
             "display_mode"={ value="fullscreen" }
@@ -1209,7 +1264,7 @@ template_counter=-");
             (game.mode, game.size),
             (DisplayMode::Fullscreen, Some([1920, 1080]))
         );
-        let stretch = game.stretch(&[OWNER_MONITOR]).unwrap();
+        let stretch = game.stretch(&[Some(OWNER_MONITOR)]).unwrap();
         assert!((stretch - 4.0 / 3.0).abs() < 1e-6);
     }
 
@@ -1230,7 +1285,7 @@ template_counter=-");
             mode: DisplayMode::Fullscreen,
             ..bad
         };
-        assert_eq!(full.screen_scale(&[OWNER_MONITOR]), None);
+        assert_eq!(full.screen_scale(&[Some(OWNER_MONITOR)]), None);
         let padded = pdx(r#""fullscreen_resolution"={ value=" 1920x1080p" }"#);
         assert_eq!(padded.size, Some([1920, 1080]));
         let bare = pdx(r#""display_index"={ version=0 } "display_mode"={ version=0 }"#);
@@ -1258,7 +1313,7 @@ template_counter=-");
             physical: [3840, 2160],
             dpi: 192,
         };
-        let desktops = [OWNER_MONITOR, tv];
+        let desktops = [Some(OWNER_MONITOR), Some(tv)];
         assert_eq!(game.window(&desktops), Some((tv, Window::Borderless)));
         assert_eq!(game.frame(&desktops), Some([1920, 1080]));
         assert_eq!(game.screen_scale(&desktops), Some(2.0));
@@ -1269,7 +1324,7 @@ template_counter=-");
     fn an_index_past_the_monitors_opens_an_ordinary_window_at_size() {
         let missing = r#""Graphics"={ "display_index"={ value="5" } }"#;
         let game = display(OWNER_SETTINGS, Some(missing)).unwrap();
-        let monitors = [OWNER_MONITOR];
+        let monitors = [Some(OWNER_MONITOR)];
         assert_eq!(game.window(&monitors), Some((OWNER_MONITOR, Window::Plain)));
         assert_eq!(game.frame(&monitors), Some([2048, 1152]));
         assert_eq!(game.screen_scale(&monitors), Some(1.25));
@@ -1284,26 +1339,81 @@ template_counter=-");
     }
 
     #[test]
-    fn sdl_lists_the_primary_desktop_first_and_skips_detached_adapters() {
-        let adapter = |attached, primary, width| Adapter {
-            attached,
+    fn sdl_lists_the_primary_desktop_first_deduplicates_devices_and_skips_missing_modes() {
+        let monitor = |name: &str, has_mode, primary, width| Monitor {
+            device: name.encode_utf16().collect(),
             primary,
+            has_mode,
             desktop: Some(Desktop {
                 physical: [width, 1080],
                 dpi: 96,
             }),
         };
-        let adapters = [
-            adapter(true, false, 1920),
-            adapter(false, false, 800),
-            adapter(true, true, 2560),
-            adapter(true, false, 3840),
+        let monitors = [
+            monitor(r"\\.\DISPLAY2", true, false, 1920),
+            monitor(r"\\.\DISPLAY3", false, false, 800),
+            monitor(r"\\.\DISPLAY1", true, true, 2560),
+            monitor(r"\\.\DISPLAY2", true, false, 1920),
+            monitor(r"\\.\DISPLAY4", true, false, 3840),
         ];
-        let widths: Vec<u32> = sdl_order(&adapters)
+        let widths: Vec<Option<u32>> = sdl_order(&monitors)
             .iter()
-            .map(|desktop| desktop.physical[0])
+            .map(|desktop| desktop.map(|desktop| desktop.physical[0]))
             .collect();
-        assert_eq!(widths, [2560, 1920, 3840]);
+        assert_eq!(widths, [Some(2560), Some(1920), Some(3840)]);
+    }
+
+    #[test]
+    fn unavailable_monitor_before_usable_preserves_secondary_display_index() {
+        let primary = OWNER_MONITOR;
+        let tv = Desktop {
+            physical: [3840, 2160],
+            dpi: 192,
+        };
+        let monitors = [
+            Monitor {
+                device: r"\\.\DISPLAY1".encode_utf16().collect(),
+                primary: true,
+                has_mode: true,
+                desktop: Some(primary),
+            },
+            Monitor {
+                device: r"\\.\DISPLAY2".encode_utf16().collect(),
+                primary: false,
+                has_mode: true,
+                desktop: None,
+            },
+            Monitor {
+                device: r"\\.\DISPLAY3".encode_utf16().collect(),
+                primary: false,
+                has_mode: true,
+                desktop: Some(tv),
+            },
+        ];
+        let desktops = sdl_order(&monitors);
+        let at_index = |index: i32| {
+            display(
+                OWNER_SETTINGS,
+                Some(&format!(
+                    r#""Graphics"={{ "display_index"={{ value="{index}" }} }}"#
+                )),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            at_index(0).window(&desktops),
+            Some((primary, Window::Borderless))
+        );
+        assert_eq!(at_index(1).window(&desktops), None);
+        assert_eq!(at_index(1).frame(&desktops), None);
+        assert_eq!(at_index(1).screen_scale(&desktops), None);
+        assert_eq!(
+            at_index(2).window(&desktops),
+            Some((tv, Window::Borderless))
+        );
+        assert_eq!(at_index(2).screen_scale(&desktops), Some(2.0));
+        assert_eq!(at_index(3).window(&desktops), Some((primary, Window::Plain)));
+        assert_eq!(at_index(0).window(&[None, Some(tv)]), None);
     }
 
     #[test]

@@ -10,7 +10,8 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
     let (raster, note) = Setting::MatchGame.resolve_raster(Err("missing"), Ok(&[]));
     assert_eq!(raster, Raster::direct(1.));
     assert!(note.is_some());
-    let (raster, _) = Setting::MatchGame.resolve_raster(Ok(&borderless_at(1.2)), Ok(&[MONITOR]));
+    let (raster, _) =
+        Setting::MatchGame.resolve_raster(Ok(&borderless_at(1.2)), Ok(&[Some(MONITOR)]));
     let screen_point = [200., 150.];
     let frame_point = screen_point.map(|point| point / raster.stretch);
     let hit = to_interface(frame_point, raster.ui_scale);
@@ -20,15 +21,36 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
 
 #[test]
 fn matching_the_game_multiplies_its_scale_by_its_stretch() {
-    let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[MONITOR]));
+    let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Some(MONITOR)]));
     assert_eq!((scale, note), (1.25, None));
     let unscaled = Desktop { dpi: 96, ..MONITOR };
     assert_eq!(
-        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[unscaled])),
+        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Some(unscaled)])),
         (1.0, None)
     );
-    let (scale, _) = Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[unscaled]));
+    let (scale, _) =
+        Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[Some(unscaled)]));
     assert_eq!(scale, 2560.0 / 2133.0);
+    let tv = Desktop {
+        physical: [3840, 2160],
+        dpi: 192,
+    };
+    let on_unavailable = Display {
+        display_index: 1,
+        ..borderless()
+    };
+    let (scale, note) =
+        Setting::MatchGame.resolve(Ok(&on_unavailable), Ok(&[Some(MONITOR), None, Some(tv)]));
+    assert_eq!(scale, 1.0);
+    assert!(note.is_some());
+    let on_third = Display {
+        display_index: 2,
+        ..borderless()
+    };
+    assert_eq!(
+        Setting::MatchGame.resolve(Ok(&on_third), Ok(&[Some(MONITOR), None, Some(tv)])),
+        (2.0, None)
+    );
 }
 
 #[test]

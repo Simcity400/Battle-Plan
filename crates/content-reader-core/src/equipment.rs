@@ -4,8 +4,10 @@ mod validity;
 pub use validity::{Assignment, CountKey, ModuleCountLimit, ModuleValidity};
 mod groups;
 pub use design::{
-    ModuleConversion, ModuleDesign, ModuleXpRules, StatComponents, StatContribution, StatGroup,
-    StatValue, UpgradeCurrency, UpgradeDesign, UpgradeXpRules, module_save_xp,
+    BUILD_COST_IC_STAT, CARRIER_SIZE_STAT, FORBIDDEN_RELIABILITY_SCALED_STATS, ModuleConversion,
+    ModuleDesign, ModuleXpRules, RELIABILITY_FACTOR_STAT, RELIABILITY_STAT, StatComponents,
+    StatContribution, StatGroup, StatValue, UpgradeCurrency, UpgradeDesign, UpgradeXpRules,
+    module_save_xp,
 };
 
 pub use groups::{GROUPS_DIRECTORY, Group, Groups};
@@ -28,12 +30,6 @@ use crate::{
 };
 
 pub const DIRECTORY: &str = "common/units/equipment/";
-
-pub const UNREPRODUCED_STAT_FIELDS: [&str; 3] = [
-    "module_add_stats_multiplier",
-    "module_multiply_stats_multiplier",
-    "scaled_by_reliability",
-];
 
 pub fn files(layers: &ResolvedLayers) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     let mut files = Vec::new();
@@ -446,6 +442,11 @@ fn equipment_field(field: &Field<'_>, keyword: Option<&[u8]>, slots: &mut Slots)
         Some(b"modifier_stat") => Shape::Object(Node::ModifierStat),
         Some(b"upgrade_window_override") => Shape::Object(Node::Override),
         Some(b"module_count_limit") => Shape::Object(Node::Limit),
+        Some(
+            b"module_add_stats_multiplier"
+            | b"module_multiply_stats_multiplier"
+            | b"scaled_by_reliability",
+        ) => Shape::Object(Node::Stats),
         Some(b"can_be_produced" | b"can_be_lend_leased") => Shape::Trigger,
         Some(name) if single_value_field(name) => Shape::One,
         _ if is_stat(keyword) => Shape::One,
@@ -542,7 +543,9 @@ pub struct Equipment {
     pub model_priority: i32,
     pub depth: i32,
     pub stats: [i64; STAT_COUNT],
-    pub unreproduced_stat_fields: Vec<&'static str>,
+    pub module_add_stats_multiplier: Vec<StatValue>,
+    pub module_multiply_stats_multiplier: Vec<StatValue>,
+    pub scaled_by_reliability: Vec<StatValue>,
     pub duplicate: bool,
 }
 
@@ -575,7 +578,9 @@ impl Equipment {
             model_priority: 1,
             depth: 0,
             stats: [0; STAT_COUNT],
-            unreproduced_stat_fields: Vec::new(),
+            module_add_stats_multiplier: Vec::new(),
+            module_multiply_stats_multiplier: Vec::new(),
+            scaled_by_reliability: Vec::new(),
             duplicate: false,
         }
     }
@@ -927,10 +932,26 @@ impl Database {
                 b"archetype" => match named.filter(|&found| self.equipment[found].is_archetype) {
                     Some(found) => {
                         let archetype = &self.equipment[found];
-                        let (stats, sprite) = (archetype.stats, archetype.sprite.clone());
+                        let (
+                            stats,
+                            module_add_stats_multiplier,
+                            module_multiply_stats_multiplier,
+                            scaled_by_reliability,
+                            sprite,
+                        ) = (
+                            archetype.stats,
+                            archetype.module_add_stats_multiplier.clone(),
+                            archetype.module_multiply_stats_multiplier.clone(),
+                            archetype.scaled_by_reliability.clone(),
+                            archetype.sprite.clone(),
+                        );
                         let equipment = &mut self.equipment[at];
                         equipment.archetype = Some(found);
                         equipment.stats = stats;
+                        equipment.module_add_stats_multiplier = module_add_stats_multiplier;
+                        equipment.module_multiply_stats_multiplier =
+                            module_multiply_stats_multiplier;
+                        equipment.scaled_by_reliability = scaled_by_reliability;
                         if equipment.sprite.is_empty() {
                             equipment.sprite = sprite;
                         }
@@ -999,17 +1020,23 @@ impl Database {
                     self.equipment[at].allowed_types = category_list(&field.value, field.quoted());
                 }
                 b"type_override" => self.equipment[at].type_override = string.to_ascii_lowercase(),
-                b"module_add_stats_multiplier"
-                | b"module_multiply_stats_multiplier"
-                | b"scaled_by_reliability" => {
-                    let fields = &mut self.equipment[at].unreproduced_stat_fields;
-                    if let Some(stat_field) = UNREPRODUCED_STAT_FIELDS
-                        .into_iter()
-                        .find(|known| known.as_bytes() == keyword.as_slice())
-                        && !fields.contains(&stat_field)
-                    {
-                        fields.push(stat_field);
-                    }
+                b"module_add_stats_multiplier" => {
+                    StatGroup::read_entries(
+                        &mut self.equipment[at].module_add_stats_multiplier,
+                        field.value.items().unwrap_or_default(),
+                    );
+                }
+                b"module_multiply_stats_multiplier" => {
+                    StatGroup::read_entries(
+                        &mut self.equipment[at].module_multiply_stats_multiplier,
+                        field.value.items().unwrap_or_default(),
+                    );
+                }
+                b"scaled_by_reliability" => {
+                    StatGroup::read_entries(
+                        &mut self.equipment[at].scaled_by_reliability,
+                        field.value.items().unwrap_or_default(),
+                    );
                 }
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
                 b"module_count_limit" => {
@@ -1072,6 +1099,22 @@ impl Database {
                     .into_iter()
                     .map(|what| format!("{path}: equipment {name}: {what}")),
             );
+        }
+        let metadata = stat_metadata();
+        for forbidden in FORBIDDEN_RELIABILITY_SCALED_STATS {
+            if let Some(entry) = self.equipment[at]
+                .scaled_by_reliability
+                .iter_mut()
+                .find(|entry| entry.index == forbidden && entry.value != 0)
+            {
+                let stat_name = metadata
+                    .get(forbidden)
+                    .map_or("unknown", |(keyword, _, _)| *keyword);
+                self.misreads.push(format!(
+                    "{path}: equipment {name}: '{stat_name}' is not supported in 'scaled_by_reliability'"
+                ));
+                entry.value = 0;
+            }
         }
         for alias in &self.equipment[at].aliases {
             self.by_name.insert(alias.clone(), at);
@@ -1411,23 +1454,6 @@ impl Database {
 
     pub fn category(&self, equipment: &Equipment) -> u64 {
         normalize_category(self.primary_category(equipment) | equipment.module_category)
-    }
-
-    pub fn unreproduced_stat_field(&self, at: usize) -> Option<(&'static str, &[u8])> {
-        let mut pending = vec![at];
-        let mut seen = BTreeSet::new();
-        while let Some(at) = pending.pop() {
-            if !seen.insert(at) {
-                continue;
-            }
-            let equipment = &self.equipment[at];
-            if let Some(&field) = equipment.unreproduced_stat_fields.first() {
-                return Some((field, equipment.name.as_slice()));
-            }
-            pending.extend(equipment.archetype);
-            pending.push(equipment.parent);
-        }
-        None
     }
 
     pub fn designer_families(&self, equipment: &Equipment) -> Result<[bool; 3], String> {

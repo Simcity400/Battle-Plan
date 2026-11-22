@@ -388,6 +388,11 @@ impl IconContent {
         .fingerprinted()
     }
 
+    pub fn with_geography(mut self, geography: equipment_graphics::context::Content) -> Self {
+        self.geography = geography;
+        self.fingerprinted()
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = self.load_warnings.clone();
         let refused = &self.enablers.refused;
@@ -661,59 +666,57 @@ fn rule(
         .name_str()
         .map_err(|error| error.to_string())?;
     let entry = String::from_utf8_lossy(&variant.icon);
-    if variant.icon_active != 0 {
-        if variant.icon_kind > 1 {
-            return Err(format!(
-                "variant {} has an icon entry of unknown kind {}",
-                variant.id, variant.icon_kind
-            ));
-        }
-        if variant.icon_kind == 1 && entry == "." {
-            let creator = variant.creator_link;
-            let (country, ideology, culture) = if (creator as i32) <= 0 {
-                (None, None, None)
-            } else {
-                let slot = hour
-                    .links
-                    .get(&creator)
-                    .ok_or_else(|| format!("variant creator {creator} has no country link"))?;
-                let model = hour.countries.get(slot).ok_or_else(|| {
-                    format!("variant creator {creator} has no recorded appearance")
-                })?;
-                let ideology = model
-                    .ruling_ideology
-                    .clone()
-                    .ok_or("the creator's ruling party is unknown at this hour: not recorded, or its token is not text")?;
-                let culture = model
-                    .graphical_culture
-                    .clone()
-                    .ok_or("the creator's graphical culture is not recorded")?;
-                (
-                    Some(creator),
-                    ideology.filter(|token| !token.is_empty()),
-                    Some(culture),
-                )
-            };
-            if let Some(icon) = pool(
-                content,
-                hour,
-                key,
-                country,
-                ideology.as_deref(),
-                culture.as_deref(),
-                ask,
-            )? {
-                return Ok(Some(icon));
-            }
+    if variant.icon_kind > 1 {
+        return Err(format!(
+            "variant {} has an icon entry of unknown kind {}",
+            variant.id, variant.icon_kind
+        ));
+    }
+    if variant.icon_kind == 1 && entry == "." {
+        let creator = variant.creator_link;
+        let (country, ideology, culture) = if (creator as i32) <= 0 {
+            (None, None, None)
         } else {
-            let found = if variant.icon_kind == 0 {
-                ask(Probe::Sprite(entry.clone().into_owned()))?
-            } else {
-                ask(Probe::File(entry.clone().into_owned()))?
-            };
-            if found.is_some() {
-                return Ok(found);
-            }
+            let slot = hour
+                .links
+                .get(&creator)
+                .ok_or_else(|| format!("variant creator {creator} has no country link"))?;
+            let model = hour.countries.get(slot).ok_or_else(|| {
+                format!("variant creator {creator} has no recorded appearance")
+            })?;
+            let ideology = model
+                .ruling_ideology
+                .clone()
+                .ok_or("the creator's ruling party is unknown at this hour: not recorded, or its token is not text")?;
+            let culture = model
+                .graphical_culture
+                .clone()
+                .ok_or("the creator's graphical culture is not recorded")?;
+            (
+                Some(creator),
+                ideology.filter(|token| !token.is_empty()),
+                Some(culture),
+            )
+        };
+        if let Some(icon) = pool(
+            content,
+            hour,
+            key,
+            country,
+            ideology.as_deref(),
+            culture.as_deref(),
+            ask,
+        )? {
+            return Ok(Some(icon));
+        }
+    } else if variant.icon_active != 0 {
+        let found = if variant.icon_kind == 0 {
+            ask(Probe::Sprite(entry.clone().into_owned()))?
+        } else {
+            ask(Probe::File(entry.clone().into_owned()))?
+        };
+        if found.is_some() {
+            return Ok(found);
         }
     }
     let l_slot =
@@ -787,12 +790,20 @@ fn rule(
             }),
     };
     let capital = variant.classifier_flags & (1 << 6) != 0;
-    let l_link = l_slot.and_then(|slot| {
-        hour.links
-            .iter()
-            .find(|(_, s)| **s == slot)
-            .map(|(raw, _)| *raw)
-    });
+    let l_link = if (variant.origin_link as i32) > 0 {
+        Some(variant.origin_link)
+    } else if (variant.creator_link as i32) > 0
+        && l_slot == hour.links.get(&variant.creator_link).copied()
+    {
+        Some(variant.creator_link)
+    } else {
+        l_slot.and_then(|slot| {
+            hour.links
+                .iter()
+                .find(|(_, s)| **s == slot)
+                .map(|(raw, _)| *raw)
+        })
+    };
     fallback(
         content,
         hour,

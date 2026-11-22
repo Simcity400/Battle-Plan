@@ -44,15 +44,16 @@ impl Setting {
     pub fn resolve_raster(
         self,
         display: Result<&Display, &str>,
-        monitors: Result<&[Desktop], &str>,
+        monitors: Result<&[Option<Desktop>], &str>,
     ) -> (Raster, Option<String>) {
         let (screen_scale, note) = self.resolve(display, monitors);
         let raster = match (self, display, monitors, &note) {
             (Self::MatchGame, Ok(display), Ok(monitors), None) => {
                 let frame = display.frame(monitors).expect("validated display frame");
+                let primary = monitors[0].expect("validated primary display");
                 Raster {
                     ui_scale: display
-                        .interface_to_frame(frame, display.effective_gui_scale(monitors[0])),
+                        .interface_to_frame(frame, display.effective_gui_scale(primary)),
                     stretch: display
                         .stretch(monitors)
                         .expect("validated display stretch"),
@@ -72,7 +73,7 @@ impl Setting {
     pub fn resolve(
         self,
         display: Result<&Display, &str>,
-        monitors: Result<&[Desktop], &str>,
+        monitors: Result<&[Option<Desktop>], &str>,
     ) -> (f32, Option<String>) {
         let fallback = |why: String| {
             (
@@ -109,7 +110,7 @@ impl Setting {
 
 struct MonitorState {
     generation: AtomicU64,
-    monitors: Mutex<Arc<Result<Vec<Desktop>, String>>>,
+    monitors: Mutex<Arc<Result<Vec<Option<Desktop>>, String>>>,
     reading: AtomicBool,
     again: AtomicBool,
 }
@@ -162,7 +163,7 @@ pub fn monitors_generation() -> u64 {
     monitor_state().generation.load(Ordering::Acquire)
 }
 
-pub fn monitors() -> Arc<Result<Vec<Desktop>, String>> {
+pub fn monitors() -> Arc<Result<Vec<Option<Desktop>>, String>> {
     Arc::clone(
         &monitor_state()
             .monitors

@@ -354,6 +354,7 @@ fn convoy_weapon_bound(layers: &content_reader_core::ResolvedLayers) -> io::Resu
 pub(super) fn convoy_weapon_bound_from_database(
     database: &content_reader_core::equipment::Database,
 ) -> ConvoyBound {
+    use content_reader_core::equipment::StatComponents;
     let misreads = database.misreads.clone();
     if let Some(lost) = &database.lost {
         return (Err(lost.clone()), misreads);
@@ -368,9 +369,42 @@ pub(super) fn convoy_weapon_bound_from_database(
         .iter()
         .filter(|equipment| database.category(equipment) & 1 != 0)
     {
+        let has_dynamic_terms = !equipment.module_add_stats_multiplier.is_empty()
+            || !equipment.module_multiply_stats_multiplier.is_empty()
+            || !equipment.scaled_by_reliability.is_empty();
+        if !equipment.module_slots.is_empty() && has_dynamic_terms {
+            return (
+                Err(format!(
+                    "convoy equipment {} defines module slots with reliability-scaled or module-multiplied stats, so convoy weapon bounds cannot be determined from equipment types alone",
+                    String::from_utf8_lossy(&equipment.name)
+                )),
+                misreads,
+            );
+        }
+        let mut components = StatComponents::base(&equipment.stats);
+        for (_, module) in &equipment.default_modules {
+            if let Some(group) = database.module_stats(module)
+                && let Err(reason) = components.apply_module(group, equipment)
+            {
+                return (Err(reason.to_owned()), misreads);
+            }
+        }
+        let projected = match components.finish_for(equipment) {
+            Ok(values) => values,
+            Err(reason) => return (Err(reason.to_owned()), misreads),
+        };
+        let at_zero_rel = components.finish();
+        let mut full_rel = components.clone();
+        for term in &equipment.scaled_by_reliability {
+            if let Some(target) = full_rel.values.get_mut(term.index) {
+                target.additive = target.additive.wrapping_add(term.value);
+            }
+        }
+        let at_full_rel = full_rel.finish();
         for &stat in &stats {
-            let value = equipment.stats[stat];
-            range = [range[0].min(value), range[1].max(value)];
+            for value in [projected[stat], at_zero_rel[stat], at_full_rel[stat]] {
+                range = [range[0].min(value), range[1].max(value)];
+            }
         }
     }
     (Ok(range), misreads)

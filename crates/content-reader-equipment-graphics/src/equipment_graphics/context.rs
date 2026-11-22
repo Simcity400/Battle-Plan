@@ -19,6 +19,29 @@ pub struct Content {
     continent_by_state: BTreeMap<u32, Option<String>>,
 }
 
+pub fn state_continent(
+    provinces: &[u32],
+    definitions: &BTreeMap<u32, ProvinceDefinition>,
+    coastal: &BTreeSet<u32>,
+    continents: &[String],
+) -> Option<String> {
+    let mut chosen = None;
+    for province in provinces {
+        if chosen.is_none()
+            && let Some(index) = definitions
+                .get(province)
+                .and_then(|definition| definition.continent.checked_sub(1))
+            && let Some(name) = continents.get(usize::from(index))
+        {
+            chosen = Some(name.clone());
+        }
+        if coastal.contains(province) {
+            break;
+        }
+    }
+    chosen
+}
+
 impl Content {
     pub fn load(
         layers: &ResolvedLayers,
@@ -27,16 +50,23 @@ impl Content {
         defines: &crate::defines::Defines,
     ) -> io::Result<Self> {
         let continents = continent_names(&layers.read(&default_map.file("continent")?)?)?;
-        let continent = |province: &u32| {
-            let index = provinces.get(province)?.continent;
-            continents.get(usize::from(index.checked_sub(1)?)).cloned()
-        };
+        let coastal: BTreeSet<u32> =
+            crate::map::definition_rows(&layers.read(&default_map.file("definitions")?)?)?
+                .into_iter()
+                .filter(|row| row.coastal)
+                .map(|row| u32::from(row.id))
+                .collect();
         Ok(Self {
             continent_by_state: states::read(layers, defines, provinces)?
                 .0
                 .definitions()
                 .iter()
-                .map(|(id, state)| (*id, state.provinces.iter().find_map(continent)))
+                .map(|(id, state)| {
+                    (
+                        *id,
+                        state_continent(&state.provinces, provinces, &coastal, &continents),
+                    )
+                })
                 .collect(),
         })
     }
@@ -280,5 +310,70 @@ mod tests {
         assert_eq!(prepared.context(u32::MAX), Ok(None));
         assert_eq!(prepared.context(5).unwrap().unwrap().country_tag, "GER");
         assert!(prepared.context(6).is_err());
+    }
+
+    #[test]
+    fn mixed_continent_and_coastal_states_follow_native_continent_scan() {
+        content_reader_core::test_game::enter();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_context_mixed_continent_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (path, text) in [
+            (
+                "map/default.map",
+                "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=continent.txt\n",
+            ),
+            ("map/continent.txt", "continents = { europe asia }\n"),
+            (
+                "map/definition.csv",
+                "0;0;0;0;land;false;unknown;0\n\
+                 1;1;0;0;land;false;plains;1\n\
+                 2;2;0;0;land;false;plains;2\n\
+                 3;3;0;0;sea;true;ocean;0\n\
+                 4;4;0;0;land;false;plains;2\n\
+                 5;5;0;0;sea;false;ocean;0\n",
+            ),
+            (
+                "common/defines/00_defines.lua",
+                "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 10 } }\n",
+            ),
+            (
+                "history/states/1-mixed.txt",
+                "state = { id = 1 name = \"STATE_1\" provinces = { 1 2 } }\n",
+            ),
+            (
+                "history/states/2-coastal-first.txt",
+                "state = { id = 2 name = \"STATE_2\" provinces = { 3 4 } }\n",
+            ),
+            (
+                "history/states/3-inland-zero-first.txt",
+                "state = { id = 3 name = \"STATE_3\" provinces = { 5 4 } }\n",
+            ),
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let default_map = crate::terrain::read_default_map(&layers).unwrap();
+        let provinces = crate::map::parse_definitions(
+            &layers.read(&default_map.file("definitions").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let defines = crate::defines::read(&layers).unwrap();
+        let loaded = Content::load(&layers, &default_map, &provinces, &defines).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            loaded.continent_by_state.get(&1),
+            Some(&Some("europe".to_owned()))
+        );
+        assert_eq!(loaded.continent_by_state.get(&2), Some(&None));
+        assert_eq!(
+            loaded.continent_by_state.get(&3),
+            Some(&Some("asia".to_owned()))
+        );
     }
 }
