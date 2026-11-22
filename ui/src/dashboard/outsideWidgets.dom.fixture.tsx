@@ -18,11 +18,11 @@ clock.setBounds({ firstHour: 0, lastHour: 200 });
 
 const losses: LossesReply = {
   branchId: '1', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'GER', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null,
-  destructionCountedFrom: 100, destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
+  destructionRuns: [{ firstHour: 100, lastHour: 109, countedFrom: 100, withheldFrom: null }], destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
   designs: [{ variant: 91001, equipment: 'mod_walkers_v2', archetype: 'mod_walkers', archetypeName: 'Walking machines', names: [{ firstHour: 100, name: 'Walker', known: true }] }],
   coverage: [{ firstHour: 100, lastHour: 109, coverage: 'logged' }],
   causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' }, group: null, loss: true,
-    unknown: null, unknownSpans: [], leaves: [{ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], lowerBoundFrom: null }] }],
+    unknown: null, unknownSpans: [], leaves: [{ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], exact: [], lowerBoundFrom: null }] }],
 };
 const trade: TradeFlowsReply = {
   branchId: '1', decimals: 5, resources: [{ id: 1, token: 'steel', ordinal: 1, name: 'Steel', icon: null }], countries: ['GER', 'ITA'],

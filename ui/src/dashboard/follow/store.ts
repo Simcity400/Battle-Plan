@@ -16,7 +16,7 @@ export interface FollowTransport {
 
 export type Availability = { available: true } | { available: false; reason: string };
 
-export interface Landed { panel: FollowedPanel; values?: Map<string, number | string>; hour: number; through: number }
+export interface Landed { panel: FollowedPanel; values?: Map<string, number | bigint | string>; hour: number; through: number }
 
 export interface FollowEntry {
   readonly id: number;
