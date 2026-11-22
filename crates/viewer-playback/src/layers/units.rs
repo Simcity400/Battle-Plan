@@ -238,12 +238,13 @@ struct Member {
     read_at: u32,
     seen: bool,
     stale: bool,
-    pick: Option<(PickRoute, Option<u32>)>,
+    roster: Option<u32>,
+    pick: Option<PickRoute>,
 }
 
 impl Default for Member {
     fn default() -> Self {
-        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, pick: None }
+        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, roster: None, pick: None }
     }
 }
 
@@ -549,11 +550,11 @@ impl Units {
         for slot in slots {
             let Some(member) = self.members.get(slot as usize) else { continue };
             let Some((province, owner)) = member.sighted else { continue };
-            let (route, roster) = member.pick.unzip();
+            let route = member.pick;
             divisions.entry(province).or_default().push(PickDivision {
                 id: member.id,
                 owner,
-                roster: roster.flatten(),
+                roster: member.roster,
                 kind: route.and_then(|route| route.kind),
                 hop: route.and_then(|route| route.hop),
                 unrouted: route.map(|route| route.unrouted),
@@ -961,7 +962,7 @@ impl Units {
                 Some(owner_slot) => {
                     let (signature, route) = self.signature(mirrors, id, province);
                     let roster = roster.and_then(|raw| self.links.get(&raw).copied());
-                    self.members[at].pick = route.map(|route| (route, roster));
+                    (self.members[at].pick, self.members[at].roster) = (route, roster);
                     let member = &self.members[at];
                     if member.id != id || member.sighted != Some((province, owner_slot)) || member.read_at == NONE {
                         let (seen, read_at) = seer.sees(id, owner_slot, province);
@@ -976,6 +977,7 @@ impl Units {
             _ => None,
         };
         if key.is_none() {
+            (self.members[at].pick, self.members[at].roster) = (None, None);
             self.index(slot, NONE);
         }
         self.members[at].stale = true;

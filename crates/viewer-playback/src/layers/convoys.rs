@@ -952,7 +952,7 @@ impl Convoys {
 
     fn settle_dirty(&mut self, mirrors: &Mirrors, wait: bool) {
         self.frame += 1;
-        if self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
+        if self.columns.is_none() {
             return;
         }
         if self.fresh_vision.swap(false, Ordering::AcqRel) {
@@ -963,6 +963,9 @@ impl Convoys {
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
             (self.pending, self.stale, self.since) = (Vec::new(), false, None);
             (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
+            return;
+        }
+        if TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
             return;
         }
         if self.refused.take().is_some() {
@@ -1100,6 +1103,11 @@ impl Layer for Convoys {
         Ok(())
     }
 
+    fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
+        self.take_vision(upstream);
+        self.compose(mirrors)
+    }
+
     fn apply(&mut self, step: &Step, mirrors: &Mirrors) {
         if step.gap() || self.columns.is_none() {
             return;
@@ -1146,18 +1154,7 @@ impl Layer for Convoys {
     }
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
-        if self.window
-            && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
-        {
-            match vision.ours() {
-                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
-                    self.vision = Some((vision.choice().clone(), ours));
-                    self.stale |= self.columns.is_some();
-                }
-                None => self.vision = None,
-                Some(_) => {}
-            }
-        }
+        self.take_vision(upstream);
         self.settle_dirty(mirrors, settling.strict());
         Ok(())
     }
@@ -1195,6 +1192,21 @@ impl Layer for Convoys {
 }
 
 impl Convoys {
+    fn take_vision(&mut self, upstream: &Upstream<'_>) {
+        if self.window
+            && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
+        {
+            match vision.ours() {
+                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
+                    self.vision = Some((vision.choice().clone(), ours));
+                    self.stale |= self.columns.is_some();
+                }
+                None => self.vision = None,
+                Some(_) => {}
+            }
+        }
+    }
+
     fn mark(&mut self, changes: &Changes, read: &[usize]) {
         let deleted: Vec<u128> = changes.deleted().keys().unwrap_or_default().to_vec();
         let mut slots: Vec<u32> = changes.inserted().slots().to_vec();

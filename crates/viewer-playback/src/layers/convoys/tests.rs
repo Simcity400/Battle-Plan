@@ -165,7 +165,43 @@ fn side(name: &str) -> (MapSide, Arc<Lines>) {
 }
 
 fn layer(side: &MapSide) -> &Convoys {
-    side.parts().unwrap().1[0].any().downcast_ref::<Convoys>().unwrap()
+    side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Convoys>()).unwrap()
+}
+
+fn vision_layer(side: &MapSide) -> &crate::layers::vision::Vision {
+    side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::vision::Vision>()).unwrap()
+}
+
+fn window_side(name: &str, routes: Arc<dyn Routes>, refused_hours: std::ops::Range<u32>) -> MapSide {
+    use viewer_foundation::map::perspective::VISION_TABLES;
+    let recording = recorded::record_naming(name, HOURS, &[b"AAA", b"BBB"], |at, store| {
+        for &table in VISION_TABLES {
+            let status = if table == TableId::Countries && refused_hours.contains(&at) { Status::NotRecorded } else { Status::Complete };
+            store.status(table.index(), status, true, Some(at as i32), true).unwrap();
+        }
+        campaign(at, store);
+        if at == 0 {
+            let mut countries = store.table(TableId::Countries.index()).unwrap();
+            for (slot, (raw, canonical)) in [(7u32, 3u32), (8, 4)].into_iter().enumerate() {
+                let slot = slot as u32;
+                countries.insert_at(slot, u128::from(raw)).unwrap();
+                countries.write(slot, column(TableId::Countries, "canonical_slot"), Cell::U32(canonical)).unwrap();
+                countries.write(slot, column(TableId::Countries, "tag"), Cell::Bytes(slot)).unwrap();
+            }
+            let mut player = store.table(TableId::LocalPlayer.index()).unwrap();
+            player.insert_at(0, 0).unwrap();
+            player.write(0, column(TableId::LocalPlayer, "country"), Cell::U32(7)).unwrap();
+        }
+    });
+    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let content = Arc::new(crate::layers::vision::Content::new(Err("no fog content".into())));
+    let layers: Vec<Box<dyn Layer>> = vec![Box::new(crate::layers::vision::Vision::new(content)), Box::new(Convoys::new(routes).in_window())];
+    let mut side = MapSide::new(Arc::clone(&entry), layers, supply()).unwrap();
+    assert_eq!(side.refusals().count(), 0, "{:?}", side.refusals().collect::<Vec<_>>());
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    side
 }
 
 fn composed_equal(side: &MapSide) {
@@ -176,17 +212,29 @@ fn composed_equal(side: &MapSide) {
 }
 
 fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
-    for _ in 0..50_000_000u64 {
+    let cap = cap.min(side.entry().playhead().timeline().last());
+    let mut stood = 0u64;
+    loop {
+        assert!(side.entry().playhead().error().is_none(), "the playhead stopped before cap {cap}: {:?}", side.entry().playhead().error());
         let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
         let frame = side.frame(head).unwrap();
         if done(side, &frame) {
             return;
         }
         if frame.steps == 0 && frame.swapped.is_none() {
+            if !side.composing() && side.entry().playhead().newest().is_some_and(|newest| newest >= cap) {
+                let quiet = side.parts().is_some_and(|_| layer(side).in_flight == 0 && layer(side).carried().entities == 0);
+                stood += 1;
+                let limit = if quiet { 64 } else { 200_000 };
+                assert!(stood < limit, "the map side reached hour {:?} (cap {cap}) without reaching what the test waits for: {}", side.applied(), recorded::seen(side));
+            } else {
+                stood = 0;
+            }
             std::thread::yield_now();
+        } else {
+            stood = 0;
         }
     }
-    panic!("the map side never reached what the test waits for with the head at most {cap}");
 }
 
 fn drawn(side: &MapSide) -> (usize, usize) {
@@ -388,59 +436,42 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     assert!(layer(&side).shown().is_some(), "slot 7's own lines are shown");
 }
 
-// quarantine: #142 a vision or viewing-country change never settles
 #[test]
-#[ignore = "quarantined under #142"]
 fn a_refused_vision_withholds_the_lines_made_for_the_country_before() {
-    let entry = open(recorded::record("convoys-refused-viewer", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(Lines::default());
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>).in_window())], supply()).unwrap();
-    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    let mut side = window_side("convoys-refused-viewer", Arc::clone(&routes) as Arc<dyn Routes>, 60..146);
     through(&mut side, 30);
     side.settle_all().unwrap();
+    assert_eq!(vision_layer(&side).ours(), Some(3));
     assert!(layer(&side).shown().is_some(), "slot 3's lines are shown for slot 3");
-    let refused = crate::layers::vision::Vision::new(Arc::new(crate::layers::vision::Content::new(Err("no fog content".into()))));
-    assert_eq!(refused.ours(), None, "a vision not made has no viewing country");
-    let upstream: Vec<Box<dyn Layer>> = vec![Box::new(refused)];
-    let convoys = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Convoys>()).expect("the convoys layer");
-    convoys.settle_with(&crate::playhead_host::mirror::Mirrors::default(), &crate::layers::Upstream::new(&upstream), crate::layers::Settling::Whole).unwrap();
-    assert!(convoys.shown().is_none(), "slot 3's lines are withheld once the vision has no viewing country");
+    frames_within(&mut side, 68, |side, _| !side.composing() && side.applied().is_some_and(|hour| hour >= 64));
+    side.settle_all().unwrap();
+    assert_eq!(vision_layer(&side).ours(), None, "a refused vision has no viewing country");
+    assert!(layer(&side).shown().is_none(), "slot 3's lines are withheld once the vision has no viewing country");
 }
 
-// quarantine: #142 a vision or viewing-country change never settles
 #[test]
-#[ignore = "quarantined under #142"]
 fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() {
     use crate::layers::Published;
-    let entry = open(recorded::record("convoys-refused-settled", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(HeldLines::default());
     routes.set(true);
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>).in_window())], supply()).unwrap();
-    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    let mut side = window_side("convoys-refused-settled", Arc::clone(&routes) as Arc<dyn Routes>, 60..146);
     through(&mut side, 30);
     side.settle_all().unwrap();
     routes.set(false);
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
-    let refused = crate::layers::vision::Vision::new(Arc::new(crate::layers::vision::Content::new(Err("no fog content".into()))));
-    let upstream: Vec<Box<dyn Layer>> = vec![Box::new(refused)];
-    let convoys = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Convoys>()).expect("the convoys layer");
-    convoys.settle_with(&crate::playhead_host::mirror::Mirrors::default(), &crate::layers::Upstream::new(&upstream), crate::layers::Settling::Whole).unwrap();
     frames_within(&mut side, 140, |side, frame| at(side).is_some_and(|hour| hour >= 134) && frame.steps == 0);
     side.frame(140).unwrap();
+    assert_eq!(vision_layer(&side).ours(), None);
     assert!(layer(&side).refused().is_some_and(|why| why.contains("vision")), "{:?}", layer(&side).refused());
     assert_eq!((layer(&side).carried().entities, layer(&side).published(), layer(&side).in_flight), (0, Published::Current, 0), "a refused layer carries and publishes no work");
     assert!(side.on_screen().is_some_and(|on| on.settled), "the held map settles while the vision is refused");
     assert!(layer(&side).shown().is_none());
     routes.set(true);
-    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    frames_within(&mut side, 152, |side, _| !side.composing() && side.applied().is_some_and(|hour| hour >= 148));
     side.settle_all().unwrap();
+    assert_eq!(vision_layer(&side).ours(), Some(3));
     assert_eq!(layer(&side).refused(), None);
     assert_eq!(layer(&side).product_for, Some(3));
     assert_eq!(drawn(&side), (2, 7), "the client that replaced the one before, read again");

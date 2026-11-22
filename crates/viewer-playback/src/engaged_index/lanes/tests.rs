@@ -242,9 +242,7 @@ fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() 
     assert!(!Arc::ptr_eq(&forked, &parent), "timeline 1 has an index of its own");
 }
 
-// quarantine: #139 the earlier format's fixture trips the custom sea capture status check
 #[test]
-#[ignore = "quarantined under #139"]
 fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     use crate::lane_rows::{Kept, Table};
     use crate::layers::sounds::tests::record_runs_at;
@@ -255,19 +253,13 @@ fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     };
     const FORMAT: u16 = 97;
     let commander = NavalCommanderInputs { commander: 0x1234_5678_9abc_def0, name: vec![0xff, 0, 8], ..Default::default() };
-    let side = NavalCombatSideDetails { commander_inputs: Some(commander.clone()), engaged: 1, units: vec![4, u64::MAX, 2], ..Default::default() };
-    let row = NavalCombatDetailsRow { combat: 7, sides: [side.clone(), side], ..Default::default() };
+    let side = |engaged: u8| NavalCombatSideDetails { commander_inputs: Some(commander.clone()), engaged, units: vec![4, u64::MAX, 2], ..Default::default() };
+    let row_at = |engaged: u8| NavalCombatDetailsRow { combat: 7, sides: [side(engaged), side(engaged)], ..Default::default() };
     let mut needle = Vec::new();
     commander.encode(&mut needle).unwrap();
     let old_commander = &needle[..needle.len() - 4];
     let sides_column = (0..64).find(|&column| TableId::NavalCombatDetails.field_name(column) == Some("sides")).unwrap();
-    let recording = record_runs_at(FORMAT, &[(0, 4)], &[], |hour, store| {
-        store.status(TableId::NavalCombatDetails.index(), Status::Complete, true, Some(hour), true).unwrap();
-        if hour != 0 {
-            return;
-        }
-        let mut changes = store.table(TableId::NavalCombatDetails.index()).unwrap();
-        changes.insert_at(0, row.key()).unwrap();
+    let old_sides = |row: &NavalCombatDetailsRow| {
         let mut current = Vec::new();
         row.visit_wire(&mut |column, field| {
             if column == sides_column
@@ -287,18 +279,35 @@ fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
         }
         old.extend_from_slice(rest);
         assert_eq!(old.len(), current.len() - 8, "both sides' commanders lose their timed traits");
+        old
+    };
+    let recording = record_runs_at(FORMAT, &[(0, 4)], &[], |hour, store| {
+        store.status(TableId::NavalCombatDetails.index(), Status::Complete, true, Some(hour), true).unwrap();
+        if hour != 0 && hour != 3 {
+            return;
+        }
+        let row = row_at(if hour == 0 { 1 } else { 0 });
+        let mut changes = store.table(TableId::NavalCombatDetails.index()).unwrap();
+        if hour == 0 {
+            changes.insert_at(0, row.key()).unwrap();
+        }
+        let old = old_sides(&row);
         changes.write(0, sides_column, Cell::Opaque(&old)).unwrap();
     });
     assert_eq!(recording.format(), FORMAT);
     let pages: Arc<dyn Pages> = recording;
     let mut table = Table::<tables::NavalCombatDetails>::open(&pages, 0, Some(&["sides"]), "The test").unwrap();
     table.seek(2).unwrap();
-    let rows = tables::NavalCombatDetails::borrow(table.rows()).unwrap();
-    assert_eq!(rows.len(), 1);
-    for side in &rows[0].sides {
-        let inputs = side.commander_inputs.as_ref().unwrap();
-        assert_eq!(inputs.timed_traits, Recorded::NotRecorded);
-        assert_eq!((inputs.commander, &inputs.name), (commander.commander, &commander.name));
-        assert_eq!((side.engaged, &side.units[..]), (1, &[4, u64::MAX, 2][..]));
-    }
+    let check = |rows: &[NavalCombatDetailsRow], engaged: u8| {
+        assert_eq!(rows.len(), 1);
+        for side in &rows[0].sides {
+            let inputs = side.commander_inputs.as_ref().unwrap();
+            assert_eq!(inputs.timed_traits, Recorded::NotRecorded);
+            assert_eq!((inputs.commander, &inputs.name), (commander.commander, &commander.name));
+            assert_eq!((side.engaged, &side.units[..]), (engaged, &[4, u64::MAX, 2][..]));
+        }
+    };
+    check(tables::NavalCombatDetails::borrow(table.rows()).unwrap(), 1);
+    table.step(3).unwrap();
+    check(tables::NavalCombatDetails::borrow(table.rows()).unwrap(), 0);
 }
