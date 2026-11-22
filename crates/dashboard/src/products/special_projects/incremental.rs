@@ -61,16 +61,21 @@ impl Track {
     }
 }
 
+type Proven = (BTreeMap<u32, i32>, BTreeMap<u32, i32>);
+
 struct Current {
     piece: Piece,
     owners: BTreeMap<u32, Vec<(i32, i32)>>,
+    edges: Vec<i32>,
+    linked: BTreeSet<u32>,
+    recheck: i32,
     known: BTreeSet<u32>,
     programs: BTreeSet<u128>,
     projects: Track,
     history: Track,
     reads: Track,
     scientists: Option<Track>,
-    proven: (BTreeMap<u32, i32>, BTreeMap<u32, i32>),
+    proven: Proven,
 }
 
 fn read_of(known: &BTreeSet<u32>, key: u128) -> bool {
@@ -82,12 +87,23 @@ impl Current {
         supplied(&self.owners, raw, sample(self.reads.rows.get(&read_key(table, raw)).map(AsRef::as_ref)), hour)
     }
 
-    fn proven(&self, linked: &BTreeSet<u32>, hour: i32) -> (BTreeMap<u32, i32>, BTreeMap<u32, i32>) {
-        let reads = |table| linked.iter().filter_map(|&raw| Some((raw, self.supplies(table, raw, hour)?))).collect::<BTreeMap<_, _>>();
+    fn prove(&mut self, hour: i32) -> bool {
+        let reads = |table| self.linked.iter().filter_map(|&raw| Some((raw, self.supplies(table, raw, hour)?))).collect::<BTreeMap<_, _>>();
         let projects = if self.projects.reader.status() == Status::Complete { reads(TableId::Projects) } else { BTreeMap::new() };
         let histories = if self.history.reader.status() == Status::Complete { reads(TableId::ProjectHistory) } else { BTreeMap::new() };
-        (projects, histories)
+        self.recheck = projects.values().chain(histories.values()).min().map_or(i32::MAX, |read| read.saturating_add(STAGGER_PERIOD));
+        let proven = (projects, histories);
+        let changed = proven != self.proven;
+        self.proven = proven;
+        changed
     }
+}
+
+fn edges(owners: &BTreeMap<u32, Vec<(i32, i32)>>) -> Vec<i32> {
+    let mut edges: Vec<i32> = owners.values().flatten().flat_map(|&(first, last)| [Some(first), last.checked_add(1)]).flatten().collect();
+    edges.sort_unstable();
+    edges.dedup();
+    edges
 }
 
 struct Episodes {
@@ -131,9 +147,11 @@ impl Episodes {
                 reads: Track::new(r, &piece, TableId::SliceReads, &read_columns()?, |k| read_of(&known, k), count)?,
                 scientists: open_programs(&programs, || Track::new(r, &piece, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| programs.contains(&k), count))?,
                 proven: Default::default(),
-                piece, owners, known, programs,
+                edges: edges(&owners),
+                recheck: i32::MAX,
+                piece, owners, linked, known, programs,
             };
-            current.proven = current.proven(&linked, current.piece.last);
+            current.prove(current.piece.last);
             Some(current)
         } else { None };
         Ok(())
@@ -149,27 +167,29 @@ impl Episodes {
             let before = c.piece.last;
             let next = before + 1;
             let mut boundary = false;
-            for (raw, runs) in &c.owners {
-                let linked = within(runs, next);
-                if linked && c.known.insert(*raw) {
-                    c.projects.include(|k| (k >> 32) as u32 == *raw, count);
-                    c.history.include(|k| (k >> 64) as u32 == *raw, count);
-                    c.reads.include(|k| k as u32 == *raw && read_of(&c.known, k), count);
+            if c.edges.binary_search(&next).is_ok() {
+                let linked: BTreeSet<u32> = c.owners.iter().filter(|(_, runs)| within(runs, next)).map(|(&raw, _)| raw).collect();
+                for &raw in &linked {
+                    if c.known.insert(raw) {
+                        c.projects.include(|k| (k >> 32) as u32 == raw, count);
+                        c.history.include(|k| (k >> 64) as u32 == raw, count);
+                        c.reads.include(|k| k as u32 == raw && read_of(&c.known, k), count);
+                    }
                 }
-                boundary |= linked != within(runs, before);
+                boundary |= linked != c.linked;
+                c.linked = linked;
             }
             boundary |= c.projects.step(r, |k| c.known.contains(&((k >> 32) as u32)), count)?;
             boundary |= c.history.step(r, |k| c.known.contains(&((k >> 64) as u32)), count)?;
             boundary |= c.reads.step(r, |k| read_of(&c.known, k), count)?;
             if let Some(track) = &mut c.scientists { boundary |= track.step(r, |k| c.programs.contains(&k), count)?; }
-            let linked: BTreeSet<u32> = c.owners.iter().filter(|(_, runs)| within(runs, next)).map(|(&raw, _)| raw).collect();
             if matches!(c.projects.reader.status(), Status::Truncated { .. }) {
                 extend(&mut self.partial, next, next);
             }
-            let proven = c.proven(&linked, next);
-            let observable = c.projects.reader.status() == Status::Complete && proven.0.len() == linked.len();
-            boundary |= proven != c.proven;
-            c.proven = proven;
+            if boundary || next >= c.recheck {
+                boundary |= c.prove(next);
+            }
+            let observable = c.projects.reader.status() == Status::Complete && c.proven.0.len() == c.linked.len();
             observed_change |= boundary;
             if observable {
                 if boundary {

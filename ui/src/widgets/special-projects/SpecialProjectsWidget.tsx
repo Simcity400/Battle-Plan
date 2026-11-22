@@ -148,8 +148,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     const hour = Math.floor(clockHour) + axisOffset;
     if (view === 'live') return JSON.stringify([membershipAt(hour), tags.find(tag => resolved.match.matches(tag, hour)), resolved.match.known(hour)]);
     if (!data) return '';
-    return `${membershipAt(hour)}\u0004${data.map(reply => historyKey(reply, hour, resolved.memberships.get(reply.tag))).join('\u0004')}`;
-  }, [data, view, axisOffset, resolved, membershipAt, tags]);
+    return `${membershipAt(hour)}\u0004${data.map(reply => historyKey(reply, hour, resolved.memberships.get(reply.tag), track?.branch.firstHour)).join('\u0004')}`;
+  }, [data, view, axisOffset, resolved, membershipAt, tags, track?.branch.firstHour]);
   const playbackHour = useHeadHour(runtime.clock, active && following && (view === 'live' || !!data), structure);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const pinned = widget.time.mode === 'pin';
@@ -199,7 +199,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     const hour = projectCountryHour(reply, labelHour, membership);
     if (projectCountryHour(reply, at, membership) === null || hour === null) return [];
     if (data.length === 1) return projects;
-    return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ? PROJECTS_UNRECORDED : (projects.length ? '' : 'No special projects yet.')), ...projects];
+    const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
+    return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
   }) ?? [], [data, at, from, following, labelAt, labelHour, resolved.memberships, view]);
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
@@ -268,7 +269,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
         : <><WidgetState kind="unavailable" message={unobservedReason(reply, at)} />{details}{popup}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) {
-    const unrecorded = historyUnrecorded(data, from, at);
+    const unrecorded = historyUnrecorded(data, from, at, reply => resolved.memberships.get(reply.tag));
     body = historyMembershipUnknown ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
       : unrecorded ? <WidgetState kind="unavailable" message={unrecorded} /> : <WidgetState kind="empty" message="No special projects yet." />;
   }

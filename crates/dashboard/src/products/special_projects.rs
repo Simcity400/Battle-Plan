@@ -123,7 +123,7 @@ pub struct SpecialProjectRun {
     pub state: ProjectState,
     pub completion: Option<ProjectDate>,
     pub cancellation: Option<ProjectDate>,
-    #[doc = " History entries less the completion's; none where the history was not recorded."]
+    #[doc = " The history's choices, its completion marker apart; none where the history was not recorded."]
     pub iterations: Option<i32>,
 }
 
@@ -156,7 +156,7 @@ pub struct SpecialProjectsReply {
     pub people: Vec<ProjectPerson>,
     #[doc = " The game's text for each iteration count shown, none where it cannot be made."]
     pub iteration_texts: BTreeMap<i32, Option<String>>,
-    #[doc = " Why nothing is shown, apart from a country with no projects."]
+    #[doc = " Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing."]
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -876,10 +876,6 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     }
     let unavailable = if identities.is_empty() {
         Some("No country held this tag in the recording.".into())
-    } else if observed.is_empty() && !partial.is_empty() {
-        Some("Projects were read only in part for this country.".into())
-    } else if observed.is_empty() {
-        Some("Projects were not recorded for this country.".into())
     } else if content.definitions.projects.is_empty() {
         Some("The recorded content has no readable special-project definitions.".into())
     } else {
@@ -972,28 +968,34 @@ pub struct Completions {
     pub warnings: Vec<String>,
 }
 
+type Marked = BTreeMap<(u128, i32), (u32, i32)>;
+
+fn completed_in(found: &mut Marked, run: u32, history: &History, from: i32, to: i32) {
+    for (key, steps) in &history.keys {
+        for step in steps {
+            let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
+            if entry.completion && (from..=to).contains(&entry.date) {
+                found.entry((*key, entry.date)).or_insert((run, step.hour));
+            }
+        }
+    }
+}
+
 pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
     let recording = query.replay.recording();
     let content = content(source, load)?;
     let names = country_ids::Names::new(&query.holders);
-    let mut found: BTreeMap<u128, (u32, i32, i32)> = BTreeMap::new();
+    let mut found: Marked = BTreeMap::new();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
     for stretch in query.timeline.within(from, to) {
         crate::metadata::check_cancel(cancelled)?;
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
-        for (key, steps) in &history.keys {
-            for step in steps {
-                let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
-                if entry.completion && (from..=to).contains(&entry.date) {
-                    found.entry(*key).or_insert((stretch.run, entry.date, step.hour));
-                }
-            }
-        }
+        completed_in(&mut found, stretch.run, &history, from, to);
     }
     let mut by_hour: BTreeMap<(u32, i32), BTreeSet<u128>> = BTreeMap::new();
-    for (&key, &(run, _, observed)) in &found {
+    for (&(key, _), &(run, observed)) in &found {
         by_hour.entry((run, observed)).or_default().insert(key >> 32);
     }
     let mut naming = Naming::new(&content);
@@ -1033,7 +1035,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
     }
     let mut events: Vec<ProjectCompletion> = found
         .into_iter()
-        .filter_map(|(key, (_, date, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ..completion.clone() }))
+        .filter_map(|((key, date), (_, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ..completion.clone() }))
         .collect();
     events.sort_by(|a, b| (a.date, a.owner, a.project).cmp(&(b.date, b.owner, b.project)));
     Ok(Completions { events, unrecorded, warnings: naming.warnings() })

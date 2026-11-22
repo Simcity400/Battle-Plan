@@ -138,7 +138,7 @@ impl Fold {
             let held = self.open.get(&key).map(|index| (*index, self.since[index]));
             let since = held.map_or(observed.read, |(_, since)| since);
             let history = observed.history.filter(|&(read, _)| read >= since);
-            let iterations = history.map(|(_, entries)| entries.len() as i32 - i32::from(done));
+            let iterations = history.map(|(_, entries)| entries.iter().filter(|entry| !entry.completion).count() as i32);
             if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
                 self.open.remove(&key);
             }

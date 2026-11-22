@@ -3363,7 +3363,7 @@ presentation: number,
  */
 progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
 /**
- * History entries less the completion's; none where the history was not recorded.
+ * The history's choices, its completion marker apart; none where the history was not recorded.
  */
 iterations: number | null, };
 export type ProjectEpisode = { id: string,
@@ -3389,7 +3389,7 @@ partial: Array<HourSpan>, projects: Array<ProjectEpisode>, presentations: Array<
  */
 iterationTexts: { [key in number]?: string | null },
 /**
- * Why nothing is shown, apart from a country with no projects.
+ * Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing.
  */
 unavailable: string | null, warnings: Array<string>, };
 export type AirChoice = { id: string, name: string, };
@@ -5829,10 +5829,14 @@ export type SpecialProjectIterationParams = { branchId: string, country: Country
 /**
  * The project's raw owner id, its id within it and the iteration's history ordinal.
  */
-owner: number, project: number, ordinal: number, };
+owner: number, project: number, ordinal: number,
+/**
+ * The choice-history read that listed the iteration: the clicked project's own.
+ */
+read: number, };
 export type SpecialProjectIteration = {
 /**
- * The iteration's own hour: every value is read at it.
+ * The iteration's own hour: its game state is read at it, the choice and its project at the listing read.
  */
 hour: number,
 /**

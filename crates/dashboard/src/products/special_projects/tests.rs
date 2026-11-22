@@ -44,6 +44,21 @@ fn a_completed_project_keeps_its_last_scientist_and_its_history_date() {
 }
 
 #[test]
+fn a_completion_read_before_its_history_marker_counts_the_same_choices_in_one_episode() {
+    let mut fold = Fold::new(START);
+    let scientist = Person::Character(31);
+    observe(&mut fold, 1_000, 1_000, &[(running(1, 90), Some(entries(3, None)), scientist.clone()), (running(2, 90), Some(entries(0, None)), scientist.clone())]);
+    observe(&mut fold, 1_001, 1_001, &[(done(1), Some(entries(3, None)), Person::Unassigned), (done(2), Some(entries(0, None)), Person::Unassigned)]);
+    observe(&mut fold, 1_002, 1_002, &[(done(1), Some(entries(3, Some(1_001))), Person::Unassigned), (done(2), Some(entries(0, Some(1_001))), Person::Unassigned)]);
+    assert_eq!(fold.episodes.len(), 2, "a completion whose marker is not read yet is no replacement");
+    for (episode, count) in fold.episodes.iter().zip([3, 0]) {
+        assert!(episode.runs.iter().all(|run| run.iterations == Some(count)), "the choices are counted, never less one for a marker not read: {:?}", episode.runs);
+        let done = &episode.runs[1];
+        assert_eq!(fold.looks[done.presentation as usize].person, scientist, "the completed project keeps its scientist");
+    }
+}
+
+#[test]
 fn projects_of_two_raw_owners_sharing_a_local_id_are_their_own_episodes() {
     let mut fold = Fold::new(START);
     let other = Row { owner: 12, ..running(1, 25) };
@@ -137,6 +152,17 @@ fn the_latest_completion_entry_dated_by_the_observation_dates_it() {
     let history = [entry(0, marker, 1_010), entry(1, marker, 1_030), entry(2, marker, 1_090), entry(3, 3, 1_040)];
     assert_eq!(fold::completion_date(&history, 1_050, START), Some(ProjectDate { hour: 1_030, exact: true }));
     assert_eq!(fold::completion_date(&history, 1_005, START), None);
+}
+
+#[test]
+fn two_completions_sharing_an_owner_project_and_marker_ordinal_on_different_dates_are_two_events() {
+    let marker = i64::from(COMPLETION_MARKER);
+    let step = |hour, date: i64| Step { hour, cells: Some(Box::new([Cell::Number(marker), Cell::Number(marker), Cell::Number(date)])) };
+    let key = (11_u128 << 64) | (1_u128 << 32) | 4;
+    let history = History { keys: vec![(key, vec![step(1_010, 1_008), step(1_011, 1_008), step(1_050, 1_049)])], ..History::default() };
+    let mut found = BTreeMap::new();
+    completed_in(&mut found, 2, &history, START, 1_100);
+    assert_eq!(found, BTreeMap::from([((key, 1_008), (2, 1_010)), ((key, 1_049), (2, 1_050))]), "a replacement's completion reusing the marker ordinal is its own event, each first observed once");
 }
 
 #[test]

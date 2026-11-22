@@ -437,7 +437,7 @@ pub(crate) fn spans(first: i32, last: i32, events: &[StatusRun], links: &[Status
         let held = match (available(event), available(link)) {
             (false, _) => Held::Unread,
             (true, false) => Held::Unjoined,
-            (true, true) if !complete(event) => Held::InPart,
+            (true, true) if !complete(event) || !complete(link) => Held::InPart,
             (true, true) => Held::Observed,
         };
         match out.last_mut() {
@@ -865,11 +865,15 @@ fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: 
     let made: Vec<(i32, i32)> = if last < first {
         Vec::new()
     } else {
-        spans(first, last, &read::statuses(recording, run, log.table, first, last)?, &read::statuses(recording, run, TableId::CountryLinks, first, last)?)
-            .into_iter()
-            .filter(|span| span.held.read())
-            .map(|span| (span.first, span.last))
-            .collect()
+        let mut made: Vec<(i32, i32)> = Vec::new();
+        for span in spans(first, last, &read::statuses(recording, run, log.table, first, last)?, &read::statuses(recording, run, TableId::CountryLinks, first, last)?) {
+            match made.last_mut() {
+                Some(held) if span.held.read() && held.1.checked_add(1) == Some(span.first) => held.1 = span.last,
+                _ if span.held.read() => made.push((span.first, span.last)),
+                _ => {}
+            }
+        }
+        made
     };
     let made = Arc::new(made);
     *held = Some(Arc::clone(&made));
@@ -952,10 +956,12 @@ fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Op
 
 fn latest_in_part(query: &Query<'_>, family: MilitaryAirFamily, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
     let log = dashboard_declare::log(family.log()).ok_or_else(|| dashboard_core::invalid(format!("No declared log {}", family.log())))?;
+    let recording = query.replay.recording();
     let mut latest = None;
     for stretch in query.timeline.within(from, to) {
-        let runs = read::statuses(query.replay.recording(), stretch.run, log.table, stretch.first, stretch.last)?;
-        latest = latest.max(runs.iter().filter(|run| available(run.status) && !complete(run.status)).map(|run| run.last).max());
+        let (first, last) = (stretch.first.max(from), stretch.last.min(to));
+        let held = spans(first, last, &read::statuses(recording, stretch.run, log.table, first, last)?, &read::statuses(recording, stretch.run, TableId::CountryLinks, first, last)?);
+        latest = latest.max(held.iter().filter(|span| span.held == Held::InPart).map(|span| span.last).max());
     }
     Ok(latest)
 }

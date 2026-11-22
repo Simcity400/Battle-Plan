@@ -158,9 +158,10 @@ function IterationOutput({ runtime, track, tag, active, project, choice, onOpen 
   track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink) => void;
 }) {
   const recorded = !!track && choice.date >= track.branch.firstHour && choice.date <= track.branch.lastHour;
-  const request = useMemo(() => track && recorded ? { sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
-    params: { branchId: track.branch.id, hour: choice.date, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal } } : null,
-  [track, recorded, choice.date, choice.ordinal, tag, project.owner, project.id]);
+  const read = project.historyReadHour;
+  const request = useMemo(() => track && recorded && read !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
+    params: { branchId: track.branch.id, hour: choice.date, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal, read } } : null,
+  [track, recorded, read, choice.date, choice.ordinal, tag, project.owner, project.id]);
   const validate = useMemo(() => (value: unknown) => validateProjectIteration(value, choice.date), [choice.date]);
   const { data, error } = useProduct<SpecialProjectIteration>(runtime.client, request, active, validate, track?.source);
   if (!recorded) return <p className="project-window-withheld" title="This iteration's hour is not recorded in this branch.">Not recorded</p>;

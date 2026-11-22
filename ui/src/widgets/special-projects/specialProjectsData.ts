@@ -64,10 +64,26 @@ export const observedAt = (data: SpecialProjectsReply, hour: number) => runAt(da
 export const unobservedReason = (data: SpecialProjectsReply, hour: number) =>
   runAt(data.partial, hour) !== null ? 'Projects were read only in part at this time.' : 'Projects were not recorded at this time.';
 
-export function historyUnrecorded(data: readonly SpecialProjectsReply[], first: number, last: number): string | null {
-  const meets = (spans: readonly HourSpan[]) => spans.some(span => span.firstHour <= last && first <= span.lastHour);
-  if (data.some(reply => meets(reply.available))) return null;
-  return data.some(reply => meets(reply.partial)) ? 'Projects were read only in part over this time.' : 'Projects were not recorded over this time.';
+export function historyUnrecorded(data: readonly SpecialProjectsReply[], first: number, last: number,
+  membership?: (reply: SpecialProjectsReply) => readonly HourSpan[] | undefined): string | null {
+  const meets = (spans: readonly HourSpan[], from: number, to: number) => spans.some(span => span.firstHour <= to && from <= span.lastHour);
+  if (!data.some(reply => meets(reply.available, first, last))) {
+    return data.some(reply => meets(reply.partial, first, last)) ? 'Projects were read only in part over this time.' : 'Projects were not recorded over this time.';
+  }
+  let gap = false, inPart = false;
+  for (const reply of data) {
+    const held = membership?.(reply);
+    const runs = (held ? clipToSpans(reply.identities, held) : reply.identities).flatMap(run => {
+      const firstHour = Math.max(run.firstHour, first), lastHour = Math.min(run.lastHour, last);
+      return firstHour <= lastHour ? [{ firstHour, lastHour }] : [];
+    });
+    for (const hole of withoutHours(runs, reply.available)) {
+      gap = true;
+      inPart ||= meets(reply.partial, hole.firstHour, hole.lastHour);
+    }
+  }
+  if (!gap) return null;
+  return `No special projects in the hours recorded; projects were ${inPart ? 'read only in part' : 'not recorded'} for some of this time.`;
 }
 
 export function projectCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, first: number, last: number) {
@@ -274,13 +290,13 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
   return history;
 }
 
-export function historyKey(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[]): string {
+export function historyKey(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[], from = -Infinity): string {
   const parts: string[] = [];
   for (const project of data.projects) {
     const latest = shownRuns(project, hour, membership).at(-1);
     if (latest) parts.push(`${project.id}\u0001${latest.presentation}\u0001${latest.completion ? 'c' : latest.cancellation ? 'x' : ''}`);
   }
-  return parts.join('\u0002');
+  return parts.length ? parts.join('\u0002') : `\u0003${historyUnrecorded([data], from, hour, () => membership) ?? ''}`;
 }
 
 export function closedLane(id: string, history: ProjectHistory): TimelineLane | null {

@@ -357,10 +357,6 @@ impl Reads<'_, '_> {
         known
     }
 
-    fn follows(&self, read: i32, until: i32) -> bool {
-        self.hour < read && read <= until && held_since(self.query, self.tag, self.holder, self.hour, read)
-    }
-
     fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
         let before = Self { hour: previous, ..*self };
         match (before.last(table, what), self.last(table, what)) {
@@ -638,7 +634,6 @@ impl AtHour for SpecialProjectDetailsAt {
                 OwnerRead::Read(read, history) => {
                     read_of.insert(owner, (read, history));
                 }
-                OwnerRead::Unread => {}
                 OwnerRead::Withheld => return Ok(false),
             }
         }
@@ -940,7 +935,6 @@ fn history_read(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, proj
 }
 
 enum OwnerRead {
-    Unread,
     Read(i32, Option<Result<i32, String>>),
     Withheld,
 }
@@ -949,7 +943,6 @@ impl OwnerRead {
     fn of(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, has_rows: bool) -> Self {
         match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| reads.supplies(read)) {
             Some(read) if reads.owned(owner, read).is_ok() => Self::Read(read, has_rows.then(|| history_read(slices, reads, owner, read))),
-            None if !has_rows && owner != reads.holder.id => Self::Unread,
             _ => Self::Withheld,
         }
     }
@@ -1013,7 +1006,6 @@ fn projects(
     let mut read_of: BTreeMap<u32, i32> = BTreeMap::new();
     let mut withheld = Vec::new();
     for &owner in owners {
-        let has_rows = !prefixed(rows, owner, |row| row.owner).is_empty();
         let why = match replay_data::sliced::read_hour(slices, TableId::Projects, owner) {
             Some(read) if reads.supplies(read) => match reads.owned(owner, read) {
                 Ok(()) => {
@@ -1022,8 +1014,7 @@ fn projects(
                 }
                 Err(why) => why,
             },
-            _ if has_rows || owner == reads.holder.id => PROJECTS_UNREAD.to_owned(),
-            _ => continue,
+            _ => PROJECTS_UNREAD.to_owned(),
         };
         if !withheld.contains(&why) {
             withheld.push(why);

@@ -380,11 +380,18 @@ test('Current renders again only when a section, order, name, scientist, state o
   assert.notEqual(currentKey(bounded, 170), currentKey(data, 170), 'an exact completion date replaces its bound');
 });
 
-test('History names an interval read only in part or not at all, never as no projects, though a later read is complete', () => {
+test('History names an interval read only in part or not at all, never as no projects, though a later read is complete or only part was read', () => {
   const later = { ...fixture(), projects: [], available: [{ firstHour: 220, lastHour: 300 }], partial: [{ firstHour: 150, lastHour: 150 }] };
   assert.equal(historyUnrecorded([later], 140, 160), 'Projects were read only in part over this time.');
   assert.equal(historyUnrecorded([later], 100, 140), 'Projects were not recorded over this time.');
-  assert.equal(historyUnrecorded([later], 140, 230), null, 'a complete read in the interval proves no projects');
+  assert.equal(historyUnrecorded([later], 220, 230), null, 'complete reads over the whole interval prove no projects');
+  assert.equal(historyUnrecorded([later], 140, 230), 'No special projects in the hours recorded; projects were read only in part for some of this time.',
+    'one complete read does not prove no projects over hours never read whole');
+  assert.equal(historyUnrecorded([{ ...later, partial: [] }], 140, 230), 'No special projects in the hours recorded; projects were not recorded for some of this time.');
+  assert.equal(historyUnrecorded([later], 140, 230, () => [{ firstHour: 220, lastHour: 300 }]), null, 'hours outside the membership are no gap');
+  const empty = { ...later, available: [{ firstHour: 100, lastHour: 150 }], partial: [] };
+  assert.notEqual(historyKey(empty, 150, undefined, 100), historyKey(empty, 160, undefined, 100), 'with no projects, a change in coverage renders');
+  assert.equal(historyKey(empty, 160, undefined, 100), historyKey(empty, 170, undefined, 100));
 });
 
 test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no run', () => {

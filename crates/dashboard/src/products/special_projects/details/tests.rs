@@ -28,6 +28,7 @@ const HISTORY_UNSTAMPED: [i32; 2] = [30, 35];
 const LATER_READ_ITERATION: u32 = 5;
 const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = 30..45;
 const BEFORE_UNHELD_ITERATION: (u32, i32) = (6, 33);
+const ALIAS_UNSTAMPED: i32 = 38;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -84,7 +85,7 @@ fn frame(hour: i32) -> DecodedFrame {
         .flatten()
         .collect(),
     ));
-    let mut slices: Vec<SliceReadRow> = [(9001, read), (MOVED_OWNER, moved)]
+    let mut slices: Vec<SliceReadRow> = [(9001, read), (11, read.filter(|_| hour != ALIAS_UNSTAMPED)), (MOVED_OWNER, moved)]
         .into_iter()
         .filter_map(|(owner, read)| read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
         .flatten()
@@ -197,7 +198,7 @@ fn followed_details_drop_an_owners_refusal_once_another_reason_withholds_its_cho
         set(&mut frame, TableId::ProjectHistory, TableRows::empty(TableId::ProjectHistory));
         let stamp = |table: TableId, owner, sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour };
         let slices = if read {
-            vec![stamp(TableId::Projects, 9001, READ), stamp(TableId::Projects, SHIFTED, READ), stamp(TableId::Projects, UNSTAMPED, READ), stamp(TableId::ProjectHistory, SHIFTED, FIRST)]
+            vec![stamp(TableId::Projects, 11, READ), stamp(TableId::Projects, 9001, READ), stamp(TableId::Projects, SHIFTED, READ), stamp(TableId::Projects, UNSTAMPED, READ), stamp(TableId::ProjectHistory, SHIFTED, FIRST)]
         } else {
             Vec::new()
         };
@@ -240,6 +241,9 @@ fn a_value_with_no_read_in_the_day_or_since_the_holder_took_the_tag_is_not_read_
     assert!(has(&early, "Projects were not read"), "{early}");
     assert_eq!(early["scientists"][0]["injuryDays"], Value::Null);
     assert_eq!(early["scientists"][0]["injuryHour"], Value::Null);
+    let alias = details(&source, ALIAS_UNSTAMPED);
+    assert_eq!(alias["projects"], Value::Null, "a linked owner with no proven read and no rows is not an owner without projects, as the list holds: {alias}");
+    assert!(has(&alias, "Projects were not read"), "{alias}");
     let after = details(&source, UNHELD + 2);
     assert_eq!(after["programs"], Value::Null);
     assert!(has(&after, "Program assignments were last read before this country held the tag"), "{after}");
@@ -293,40 +297,60 @@ fn project_output_is_the_game_text_with_its_links_and_names_what_it_cannot_show(
     assert_eq!(broken.refusals.values().sum::<usize>(), 1, "an output the links cannot frame is withheld by name, never shown broken: {broken:?}");
 }
 
-#[test]
-fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
-    let source = recording();
-    let iteration = |ordinal: u32, hour: i32| asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour }));
-    let refused = |result: Result<Value, dashboard_core::QueryError>| match result {
+fn refusal(result: Result<Value, dashboard_core::QueryError>) -> String {
+    match result {
         Err(dashboard_core::QueryError::Refused { text }) => text,
         other => panic!("not a refusal: {other:?}"),
+    }
+}
+
+#[test]
+fn an_iteration_is_the_listing_projects_choice_rendered_with_that_projects_definition() {
+    const REPLACED: i32 = 35;
+    const CHOICE: i32 = 30;
+    const OWN_CHOICE: i32 = 24;
+    const MARKER: i32 = 40;
+    const UNPROVEN: i32 = 45;
+    const UNHELD: i32 = 50;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        if hour == UNHELD {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        let replaced = hour >= REPLACED;
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, ..Default::default() }]));
+        let choice = |ordinal, date| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() };
+        let history = if replaced {
+            let mut rows = vec![choice(0, CHOICE), choice(1, CHOICE)];
+            rows.extend((hour >= MARKER).then(|| ProjectHistoryRow { prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, ..choice(2, MARKER) }));
+            rows
+        } else {
+            vec![choice(0, OWN_CHOICE)]
+        };
+        set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(history));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 78, literal: b"replacement".to_vec() }]));
+        let read = if hour == UNPROVEN { hour - 1 } else { hour };
+        let mut slices: Vec<SliceReadRow> =
+            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
+        slices.sort_by_key(|row| (row.table, row.owner));
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
     };
-    assert!(refused(iteration(0, FIRST - 1)).contains("hour is not recorded"), "an hour outside the recording is named, never guessed");
-    let unavailable = |ordinal, hour| iteration(ordinal, hour).unwrap()["unavailable"].as_str().unwrap().to_owned();
-    let first = PROJECT_READS[0];
-    assert_eq!(unavailable(0, first + 1), "The asked hour is not this iteration's hour");
-    assert_eq!(unavailable(1, first), "This history entry is the project's completion, not an iteration");
-    assert_eq!(unavailable(9, NEXT_DAY_ITERATION), "This iteration's choice was not read within a day of its hour");
-    assert!(refused(iteration(0, first)).contains("content"), "an iteration goes on to the recorded content");
-    assert!(
-        refused(iteration(LATER_READ_ITERATION, first)).contains("content"),
-        "an iteration whose hour has no proven history read is found at the first proven read after it, within its day"
-    );
-    assert!(refused(iteration(3, NEXT_DAY_ITERATION)).contains("content"), "a choice first read later in its day, under the same holder, is found for its own hour");
-    assert!(
-        refused(iteration(BEFORE_UNHELD_ITERATION.0, BEFORE_UNHELD_ITERATION.1)).contains("content"),
-        "the first proven read after the choice finds it, though a later read in the day came after the holder changed"
-    );
-    assert_eq!(
-        unavailable(4, UNHELD_NEXT_ITERATION),
-        "This iteration's choice was next read after this country stopped holding the tag",
-        "a later read is a reading of this country's history only while it held the tag throughout"
-    );
-    assert_eq!(
-        unavailable(2, LATE_ITERATION),
-        "Projects were not read in the day up to this hour while this country held the tag",
-        "the project state retained from before the holder's run is not this country's"
-    );
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-project-iteration-listed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let iteration = |ordinal: u32, hour: i32, read: i32| {
+        asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": read }))
+    };
+    let unavailable = |ordinal, hour, read| iteration(ordinal, hour, read).unwrap()["unavailable"].as_str().unwrap().to_owned();
+    assert!(refusal(iteration(0, FIRST - 1, REPLACED)).contains("hour is not recorded"), "an hour outside the recording is named, never guessed");
+    assert!(refusal(iteration(1, CHOICE, REPLACED)).contains("content"), "the replacement's choice at an hour its predecessor held the id is found where it was listed");
+    assert!(refusal(iteration(0, CHOICE, REPLACED)).contains("content"), "the predecessor's choice of the same ordinal at another date does not refuse it");
+    assert_eq!(unavailable(0, OWN_CHOICE, REPLACED - 1), "lexical tokens lacks token 77", "the predecessor's own choice is rendered with its own definition, never the replacement's");
+    assert_eq!(unavailable(0, OWN_CHOICE, REPLACED), "The asked hour is not this iteration's hour", "a listing holding the ordinal at another date is another choice");
+    assert_eq!(unavailable(0, CHOICE, CHOICE - 1), "The iteration's choices were listed before its hour");
+    assert_eq!(unavailable(2, MARKER, MARKER), "This history entry is the project's completion, not an iteration");
+    assert_eq!(unavailable(0, CHOICE, UNPROVEN), "This iteration's choices were not read at the hour that lists them");
+    assert_eq!(unavailable(0, CHOICE, UNHELD + 1), "This iteration's choice was listed after this country stopped holding the tag");
 }
 
 #[test]
@@ -344,12 +368,12 @@ fn a_project_read_while_its_raw_owner_belonged_to_another_country_is_not_this_co
     let effects = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "hour": at })).unwrap();
     assert_eq!(effects["unavailable"], json!(other), "the retained read predates the owner's move to this country: {effects}");
     assert!(has(&details(&source, at), other), "the details list withholds the same read");
-    let iteration = asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "ordinal": 0, "hour": MOVED_ITERATION })).unwrap();
-    assert_eq!(iteration["unavailable"], json!(other), "the choice was next read after the owner left this country: {iteration}");
+    let iteration = asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "ordinal": 0, "hour": MOVED_ITERATION, "read": MOVED_READS[2] })).unwrap();
+    assert_eq!(iteration["unavailable"], json!(other), "the choice was listed after the owner left this country: {iteration}");
 }
 
 #[test]
-fn an_iteration_is_found_at_the_first_complete_read_after_a_read_in_part() {
+fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
     const CHOICE: i32 = 30;
     const IN_PART: i32 = 31;
     const COMPLETE: i32 = 35;
@@ -358,6 +382,7 @@ fn an_iteration_is_found_at_the_first_complete_read_after_a_read_in_part() {
         let stamp = |table: TableId, sample_hour| SliceReadRow { table: table.index() as u32, owner: 9001, sample_hour };
         let read = hour >= CHOICE;
         set(&mut frame, TableId::Projects, TableRows::Projects(if read { vec![ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }] } else { Vec::new() }));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 77, literal: b"project".to_vec() }]));
         let choice = ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() };
         *frame.tables[TableId::ProjectHistory.index()] = match hour {
             IN_PART => TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice.clone()]), missing: 1 },
@@ -376,8 +401,8 @@ fn an_iteration_is_found_at_the_first_complete_read_after_a_read_in_part() {
     };
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(crate::SourceKey { source_id: "special-project-iteration-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    match asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "hour": CHOICE })) {
-        Err(dashboard_core::QueryError::Refused { text }) => assert!(text.contains("content"), "the complete read after the one in part proves the choice and goes on to the content: {text}"),
-        other => panic!("the choice was not found past the read in part: {other:?}"),
-    }
+    let iteration = |read: i32| asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "hour": CHOICE, "read": read }));
+    let in_part = iteration(IN_PART).unwrap();
+    assert!(in_part["unavailable"].as_str().unwrap().starts_with("Project choice history is unavailable"), "a listing read in part proves no choice: {in_part}");
+    assert!(refusal(iteration(COMPLETE)).contains("content"), "the complete listing proves the choice and goes on to the content");
 }

@@ -98,7 +98,7 @@ fn a_restart_after_an_unread_interval_is_new_events_only_when_dated_within_it() 
 fn observed_hours_are_those_both_tables_were_available() {
     let run = |first, last, status| StatusRun { first, last, status };
     let events = [run(10, 19, Status::Complete), run(20, 24, Status::Unavailable { reason: 1 }), run(25, 40, Status::Truncated { missing: 2 })];
-    let links = [run(10, 14, Status::Complete), run(15, 16, Status::Unavailable { reason: 3 }), run(17, 22, Status::Complete), run(30, 40, Status::Complete)];
+    let links = [run(10, 14, Status::Complete), run(15, 16, Status::Unavailable { reason: 3 }), run(17, 18, Status::Complete), run(19, 22, Status::Truncated { missing: 1 }), run(30, 40, Status::Complete)];
     let span = |first, last, held| Span { first, last, held };
     assert_eq!(
         spans(8, 42, &events, &links),
@@ -106,7 +106,8 @@ fn observed_hours_are_those_both_tables_were_available() {
             span(8, 9, Held::Unread),
             span(10, 14, Held::Observed),
             span(15, 16, Held::Unjoined),
-            span(17, 19, Held::Observed),
+            span(17, 18, Held::Observed),
+            span(19, 19, Held::InPart),
             span(20, 24, Held::Unread),
             span(25, 29, Held::Unjoined),
             span(30, 40, Held::InPart),
@@ -345,6 +346,32 @@ mod windows {
         }
         crate::answer::forget(&warmed);
         assert!(kept_observed(&warmed).is_empty(), "forgotten with the recording's index");
+    }
+
+    #[test]
+    fn a_window_reaches_back_across_a_read_in_part_and_names_it_incomplete() {
+        const IN_PART: i32 = FIRST + 2;
+        const AT: i32 = FIRST + 10;
+        let frames = (FIRST..=AT)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let losses = vec![loss(u64::try_from(hour).unwrap(), hour, 9001, (5, 1), false, 1_000, None)];
+                if hour == IN_PART {
+                    *frame.tables[TableId::AirLossEvents.index()] = TableView::Truncated { rows: tables::AirLossEvents::wrap(losses), missing: 1 };
+                    frame.metrics.table_ns[TableId::AirLossEvents.index()] = 1;
+                } else {
+                    set::<tables::AirLossEvents>(&mut frame, losses);
+                }
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(crate::SourceKey { source_id: "air-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = crate::answer::query(&source, 1).unwrap();
+        let (context, running) = (LoadContext { content: None }, AtomicBool::new(false));
+        let reply = window_reply(&source, &query, &asked(MilitaryAirFamily::AirLosses, &[], &[], Some(FIRST), None), (AT, AT), &context, &running).unwrap();
+        assert_eq!(reply.observed, vec![HourSpan { first_hour: FIRST, last_hour: AT }], "the reads before and after the read in part are one stretch");
+        assert_eq!(reply.incomplete, vec![HourSpan { first_hour: IN_PART, last_hour: IN_PART }], "the read in part it reaches back over is named");
     }
 
     #[test]
