@@ -416,6 +416,8 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
             pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(1)),
             supply: replay_data::rows::Recorded::NotRecorded,
+            supply_ratio_exact: replay_data::rows::Recorded::Value(Some(0)),
+            supply_grace_exact: replay_data::rows::Recorded::Value(Some(0)),
             ..Default::default()
         },
         replay_data::rows::DivisionStatusRow {
@@ -427,6 +429,8 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
             pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(0)),
             supply: replay_data::rows::Recorded::NotRecorded,
+            supply_ratio_exact: replay_data::rows::Recorded::Value(Some(0)),
+            supply_grace_exact: replay_data::rows::Recorded::Value(Some(0)),
             ..Default::default()
         },
     ];
@@ -642,6 +646,8 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
                 pending_template: Recorded::NotRecorded,
                 supply_grace_remaining: Recorded::Value(0),
                 supply: supply.clone(),
+                supply_ratio_exact: Recorded::Value(Some(0)),
+                supply_grace_exact: Recorded::Value(Some(0)),
                 ..Default::default()
             }]),
         );
@@ -696,6 +702,8 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             experience: Recorded::NotRecorded,
             pending_template: Recorded::NotRecorded,
             supply: Recorded::Value(None),
+            supply_ratio_exact: Recorded::Value(Some(0)),
+            supply_grace_exact: Recorded::Value(Some(0)),
             ..Default::default()
         }]),
     );
