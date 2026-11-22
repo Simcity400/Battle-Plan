@@ -279,8 +279,8 @@ fn skipped(cause: PowerCause) -> bool {
     matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console)
 }
 
-fn recurring(cause: PowerCause) -> bool {
-    matches!(cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
+fn recurring(kind: u8, cause: PowerCause) -> bool {
+    kind != Item::CHANGE || matches!(cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
 }
 
 type Holds = BTreeMap<u64, Hold>;
@@ -734,7 +734,7 @@ impl PowerLedger {
         let key = (part.holder, part.currency, part.ordinal);
         let seen = self.item_days.entry(key).or_default();
         let payment = Payment {
-            recurring: recurring(item.cause),
+            recurring: recurring(item.kind, item.cause),
             upkeep: item.cause == PowerCause::AbilityUpkeep,
             hour: part.day,
             read: part.read,
@@ -822,7 +822,10 @@ impl PowerLedger {
                 continue;
             }
             if rows.is_empty() {
-                let emptied = all_day_rows.is_empty() && confirmed_zero;
+                let emptied = confirmed_zero
+                    && all_day_rows
+                        .iter()
+                        .all(|cost| fresh.as_ref().is_some_and(|daily| cost.epoch == daily.epoch && Some(cost.pp_sequence) == daily.pp_sequence) && cost.cost_raw == 0);
                 let held_sum = batch.parts.values().try_fold(0i128, |sum, part| match part.spent {
                     Recorded::Value(spent) => Some(sum + i128::from(spent)),
                     Recorded::NotRecorded => None,
@@ -1046,7 +1049,9 @@ impl PowerLedger {
             }
             let holder = self.slot(row.country);
             let first = First { site: row.site, hour: row.hour, read: at, country: row.country, epoch: row.epoch, sequence: row.sequence };
-            let ordinal = self.item(own, pending, holder, ItemId::change(&row), first)?;
+            let id = ItemId::change(&row);
+            let item_kind = id.kind;
+            let ordinal = self.item(own, pending, holder, id, first)?;
             let total = Self::item_total(own, pending, holder, row.currency as u8, ordinal)?;
             let Some(charge) = charge else {
                 tally::count(total, false, 1);
@@ -1055,7 +1060,7 @@ impl PowerLedger {
             let item_key = (holder, row.currency as u8, ordinal);
             let seen = self.item_days.entry(item_key).or_default();
             let payment = Payment {
-                recurring: recurring(row.cause),
+                recurring: recurring(item_kind, row.cause),
                 upkeep: row.cause == PowerCause::AbilityUpkeep,
                 hour: row.hour,
                 read: at,
@@ -1161,9 +1166,9 @@ impl PowerLedger {
             if complete {
                 let daily_candidates: Vec<u32> = pending.daily.iter().copied().collect();
                 for raw in daily_candidates {
-                    if inputs::holds_no_costs(hour, raw)?
-                        && let Some(daily) = inputs::fresh_daily(hour, raw)?
+                    if let Some(daily) = inputs::fresh_daily(hour, raw)?
                         && Self::confirms_empty(witnesses, raw, hour.hour, midnight(daily.day_hour), run_first, Some(&daily))
+                        && inputs::no_nonzero_costs_for(hour, raw, &daily)?
                     {
                         let day = midnight(daily.day_hour);
                         if day == today {
@@ -1171,6 +1176,8 @@ impl PowerLedger {
                             for key in keys {
                                 self.remove_batch(key, pending);
                             }
+                        }
+                        if !self.raw_batches(raw).iter().any(|key| key.day == today) {
                             self.mismatched.remove(&raw);
                         }
                         if !self.raw_batches(raw).iter().any(|key| key.day == day) {

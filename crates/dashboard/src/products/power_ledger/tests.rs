@@ -340,6 +340,31 @@ fn source_frame(hour: i32) -> DecodedFrame {
 #[test]
 fn two_native_days_in_one_read_hour_keep_separate_dates_and_amounts() {
     const GER2: u32 = 9002;
+    let relation = |country: u32, day_hour: i32, amount: i64, sequence: u64| CountryPowerDailyCostRow {
+        country,
+        ordinal: 0,
+        epoch: 1,
+        day_hour,
+        pp_sequence: sequence,
+        component: PowerDailyCostKind::Relation,
+        cost_raw: amount,
+        cause: PowerCause::Diplomacy,
+        site: PowerSite::AddPoliticalPowerNoDeficit,
+        identity: replay_data::rows::PowerIdentity { target_country: Some(555), ..Default::default() },
+        ..Default::default()
+    };
+    let blockade = |country: u32, day_hour: i32, amount: i64, sequence: u64| CountryPowerDailyCostRow {
+        country,
+        ordinal: 1,
+        epoch: 1,
+        day_hour,
+        pp_sequence: sequence,
+        component: PowerDailyCostKind::Blockade,
+        cost_raw: amount,
+        cause: PowerCause::Blockade,
+        site: PowerSite::AddPoliticalPowerNoDeficit,
+        ..Default::default()
+    };
     let make_frame = |hour: i32| {
         let mut frame = source(1, hour, Some(1_000));
         set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: SLOT, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
@@ -352,12 +377,14 @@ fn two_native_days_in_one_read_hour_keep_separate_dates_and_amounts() {
         let mut days = Vec::new();
         let mut costs = Vec::new();
         if (144..=167).contains(&hour) {
-            days.push(daily(144, 20 * PP, 10 * PP, 10 * PP, 80));
-            costs.push(cost(144, 10 * PP, 80));
+            days.push(daily(144, 20 * PP, 15 * PP, 5 * PP, 80));
+            costs.push(relation(GER, 144, 10 * PP, 80));
+            costs.push(blockade(GER, 144, 5 * PP, 80));
         }
         if hour == 168 {
-            days.push(CountryPowerDailyRow { country: GER2, ..daily(120, 30 * PP, 20 * PP, 10 * PP, 50) });
-            costs.push(CountryPowerDailyCostRow { country: GER2, ..cost(120, 20 * PP, 50) });
+            days.push(CountryPowerDailyRow { country: GER2, ..daily(120, 40 * PP, 27 * PP, 13 * PP, 50) });
+            costs.push(relation(GER2, 120, 20 * PP, 50));
+            costs.push(blockade(GER2, 120, 7 * PP, 50));
         }
         set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
         set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
@@ -372,14 +399,76 @@ fn two_native_days_in_one_read_hour_keep_separate_dates_and_amounts() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-same-read".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = asked(&source, FIRST, 168);
-    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits)).collect();
+    assert!(reply.payments.is_empty(), "relation (Diplomacy) and blockade daily costs must not emit one-off payments");
+    let listed: Vec<_> = reply
+        .days
+        .iter()
+        .map(|day| (reply.items[day.item as usize].cause.as_str(), day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits))
+        .collect();
     assert_eq!(
         listed,
         [
-            (168, Some(120), 1, 1, Some((20 * PP).to_string()), 0),
-            (168, Some(144), 1, 1, Some((10 * PP).to_string()), 0),
+            ("Diplomacy", 168, Some(120), 1, 1, Some((20 * PP).to_string()), 0),
+            ("Blockade", 168, Some(120), 1, 1, Some((7 * PP).to_string()), 0),
+            ("Diplomacy", 168, Some(144), 1, 1, Some((10 * PP).to_string()), 0),
+            ("Blockade", 168, Some(144), 1, 1, Some((5 * PP).to_string()), 0),
         ],
-        "two native days counted in the same read hour emit two entries with separate dates and amounts"
+        "two native days counted in the same read hour emit separate dated charges for collector Diplomacy and Blockade causes"
+    );
+}
+
+#[test]
+fn unavailable_roll_hour_is_withheld_and_named_while_later_available_roll_displays() {
+    let make_frame = |hour: i32| {
+        let mut frame = source_frame(hour);
+        let day = match hour {
+            ..=119 => None,
+            120..=143 => Some((daily(120, 3 * PP, 2 * PP, PP, 50), cost(120, 2 * PP, 50))),
+            144 => None,
+            145..=167 => Some((daily(144, 5 * PP, 25 * PP / 10, 15 * PP / 10, 80), cost(144, 25 * PP / 10, 80))),
+            _ => Some((daily(168, 3 * PP, 2 * PP, PP, 110), cost(168, 2 * PP, 110))),
+        };
+        if hour == 144 {
+            set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+            frame.tables[TableId::CountryPowerDailyCosts.index()] = TableView::Unavailable { reason: "costs unavailable".into() }.into();
+        } else {
+            let (days, costs) = day.map_or((Vec::new(), Vec::new()), |(day, cost)| (vec![day], vec![cost]));
+            set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+            set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        }
+        frame
+    };
+    let frames = (FIRST..=168).map(make_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-unavailable-roll".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 168);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone())).collect();
+    assert_eq!(
+        listed,
+        [(168, Some(144), 1, 1, Some("250000".into()))],
+        "an unavailable midnight roll must be withheld from reply.days while a later available roll still displays"
+    );
+    assert!(
+        reply.warnings.iter().any(|warning| warning.contains("costs unavailable")),
+        "the unavailable day-log gap must propagate its named reason to warnings: {:?}",
+        reply.warnings
+    );
+    assert!(
+        reply.coverage.iter().any(|run| run.first_hour <= 144 && 144 <= run.last_hour && !run.covered),
+        "hour 144 must not be reported as covered"
+    );
+    let query = crate::answer::query(&source, 1).unwrap();
+    let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let command = spending(&source, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 168 }, &naming, &AtomicBool::new(false)).unwrap();
+    assert!(
+        command.warnings.iter().any(|warning| warning.contains("costs unavailable")),
+        "command currency also propagates the unavailable day-log gap warning: {:?}",
+        command.warnings
+    );
+    assert!(
+        command.coverage.iter().any(|run| run.first_hour <= 144 && 144 <= run.last_hour && !run.covered && run.reason.as_deref().is_some_and(|reason| reason.contains("costs unavailable"))),
+        "command currency marks hour 144 uncovered with the named day-log unavailability reason: {:?}",
+        command.coverage
     );
 }
 

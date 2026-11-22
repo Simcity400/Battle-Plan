@@ -1845,6 +1845,82 @@ fn midnight_recovery_deletion_only_with_unlink_moves_survivor_and_withdraws_dele
 }
 
 #[test]
+fn staggered_zero_confirmation_clears_mismatch_and_blocks_stale_revisions() {
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        match hour {
+            24 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+            }
+            26 => {
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, 0, 50), TEXTS).unwrap();
+            }
+            27 => {
+                put_daily(store, hour, &daily(24, 3 * Q, 0, 50));
+            }
+            48 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (h26, _) = run_custom(26, scenario);
+    assert!(keys(&h26, TableId::PowerDayParts).is_empty(), "zeroing the last cost row removes the open batch");
+    assert_eq!(cell::<Coverage>(&h26, TableId::PowerSpendCoverage, 10, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)));
+    let (h27, _) = run_custom(27, scenario);
+    assert_eq!(
+        (cell::<Coverage>(&h27, TableId::PowerSpendCoverage, 10, "daily_mismatch"), cell::<Coverage>(&h27, TableId::PowerSpendCoverage, 10, "political")),
+        (Some(0), Some(1)),
+        "a fresh daily zero matching the stored zero-valued cost row clears the mismatch"
+    );
+    let (h48, _) = run_custom(48, scenario);
+    assert!(
+        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        "a stale positive revision after midnight must not settle a day confirmed empty via a staggered zero update"
+    );
+    assert!(keys(&h48, TableId::PowerSpendDays).is_empty());
+    assert_resumes_match(&[24, 26, 27], 48, scenario);
+}
+
+#[test]
+fn relation_and_blockade_daily_costs_settle_into_day_totals_and_day_log() {
+    let relation = |day: i32, amount: i64, seq: u64| CountryPowerDailyCostRow {
+        cause: PowerCause::Diplomacy,
+        ..cost(day, 0, PowerDailyCostKind::Relation, amount, seq)
+    };
+    let blockade = |day: i32, amount: i64, seq: u64| CountryPowerDailyCostRow {
+        cause: PowerCause::Blockade,
+        identity: PowerIdentity::default(),
+        ..cost(day, 1, PowerDailyCostKind::Blockade, amount, seq)
+    };
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        if hour == 24 {
+            put_daily(store, hour, &daily(24, 3 * Q, Q / 2 + Q / 4, 50));
+            testing::put(store, TableId::CountryPowerDailyCosts, &relation(24, Q / 2, 50), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &blockade(24, Q / 4, 50), TEXTS).unwrap();
+        }
+    };
+    let (h48, _) = run_custom(48, scenario);
+    for (ordinal, expected) in [(0_u32, Q / 2), (1_u32, Q / 4)] {
+        assert_eq!(
+            (
+                spend(&h48, 10, POLITICAL, ordinal, "payments"),
+                spend(&h48, 10, POLITICAL, ordinal, "days"),
+                spend(&h48, 10, POLITICAL, ordinal, "day_payments"),
+                spend(&h48, 10, POLITICAL, ordinal, "day_charge"),
+            ),
+            (Some(0), Some(1), Some(1), Some(expected)),
+            "daily cost ordinal {ordinal} with collector cause settles as recurring, not one-off"
+        );
+    }
+    let logged = keys(&h48, TableId::PowerSpendDays);
+    assert_eq!(logged.len(), 2, "both Diplomacy relation and Blockade daily costs emit PowerSpendDays rows");
+}
+
+#[test]
 fn shared_holder_mismatch_stays_isolated_and_overflowing_sum_is_uncovered() {
     let scenario = |store: &mut Store, hour: i32| {
         setup_base(store, hour, &[(1, 10), (2, 10), (3, 20), (4, 20)], &[1, 2, 3, 4]);

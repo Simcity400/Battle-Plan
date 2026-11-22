@@ -238,6 +238,16 @@ pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> 
     Ok(costs_complete(hour) && hour.table(TableId::CountryPowerDailyCosts).slot(u128::from(country) << 32).is_none())
 }
 
+pub(super) fn no_nonzero_costs_for(hour: &Hour<'_>, country: u32, daily: &CountryPowerDailyRow) -> io::Result<bool> {
+    if !costs_complete(hour) {
+        return Ok(false);
+    }
+    let day = super::midnight(daily.day_hour);
+    Ok(costs_of(hour, country)?
+        .into_iter()
+        .all(|cost| cost.epoch == daily.epoch && super::midnight(cost.day_hour) == day && Some(cost.pp_sequence) == daily.pp_sequence && cost.cost_raw == 0))
+}
+
 pub(super) fn written_cost_days(hour: &Hour<'_>) -> io::Result<HashSet<(u32, i32)>> {
     let table = TableId::CountryPowerDailyCosts;
     if !costs_complete(hour) {
