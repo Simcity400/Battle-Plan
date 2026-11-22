@@ -1298,7 +1298,11 @@ mod tests {
     fn composite_prefix_evaluation_does_not_double_apply_hidden_temp_writes() {
         let assets = assets();
         enter_trigger_test_game();
-        let frame = frame();
+        let mut frame = frame();
+        *frame.tables[replay_data::rows::TableId::ScriptFlags.index()] =
+            replay_frame::frame::TableView::Unavailable {
+                reason: "flag read refused".into(),
+            };
         let loc: Localisation = [
             ("GER", "Viewer country"),
             ("ENG", "Source country"),
@@ -1402,5 +1406,22 @@ mod tests {
                 "{source}: {short_circuit_lines:?}"
             );
         }
+        kind.launchable = parse(
+            "hidden_trigger = { set_temp_variable = { x = 7 } } OR = { has_global_flag = oilfield always = yes } if = { limit = { check_variable = { temp_var:x = 7 } } always = no }",
+        );
+        let (result, flag_lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert!(
+            flag_lines.iter().any(|(key, entry)| {
+                key == "raid launchable: has_global_flag" && entry.is_err()
+            }),
+            "{flag_lines:?}"
+        );
+        assert_eq!(
+            flag_lines.last(),
+            Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+            "{flag_lines:?}"
+        );
     }
 }

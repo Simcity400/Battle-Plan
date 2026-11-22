@@ -469,21 +469,43 @@ impl<'a> Formatter<'_, '_, 'a> {
         match unit {
             Unit::Unknown(why) => Err(why.clone().to_string()),
             Unit::Chain(chain) => {
-                for branch in chain {
+                for (index, branch) in chain.iter().enumerate() {
                     if let Some(why) = &branch.refused {
                         return Err(why.clone().to_string());
                     }
-                    let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
-                    if selected {
-                        return Ok(self.and(
-                            "if",
-                            &branch.body,
-                            scopes,
-                            inverted,
-                            indent,
-                            if mode == 2 { 2 } else { 0 },
-                            sink,
-                        ));
+                    match self.evaluator.all(&branch.limit, scopes).decided() {
+                        Ok(true) => {
+                            return Ok(self.and(
+                                "if",
+                                &branch.body,
+                                scopes,
+                                inverted,
+                                indent,
+                                if mode == 2 { 2 } else { 0 },
+                                sink,
+                            ));
+                        }
+                        Ok(false) => {}
+                        Err(why) => {
+                            let before = self.evaluator.variable_session();
+                            let had_taint = self.evaluator.temps_written().is_some();
+                            let _ = self.evaluator.maybe(true, || {
+                                let _ = self.evaluator.all(&branch.body, scopes);
+                                self.evaluator.branches(&chain[index + 1..], scopes)
+                            });
+                            let tainted_now = !had_taint
+                                && self.evaluator.temps_written().is_some();
+                            self.evaluator.restore_variable_session(&before);
+                            if tainted_now
+                                || chain[index + 1..]
+                                    .iter()
+                                    .any(|later| later.refused.is_some())
+                            {
+                                return Err(why);
+                            }
+                            sink.push_err("if".into(), why.clone());
+                            return Ok(Eval::unknown(why));
+                        }
                     }
                 }
                 Ok(Eval::True)
@@ -526,15 +548,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     let Some(items) = item.value.items() else {
                         return Err("hidden_trigger requires block".into());
                     };
-                    let value = self.evaluator.evaluate(items, scopes);
-                    if let Err(why) = value.clone().decided() {
-                        self.evaluator.taint_temps(
-                            crate::triggers::Failure::from(why).context(|why| {
-                                format!("trigger tooltip session is uncertain: {why}")
-                            }),
-                        );
-                    }
-                    Ok(value)
+                    Ok(self.evaluator.evaluate(items, scopes))
                 }
                 Child::Coded(_, name) if name == "and" => {
                     let Some(items) = item.value.items() else {
@@ -617,15 +631,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                         Ok(own) => own,
                         Err(why) => {
                             sink.push_err(key_text(item), why);
-                            let value = self.evaluator.unit(unit, scopes);
-                            if let Err(why) = value.clone().decided() {
-                                self.evaluator.taint_temps(
-                                    crate::triggers::Failure::from(why).context(|why| {
-                                        format!("trigger tooltip session is uncertain: {why}")
-                                    }),
-                                );
-                            }
-                            return Ok(value);
+                            return Ok(self.evaluator.unit(unit, scopes));
                         }
                     };
                     let mut evaluated = None;
@@ -648,29 +654,10 @@ impl<'a> Formatter<'_, '_, 'a> {
                             }
                             Err(why) => {
                                 sink.push_err(key_text(item), why);
-                                if let Some(value) = &evaluated
-                                    && let Err(why) = value.clone().decided()
-                                {
-                                    self.evaluator.taint_temps(
-                                        crate::triggers::Failure::from(why).context(|why| {
-                                            format!("trigger tooltip session is uncertain: {why}")
-                                        }),
-                                    );
-                                }
                             }
                         }
                     }
-                    if custom {
-                        let value = evaluated.unwrap_or_else(|| self.evaluator.unit(unit, scopes));
-                        if let Err(why) = value.clone().decided() {
-                            self.evaluator.taint_temps(
-                                crate::triggers::Failure::from(why).context(|why| {
-                                    format!("trigger tooltip session is uncertain: {why}")
-                                }),
-                            );
-                        }
-                        Ok(value)
-                    } else if has_children {
+                    if has_children {
                         Ok(self.body(
                             &self.evaluator.units(children(item)),
                             scopes,

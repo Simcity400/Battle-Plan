@@ -329,6 +329,15 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
         }
     }
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        vec![replay_data::rows::LexicalTokenRow {
+            token: 1,
+            literal: b"missing_flag".to_vec(),
+        }],
+    ));
+    *frame.tables[TableId::ScriptFlags.index()] = TableView::Unavailable {
+        reason: "flag read refused".into(),
+    };
     let names = TriggerNames {
         scripted: Default::default(),
         counts: Some(Default::default()),
@@ -346,6 +355,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
         ("TRIGGER_OR_STARTS", "Any"),
         ("TRIGGER_ALWAYS_TRUE", "Always"),
         ("TRIGGER_ALWAYS_FALSE", "Never"),
+        ("custom", "Custom"),
     ]
     .into_iter()
     .map(|(k, v)| (k.into(), v.into()))
@@ -436,6 +446,46 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
             "{source}: {display_refused}"
         );
     }
+    for source in [
+        "hidden_trigger={set_temp_variable={x=7}} OR={has_global_flag=missing_flag always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+        "hidden_trigger={set_temp_variable={x=7}} OR={if={limit={has_global_flag=missing_flag} always=no} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+    ] {
+        let kept = run_synthetic(source).unwrap_err();
+        assert!(kept.contains("[no]Never\n"), "{source}: {kept}");
+        assert!(!kept.contains("session is uncertain"), "{source}: {kept}");
+    }
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} OR={hidden_trigger={has_global_flag=missing_flag} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} OR={custom_trigger_tooltip={tooltip=custom has_global_flag=missing_flag} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Custom\n   Always\n[no]Never\n"
+    );
+    let dependent = run_synthetic(
+        "hidden_trigger={set_temp_variable={x=7}} OR={has_global_flag=missing_flag hidden_trigger={set_temp_variable={x=8}} always=yes} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(!dependent.contains("[no]Never\n"), "{dependent}");
+    assert!(
+        dependent.contains("depends on an unknown earlier condition"),
+        "{dependent}"
+    );
+    let undecided_write = run_synthetic(
+        "hidden_trigger={set_temp_variable={x=7}} if={limit={has_global_flag=missing_flag} set_temp_variable={x=8}} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(!undecided_write.contains("[no]Never\n"), "{undecided_write}");
+    assert!(
+        undecided_write.contains("session is uncertain"),
+        "{undecided_write}"
+    );
     let or_refused = run_synthetic("OR={always=no synthetic_unported_trigger=yes}").unwrap_err();
     assert!(or_refused.contains("   Never\n"), "{or_refused}");
     assert!(
