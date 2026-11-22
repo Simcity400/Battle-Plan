@@ -1456,3 +1456,110 @@ fn eof_variable_copy_warning_keeps_retained_source_name() {
         read.misreads
     );
 }
+
+#[test]
+fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
+    let dispatch = |(), field: &Field<'_>| match field.keyword().as_deref() {
+        Some(b"a" | b"b" | b"c" | b"d" | b"e" | b"f" | b"g") => Shape::Object(()),
+        Some(b"opaque") => Shape::ByKey,
+        _ => Shape::One,
+    };
+
+    let bytes = br#"
+        a = { opaque = { @v = from_opaque x = 1 } name = @v }
+        @v = redef
+        b = { opaque = { @blk = { inner = 1 } x = 2 } name = "after_block_def" }
+        c = { opaque = { x = 3 @tail = trailing_val } name = @tail }
+        d = { opaque = { @empty = } name = "after_empty_def" }
+        e = { opaque = { @copy = @missing } name = "after_no_eq_def" }
+        f = { opaque = { loose k = } name = "after_balanced_valueless" }
+        @after = final_name
+        g = { name = @after }
+    "#;
+
+    let strict = read(bytes, Mode::KeepMark, Top::File(()), None, &mut |s, f| {
+        dispatch(s, f)
+    });
+    assert!(strict.unsettled.is_some(), "{strict:?}");
+
+    let recovered = read_recovering(bytes, Mode::KeepMark, Top::File(()), None, &mut |s, f| {
+        dispatch(s, f)
+    });
+    assert!(recovered.unsettled.is_none(), "{recovered:?}");
+    let names: Vec<(&str, Vec<u8>)> = ["a", "b", "c", "d", "e", "f", "g"]
+        .into_iter()
+        .map(|entry| {
+            let value = block(&recovered.items, entry)
+                .iter()
+                .find(|item| item.keyword_is("name"))
+                .and_then(|item| item.value.scalar())
+                .expect(entry)
+                .to_vec();
+            (entry, value)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("a", b"from_opaque".to_vec()),
+            ("b", b"after_block_def".to_vec()),
+            ("c", b"trailing_val".to_vec()),
+            ("d", b"after_empty_def".to_vec()),
+            ("e", b"after_no_eq_def".to_vec()),
+            ("f", b"after_balanced_valueless".to_vec()),
+            ("g", b"final_name".to_vec()),
+        ]
+    );
+
+    let redef_only = b"a = { opaque = { @v = one x = 1 } } @v = two b = { name = @v }";
+    assert!(
+        read(
+            redef_only,
+            Mode::KeepMark,
+            Top::File(()),
+            None,
+            &mut |s, f| dispatch(s, f)
+        )
+        .unsettled
+        .is_some()
+    );
+    let redef_recovered = read_recovering(
+        redef_only,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |s, f| dispatch(s, f),
+    );
+    assert!(redef_recovered.unsettled.is_none(), "{redef_recovered:?}");
+    assert_eq!(
+        block(&redef_recovered.items, "b")[0].value,
+        Value::Scalar(b"one".to_vec())
+    );
+
+    let brace_value = b"@o = { a = { opaque = { loose k = @o } name = \"after_brace_var\" } }";
+    assert!(
+        read(
+            brace_value,
+            Mode::KeepMark,
+            Top::File(()),
+            None,
+            &mut |s, f| dispatch(s, f)
+        )
+        .unsettled
+        .is_some()
+    );
+    let brace_recovered = read_recovering(
+        brace_value,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |s, f| dispatch(s, f),
+    );
+    assert!(brace_recovered.unsettled.is_none(), "{brace_recovered:?}");
+    let a_name = block(&brace_recovered.items, "a")
+        .iter()
+        .find(|item| item.keyword_is("name"))
+        .and_then(|item| item.value.scalar())
+        .expect("a name");
+    assert_eq!(a_name, b"after_brace_var");
+}
