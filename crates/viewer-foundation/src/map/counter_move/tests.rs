@@ -1326,3 +1326,20 @@ fn a_figure_stands_on_the_track_of_the_layout_its_frame_draws() {
     let drawn = history.sample(unit, &moving).expect("its animator draws it");
     assert_eq!(standing, drawn.motion.position());
 }
+
+#[test]
+fn sparse_high_in_view_province_ids_keep_movement_history_bounded() {
+    let mut history = MovementHistory::default();
+    let unit = Unit::Division(7);
+    let moving = live_position(u32::MAX, &[u32::MAX - 1], 0.0, false);
+    for frame in 0..4 {
+        history.begin_frame(
+            movement_frame(frame as f32 / 10.0, 100, 2.0),
+            [0, 64, 4_000_000_011, u32::MAX - 1, u32::MAX],
+        );
+        assert!(history.in_view.slot_capacity() <= 32);
+        let _ = history.sample(unit, &moving);
+    }
+    assert!(history.in_view.contains(u32::MAX));
+    assert!(!history.in_view.contains(u32::MAX - 2));
+}
