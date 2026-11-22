@@ -65,7 +65,7 @@ impl JobSlot {
     }
 }
 
-pub(crate) struct JobGuard {
+pub struct JobGuard {
     slot: Option<JobSlot>,
     previous: u16,
     _thread: PhantomData<Rc<()>>,
