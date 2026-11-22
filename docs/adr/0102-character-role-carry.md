@@ -6,4 +6,4 @@ The quiet fast path requires a complete held walk, a matching census generation 
 
 An operative link is tracked by census occurrence and reference. Both the unit leader domain and its trait domain must certify the same resolved object before reading its fields. Each domain observes constructors and destruction. An available read retains the row, its definition values and its text, and a matching certificate can carry them without another object read. An unavailable name or codename makes that observation ineligible for the next carry. Operative holds settle only after their own table completes. The game thread can invalidate both caches by marking them forgotten, while the worker clears them and records retained-byte accounting at finish.
 
-[Role store and certificates](../../crates/collector/src/extended/character_inputs/role_store.rs) · [Role frame installation](../../crates/collector/src/extended/character_inputs.rs)
+[Role store and certificates](../../crates/collector-characters/src/extended/character_inputs/role_store.rs) · [Role frame installation](../../crates/collector-characters/src/extended/character_inputs.rs)

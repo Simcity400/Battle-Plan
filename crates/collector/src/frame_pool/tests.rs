@@ -128,7 +128,7 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
             }
         })
     };
-    let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    let deadline = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
     let mut popped = Vec::new();
     while popped.len() < count {
         assert!(std::time::Instant::now() < deadline, "the FIFO lost an index");

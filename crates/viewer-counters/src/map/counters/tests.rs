@@ -1454,6 +1454,7 @@ fn draw_land_action_fixture_with(
                 flotillas: Vec::new(),
                 positions: Vec::new(),
                 units: Vec::new(),
+                layout: counter_move::DrawnLayout::new(inputs.hour),
                 icons: Vec::new(),
                 source_kinds: Vec::new(),
                 groups: Vec::new(),

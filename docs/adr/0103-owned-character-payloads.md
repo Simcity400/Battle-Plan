@@ -10,4 +10,4 @@ Advisor tail measurements are bounded and opt-in. Acquisition records them witho
 
 The benchmark uses `_rdtsc` on x86-64, where the test's direct instruction use requires no operand or memory precondition.
 
-[Owned copy](../../crates/collector/src/extended/characters/owned_copy.rs) · [Target-hint tests](../../crates/collector/src/extended/characters/character_target_hint_tests.rs) · [Trait capture](../../crates/collector/src/extended/characters/traits.rs) · [Spool conversion shadow](../../crates/collector/src/extended/characters/shadow.rs) · [Character benchmarks](../../crates/collector/src/extended/characters/quiet_bench.rs)
+[Owned copy](../../crates/collector-characters/src/extended/characters/owned_copy.rs) · [Target-hint tests](../../crates/collector-characters/src/extended/characters/character_target_hint_tests.rs) · [Trait capture](../../crates/collector-characters/src/extended/characters/traits.rs) · [Spool conversion shadow](../../crates/collector-characters/src/extended/characters/shadow.rs) · [Character benchmarks](../../crates/collector-characters/src/extended/characters/quiet_bench.rs)

@@ -1,8 +1,9 @@
 use super::{
-    Captured, construction_ic, event_feed, fuel_awards, land_events, line_output,
-    operation_outcomes, peace_settlements, politics,
+    Captured, construction_ic, event_feed, fuel_awards, line_output, peace_settlements, politics,
 };
 use crate::sampling::qpc;
+use collector_land_events::extended::land_events;
+use collector_operation_outcomes::extended::operation_outcomes;
 use replay_data::rows::TableId;
 
 const N: usize = 8;
@@ -61,7 +62,7 @@ impl ObserverBoundaryRequest {
         crate::roster_changes::boundary(!self.continuous || self.recovery);
         crate::political_status_changes::boundary(!self.continuous || self.recovery);
         crate::wing_changes::boundary(!self.continuous || self.recovery);
-        crate::mission_changes::boundary(!self.continuous || self.recovery);
+        collector_missions::mission_changes::boundary(!self.continuous || self.recovery);
         crate::rail_changes::boundary(!self.continuous || self.recovery);
         crate::territory_changes::boundary(!self.continuous || self.recovery);
         crate::army_stat_changes::boundary(!self.continuous || self.recovery);
@@ -77,11 +78,11 @@ impl ObserverBoundaryRequest {
         crate::retreat_ban_changes::boundary(!self.continuous || self.recovery);
         crate::local_subunit_changes::boundary(!self.continuous || self.recovery);
         crate::design_changes::boundary(!self.continuous || self.recovery);
-        crate::template_changes::boundary(!self.continuous || self.recovery);
-        crate::faction_goal_changes::boundary(!self.continuous || self.recovery);
-        crate::faction_companion_changes::boundary(!self.continuous || self.recovery);
+        collector_division_templates::template_changes::boundary(!self.continuous || self.recovery);
+        collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
+        collector_factions::faction_companion_changes::boundary(!self.continuous || self.recovery);
         crate::ship_model_changes::boundary(!self.continuous || self.recovery);
-        crate::province_unit_changes::boundary(!self.continuous || self.recovery);
+        collector_divisions::province_unit_changes::boundary(!self.continuous || self.recovery);
         crate::province_combat_changes::boundary(!self.continuous || self.recovery);
         crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
         crate::character_changes::boundary(!self.continuous || self.recovery);
@@ -137,7 +138,7 @@ impl ObserverBoundaryRequest {
             crate::roster_changes::boundary(true);
             crate::political_status_changes::boundary(true);
             crate::wing_changes::boundary(true);
-            crate::mission_changes::boundary(true);
+            collector_missions::mission_changes::boundary(true);
             crate::rail_changes::boundary(true);
             crate::territory_changes::boundary(true);
             crate::army_stat_changes::boundary(true);
@@ -153,11 +154,11 @@ impl ObserverBoundaryRequest {
             crate::retreat_ban_changes::boundary(true);
             crate::local_subunit_changes::boundary(true);
             crate::design_changes::boundary(true);
-            crate::template_changes::boundary(true);
-            crate::faction_goal_changes::boundary(true);
-            crate::faction_companion_changes::boundary(true);
+            collector_division_templates::template_changes::boundary(true);
+            collector_factions::faction_goal_changes::boundary(true);
+            collector_factions::faction_companion_changes::boundary(true);
             crate::ship_model_changes::boundary(true);
-            crate::province_unit_changes::boundary(true);
+            collector_divisions::province_unit_changes::boundary(true);
             crate::province_combat_changes::boundary(true);
             crate::air_base_carry_changes::boundary(true);
             crate::character_changes::boundary(true);
@@ -194,7 +195,9 @@ fn lane_reason(finished: &[bool; N], reason: &'static str) -> &'static str {
     if finished[..6].iter().all(|&finished| finished) {
         reason
     } else {
-        crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Stopped)
+        crate::sampling::acquisition_failure_reason(
+            collector_workers::acquisition::Failure::Stopped,
+        )
     }
 }
 fn elapsed(begin: i64) -> u64 {
@@ -385,10 +388,12 @@ mod tests {
 
     #[test]
     fn lanes_after_a_failed_drain_keep_their_stopped_reason() {
-        let panicked =
-            crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Panicked);
-        let stopped =
-            crate::sampling::acquisition_failure_reason(crate::acquisition::Failure::Stopped);
+        let panicked = crate::sampling::acquisition_failure_reason(
+            collector_workers::acquisition::Failure::Panicked,
+        );
+        let stopped = crate::sampling::acquisition_failure_reason(
+            collector_workers::acquisition::Failure::Stopped,
+        );
         let mut finished = [false; N];
         for drains in 0..6 {
             finished[..drains].fill(true);

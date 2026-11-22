@@ -411,6 +411,7 @@ fn borrowed_naval_parts_keep_empty_and_same_position_holder_attach_order() {
     let child = |name: &str| Part {
         path: name.into(),
         child: None,
+        background_index: None,
         kind: PartKind::Cell {
             texture: 1,
             masking: None,

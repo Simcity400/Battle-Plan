@@ -3359,24 +3359,89 @@ pub enum MapIconPool {
     Occupation,
 }
 
+fn build_matches_verified(build: &str, version: &str, checksum: &str) -> bool {
+    let candidate = build
+        .rsplit_once(" v")
+        .map(|(_, rest)| rest)
+        .unwrap_or(build)
+        .trim();
+    let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
+    candidate
+        .strip_prefix(version)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(checksum))
+}
+
 impl MapIconPool {
+    pub const VERIFIED_BUILDS: &'static [(&'static str, &'static str)] = &[
+        ("1.19.5.0", "c184"),
+        ("1.19.4.2", "0bdb"),
+        ("1.19.4.1", "f584"),
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AirBase => "air base",
+            Self::AirMission => "air mission",
+            Self::RocketSite => "rocket site",
+            Self::GunEmplacement => "gun emplacement",
+            Self::Radar => "radar",
+            Self::StrategicLocation => "strategic location",
+            Self::Base => "naval base",
+            Self::Combat => "naval combat",
+            Self::CombatResults => "naval combat results",
+            Self::Mission => "naval mission",
+            Self::Label => "map label",
+            Self::Capital => "capital",
+            Self::Raid => "raid",
+            Self::Ping => "faction ping",
+            Self::Facility => "facility",
+            Self::Headquarter => "headquarter",
+            Self::LandCombat => "land combat",
+            Self::AdjacencyRule => "adjacency rule",
+            Self::Resource => "resource",
+            Self::Occupation => "occupation",
+        }
+    }
+
     pub fn initial(self) -> usize {
         match self {
             Self::Label => 0xA0,
             Self::Occupation => 0x60,
             Self::AirBase | Self::AirMission | Self::Base | Self::Capital | Self::Resource => 0xC0,
-            Self::Combat | Self::AdjacencyRule => 0x20,
+            Self::Combat => 0x20,
             Self::CombatResults
             | Self::Mission
             | Self::Headquarter
             | Self::Radar
-            | Self::StrategicLocation => 0x40,
+            | Self::StrategicLocation
+            | Self::AdjacencyRule => 0x40,
             Self::Raid
             | Self::Ping
             | Self::Facility
             | Self::LandCombat
             | Self::RocketSite
             | Self::GunEmplacement => 0x80,
+        }
+    }
+
+    pub fn initial_for_build(self, build: Option<&str>) -> Result<usize, String> {
+        let Some(build) = build.map(str::trim).filter(|build| !build.is_empty()) else {
+            return Err(format!(
+                "{} map icon pool initial capacity is unknown: game build is unverified",
+                self.name()
+            ));
+        };
+        if Self::VERIFIED_BUILDS
+            .iter()
+            .any(|&(version, checksum)| build_matches_verified(build, version, checksum))
+        {
+            Ok(self.initial())
+        } else {
+            Err(format!(
+                "{} map icon pool initial capacity is unknown for game build '{build}'",
+                self.name()
+            ))
         }
     }
 }
@@ -3418,6 +3483,28 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         setup: Setup,
         resources: &dyn Resources,
     ) -> Result<Self, String> {
+        Self::with_initial(template, viewport, kind.initial(), setup, resources)
+    }
+
+    pub fn new_for_build(
+        template: &Element,
+        viewport: [i32; 2],
+        kind: MapIconPool,
+        build: Option<&str>,
+        setup: Setup,
+        resources: &dyn Resources,
+    ) -> Result<Self, String> {
+        let initial = kind.initial_for_build(build)?;
+        Self::with_initial(template, viewport, initial, setup, resources)
+    }
+
+    fn with_initial(
+        template: &Element,
+        viewport: [i32; 2],
+        initial: usize,
+        setup: Setup,
+        resources: &dyn Resources,
+    ) -> Result<Self, String> {
         let mut pool = Self {
             template: template.path.clone(),
             viewport,
@@ -3435,7 +3522,7 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             setup,
             withheld: Withheld::default(),
         };
-        pool.add(template, kind.initial(), resources)?;
+        pool.add(template, initial, resources)?;
         Ok(pool)
     }
 

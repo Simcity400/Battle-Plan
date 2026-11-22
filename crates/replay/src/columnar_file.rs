@@ -343,7 +343,7 @@ mod hours {
         }
 
         pub fn with_unit(file: FileWriter<W>, level: i32, settings: unit::Settings) -> io::Result<Self> {
-            Self::with_schema(file, level, settings, crate::columnar_frames::schema()?)
+            Self::with_schema(file, level, settings, crate::columnar_frames::schema()?, recorder_derive::writers())
         }
 
         #[cfg(any(test, feature = "test-support"))]
@@ -353,10 +353,11 @@ mod hours {
             for (kinds, &held) in kinds.iter_mut().zip(columns) {
                 kinds.truncate(held);
             }
-            Self::with_schema(file, level, settings, kinds)
+            let writers = recorder_derive::writers_within(kinds.len());
+            Self::with_schema(file, level, settings, kinds, writers)
         }
 
-        fn with_schema(file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>) -> io::Result<Self> {
+        fn with_schema(file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: recorder_derive::Writers) -> io::Result<Self> {
             let tables = kinds.len();
             let columns = kinds.iter().map(Vec::len).collect();
             let mut store = Store::new(kinds.clone(), crate::columnar_frames::keeps_last()[..tables].to_vec());
@@ -364,7 +365,6 @@ mod hours {
             store.attach(Encoder::new(&kinds, settings)?);
             let appended = Appended::default();
             store.read_strings_from(Box::new(appended.clone()));
-            let writers = recorder_derive::writers();
             let adapter = Journal::leaving(&writers.tables(), crate::columnar_frames::names());
             Ok(Self { file, store, adapter, writers, columns, appended, running: false, block: None, summaries: crate::campaign::live::Summaries::new(level)?, run: (0, 0) })
         }

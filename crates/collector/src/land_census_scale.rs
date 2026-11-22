@@ -1,7 +1,6 @@
-use crate::{
-    division_census::Census, extended::division_land::Captured,
-    unit_scale_tests::fixture as unit_world,
-};
+use crate::unit_scale_tests::fixture as unit_world;
+use collector_division_parts::division_land::Captured;
+use collector_divisions::division_census::Census;
 use engine_native::{carmy, carmy_manpower_values, walk::Outcome};
 
 fn run(countries: usize) {

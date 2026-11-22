@@ -862,6 +862,7 @@ fn bake_draws(
         let part = Part {
             path: path.into(),
             child: None,
+            background_index: None,
             kind,
             clip: None,
             color: [1.; 4],

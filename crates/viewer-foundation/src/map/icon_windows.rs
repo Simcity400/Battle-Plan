@@ -286,6 +286,7 @@ pub fn take_counts() -> Vec<PoolCount> {
 #[derive(Debug)]
 pub struct PoolView<K = u32> {
     built: Option<(NativeWindows, [i32; 2])>,
+    built_build: Option<String>,
     pool: Option<Pool<K>>,
     last: Option<f32>,
     active: bool,
@@ -331,6 +332,7 @@ impl<K> Default for PoolView<K> {
     fn default() -> Self {
         Self {
             built: None,
+            built_build: None,
             pool: None,
             last: None,
             active: false,
@@ -437,18 +439,49 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
         plan: &Plan<'_, K>,
         initialize: native_gui::lifecycle::Setup,
+        update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        value: impl Fn(&K) -> V,
+        regions: bool,
+        notes: &mut BTreeMap<String, usize>,
+    ) -> bool {
+        self.present_recorded_with_build(context, plan, None, initialize, update, value, regions, notes)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with its verified build and update key")]
+    pub fn present_recorded_for_build<V: PartialEq + Send + Sync + 'static>(
+        &mut self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        plan: &Plan<'_, K>,
+        build: Option<&str>,
+        initialize: native_gui::lifecycle::Setup,
+        update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        value: impl Fn(&K) -> V,
+        regions: bool,
+        notes: &mut BTreeMap<String, usize>,
+    ) -> bool {
+        self.present_recorded_with_build(context, plan, Some(build), initialize, update, value, regions, notes)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with optional build verification")]
+    fn present_recorded_with_build<V: PartialEq + Send + Sync + 'static>(
+        &mut self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        plan: &Plan<'_, K>,
+        build: Option<Option<&str>>,
+        initialize: native_gui::lifecycle::Setup,
         mut update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
         value: impl Fn(&K) -> V,
         regions: bool,
         notes: &mut BTreeMap<String, usize>,
     ) -> bool {
-        if !self.same(context) {
+        if !self.same_with_build(context, build.flatten()) {
             self.records.clear();
         }
         let records = std::cell::RefCell::new(std::mem::take(&mut self.records));
-        let kept = self.present_kept_regions(
+        let kept = self.present_kept_regions_with_build(
             context,
             plan,
+            build,
             initialize,
             |owner, slot, instance, root| {
                 records.borrow_mut().remove(&owner);
@@ -478,6 +511,10 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         kept
     }
 
+    fn same_with_build<R>(&self, context: &Context<'_, R>, build: Option<&str>) -> bool {
+        self.same(context) && self.built_build.as_deref() == build
+    }
+
     pub fn forget_writes(&mut self) {
         self.records.clear();
     }
@@ -493,7 +530,22 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         regions: bool,
         notes: &mut BTreeMap<String, usize>,
     ) -> bool {
-        if self.nothing_due(context, plan, &unchanged) {
+        self.present_kept_regions_with_build(context, plan, None, initialize, update, unchanged, regions, notes)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with the caller's keep test and build")]
+    fn present_kept_regions_with_build(
+        &mut self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        plan: &Plan<'_, K>,
+        build: Option<Option<&str>>,
+        initialize: native_gui::lifecycle::Setup,
+        update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        unchanged: impl Fn(&K, SlotId) -> bool,
+        regions: bool,
+        notes: &mut BTreeMap<String, usize>,
+    ) -> bool {
+        if self.same_with_build(context, build.flatten()) && self.nothing_due(context, plan, &unchanged) {
             let kept = self.kept.as_ref().expect("the gate found the windows kept");
             let tally = Tally {
                 still: true,
@@ -524,7 +576,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         let mut shown = Vec::with_capacity(plan.owners.len());
         let mut tally = Tally::default();
         let keep = match self.present_windows(
-            context, plan, initialize, update, &unchanged, regions, notes, held, &mut shown, &mut tally,
+            context, plan, build, initialize, update, &unchanged, regions, notes, held, &mut shown, &mut tally,
         ) {
             Ok(keep) => keep,
             Err(why) => {
@@ -689,6 +741,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
         plan: &Plan<'_, K>,
+        build: Option<Option<&str>>,
         initialize: native_gui::lifecycle::Setup,
         mut update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
         unchanged: &dyn Fn(&K, SlotId) -> bool,
@@ -703,7 +756,8 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             .gui_type(plan.name.as_bytes())
             .ok_or("no GUI template is registered")?;
         let mut held = held;
-        if !self.same(context) {
+        let requested_build = build.flatten();
+        if !self.same_with_build(context, requested_build) {
             tally.because(if self.built.is_none() {
                 "no frame presented yet"
             } else {
@@ -717,14 +771,27 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             *self = Self::default();
             (self.generations, self.cleaning) = (generations, cleaning);
             self.painted = painted;
-            self.pool = Some(Pool::new(
-                root,
-                context.viewport,
-                plan.kind,
-                initialize,
-                context.resources,
-            )?);
+            let pool = if build.is_some() || plan.kind == MapIconPool::AdjacencyRule {
+                Pool::new_for_build(
+                    root,
+                    context.viewport,
+                    plan.kind,
+                    requested_build,
+                    initialize,
+                    context.resources,
+                )?
+            } else {
+                Pool::new(
+                    root,
+                    context.viewport,
+                    plan.kind,
+                    initialize,
+                    context.resources,
+                )?
+            };
+            self.pool = Some(pool);
             self.built = Some((context.windows.clone(), context.viewport));
+            self.built_build = requested_build.map(str::to_owned);
             held = None;
         }
         let pool = self.pool.as_mut().expect("the matching view was built");
@@ -978,13 +1045,25 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                     return Ok(());
                 }
                 *self = Self::default();
-                self.pool = Some(Pool::new(
-                    root,
-                    context.viewport,
-                    plan.kind,
-                    initialize,
-                    context.resources,
-                )?);
+                let pool = if plan.kind == MapIconPool::AdjacencyRule {
+                    Pool::new_for_build(
+                        root,
+                        context.viewport,
+                        plan.kind,
+                        None,
+                        initialize,
+                        context.resources,
+                    )?
+                } else {
+                    Pool::new(
+                        root,
+                        context.viewport,
+                        plan.kind,
+                        initialize,
+                        context.resources,
+                    )?
+                };
+                self.pool = Some(pool);
                 self.built = Some((context.windows.clone(), context.viewport));
             }
             let pool = self.pool.as_mut().expect("the matching view was built");

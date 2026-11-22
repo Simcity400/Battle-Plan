@@ -18,7 +18,7 @@ use viewer_foundation::engagement_history::kept_frames;
 use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission};
 use viewer_foundation::map::counter_anchors::stack_anchor;
 use viewer_foundation::map::counter_hovers::land::{CounterControl, CounterHover};
-use viewer_foundation::map::country_index::FlagTags;
+use viewer_foundation::map::country_index::{CountryIndex, FlagTags};
 use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
@@ -2477,14 +2477,21 @@ pub struct HourTables {
     engaged: Arc<CombatFlags>,
 }
 
+impl HourTables {
+    pub fn country_index(&self) -> &Arc<CountryIndex> {
+        &self.base.country_index
+    }
+}
+
 pub struct HourBase {
     frame: Arc<DecodedFrame>,
     engagement_content: EngagementContent,
     relations: Result<Relations, &'static str>,
+    country_index: Arc<CountryIndex>,
+    #[cfg(test)]
     links: BTreeMap<u32, u32>,
     vision: Arc<Vision>,
     countries: Arc<Countries>,
-    country_ids: BTreeMap<u32, u32>,
     geography: Arc<geography::Geometry>,
     native_relations: Arc<allegiance::NativeRelations>,
     peace_conference: bool,
@@ -2532,6 +2539,18 @@ impl std::ops::DerefMut for HourTables {
 }
 
 impl HourBase {
+    fn links(&self) -> &BTreeMap<u32, u32> {
+        #[cfg(test)]
+        if !self.links.is_empty() {
+            return &self.links;
+        }
+        self.country_index.links()
+    }
+
+    fn country_ids(&self) -> &BTreeMap<u32, u32> {
+        self.country_index.ids()
+    }
+
     fn land(&self) -> CounterTables<'_> {
         CounterTables {
             type_tints: &self.type_tints,
@@ -2638,7 +2657,7 @@ impl HourTables {
         let (land_combats, naval_markers, engaged) = engagement_tables(
             &self.frame,
             &self.vision,
-            &self.links,
+            self.links(),
             self.relations.as_ref().map_err(|reason| *reason),
             &self.movement,
             &self.engagement_content,
@@ -2745,58 +2764,61 @@ pub fn hour_tables(
     )
 }
 
-#[derive(Default)]
 pub struct Carry {
+    country_index: viewer_foundation::map::memo::Settled<CountryIndex>,
     countries: carry::Carried<CountryInputs, u32>,
     pins: carry::Carried<HourPins, u32>,
     abilities: carry::Carried<AbilityInputs, ()>,
     native_relations: carry::Carried<allegiance::NativeRelations, ()>,
 }
 
+impl Default for Carry {
+    fn default() -> Self {
+        Self {
+            country_index: CountryIndex::memo(),
+            countries: Default::default(),
+            pins: Default::default(),
+            abilities: Default::default(),
+            native_relations: Default::default(),
+        }
+    }
+}
+
 struct CountryInputs {
-    links: BTreeMap<u32, u32>,
-    country_ids: BTreeMap<u32, u32>,
+    index: Arc<CountryIndex>,
     relations: Result<Relations, &'static str>,
     countries: Arc<Countries>,
     peace_conference: bool,
 }
 
-fn country_inputs(frame: &DecodedFrame, map: &MapData, ours: u32) -> io::Result<CountryInputs> {
-    let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect();
+fn country_inputs(
+    frame: &DecodedFrame,
+    map: &MapData,
+    ours: u32,
+    index_memo: Option<&viewer_foundation::map::memo::Settled<CountryIndex>>,
+) -> io::Result<CountryInputs> {
+    let index = match index_memo {
+        Some(memo) => CountryIndex::settled(memo, frame)?,
+        None => Arc::new(CountryIndex::read(frame)?),
+    };
     let country_source = core::<tables::Countries>(frame)?;
     let country_rows: BTreeMap<_, _> = country_source
         .iter()
         .map(|country| (country.canonical_slot, country))
         .collect();
-    let tags: BTreeMap<u32, String> = country_source
-        .iter()
-        .map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned()))
-        .collect();
-    let country_ids = country_source
-        .iter()
-        .map(|country| (country.canonical_slot, country.id))
-        .collect();
-    let appearances: BTreeMap<_, _> = rows::<tables::CountryAppearance>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.country, row))
-        .collect();
-    let relations = Relations::read(frame, &links);
+    let relations = Relations::read(frame, index.links());
     let countries = Countries {
-        tags,
-        flag_tags: initial_flags::flag_tags(&country_rows, &appearances),
+        index: Some(Arc::clone(&index)),
         sides: match &relations {
-            Ok(relations) => allegiance::counter_table(relations, &links, ours),
+            Ok(relations) => allegiance::counter_table(relations, index.links(), ours),
             Err(_) => BTreeMap::from([(ours, Allegiance::Ours)]),
         },
         groups: ideology_groups(frame, &country_rows)?,
-        ui_colors: UiColors::read(map, frame, &links)?,
+        ui_colors: UiColors::read(map, frame, index.links())?,
+        ..Default::default()
     };
     let peace_conference = peace_conference_hides_units(country_source, ours);
-    Ok(CountryInputs { links, country_ids, relations, countries: Arc::new(countries), peace_conference })
+    Ok(CountryInputs { index, relations, countries: Arc::new(countries), peace_conference })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2916,7 +2938,7 @@ pub fn naval_dominance_sources(
     if frame.complete::<tables::NavalMissionLedgers>().is_ok_and(|rows| rows.is_empty()) {
         return Ok(BTreeMap::new());
     }
-    let CountryInputs { links, country_ids, .. } = country_inputs(frame, map, ours).map_err(|error| error.to_string())?;
+    let CountryInputs { index, .. } = country_inputs(frame, map, ours, None).map_err(|error| error.to_string())?;
     let native = NativeInputs::read(frame).map_err(|error| error.to_string())?;
     let forces = table_access_rows::<tables::TaskForces>(frame)
         .map_err(|error| error.to_string())?
@@ -2930,7 +2952,7 @@ pub fn naval_dominance_sources(
         .as_ref()
         .map(|world| viewer_foundation::map::movement_reads::Moves::new(world, reads, &cells))
         .map_err(Clone::clone);
-    naval_mission_inputs::Hour::read(frame, content, &native, (&links, &country_ids), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
+    naval_mission_inputs::Hour::read(frame, content, &native, (index.links(), index.ids()), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
 }
 
 pub fn hour_tables_profiled(
@@ -2966,33 +2988,37 @@ pub fn hour_tables_profiled(
     let divisions = !left_out.has(Kinds::LAND) && need.shown.units;
     let shared = Arc::new(frame.clone());
     let lookups = Lookups::default();
-    let CountryInputs { links, country_ids, relations, countries, peace_conference } =
+    let CountryInputs { index: country_index, relations, countries, peace_conference } =
         spans.measure("overlay.tables.counters.country_inputs", |_| match carry {
-            Some(carry) => carry.countries.get_or_build(frame, &[], ours, || country_inputs(frame, map, ours)).map(|inputs| CountryInputs {
-                links: inputs.links.clone(),
-                country_ids: inputs.country_ids.clone(),
-                relations: inputs.relations.clone(),
-                countries: Arc::clone(&inputs.countries),
-                peace_conference: inputs.peace_conference,
-            }),
-            None => country_inputs(frame, map, ours),
+            Some(carry) => carry
+                .countries
+                .get_or_build(frame, &[], ours, || country_inputs(frame, map, ours, Some(&carry.country_index)))
+                .map(|inputs| CountryInputs {
+                    index: Arc::clone(&inputs.index),
+                    relations: inputs.relations.clone(),
+                    countries: Arc::clone(&inputs.countries),
+                    peace_conference: inputs.peace_conference,
+                }),
+            None => country_inputs(frame, map, ours, None),
         })?;
+    let links = country_index.links();
+    let country_ids = country_index.ids();
     let geography = spans.measure("overlay.tables.counters.geography", |_| {
         geography::read(frame, content)
     })?;
     let (pings, abilities, guns, movement, actions) =
         spans.measure("overlay.tables.counters.movement_actions", |spans| {
             let pings = spans.measure("overlay.tables.counters.movement_actions.pins", |_| match carry {
-                Some(carry) => carry.pins.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], ours, || HourPins::read(frame, &links, ours, content)).map(|pins| (*pins).clone()),
-                None => HourPins::read(frame, &links, ours, content),
+                Some(carry) => carry.pins.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], ours, || HourPins::read(frame, links, ours, content)).map(|pins| (*pins).clone()),
+                None => HourPins::read(frame, links, ours, content),
             })?;
             let abilities = spans.measure("overlay.tables.counters.movement_actions.abilities", |_| match carry {
                 _ if !need.shown.units => Ok(AbilityInputs::default()),
-                Some(carry) => carry.abilities.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], (), || AbilityInputs::read(frame, &links)).map(|abilities| (*abilities).clone()),
-                None => AbilityInputs::read(frame, &links),
+                Some(carry) => carry.abilities.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], (), || AbilityInputs::read(frame, links)).map(|abilities| (*abilities).clone()),
+                None => AbilityInputs::read(frame, links),
             })?;
             let hostility = spans.measure("overlay.tables.counters.movement_actions.hostility", |_| {
-                counter_action::DestinationHostility::read(frame, &links)
+                counter_action::DestinationHostility::read(frame, links)
             })?;
             let guns = spans.measure("overlay.tables.counters.movement_actions.guns", |_| {
                 if left_out.has(Kinds::GUNS) || !need.shown.units {
@@ -3023,7 +3049,7 @@ pub fn hour_tables_profiled(
             let (land_combats, naval_markers, engaged) = engagement_tables(
                 frame,
                 &vision,
-                &links,
+                links,
                 relations.as_ref().map_err(|reason| *reason),
                 &movement,
                 &engagement_content,
@@ -3051,8 +3077,8 @@ pub fn hour_tables_profiled(
                         &BaseContext {
                             content,
                             vision: &vision,
-                            links: &links,
-                            country_ids: &country_ids,
+                            links,
+                            country_ids,
                             relations: relations.as_ref().map_err(|reason| *reason),
                             order: order.as_ref(),
                             carry_tokens: need.by_key,
@@ -3078,8 +3104,8 @@ pub fn hour_tables_profiled(
                             MissionIcons::read(
                                 frame,
                                 &vision,
-                                &links,
-                                &country_ids,
+                                links,
+                                country_ids,
                                 &native,
                                 &forces,
                             )?
@@ -3113,7 +3139,7 @@ pub fn hour_tables_profiled(
                             frame,
                             content,
                             &native,
-                            (&links, &country_ids),
+                            (links, country_ids),
                             forces,
                             (mission_topology, moves),
                             vision.ours(),
@@ -3136,8 +3162,32 @@ pub fn hour_tables_profiled(
             BTreeSet::new()
         };
         let type_tints = spans.measure("overlay.tables.counters.remaining_hour_base.type_tints", |_| {
-            type_tint::Index::read(type_tints, frame, &links, vision.ours())
+            type_tint::Index::read(type_tints, frame, country_index.links(), vision.ours())
         });
+        let ideologies = spans.measure("overlay.tables.counters.remaining_hour_base.ideologies", |_| {
+            Ok::<_, io::Error>(
+                rows::<tables::TaskForces>(frame)?
+                    .rows()
+                    .iter()
+                    .filter_map(|force| country_index.links().get(&force.logical_owner).copied())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|slot| {
+                        (
+                            slot,
+                            naval::ideology_frame(frame, &content.ideologies, country_index.ids(), slot),
+                        )
+                    })
+                    .collect(),
+            )
+        })?;
+        let native_relations = spans.measure(
+            "overlay.tables.counters.remaining_hour_base.native_relations",
+            |_| match carry {
+                Some(carry) => carry.native_relations.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], (), || allegiance::NativeRelations::read(frame, country_index.links())),
+                None => allegiance::NativeRelations::read(frame, country_index.links()).map(Arc::new),
+            },
+        )?;
         let tables = HourBase {
             frame: Arc::clone(&shared),
             engagement_content,
@@ -3146,23 +3196,7 @@ pub fn hour_tables_profiled(
             naval: spans.measure("overlay.tables.counters.remaining_hour_base.naval", |_| {
                 NavalTables::read(frame, &vision)
             })?,
-            ideologies: spans.measure("overlay.tables.counters.remaining_hour_base.ideologies", |_| {
-                Ok::<_, io::Error>(
-                    rows::<tables::TaskForces>(frame)?
-                        .rows()
-                        .iter()
-                        .filter_map(|force| links.get(&force.logical_owner).copied())
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .map(|slot| {
-                            (
-                                slot,
-                                naval::ideology_frame(frame, &content.ideologies, &country_ids, slot),
-                            )
-                        })
-                        .collect(),
-                )
-            })?,
+            ideologies,
             bases: spans.measure("overlay.tables.counters.remaining_hour_base.bases", |_| {
                 match (need.shown.bases, left_out.has(Kinds::BASES)) {
                     (false, _) => Ok(BaseTables::none()),
@@ -3211,17 +3245,12 @@ pub fn hour_tables_profiled(
                     (true, false) => land::IconInputs::read(frame),
                 }
             })?,
-            native_relations: spans.measure(
-                "overlay.tables.counters.remaining_hour_base.native_relations",
-                |_| match carry {
-                    Some(carry) => carry.native_relations.get_or_build(frame, &[replay_data::rows::TableId::CountryLinks], (), || allegiance::NativeRelations::read(frame, &links)),
-                    None => allegiance::NativeRelations::read(frame, &links).map(Arc::new),
-                },
-            )?,
-            links,
+            native_relations,
+            country_index,
+            #[cfg(test)]
+            links: BTreeMap::new(),
             vision,
             countries,
-            country_ids,
             geography,
             peace_conference,
             order,
@@ -3259,7 +3288,7 @@ pub fn hour_tables_profiled(
         tables.divisions = spans.measure("overlay.tables.counters.divisions", |_| {
             division_counters(
                 frame,
-                &|raw| tables.links.get(&raw).copied(),
+                &|raw| tables.links().get(&raw).copied(),
                 &tables.land(),
             )
         })?;
@@ -3272,7 +3301,7 @@ pub fn hour_tables_profiled(
             equipment,
             vision: &tables.vision,
             native: &tables.native,
-            country_ids: &tables.country_ids,
+            country_ids: tables.country_ids(),
             aggression: &content.aggression,
             ideology: &ideology,
         };
@@ -3283,7 +3312,7 @@ pub fn hour_tables_profiled(
             movement_content,
             &tables.land(),
             &NavalContext::cached(frame, sources, &tables.naval)?,
-            &|raw| tables.links.get(&raw).copied(),
+            &|raw| tables.links().get(&raw).copied(),
         )
     })?;
     }
@@ -3318,7 +3347,7 @@ fn prepare_with(
 ) -> io::Result<PreparedCounters> {
     let frame: &DecodedFrame = &tables.frame;
     let mut out = CounterFrame::default();
-    let owner = |raw: u32| tables.links.get(&raw).copied();
+    let owner = |raw: u32| tables.links().get(&raw).copied();
     let layered = retained.as_deref().map(|retained| retained.layered().clone()).unwrap_or_default();
 
     out.report.grouping = inputs
@@ -3371,7 +3400,7 @@ fn prepare_with(
         equipment: inputs.equipment,
         vision: &tables.vision,
         native: &tables.native,
-        country_ids: &tables.country_ids,
+        country_ids: tables.country_ids(),
         aggression: &inputs.content.aggression,
         ideology: &ideology,
     };
@@ -3484,6 +3513,7 @@ fn prepare_with(
         fixed: out,
         land: prepared_land,
         drawn: DrawnCounters::default(),
+        motion_continuity: 0,
     })
 }
 
@@ -3604,6 +3634,7 @@ pub struct PreparedCounters {
     pub fixed: CounterFrame,
     land: Option<PreparedLand>,
     drawn: DrawnCounters,
+    motion_continuity: u64,
 }
 
 #[derive(Default)]
@@ -3618,6 +3649,21 @@ struct DrawnCounters {
 }
 
 impl PreparedCounters {
+    pub fn motion_layout(&self) -> Option<&counter_move::DrawnLayout> {
+        self.land.as_ref().map(|land| &land.layout)
+    }
+
+    pub fn motion_continuity(&self) -> u64 {
+        self.motion_continuity
+    }
+
+    pub fn set_motion_continuity(&mut self, continuity: u64) {
+        self.motion_continuity = continuity;
+        if let Some(land) = &self.land {
+            land.layout.set_continuity(continuity);
+        }
+    }
+
     pub fn flag_source<'a>(
         &'a self,
         assets: &'a CounterAssets,
@@ -3682,7 +3728,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (counter_pointer, counter_exit) =
             hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
         let DrawnCounters {
@@ -3794,7 +3840,7 @@ impl PreparedCounters {
         drop(span);
         missing_owners.sort_unstable();
         missing_owners.dedup();
-        let tags = land.as_ref().map(|land| &land.countries.tags);
+        let tags = land.as_ref().map(|land| land.countries.tags_map());
         assign_union(
             &mut report.missing_flags,
             &fixed.report.missing_flags,
@@ -3816,7 +3862,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<Option<viewer_foundation::profiling::OwnerSample>> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (counter_pointer, counter_exit) =
             hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
         if let Some(land) = land.as_mut() {
@@ -3943,7 +3989,7 @@ impl PreparedCounters {
         drop(span);
         missing_owners.sort_unstable();
         missing_owners.dedup();
-        let tags = land.as_ref().map(|land| &land.countries.tags);
+        let tags = land.as_ref().map(|land| land.countries.tags_map());
         assign_union(
             &mut report.missing_flags,
             &fixed.report.missing_flags,
@@ -3965,7 +4011,7 @@ impl PreparedCounters {
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
-        let Self { fixed, land, drawn } = self;
+        let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (mut scratch, mut report) = (Batch::default(), CounterReport::default());
         let countries = fixed.naval.countries.as_deref();
         if pools.pings {
@@ -4009,6 +4055,7 @@ impl PreparedCounters {
     }
 
     pub fn keep_drawn(&mut self, old: &mut PreparedCounters) {
+        self.set_motion_continuity(old.motion_continuity);
         if let (Some(land), Some(old)) = (self.land.as_mut(), old.land.as_mut()) {
             land.keep_drawn(old);
         }
@@ -4134,6 +4181,7 @@ fn draw_text(
 
 #[derive(Clone, Default)]
 struct Countries {
+    index: Option<Arc<CountryIndex>>,
     tags: BTreeMap<u32, String>,
     flag_tags: BTreeMap<u32, FlagTags>,
     sides: BTreeMap<u32, Allegiance>,
@@ -4142,8 +4190,18 @@ struct Countries {
 }
 
 impl Countries {
+    pub(super) fn tags_map(&self) -> &BTreeMap<u32, String> {
+        self.index.as_deref().map_or(&self.tags, CountryIndex::tags)
+    }
+
+    pub(super) fn flag_tags_map(&self) -> &BTreeMap<u32, FlagTags> {
+        self.index.as_deref().map_or(&self.flag_tags, CountryIndex::flag_tags)
+    }
+
     pub(super) fn same_flags(&self, other: &Self) -> bool {
-        self.tags == other.tags && self.flag_tags == other.flag_tags && self.groups == other.groups
+        self.tags_map() == other.tags_map()
+            && self.flag_tags_map() == other.flag_tags_map()
+            && self.groups == other.groups
     }
 }
 
@@ -4225,7 +4283,7 @@ impl Countries {
 
     fn warm_flags(&self, assets: &CounterAssets) {
         let keys: BTreeSet<String> = self
-            .tags
+            .tags_map()
             .keys()
             .filter_map(|&slot| self.flag_keys(slot))
             .flatten()
@@ -4257,7 +4315,7 @@ impl Countries {
     }
 
     fn flag_keys(&self, slot: u32) -> Option<Vec<String>> {
-        let (cosmetic, original) = self.flag_tags.get(&slot)?;
+        let (cosmetic, original) = self.flag_tags_map().get(&slot)?;
         let cosmetic = cosmetic.as_ref().ok()?;
         let group = self.groups.get(&slot)?.as_ref().ok()?;
         let keys = content_reader_country_names::country_names::flag_keys(
@@ -4269,7 +4327,7 @@ impl Countries {
     }
 
     fn flag_refusal(&self, slot: u32) -> Option<String> {
-        let Some((cosmetic, original)) = self.flag_tags.get(&slot) else {
+        let Some((cosmetic, original)) = self.flag_tags_map().get(&slot) else {
             return Some(format!(
                 "country slot {slot} flag needs its CountryAppearance row"
             ));

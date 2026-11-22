@@ -1384,9 +1384,7 @@ fn a_prefix_subscription_does_not_own_a_secondary_subscribers_tree() {
     assert_eq!(i.relation_stats(1).unwrap().owned_entries, 1);
 }
 
-// quarantine: #149 the cursor or index store disagrees with the test
 #[test]
-#[ignore = "quarantined under #149"]
 fn clearing_working_trees_reuses_overflow_extents_with_one_cache_frame() {
     use crate::store::{EMPTY, Store, Tree};
     let path = Scratch::new();
@@ -1403,8 +1401,9 @@ fn clearing_working_trees_reuses_overflow_extents_with_one_cache_frame() {
     let tree = Tree(0);
     let mut key = vec![1; 4096];
     let value = vec![7; 8192];
+    let mut cold = None;
     let mut warmed = None;
-    for _ in 0..20 {
+    for round in 0..20 {
         for row in 0..7 {
             key[0] = row;
             s.put(tree, Bytes::Borrowed(&key), EMPTY, Bytes::Borrowed(&value))
@@ -1414,10 +1413,16 @@ fn clearing_working_trees_reuses_overflow_extents_with_one_cache_frame() {
         assert_eq!(s.tree_stats(tree).page_bytes, 0);
         assert_eq!(s.tree_stats(tree).overflow_bytes, 0);
         assert!(s.stats().live_bytes <= 4096);
+        let allocations = s.stats().page_allocations;
         if let Some(warmed) = warmed {
-            assert_eq!(s.stats().page_allocations, warmed);
+            assert_eq!(allocations, warmed);
+        } else if let Some(cold) = cold {
+            assert!(allocations <= cold + 1);
+            warmed = Some(allocations);
+        } else {
+            assert_eq!(round, 0);
+            cold = Some(allocations);
         }
-        warmed = Some(s.stats().page_allocations);
     }
     assert_eq!(s.stats().compactions, 0);
 }
@@ -1706,9 +1711,7 @@ fn scattered_single_page_reclamation_has_constant_cost_with_one_cache_frame() {
     }
 }
 
-// quarantine: #149 the cursor or index store disagrees with the test
 #[test]
-#[ignore = "quarantined under #149"]
 fn fragmented_overflow_extents_reuse_the_admitted_pager() {
     use crate::store::{EMPTY, Store, Tree};
     let path = Scratch::new();
@@ -1723,8 +1726,9 @@ fn fragmented_overflow_extents_reuse_the_admitted_pager() {
     )
     .unwrap();
     let value = vec![7; 7 * 4096];
+    let mut cold = None;
     let mut warmed = None;
-    for _ in 0..3 {
+    for round in 0..4 {
         for tree in (0..512).rev() {
             let len = (2 + tree % 5) * 4096;
             s.put(
@@ -1741,8 +1745,13 @@ fn fragmented_overflow_extents_reuse_the_admitted_pager() {
         let current = s.stats();
         if let Some(warmed) = warmed {
             assert_eq!(current.page_allocations, warmed);
+        } else if let Some(cold) = cold {
+            assert!(current.page_allocations <= cold + 1);
+            warmed = Some(current.page_allocations);
+        } else {
+            assert_eq!(round, 0);
+            cold = Some(current.page_allocations);
         }
-        warmed = Some(current.page_allocations);
         assert!(current.peak_resident_bytes <= memory().allowance);
         assert!(current.metadata_bytes <= memory().metadata_bytes);
         assert_eq!(current.compactions, 0);

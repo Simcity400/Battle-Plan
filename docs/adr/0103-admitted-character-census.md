@@ -10,4 +10,4 @@ Copy sentinels in bounded guarded batches, offering all hints before reading the
 
 The parity fixture renders each requested byte window on demand at country scale. It compares decoded rows, arena bytes, failures and capacity demand across the loaned path, independent roster walks and the typed walk. It measures guarded calls at the copy, scatter, gather and prepared-plan boundaries used by live acquisition. A held loan or missing role jobs prevents a new gather for that hour without waiting.
 
-[Role census and history](../../crates/collector/src/extended/characters/census.rs)
+[Role census and history](../../crates/collector-characters/src/extended/characters/census.rs)

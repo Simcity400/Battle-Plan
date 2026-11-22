@@ -8,6 +8,7 @@ use viewer_foundation::engagement_history::Provenance;
 fn the_convoy_addition_takes_the_counter_colour_mode() {
     let tints = allegiance::Tints::VANILLA;
     let countries = Countries {
+        index: None,
         tags: BTreeMap::new(),
         flag_tags: BTreeMap::new(),
         sides: BTreeMap::new(),

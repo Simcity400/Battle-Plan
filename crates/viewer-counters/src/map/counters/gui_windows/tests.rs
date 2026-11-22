@@ -220,6 +220,7 @@ impl NavyArt for Art {
 
 fn countries() -> Countries {
     Countries {
+        index: None,
         tags: BTreeMap::from([(0, "AAA".to_owned()), (5, "BBB".to_owned())]),
         flag_tags: BTreeMap::new(),
         sides: BTreeMap::from([(0, Allegiance::Ours), (5, Allegiance::Enemy)]),

@@ -593,6 +593,7 @@ impl Shading {
 pub struct Part {
     pub path: String,
     pub child: Option<usize>,
+    pub background_index: Option<usize>,
     pub kind: PartKind,
     pub clip: Option<Clip>,
     pub color: [f32; 4],
@@ -739,6 +740,7 @@ pub struct Target {
 pub struct Region {
     pub path: String,
     pub owner: Option<String>,
+    pub background_index: Option<usize>,
     pub scroll: Option<(bool, i32)>,
     pub slide: Option<Slide>,
     pub rect: Rect,
@@ -1272,6 +1274,7 @@ struct Walk<'a> {
     diagnostics: Vec<Diagnostic>,
     refusals: Refusals,
     top: Option<usize>,
+    background_index: Option<usize>,
     opacity: f32,
     hits: Vec<Hittable>,
     hovered: Option<String>,
@@ -1412,6 +1415,23 @@ fn layout(
         drawn.target = target;
     }
     Ok(Some(drawn.finish(frame.size)))
+}
+
+#[cfg(test)]
+pub(super) fn partial_layout_for_tests(
+    window: &Element,
+    parent: [i32; 2],
+    resources: &dyn Resources,
+) -> (Layout, Refusals) {
+    let bindings = Bindings {
+        regions: true,
+        ..Bindings::default()
+    };
+    let frame = container_frame(window, Some(parent)).unwrap();
+    let mut walk = Walk::new(resources, &bindings);
+    let _ = walk.window(window, [0, 0], frame, None);
+    let refusals = std::mem::take(&mut walk.refusals);
+    (walk.finish(frame.size), refusals)
 }
 
 pub fn pointed_button(
@@ -1688,6 +1708,7 @@ impl<'a> Walk<'a> {
             self.regions.push(Region {
                 path: window.path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: None,
                 scroll: None,
                 slide: None,
                 rect: [
@@ -1858,7 +1879,7 @@ impl<'a> Walk<'a> {
         } else {
             [0, 0]
         };
-        for background in &container.backgrounds {
+        for (index, background) in container.backgrounds.iter().enumerate() {
             let Some(button) = background.button() else {
                 continue;
             };
@@ -1870,7 +1891,9 @@ impl<'a> Walk<'a> {
                 frame.size[0] - (left + right) - (button.position[0] + moved[0]),
                 frame.size[1] - (top + bottom) - (button.position[1] + moved[1]),
             ]);
+            let previous_background = self.background_index.replace(index);
             let drawn = self.drag_button(background, button, button.frame, at, clip);
+            self.background_index = previous_background;
             self.sized = None;
             if let Err(refusal) = drawn {
                 self.refusals.push(Refusal {
@@ -2012,6 +2035,7 @@ impl<'a> Walk<'a> {
             self.regions.push(Region {
                 path: element.path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: None,
                 scroll: None,
                 slide: None,
                 rect: [
@@ -2570,6 +2594,7 @@ impl<'a> Walk<'a> {
                     self.parts.push(Part {
                         path: path.clone(),
                         child: self.top,
+                        background_index: self.background_index,
                         kind: PartKind::MaskedFlag {
                             sprite: sprite.clone(),
                             flag: flag.texture,
@@ -2621,6 +2646,7 @@ impl<'a> Walk<'a> {
                     self.regions.push(Region {
                         path: path.clone(),
                         owner: self.region_owner.clone(),
+                        background_index: self.background_index,
                         scroll: None,
                         slide: None,
                         rect: [x, y, extent[0] as f32, extent[1] as f32],
@@ -2670,6 +2696,7 @@ impl<'a> Walk<'a> {
             self.regions.push(Region {
                 path: path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: self.background_index,
                 scroll: None,
                 slide: None,
                 rect,
@@ -2681,6 +2708,7 @@ impl<'a> Walk<'a> {
         self.parts.push(Part {
             path: path.clone(),
             child: self.top,
+            background_index: self.background_index,
             kind,
             clip,
             color,
@@ -3116,6 +3144,7 @@ impl<'a> Walk<'a> {
             self.regions.push(Region {
                 path: element.path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: None,
                 scroll: None,
                 slide: None,
                 rect: [
@@ -3484,6 +3513,7 @@ impl<'a> Walk<'a> {
         let text_part = |glyphs: Vec<DrawnGlyph>| Part {
             path: path.clone(),
             child: None,
+            background_index: None,
             kind: PartKind::Text {
                 font: font.facts.name.clone(),
                 glyphs,
@@ -3566,6 +3596,7 @@ impl<'a> Walk<'a> {
             self.parts.push(Part {
                 path: path.clone(),
                 child: self.top,
+                background_index: None,
                 kind: PartKind::Inline {
                     source,
                     rect,
@@ -4579,6 +4610,7 @@ impl Holder {
                 Region {
                     path: region.path.clone(),
                     owner: region.owner.clone(),
+                    background_index: region.background_index,
                     scroll: region.scroll,
                     slide: region.slide,
                     rect: [
