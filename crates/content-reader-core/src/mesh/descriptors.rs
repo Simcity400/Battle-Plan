@@ -1432,18 +1432,40 @@ fn recover_names(
     names
 }
 
+struct Binding<'a> {
+    value: &'a [u8],
+    alias: bool,
+    nested: bool,
+}
+
 fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String> {
-    let mut definitions = BTreeMap::<u32, Vec<&parser::Item>>::new();
-    definitions_in(items, &mut definitions);
+    let mut bindings = BTreeMap::<u32, Vec<Binding<'a>>>::new();
+    bindings_in(items, false, &mut bindings);
+    let mut names = BTreeSet::new();
+    let insert = |raw: &[u8], names: &mut BTreeSet<String>| {
+        if let Ok(text) = std::str::from_utf8(raw) {
+            let name = unquote(text);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    };
     let mut pending = Vec::new();
-    let mut references = |item: &'a parser::Item| {
+    let mut references = |item: &'a parser::Item, names: &mut BTreeSet<String>| {
         for field in item.value.items().unwrap_or(&[]) {
             if field.keyword_is("name")
                 && !field.quoted()
                 && let Some(raw) = field.value.scalar()
                 && raw.starts_with(b"@")
             {
-                pending.push(parser::variable_hash(&raw[1..]));
+                let hash = parser::variable_hash(&raw[1..]);
+                if bindings
+                    .get(&hash)
+                    .is_some_and(|bound| bound.iter().any(|binding| binding.nested))
+                {
+                    insert(raw, names);
+                }
+                pending.push(hash);
             }
         }
     };
@@ -1451,57 +1473,55 @@ fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String
         if item.keyword_is("objectTypes") {
             for block in item.value.items().unwrap_or(&[]) {
                 if words.iter().any(|word| block.keyword_is(word)) {
-                    references(block);
+                    references(block, &mut names);
                 }
             }
         } else if words.iter().any(|word| item.keyword_is(word)) {
-            references(item);
+            references(item, &mut names);
         }
     }
     let mut followed = BTreeSet::new();
-    let mut names = BTreeSet::new();
     while let Some(reference) = pending.pop() {
         if !followed.insert(reference) {
             continue;
         }
-        for definition in definitions.get(&reference).into_iter().flatten() {
-            let Some(raw) = definition.value.scalar() else {
-                continue;
-            };
-            if !definition.quoted() && raw.starts_with(b"@") {
-                pending.push(parser::variable_hash(&raw[1..]));
+        for binding in bindings.get(&reference).into_iter().flatten() {
+            if binding.alias {
+                pending.push(parser::variable_hash(&binding.value[1..]));
             }
-            if let Ok(text) = std::str::from_utf8(raw) {
-                let name = unquote(text);
-                if !name.is_empty() {
-                    names.insert(name);
-                }
-            }
+            insert(binding.value, &mut names);
         }
     }
     names
 }
 
-fn definitions_in<'a>(
+fn bindings_in<'a>(
     items: &'a [parser::Item],
-    definitions: &mut BTreeMap<u32, Vec<&'a parser::Item>>,
+    nested: bool,
+    bindings: &mut BTreeMap<u32, Vec<Binding<'a>>>,
 ) {
     for item in items {
-        match &item.value {
-            parser::Value::Scalar(_) => {
-                if !item.key_quoted
-                    && let Some(key) = item.key.as_deref()
-                    && key.starts_with(b"@")
-                {
-                    definitions
-                        .entry(parser::variable_hash(&key[1..]))
-                        .or_default()
-                        .push(item);
-                }
-            }
-            parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
-                definitions_in(items, definitions);
-            }
+        let value = match &item.value {
+            parser::Value::Scalar(raw) => Some(raw.as_slice()),
+            parser::Value::Tagged { tag, .. } => Some(tag.as_slice()),
+            parser::Value::Block(_) => None,
+        };
+        if let Some(value) = value
+            && !item.key_quoted
+            && let Some(key) = item.key.as_deref()
+            && key.starts_with(b"@")
+        {
+            bindings
+                .entry(parser::variable_hash(&key[1..]))
+                .or_default()
+                .push(Binding {
+                    value,
+                    alias: !item.quoted() && value.starts_with(b"@"),
+                    nested,
+                });
+        }
+        if let Some(children) = item.value.items() {
+            bindings_in(children, true, bindings);
         }
     }
 }
