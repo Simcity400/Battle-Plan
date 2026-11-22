@@ -669,8 +669,16 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
     playhead.seek(FIRST);
     let (mut head, mut out) = (FIRST, Vec::new());
     loop {
-        playhead.advance(head);
-        let (last, read) = played.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or_else(|_| panic!("no step at head {head}: {:?}", playhead.error()));
+        let mut next = None;
+        playhead
+            .wait_for(|| {
+                playhead.advance(head);
+                consumer.take(head, &mut Vec::new());
+                next = played.try_recv().ok();
+                next.is_some()
+            })
+            .unwrap_or_else(|error| panic!("no step at head {head}: {error}"));
+        let (last, read) = next.unwrap();
         consumer.take(head, &mut Vec::new());
         if let Some(read) = read {
             let before = declared.clone();

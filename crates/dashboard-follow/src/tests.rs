@@ -20,7 +20,6 @@ use std::{
     collections::BTreeMap,
     io,
     sync::{Arc, Mutex, mpsc},
-    time::Duration,
 };
 
 const TABLE: usize = 2;
@@ -240,8 +239,17 @@ impl Harness {
                     return out;
                 }
             }
-            self.playhead().advance(self.head);
-            let played = self.played.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| panic!("no step at head {} (the last seen ends at {}, Countries at {}, the newest built at {:?}, playing to {to}); the playhead says {:?}", self.head, self.seen, self.reached, self.playhead().newest(), self.playhead().error()));
+            let mut played = None;
+            let playhead = self.playhead.as_ref().expect("playing");
+            playhead
+                .wait_for(|| {
+                    playhead.advance(self.head);
+                    self.consumer.take(self.head, &mut Vec::new());
+                    played = self.played.try_recv().ok();
+                    played.is_some()
+                })
+                .unwrap_or_else(|error| panic!("no step at head {} (the last seen ends at {}, Countries at {}, the newest built at {:?}, playing to {to}): {error}", self.head, self.seen, self.reached, playhead.newest()));
+            let played = played.unwrap();
             self.awaiting &= !played.stats.reset;
             if !self.awaiting {
                 (self.seen, self.reached) = (played.stats.last, played.head);

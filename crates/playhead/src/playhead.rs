@@ -536,9 +536,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
-    if cfg!(any(test, feature = "test-support")) {
-        return Some(lock(mutex));
-    }
     match mutex.try_lock() {
         Ok(held) => Some(held),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
