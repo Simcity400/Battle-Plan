@@ -4,7 +4,7 @@ use content_reader_localisation::{localisation::Argument, localisation::Localisa
 use std::collections::BTreeMap;
 
 use super::{
-    Evaluator, Scope, Scopes,
+    Eval, Evaluator, Scope, Scopes, VariableSession,
     eval::{Child, key_text},
     event_scopes::event_object,
     load::Unit,
@@ -161,7 +161,7 @@ pub fn describe_at<'a>(
         out: String::new(),
         refusals,
     };
-    Formatter {
+    let _ = Formatter {
         evaluator,
         host: &host,
         localisation,
@@ -195,7 +195,7 @@ pub fn describe_lines<'a>(
     evaluator.begin_description_in(scopes);
     let mut out = Vec::new();
     let mut sink = Sink::Lines(&mut out);
-    Formatter {
+    let _ = Formatter {
         evaluator,
         host,
         localisation,
@@ -262,6 +262,12 @@ fn default_graph(scopes: Scopes) -> Result<EventScopes, String> {
     Ok(graph)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Combine {
+    All,
+    Any,
+}
+
 struct Formatter<'r, 'e, 'a> {
     evaluator: &'r Evaluator<'e, 'a>,
     host: &'r dyn Host<'a>,
@@ -308,17 +314,20 @@ impl<'a> Formatter<'_, '_, 'a> {
         (indent == 0 || mode == 1) && mode != 2
     }
 
-    fn prefix(
+    fn prefix_eval(
         &self,
         unit: &Unit<'_, 'a>,
         scopes: Scopes,
         inverted: bool,
         indent: usize,
         mode: u8,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<Eval>), String> {
         let mut text = "   ".repeat(indent);
+        let mut evaluated = None;
         if Self::checks_prefix(indent, mode) {
-            let fulfilled = self.evaluator.unit(unit, scopes).decided()? != inverted;
+            let value = self.evaluator.unit(unit, scopes);
+            let fulfilled = value.clone().decided()? != inverted;
+            evaluated = Some(value);
             text.push_str(&self.localised(
                 if fulfilled {
                     b"TRIGGER_FULLFILLED_PREFIX"
@@ -328,7 +337,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 &[],
             )?);
         }
-        Ok(text)
+        Ok((text, evaluated))
     }
 
     fn isolated_prefix(
@@ -340,7 +349,9 @@ impl<'a> Formatter<'_, '_, 'a> {
         mode: u8,
     ) -> Result<String, String> {
         let session = self.evaluator.variable_session();
-        let result = self.prefix(unit, scopes, inverted, indent, mode);
+        let result = self
+            .prefix_eval(unit, scopes, inverted, indent, mode)
+            .map(|(text, _)| text);
         self.evaluator.restore_variable_session(&session);
         result
     }
@@ -358,7 +369,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
         sink: &mut Sink<'_>,
-    ) {
+    ) -> Eval {
         let grouped = indent != 0 && units.len() >= 2;
         if grouped {
             match self.localised(
@@ -382,10 +393,15 @@ impl<'a> Formatter<'_, '_, 'a> {
             inverted,
             indent + usize::from(grouped),
             if grouped { 0 } else { mode },
+            Combine::All,
             sink,
-        );
+        )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Trigger body formatting keeps logical combination, inversion, indentation, display mode and output sink separate"
+    )]
     fn body(
         &self,
         units: &[Unit<'_, 'a>],
@@ -393,13 +409,46 @@ impl<'a> Formatter<'_, '_, 'a> {
         inverted: bool,
         indent: usize,
         mode: u8,
+        combine: Combine,
         sink: &mut Sink<'_>,
-    ) {
+    ) -> Eval {
+        let mut result = match combine {
+            Combine::All => Eval::True,
+            Combine::Any => Eval::False,
+        };
+        let mut stopped: Option<VariableSession> = None;
         for unit in units {
-            if let Err(why) = self.describe_unit(unit, scopes, inverted, indent, mode, sink) {
-                self.taint_and_push_err(sink, unit_key(unit), why);
+            let uncertain = stopped.is_none() && matches!(result, Eval::Unknown(_));
+            let outcome = self.evaluator.maybe(uncertain, || {
+                match self.describe_unit(unit, scopes, inverted, indent, mode, sink) {
+                    Ok(value) => value,
+                    Err(why) => {
+                        if stopped.is_none() {
+                            self.taint_and_push_err(sink, unit_key(unit), why.clone());
+                        } else {
+                            sink.push_err(unit_key(unit), why.clone());
+                        }
+                        Eval::unknown(why)
+                    }
+                }
+            });
+            if let Some(saved) = &stopped {
+                self.evaluator.restore_variable_session(saved);
+                continue;
+            }
+            result = match combine {
+                Combine::All => result.and(|| outcome),
+                Combine::Any => result.or(|| outcome),
+            };
+            let short_circuit = match combine {
+                Combine::All => result == Eval::False,
+                Combine::Any => result == Eval::True,
+            };
+            if short_circuit {
+                stopped = Some(self.evaluator.variable_session());
             }
         }
+        result
     }
 
     #[allow(
@@ -414,9 +463,9 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
         sink: &mut Sink<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<Eval, String> {
         match unit {
-            Unit::Unknown(why) => return Err(why.clone().to_string()),
+            Unit::Unknown(why) => Err(why.clone().to_string()),
             Unit::Chain(chain) => {
                 for branch in chain {
                     if let Some(why) = &branch.refused {
@@ -424,7 +473,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     }
                     let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
                     if selected {
-                        self.and(
+                        return Ok(self.and(
                             "if",
                             &branch.body,
                             scopes,
@@ -432,15 +481,13 @@ impl<'a> Formatter<'_, '_, 'a> {
                             indent,
                             if mode == 2 { 2 } else { 0 },
                             sink,
-                        );
-                        break;
+                        ));
                     }
                 }
+                Ok(Eval::True)
             }
             Unit::One(item, child) => match child {
-                Child::Keyless => {
-                    return Err("keyless trigger description is not reproduced".into());
-                }
+                Child::Keyless => Err("keyless trigger description is not reproduced".into()),
                 Child::Scripted(template) => {
                     let frame = content_reader_core::trigger_keys::frame(template);
                     if let Some(why) = self.evaluator.enter_frame(frame) {
@@ -448,11 +495,11 @@ impl<'a> Formatter<'_, '_, 'a> {
                     }
                     let prepared = template.body.as_ref().map_err(Clone::clone).and_then(|body| {
                         let flip = trigger_boolean(item).map_err(|why| why.to_string())?;
-                        Ok((body, inverted == flip))
+                        Ok((body, flip, inverted == flip))
                     });
                     match prepared {
-                        Ok((body, child_inverted)) => {
-                            self.and(
+                        Ok((body, flip, child_inverted)) => {
+                            let value = self.and(
                                 &key_text(item),
                                 &self.evaluator.units(body),
                                 scopes,
@@ -462,33 +509,36 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 sink,
                             );
                             self.evaluator.leave_frame();
+                            Ok(if flip { value } else { value.negate() })
                         }
                         Err(why) => {
                             self.evaluator.leave_frame();
-                            return Err(why);
+                            Err(why)
                         }
                     }
                 }
                 Child::Scope(parsed) => {
-                    self.scope(unit, item, parsed, scopes, inverted, indent, mode, sink)?;
+                    self.scope(unit, item, parsed, scopes, inverted, indent, mode, sink)
                 }
                 Child::Coded(_, name) if name == "hidden_trigger" => {
                     let Some(items) = item.value.items() else {
                         return Err("hidden_trigger requires block".into());
                     };
-                    if let Err(why) = self.evaluator.evaluate(items, scopes).decided() {
+                    let value = self.evaluator.evaluate(items, scopes);
+                    if let Err(why) = value.clone().decided() {
                         self.evaluator.taint_temps(
                             crate::triggers::Failure::from(why).context(|why| {
                                 format!("trigger tooltip session is uncertain: {why}")
                             }),
                         );
                     }
+                    Ok(value)
                 }
                 Child::Coded(_, name) if name == "and" => {
                     let Some(items) = item.value.items() else {
                         return Err("logical trigger requires block".into());
                     };
-                    self.and(
+                    Ok(self.and(
                         &key_text(item),
                         &self.evaluator.units(items),
                         scopes,
@@ -496,20 +546,23 @@ impl<'a> Formatter<'_, '_, 'a> {
                         indent,
                         if mode == 2 { 2 } else { 0 },
                         sink,
-                    );
+                    ))
                 }
                 Child::Coded(_, name) if name == "not" => {
                     let Some(items) = item.value.items() else {
                         return Err("logical trigger requires block".into());
                     };
-                    self.body(
-                        &self.evaluator.units(items),
-                        scopes,
-                        !inverted,
-                        indent,
-                        if mode == 2 { 2 } else { 0 },
-                        sink,
-                    );
+                    Ok(self
+                        .body(
+                            &self.evaluator.units(items),
+                            scopes,
+                            !inverted,
+                            indent,
+                            if mode == 2 { 2 } else { 0 },
+                            Combine::Any,
+                            sink,
+                        )
+                        .negate())
                 }
                 Child::Coded(_, name) if name == "or" => {
                     let Some(items) = item.value.items() else {
@@ -537,34 +590,37 @@ impl<'a> Formatter<'_, '_, 'a> {
                         }
                         (prefix, starts) => {
                             if let Err(why) = prefix {
-                                self.taint_and_push_err(sink, label.clone(), why);
+                                sink.push_err(label.clone(), why);
                             }
                             if let Err(why) = starts {
                                 sink.push_err(label, why);
                             }
                         }
                     }
-                    self.body(
+                    Ok(self.body(
                         &self.evaluator.units(items),
                         scopes,
                         inverted,
                         indent + 1,
                         if mode == 2 { 2 } else { 0 },
+                        Combine::Any,
                         sink,
-                    );
+                    ))
                 }
                 _ => {
                     let own = self.own(item, child, scopes, inverted)?;
                     let custom = item.keyword_is("custom_trigger_tooltip")
                         || item.keyword_is("custom_override_tooltip");
                     let has_children = !custom && !children(item).is_empty();
-                    let mut evaluated = false;
+                    let mut evaluated = None;
                     if !own.is_empty() {
                         let mut line = if has_children {
                             self.isolated_prefix(unit, scopes, inverted, indent, mode)?
                         } else {
-                            evaluated = Self::checks_prefix(indent, mode);
-                            self.prefix(unit, scopes, inverted, indent, mode)?
+                            let (line, value) =
+                                self.prefix_eval(unit, scopes, inverted, indent, mode)?;
+                            evaluated = value;
+                            line
                         };
                         line.push_str(&own);
                         if !own.ends_with('\n') {
@@ -573,29 +629,31 @@ impl<'a> Formatter<'_, '_, 'a> {
                         sink.push_ok(key_text(item), line);
                     }
                     if custom {
-                        if !evaluated
-                            && let Err(why) = self.evaluator.unit(unit, scopes).decided()
-                        {
+                        let value = evaluated.unwrap_or_else(|| self.evaluator.unit(unit, scopes));
+                        if let Err(why) = value.clone().decided() {
                             self.evaluator.taint_temps(
                                 crate::triggers::Failure::from(why).context(|why| {
                                     format!("trigger tooltip session is uncertain: {why}")
                                 }),
                             );
                         }
-                    } else {
-                        self.body(
+                        Ok(value)
+                    } else if has_children {
+                        Ok(self.body(
                             &self.evaluator.units(children(item)),
                             scopes,
                             inverted,
                             indent,
                             if mode == 2 { 2 } else { 0 },
+                            Combine::All,
                             sink,
-                        );
+                        ))
+                    } else {
+                        Ok(evaluated.unwrap_or_else(|| self.evaluator.unit(unit, scopes)))
                     }
                 }
             },
         }
-        Ok(())
     }
 
     #[allow(
@@ -612,13 +670,19 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
         sink: &mut Sink<'_>,
-    ) -> Result<(), String> {
-        let entered = self
+    ) -> Result<Eval, String> {
+        let Some(entered) = self
             .evaluator
             .enter_scope(parsed, scopes)
             .map_err(|why| why.to_string())?
             .filter(|entered| entered.this != Scope::State(super::NULL_STATE))
-            .ok_or_else(|| format!("trigger scope {} resolves no target", key_text(item)))?;
+        else {
+            sink.push_err(
+                key_text(item),
+                format!("trigger scope {} resolves no target", key_text(item)),
+            );
+            return Ok(Eval::False);
+        };
         let heading = match parsed {
             Parsed::Keyword(
                 keyword @ (Keyword::Owner
@@ -667,8 +731,16 @@ impl<'a> Formatter<'_, '_, 'a> {
                 let mut inner = Vec::new();
                 let mut child_sink = Sink::Lines(&mut inner);
                 self.host.enter_scope(parsed, entered);
-                if units.len() < 2 {
-                    self.body(&units, entered, inverted, 0, 2, &mut child_sink);
+                let outcome = if units.len() < 2 {
+                    self.body(
+                        &units,
+                        entered,
+                        inverted,
+                        0,
+                        2,
+                        Combine::All,
+                        &mut child_sink,
+                    )
                 } else {
                     self.body(
                         &units,
@@ -676,9 +748,10 @@ impl<'a> Formatter<'_, '_, 'a> {
                         inverted,
                         indent + 1,
                         if mode == 2 { 2 } else { 0 },
+                        Combine::All,
                         &mut child_sink,
-                    );
-                }
+                    )
+                };
                 self.host.leave_scope();
                 if units.len() < 2 {
                     if let Some(first_ok) = inner.iter().position(|(_, entry)| entry.is_ok()) {
@@ -708,27 +781,29 @@ impl<'a> Formatter<'_, '_, 'a> {
                         sink.push_entry(child_key, entry);
                     }
                 }
+                Ok(outcome)
             }
             (prefix, heading) => {
                 if let Err(why) = prefix {
-                    self.taint_and_push_err(sink, label.clone(), why);
+                    sink.push_err(label.clone(), why);
                 }
                 if let Err(why) = heading {
                     sink.push_err(label, why);
                 }
                 self.host.enter_scope(parsed, entered);
-                self.body(
+                let outcome = self.body(
                     &units,
                     entered,
                     inverted,
                     indent + 1,
                     if mode == 2 { 2 } else { 0 },
+                    Combine::All,
                     sink,
                 );
                 self.host.leave_scope();
+                Ok(outcome)
             }
         }
-        Ok(())
     }
 
     fn own(

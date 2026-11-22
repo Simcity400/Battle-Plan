@@ -344,6 +344,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
         ("TRIGGER_UNFULLFILLED_PREFIX", "[no]"),
         ("TRIGGER_AND_STARTS", "All"),
         ("TRIGGER_OR_STARTS", "Any"),
+        ("TRIGGER_ALWAYS_TRUE", "Always"),
         ("TRIGGER_ALWAYS_FALSE", "Never"),
     ]
     .into_iter()
@@ -394,6 +395,27 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
         )
         .unwrap(),
         "[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "OR={always=yes hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "OR={ROOT={always=no hidden_trigger={add_to_temp_variable={x=1}}} always=yes} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[yes]Any:\n   :\n      Never\n   Always\n[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "NOT={always=yes hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}"
+        )
+        .unwrap(),
+        "[no]Never\n[no]Never\n"
     );
     let or_refused = run_synthetic("OR={always=no synthetic_unported_trigger=yes}").unwrap_err();
     assert!(or_refused.contains("   Never\n"), "{or_refused}");

@@ -1306,6 +1306,7 @@ mod tests {
             ("TRIGGER_FULLFILLED_PREFIX", "+"),
             ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
             ("TRIGGER_OR_STARTS", "either"),
+            ("TRIGGER_ALWAYS_TRUE", "always"),
             ("TRIGGER_ALWAYS_FALSE", "never"),
             ("custom", "custom text"),
         ]
@@ -1366,5 +1367,20 @@ mod tests {
             Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
             "{custom_lines:?}"
         );
+        for source in [
+            "OR = { always = yes hidden_trigger = { add_to_temp_variable = { x = 1 } } } if = { limit = { check_variable = { temp_var:x = 0 } } always = no }",
+            "OR = { FROM = { always = no hidden_trigger = { add_to_temp_variable = { x = 1 } } } always = yes } if = { limit = { check_variable = { temp_var:x = 0 } } always = no }",
+            "OR = { NOT = { always = yes hidden_trigger = { add_to_temp_variable = { x = 1 } } } always = yes } if = { limit = { check_variable = { temp_var:x = 0 } } always = no }",
+        ] {
+            kind.launchable = parse(source);
+            let (result, short_circuit_lines) =
+                context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+            assert_eq!(result, Eval::False, "{source}");
+            assert_eq!(
+                short_circuit_lines.last(),
+                Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+                "{source}: {short_circuit_lines:?}"
+            );
+        }
     }
 }

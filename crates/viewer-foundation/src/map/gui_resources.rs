@@ -224,29 +224,6 @@ pub enum HitMode {
     NativeGeometry,
 }
 
-fn background_slots(
-    background: &native::Element,
-    resources: &dyn native_gui::Resources,
-) -> (bool, bool) {
-    let Some(button) = background.button() else {
-        return (false, false);
-    };
-    let Some((_, sprite)) =
-        native_gui::drawn_sprite(&button.sprite, |name| resources.sprite_info(name))
-    else {
-        return (false, false);
-    };
-    match sprite.kind {
-        native_gui::SpriteKind::Resizeable | native_gui::SpriteKind::CircularProgress { .. } => {
-            (false, false)
-        }
-        native_gui::SpriteKind::PieChart { .. } | native_gui::SpriteKind::LineChart { .. } => {
-            (true, false)
-        }
-        _ => (true, true),
-    }
-}
-
 pub fn observer_hit_rectangles(
     control: &native::Element,
     layout: &Layout,
@@ -277,19 +254,19 @@ pub fn observer_hit_rectangles(
                 .count()
                 > 1;
             let (region_occurrence, part_occurrence) = if duplicate {
-                let (has_region, has_part) = background_slots(background, resources);
+                let (regions, parts) = native_gui::background_emitted_counts(background, resources);
                 let region_occurrence = *region_counts.get(background.path.as_str()).unwrap_or(&0);
-                let part_occurrence = *part_counts.get(background.path.as_str()).unwrap_or(&0);
-                if has_region {
-                    *region_counts.entry(background.path.as_str()).or_default() += 1;
+                let part_base = *part_counts.get(background.path.as_str()).unwrap_or(&0);
+                if regions > 0 {
+                    *region_counts.entry(background.path.as_str()).or_default() += regions;
                 }
-                if has_part {
-                    *part_counts.entry(background.path.as_str()).or_default() += 1;
+                if parts > 0 {
+                    *part_counts.entry(background.path.as_str()).or_default() += parts;
                 }
-                if !has_region && !has_part {
+                if regions == 0 && parts == 0 {
                     continue;
                 }
-                (region_occurrence, part_occurrence)
+                (region_occurrence, part_base + parts.saturating_sub(1))
             } else {
                 (0, 0)
             };
@@ -505,6 +482,15 @@ mod tests {
                 background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
             containerWindowType = { name = split_missing size = { width = 80 height = 20 } clipping = no
                 background = { position = { x = 0 y = 0 } spriteType = GFX_missing }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_unloaded size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_unloaded alwaystransparent = yes }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_unloaded_opaque size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_unloaded }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_text_sprite size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_text_bg alwaystransparent = yes }
                 background = { position = { x = 40 y = 0 } spriteType = GFX_even } } }"#,
         );
         let resources = gui::fixture();
@@ -549,5 +535,31 @@ mod tests {
             hits.iter().map(|hit| hit.rect).collect::<Vec<_>>(),
             [[50.0, 5.0, 20.0, 10.0]]
         );
+
+        let mut special = gui::fixture();
+        let mut unloaded = special.sprites["GFX_even"].clone();
+        unloaded.missing = Some("its texture is missing".into());
+        special.sprites.insert("GFX_unloaded", unloaded);
+        let mut text_sprite = special.sprites["GFX_even"].clone();
+        text_sprite.kind = native_gui::SpriteKind::Text { textured: false };
+        special.sprites.insert("GFX_text_bg", text_sprite);
+        for name in [
+            b"split_unloaded".as_slice(),
+            b"split_unloaded_opaque".as_slice(),
+            b"split_text_sprite".as_slice(),
+        ] {
+            let panel = windows.gui_type(name).unwrap();
+            let mut instance = Instance::construct(panel, [200, 100], &special).unwrap();
+            instance.gui_show(panel, panel).unwrap();
+            let layout = instance.layout(panel, &special, None).unwrap().unwrap();
+            let hits = hit_rectangles(panel, &layout, [10, 5], &special, &mut notes);
+            assert!(notes.is_empty(), "{notes:?}");
+            assert_eq!(
+                hits.iter().map(|hit| hit.rect).collect::<Vec<_>>(),
+                [[50.0, 5.0, 20.0, 10.0]],
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
     }
 }

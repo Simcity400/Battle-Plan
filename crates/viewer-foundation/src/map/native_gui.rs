@@ -1188,6 +1188,46 @@ pub(super) fn drawn_sprite<T>(
         .find_map(|name| Some((name.to_vec(), lookup(name)?)))
 }
 
+fn missing_texture_reason(info: &SpriteInfo) -> Option<&str> {
+    matches!(
+        info.kind,
+        SpriteKind::Plain | SpriteKind::FrameAnimated { .. } | SpriteKind::Tile { .. }
+    )
+    .then_some(info.missing.as_deref())
+    .flatten()
+}
+
+pub(super) fn background_emitted_counts(
+    background: &Element,
+    resources: &dyn Resources,
+) -> (usize, usize) {
+    let Some(button) = background.button() else {
+        return (0, 0);
+    };
+    let Some((_, info)) = drawn_sprite(&button.sprite, |name| resources.sprite_info(name)) else {
+        return (0, 0);
+    };
+    if missing_texture_reason(&info).is_some() {
+        return (0, 0);
+    }
+    match info.kind {
+        SpriteKind::Text { .. }
+        | SpriteKind::Resizeable
+        | SpriteKind::PieChart { size: None }
+        | SpriteKind::CircularProgress { .. } => (0, 0),
+        SpriteKind::PieChart { size: Some(_) } | SpriteKind::LineChart { .. } => (1, 0),
+        SpriteKind::MaskedShield { small, .. } => {
+            let flag = usize::from(matches!(resources.shield_flag(small, 0), Ok(Some(_))));
+            (1, 1 + flag)
+        }
+        SpriteKind::Plain
+        | SpriteKind::Progress { .. }
+        | SpriteKind::CorneredTile { .. }
+        | SpriteKind::Tile { .. }
+        | SpriteKind::FrameAnimated { .. } => (1, 1),
+    }
+}
+
 pub(super) fn text_only(button: &native::Button, sprite: &[u8], text: Option<&str>) -> bool {
     sprite.is_empty() && !button.font.is_empty() && text != Some("")
 }
@@ -2218,11 +2258,7 @@ impl<'a> Walk<'a> {
             Vec::new()
         };
         if texture.is_none()
-            && let Some(why) = &info.missing
-            && matches!(
-                info.kind,
-                SpriteKind::Plain | SpriteKind::FrameAnimated { .. } | SpriteKind::Tile { .. }
-            )
+            && let Some(why) = missing_texture_reason(&info)
         {
             self.diagnostics.push(Diagnostic {
                 path: path.clone(),
