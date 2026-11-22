@@ -34,13 +34,13 @@ impl ActiveEntry {
         if self.name != name || self.bare != bare || self.variables != scopes.variables.get() {
             return false;
         }
-        if scopes.valid_links.get() {
+        if scopes.valid_links {
             let distance = scopes.prev_distance.borrow();
             if distance[self.at] != distance[at] {
                 return false;
             }
         }
-        let valid_links = scopes.valid_links.get();
+        let valid_links = scopes.valid_links;
         let scopes = scopes.scopes.borrow();
         if scopes[self.at].random_seed != scopes[at].random_seed
             || scopes[self.at].random_seed_refusal != scopes[at].random_seed_refusal

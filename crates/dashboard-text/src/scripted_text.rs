@@ -280,7 +280,7 @@ pub struct ExpansionScopes<'e, 'a> {
     session: std::cell::RefCell<Option<crate::triggers::VariableSession>>,
     active: std::cell::RefCell<Vec<entries::ActiveEntry>>,
     prev_distance: std::cell::RefCell<Vec<Option<usize>>>,
-    valid_links: std::cell::Cell<bool>,
+    valid_links: bool,
     fresh_depth: std::cell::Cell<usize>,
     on_large_stack: bool,
     pub(crate) world: Option<&'e crate::triggers::World<'a>>,
@@ -336,11 +336,11 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             session: std::cell::RefCell::new(None),
             active: std::cell::RefCell::new(Vec::new()),
             prev_distance: std::cell::RefCell::new(prev_distance),
-            valid_links: std::cell::Cell::new(scopes.scopes.iter().all(|scope| {
+            valid_links: scopes.scopes.iter().all(|scope| {
                 [scope.root, scope.from, scope.prev]
                     .iter()
                     .all(|link| !matches!(link, Link::Scope(to) if *to >= scopes.scopes.len()))
-            })),
+            }),
             fresh_depth: std::cell::Cell::new(0),
             on_large_stack: false,
             world: None,
@@ -353,8 +353,24 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         self.scopes.borrow()[at]
     }
 
-    fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s, 'e, 'a> {
+    fn append_description<'s>(
+        &'s self,
+        scopes: &EventScopes,
+    ) -> Result<DescriptionScopeGuard<'s, 'e, 'a>, String> {
         let next = Self::new(scopes);
+        if !next.valid_links {
+            return Err("scripted text event scope link is not given".into());
+        }
+        for (kind, targets) in [
+            ("tooltip target", &scopes.tooltip_targets),
+            ("saved target", &scopes.saved_targets),
+        ] {
+            if let Some((&at, _)) = targets.last_key_value()
+                && at >= scopes.scopes.len()
+            {
+                return Err(format!("scripted text {kind} event scope {at} is not given"));
+            }
+        }
         let offset = self.scopes.borrow().len();
         let rebase = |link| match link {
             Link::Scope(at) => Link::Scope(at + offset),
@@ -375,9 +391,6 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             .borrow_mut()
             .extend(next.prev_distance.into_inner());
         let variables = self.variables.replace(scopes.variables);
-        let valid_links = self
-            .valid_links
-            .replace(self.valid_links.get() && next.valid_links.get());
         let mut targets = self.targets.borrow_mut();
         for (at, values) in &scopes.tooltip_targets {
             targets.tooltip_targets.insert(at + offset, values.clone());
@@ -389,13 +402,12 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             &mut targets.global_tooltip_targets,
             scopes.global_tooltip_targets.clone(),
         );
-        DescriptionScopeGuard {
+        Ok(DescriptionScopeGuard {
             expanded: self,
             offset,
             variables,
-            valid_links,
             globals,
-        }
+        })
     }
 
     fn linked(&self, at: usize, link: Link, name: &str) -> Result<usize, String> {
@@ -432,7 +444,6 @@ struct DescriptionScopeGuard<'s, 'e, 'a> {
     expanded: &'s ExpansionScopes<'e, 'a>,
     offset: usize,
     variables: ScopeVariables,
-    valid_links: bool,
     globals: Vec<(Vec<u8>, EventObject)>,
 }
 
@@ -444,7 +455,6 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
             .borrow_mut()
             .truncate(self.offset);
         self.expanded.variables.set(self.variables);
-        self.expanded.valid_links.set(self.valid_links);
         let mut targets = self.expanded.targets.borrow_mut();
         targets.tooltip_targets.retain(|at, _| *at < self.offset);
         targets.saved_targets.retain(|at, _| *at < self.offset);
@@ -524,7 +534,8 @@ impl ScriptedContent {
     }
 
     pub fn with_effect_describer(mut self, factory: EffectDescriberFactory) -> Self {
-        self.effect_describer = Some(factory());
+        debug_assert!(self.effect_describer.is_none(), "effect describer is already installed");
+        self.effect_describer.get_or_insert_with(factory);
         self
     }
 
@@ -1115,7 +1126,10 @@ impl<'a> ScriptedText<'a> {
                 &fresh
             }
         };
-        let appended = expanded.append_description(scopes);
+        let appended = match expanded.append_description(scopes) {
+            Ok(appended) => appended,
+            Err(why) => return (Err(why), session),
+        };
         expanded.session.replace(session);
         let object = faction_environment.map_or(Object::Event, Object::FactionEnvironment);
         let result = self.process(text, 0, expanded, at + appended.offset, object);

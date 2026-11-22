@@ -272,8 +272,6 @@ fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_
 
 #[test]
 fn description_append_preserves_active_cursor_graph_and_guard_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut graph = EventScopes::new(vec![
         EventScope {
             root: Link::Scope(1),
@@ -298,7 +296,7 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
         variables: graph.variables,
     });
     {
-        let appended = expanded.append_description(&graph);
+        let appended = expanded.append_description(&graph).unwrap();
         assert_eq!(appended.offset, 3);
         let active = expanded.active.borrow();
         assert_eq!(active.len(), 1);
@@ -322,12 +320,30 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
     );
     assert_eq!(expanded.variables.get(), graph.variables);
     assert_eq!(expanded.active.borrow()[0].at, 0);
-    graph.scopes[0].prev = Link::Scope(99);
-    {
-        let _appended = expanded.append_description(&graph);
-        assert!(!expanded.valid_links.get());
+    let mut child = graph.clone();
+    for link in [graph.scopes.len(), usize::MAX] {
+        child.scopes[0].prev = Link::Scope(link);
+        assert_eq!(
+            expanded.append_description(&child).err().as_deref(),
+            Some("scripted text event scope link is not given")
+        );
     }
-    assert!(expanded.valid_links.get());
+    child.scopes[0].prev = graph.scopes[0].prev;
+    let target = vec![(b"child".to_vec(), EventObject::State(12))];
+    child.tooltip_targets.insert(usize::MAX, target.clone());
+    assert_eq!(
+        expanded.append_description(&child).err(),
+        Some(format!("scripted text tooltip target event scope {} is not given", usize::MAX))
+    );
+    child.tooltip_targets.remove(&usize::MAX);
+    child.saved_targets.insert(usize::MAX, target);
+    assert_eq!(
+        expanded.append_description(&child).err(),
+        Some(format!("scripted text saved target event scope {} is not given", usize::MAX))
+    );
+    assert!(expanded.valid_links);
+    assert_eq!(*expanded.scopes.borrow(), graph.scopes);
+    assert_eq!(*expanded.targets.borrow(), graph);
 }
 
 #[test]

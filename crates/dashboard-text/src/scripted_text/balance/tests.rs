@@ -222,7 +222,7 @@ impl<'a> BalanceEffectScopes<'a> {
     pub fn check_appended(&self, graph: &EventScopes, depth: usize) {
         let scopes = &self.0;
         {
-            let appended = scopes.append_description(graph);
+            let appended = scopes.append_description(graph).unwrap();
             assert_eq!(appended.offset, 1);
             assert_eq!(scopes.scope(0), graph.scopes[0]);
             assert_eq!(scopes.scope(1), graph.scopes[0]);

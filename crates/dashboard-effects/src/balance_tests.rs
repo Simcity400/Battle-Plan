@@ -317,3 +317,131 @@ fn balance_nested_description_inherits_the_active_variable_session() {
         Ok("Activate:\nFresh\n".into())
     );
 }
+
+#[test]
+fn balance_modifier_description_derives_from_sources_and_localised_static_keys() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
+        (
+            "common/defines/00_defines.lua",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+        ),
+        (
+            "localisation/replace/extra_l_english.yml",
+            "\u{feff}l_english:\n SOURCE:0 \"Source\"\n TEST:0 \"[ROOT.GetPowerBalanceModDesc]\"\n",
+        ),
+        (
+            "common/modifiers/00_balance.txt",
+            "SOURCE = { power_balance_daily = 0.01234 power_balance_weekly = -0.02345 }\nZERO = { power_balance_daily = 0 }\nEMPTY = { }\n",
+        ),
+    ]);
+    let scripted = catalogue.scripted_content().unwrap();
+    assert!(!scripted.effects_read());
+    let rendered = |frame: &DecodedFrame| {
+        let context = ScriptedText::new(frame, &catalogue.localisation, scripted, 1);
+        crate::catalogue::localised_in(&catalogue.localisation, "TEST", &[], &context)
+    };
+    fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
+        *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
+    }
+    let mut f = dashboard_text::scripted_text::complete_test_frame();
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    {
+        for row in rows {
+            row.original_tag_reference = Recorded::Value(Some(0));
+            row.original_tag = Recorded::Value(Some(Vec::new()));
+        }
+    }
+    set::<tables::PowerBalances>(
+        &mut f,
+        vec![PowerBalanceRow {
+            ordinal: 0,
+            ..Default::default()
+        }],
+    );
+    set::<tables::PowerBalanceMembers>(
+        &mut f,
+        vec![PowerBalanceMemberRow {
+            country: 100,
+            ..Default::default()
+        }],
+    );
+    set::<tables::ModifierDefinitions>(
+        &mut f,
+        [
+            (engine_executable::modifier_keys::POWER_BALANCE_DAILY, 7_001),
+            (
+                engine_executable::modifier_keys::POWER_BALANCE_WEEKLY,
+                7_002,
+            ),
+        ]
+        .into_iter()
+        .map(|(index, token)| ModifierDefinitionRow {
+            index,
+            token,
+            flags: 3,
+            precision: 2,
+            ..Default::default()
+        })
+        .collect(),
+    );
+    set::<tables::LexicalTokens>(
+        &mut f,
+        vec![
+            LexicalTokenRow {
+                token: 7_001,
+                literal: b"power_balance_daily".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 7_002,
+                literal: b"power_balance_weekly".to_vec(),
+            },
+        ],
+    );
+    set::<tables::PowerBalanceModifierBreakdowns>(
+        &mut f,
+        vec![PowerBalanceModifierBreakdownRow {
+            record: 0,
+            sources: vec![b"SOURCE".to_vec(), b"EMPTY".to_vec(), b"ZERO".to_vec()],
+            daily: Vec::new(),
+            weekly: Vec::new(),
+        }],
+    );
+    assert_eq!(rendered(&f).unwrap(), "Source: +1.23%\nSource: -2.34%\n");
+    assert!(scripted.effects_read());
+    let witness = vec![
+        ModifierBreakdownNode {
+            children: 1,
+            value: 0,
+            name: Vec::new(),
+        },
+        ModifierBreakdownNode {
+            children: 0,
+            value: 99_999,
+            name: b"SOURCE".to_vec(),
+        },
+    ];
+    set::<tables::PowerBalanceModifierBreakdowns>(
+        &mut f,
+        vec![PowerBalanceModifierBreakdownRow {
+            record: 0,
+            sources: vec![b"SOURCE".to_vec(), b"EMPTY".to_vec(), b"ZERO".to_vec()],
+            daily: witness.clone(),
+            weekly: witness,
+        }],
+    );
+    assert_eq!(rendered(&f).unwrap(), "Source: +1.23%\nSource: -2.34%\n");
+    f.tables[TableId::PowerBalanceModifierBreakdowns.index()] = TableView::Unavailable {
+        reason: "missing source capture".into(),
+    }
+    .into();
+    assert!(
+        rendered(&f)
+            .unwrap_err()
+            .contains("PowerBalanceModifierBreakdowns")
+    );
+    set::<tables::PowerBalanceMembers>(&mut f, Vec::new());
+    assert_eq!(rendered(&f).unwrap(), "");
+}
