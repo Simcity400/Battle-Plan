@@ -3,10 +3,8 @@ use crate::{ModelInstance, ModelLibrary, WATER_HEIGHT};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::{
-    map::{camera::Camera, province_admission::Admission},
-    table_access::{Available, rows},
-};
+use viewer_gpu::{camera::Camera, province_admission::Admission};
+use dashboard_text::table_access::{Available, rows};
 
 pub const NUCLEAR_ENTITY: &str = "nuke_entity";
 pub const THERMONUCLEAR_ENTITY: &str = "nuke_big_entity";

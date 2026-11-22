@@ -1,15 +1,11 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
-use viewer_foundation::map::presentation::Continuity;
-use viewer_foundation::map::province_admission::side_planes;
-use viewer_foundation::map::province_admission::views as province_admission_views;
-use viewer_foundation::map::province_schedule::Schedule;
-use viewer_foundation::map::textures::load_file;
-use viewer_foundation::map::{
-    camera::Camera,
-    gpu_contract::Targets,
-    textures::{self, ColorSpace},
-};
+use viewer_runtime::presentation::Continuity;
+use viewer_gpu::province_admission::side_planes;
+use viewer_gpu::province_admission::views as province_admission_views;
+use viewer_gpu::province_schedule::Schedule;
+use viewer_gpu::textures::load_file;
+use viewer_gpu::{camera::Camera, gpu_contract::Targets, textures::{self, ColorSpace}};
 mod fade;
 mod motion;
 mod native;
@@ -1794,7 +1790,7 @@ struct Visible<'a> {
     views: native::ViewMask,
 }
 
-type ParentView = ([f32; 3], viewer_foundation::map::province_admission::Planes);
+type ParentView = ([f32; 3], viewer_gpu::province_admission::Planes);
 
 fn parent_views(cameras: &[Camera], size: [u32; 2]) -> Vec<ParentView> {
     cameras
@@ -1834,7 +1830,7 @@ impl Drawn {
     ) -> &[Option<((usize, bool), usize, i32)>] {
         let at = (field.branch, field.hour, changes);
         let walk = |into: &mut Vec<Option<((usize, bool), usize, i32)>>| {
-            let _span = viewer_foundation::profiling::span("weather_pairs");
+            let _span = viewer_runtime::profiling::span("weather_pairs");
             into.clear();
             let mut selectors = BTreeMap::new();
             for a in anchors {
@@ -1842,7 +1838,7 @@ impl Drawn {
             }
         };
         if self.at != Some(at) || self.chosen.len() != anchors.len() {
-            viewer_foundation::view_record::add("weather packets", "pairs_drawn", 1);
+            viewer_runtime::view_record::add("weather packets", "pairs_drawn", 1);
             walk(&mut self.chosen);
             self.at = Some(at);
         } else if viewer_scene_base::actor_check::due(&mut self.calls) {
@@ -2128,18 +2124,18 @@ fn weather_packets(
 ) {
     let (camera, views, time) = frame;
     let rate = gates(camera.height, &assets.graphics).2;
-    let visible_span = viewer_foundation::profiling::span("weather_visible");
+    let visible_span = viewer_runtime::profiling::span("weather_visible");
     let seen = visible_emitters(assets, |region| fades.members(region), views, drawn);
     drop(visible_span);
-    viewer_foundation::view_record::add("weather packets", "anchors", assets.anchors.len() as u64);
-    viewer_foundation::view_record::add("weather packets", "emitters_admitted", seen.len() as u64);
+    viewer_runtime::view_record::add("weather packets", "anchors", assets.anchors.len() as u64);
+    viewer_runtime::view_record::add("weather packets", "emitters_admitted", seen.len() as u64);
     for visible in &seen {
         simulations.entry(visible.key).or_insert_with(|| {
             Simulation::cold(visible.emitter, visible.seed, visible.anchor, time)
         });
     }
     debug_assert!(seen.windows(2).all(|pair| pair[0].key < pair[1].key));
-    let advance_span = viewer_foundation::profiling::span("weather_advance");
+    let advance_span = viewer_runtime::profiling::span("weather_advance");
     let eye = sort::Eye::of(camera);
     let mut seen = seen.into_iter().peekable();
     let tasks: Vec<_> = simulations
@@ -2199,8 +2195,8 @@ fn weather_packets(
         packets.push(packet);
     }
     drop(advance_span);
-    if viewer_foundation::view_record::on() {
-        use viewer_foundation::view_record::add;
+    if viewer_runtime::view_record::on() {
+        use viewer_runtime::view_record::add;
         add("weather packets", "simulations", simulations.len() as u64);
         add(
             "weather packets",
@@ -2526,15 +2522,15 @@ impl Pass {
     }
 
     pub fn finish_frame(&mut self, camera: Camera) -> Packets {
-        let _profile = viewer_foundation::profiling::thread_span("weather_packets");
+        let _profile = viewer_runtime::profiling::thread_span("weather_packets");
         let mut packets = self.settle();
-        let entity_span = viewer_foundation::profiling::span("weather_entity_packets");
+        let entity_span = viewer_runtime::profiling::span("weather_entity_packets");
         let before = packets.len();
         self.entity_simulations.sort(sort::Eye::of(camera));
         self.entity_simulations.packets(&self.assets.entities, &self.events, &mut packets);
         drop(entity_span);
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add("weather packets", "entity_packets", (packets.len() - before) as u64);
             add(
                 "weather packets",
@@ -2552,7 +2548,7 @@ impl Pass {
                     .or_default() += packet.instances.len();
             }
         }
-        let _order_span = viewer_foundation::profiling::span("weather_order");
+        let _order_span = viewer_runtime::profiling::span("weather_order");
         native::order(&mut packets);
         Packets(packets)
     }
@@ -2610,10 +2606,10 @@ pub fn advance_entity_effects(
     Vec<viewer_models::entity_animation::Event>,
     Vec<viewer_scene_base::pointlights::Light>,
 )> {
-    let prepare_span = viewer_foundation::profiling::span("entity_prepare");
+    let prepare_span = viewer_runtime::profiling::span("entity_prepare");
     simulations.prepare(entities, &events)?;
     drop(prepare_span);
-    let _lights_span = viewer_foundation::profiling::span("entity_lights");
+    let _lights_span = viewer_runtime::profiling::span("entity_lights");
     for event in &mut events {
         if event.emission_end.is_some() && !simulations.living(event) {
             event.definition.light = None;

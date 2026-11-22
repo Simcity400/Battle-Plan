@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     io,
 };
-use viewer_foundation::map::counter_action::{self, Action};
+use viewer_unit_reads::counter_action::{self, Action};
 
 pub(super) const TABLES: [TableId; 6] = [
     TableId::Provinces,

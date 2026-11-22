@@ -15,9 +15,7 @@ use super::{OrderKey, TYPE_INVASION, TYPE_PARADROP, paradrop_counts, transport_c
 
 const ONE: i64 = 100_000;
 
-use viewer_foundation::map::ribbon_content::{
-    ExecutionDefines as Defines, ExecutionState as State,
-};
+use viewer_gpu::ribbon_content::{ExecutionDefines as Defines, ExecutionState as State};
 
 type Evaluation = Result<bool, String>;
 

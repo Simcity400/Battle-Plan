@@ -14,7 +14,8 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Instant,
 };
-use viewer_foundation::{engagement_history::History, map::perspective::Country};
+use viewer_engagements::engagement_history::History;
+use viewer_foundation::perspective::Country;
 
 const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::Campaign, None),
@@ -149,7 +150,7 @@ pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::u
     let history = Arc::new(History::default());
     let (held, folded, campaign, pages, timeline) = (Arc::clone(&history), country.clone(), replay.campaign_id.clone(), Arc::clone(&units.pages), units.timeline.clone());
     std::thread::Builder::new().name("engaged lanes".into()).spawn(move || {
-        viewer_foundation::worker_priority::lowest_priority();
+        viewer_runtime::worker_priority::lowest_priority();
         if let Err(error) = fold(&pages, &timeline, &|at: usize| starts[at], Some(&campaign), folded, held, None, |_, _, _| {}) {
             eprintln!("The engaged index's lanes stopped: {error}");
         }

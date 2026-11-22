@@ -1,7 +1,7 @@
 
 use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;

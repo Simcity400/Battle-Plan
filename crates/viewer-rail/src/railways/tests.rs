@@ -1,6 +1,6 @@
 use super::*;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
 
 fn heights() -> HeightField<'static> {
     HeightField {
@@ -319,7 +319,7 @@ fn the_rail_fade_settles_first_then_moves_at_the_cutoff_speed() {
         height: 200.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     camera.defines.railway_cutoff = 300.0;
     camera.defines.railway_cutoff_speed = 3.0;
@@ -378,7 +378,7 @@ fn height_is_bilinear_at_the_center_with_the_native_half_pixel_offset() {
 
 #[test]
 fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_hours() {
-    use viewer_foundation::map::test_support::gpu;
+    use viewer_gpu::test_support::gpu;
     let strip_count = |geometry: &PreparedRailGeometry| geometry.strips.as_ref().map(|(_, count)| *count);
     let joined = |runs: &[std::ops::Range<u32>]| (!runs.is_empty()).then(|| strip_indices(runs).len() as u32);
     let (_serial, device, queue) = gpu::device();

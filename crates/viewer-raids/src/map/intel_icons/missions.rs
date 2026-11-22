@@ -9,10 +9,8 @@ use replay_data::{
     fixed_point::{fixed5_to_q15, q15_to_fixed5},
     rows::{IntelNetworkAuxiliaryRow, OperativeEffect, Recorded},
 };
-use viewer_foundation::{
-    map::native_text::FLAG,
-    tooltip_text::{Tooltip, ensure_newlines, localise},
-};
+use viewer_native_gui::native_text::FLAG;
+use viewer_foundation::tooltip_text::{Tooltip, ensure_newlines, localise};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Defines {

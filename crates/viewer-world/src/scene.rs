@@ -7,20 +7,25 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use viewer_foundation::map::gpu_contract::MAP_SAMPLED_TEXTURES;
-use viewer_foundation::map::gpu_passes::PassTimer;
-use viewer_foundation::map::lazy_icons::LazyTextures;
-use viewer_foundation::map::presentation::Continuity;
-use viewer_foundation::map::province_admission::side_planes;
-use viewer_foundation::map::province_admission::views;
-use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
-use viewer_foundation::map::textures::fow_size;
-use viewer_foundation::profile_writer::profiling;
-use viewer_foundation::profiling::CpuLaps;
+use viewer_gpu::gpu_contract::MAP_SAMPLED_TEXTURES;
+use viewer_gpu::gpu_passes::PassTimer;
+use viewer_native_gui::lazy_icons::LazyTextures;
+use viewer_runtime::presentation::Continuity;
+use viewer_gpu::province_admission::side_planes;
+use viewer_gpu::province_admission::views;
+use viewer_gpu::province_map::ProvinceMap;
+use viewer_gpu::province_schedule::{FrameRestore, ProvinceFrame, Shared};
+use viewer_gpu::textures::fow_size;
+use viewer_runtime::profile_writer::profiling;
+use viewer_runtime::profiling::CpuLaps;
 
-use viewer_foundation::map::gpu_contract::{
-    DEPTH_FORMAT, OUTPUT_FORMAT, SCENE_FORMAT, Targets, invalid, validate_size,
+use viewer_gpu::gpu_contract::{
+    DEPTH_FORMAT,
+    OUTPUT_FORMAT,
+    SCENE_FORMAT,
+    Targets,
+    invalid,
+    validate_size,
 };
 
 use std::io;
@@ -53,14 +58,15 @@ use viewer_borders::{
 use map_display_data::landscape::Regions;
 use viewer_scene_base::{shadow::ShadowPass, line_lod::MARGIN};
 use viewer_terrain::water::WaterPass;
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::Camera,
     frame::{DayNight, FrameConstants},
     textures::{Bound, ColorSpace, data_texture, upload},
 };
 use viewer_map_text::name_pass::NamePass;
 use viewer_scene_base::post::PostPass;
-use viewer_foundation::map::{name_draw::Placements, sprites::{Batch, IconTextures, SpritePass}};
+use viewer_runtime::name_draw::Placements;
+use viewer_native_gui::sprites::{Batch, IconTextures, SpritePass};
 use viewer_terrain::rivers::{RiverAssets, RiverMesh, RiverPass};
 use crate::mapframe::FrameAssets;
 use viewer_terrain::trees::{TreeAssets, TreeField, TreeFrame, TreeGeometry, TreePass};
@@ -70,10 +76,10 @@ use viewer_models::{ModelField, ModelFrame, ModelPass, draws_city_sprawl};
 use viewer_rail::railways::{Bridges, RailAssets, RailMesh, RailPass};
 use viewer_aircraft::order_pass::{OrderPass, PlanSubmissions};
 use viewer_buildings::sprawl::Sprawl;
-use viewer_foundation::map::ribbon_content::Mode as ArrowMode;
-use viewer_foundation::map::ribbon_content::{OrderAssets, OrderField};
+use viewer_gpu::ribbon_content::Mode as ArrowMode;
+use viewer_gpu::ribbon_content::{OrderAssets, OrderField};
 use viewer_unit_models::unit_models::UnitModelAssets;
-use viewer_foundation::map::model_admission::Gates as UnitGates;
+use viewer_unit_reads::model_admission::Gates as UnitGates;
 
 macro_rules! model_passes {
     ($scene:expr) => {
@@ -236,7 +242,7 @@ pub struct Scene {
     retained_scene: RefCell<viewer_scene_base::shader_scene::State>,
     fow_noise: Arc<Bound>,
     fog: bool,
-    visibility: viewer_foundation::map::mode_visibility::Visibility,
+    visibility: viewer_foundation::mode_visibility::Visibility,
     point_light_maps: viewer_scene_base::pointlights::PointLightMaps,
     point_light_tiles: viewer_scene_base::pointlights::Tiles,
     reflection: Arc<Bound>,
@@ -277,7 +283,7 @@ pub struct Scene {
     rail_fade: RailFade,
     render_laps: [f64; 4],
     pass_timer: Option<PassTimer>,
-    frame_timer: Option<viewer_foundation::map::gpu_frame_time::FrameTimer>,
+    frame_timer: Option<viewer_gpu::gpu_frame_time::FrameTimer>,
     province_frame: Option<(ProvinceFrame, FrameRestore)>,
     pub pass_diagnostics: passes::Diagnostics,
     detail_laps: CpuLaps,
@@ -285,7 +291,7 @@ pub struct Scene {
     pub targets: Option<Targets>,
     cover: viewer_terrain::terrain_shader::Cover,
     cover_for: Option<(Camera, [u32; 2])>,
-    admitted_against: viewer_foundation::map::camera::Hold,
+    admitted_against: viewer_gpu::camera::Hold,
     generation: u64,
     borders: Option<BorderPass>,
     demilitarized: Option<DemilitarizedPass>,
@@ -332,7 +338,7 @@ pub struct Scene {
     pub movement_arrows: crate::movement_arrows::Player,
     animated_text: Option<viewer_map_text::animated_map_text::Player>,
     map_text_events: viewer_map_text::animated_map_text::events::Presenter,
-    map_text_refusals: viewer_foundation::table_access::Refusals,
+    map_text_refusals: dashboard_text::table_access::Refusals,
     weather_effects: Option<viewer_weather_effects::weather_effects::Pass>,
     encode_lane: viewer_scene_base::lane::Lane<wgpu::CommandBuffer>,
     models_lane: viewer_scene_base::lane::Lane<wgpu::CommandBuffer>,
@@ -367,7 +373,7 @@ pub struct Overlay<'a> {
     pub ui_scale: f32,
     pub interface: bool,
     pub country_names: bool,
-    pub ground: Option<viewer_foundation::map::free_icons::Ground<'a>>,
+    pub ground: Option<viewer_native_gui::free_icons::Ground<'a>>,
 }
 
 impl Default for Overlay<'_> {
@@ -616,11 +622,11 @@ impl TextureCache {
             .iter()
             .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
         {
-            viewer_foundation::load_record::count("scene textures reused", 1, 0);
+            viewer_runtime::load_record::count("scene textures reused", 1, 0);
             return Ok(shared);
         }
         let shared = SceneTextures::new(device, queue, assets, icon_images)?;
-        viewer_foundation::load_record::count("scene textures uploaded", 1, 0);
+        viewer_runtime::load_record::count("scene textures uploaded", 1, 0);
         entries.push((device.clone(), Arc::downgrade(&shared)));
         Ok(shared)
     }
@@ -692,7 +698,7 @@ impl Scene {
             assets,
             lazy,
             graphics,
-            &viewer_foundation::parallel::Workers::default(),
+            &viewer_runtime::parallel::Workers::default(),
         )
     }
 
@@ -703,7 +709,7 @@ impl Scene {
         assets: &MapAssets,
         lazy: &Arc<LazyTextures>,
         graphics: dashboard_core::protocol::MapGraphics,
-        workers: &viewer_foundation::parallel::Workers,
+        workers: &viewer_runtime::parallel::Workers,
     ) -> io::Result<Self> {
         check_device(device, graphics.samples)?;
         let samples = graphics.samples;
@@ -842,7 +848,7 @@ impl Scene {
             retained_scene: RefCell::default(),
             fow_noise,
             fog: false,
-            visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
+            visibility: viewer_foundation::mode_visibility::Visibility::POLITICAL,
             point_light_maps,
             point_light_tiles: viewer_scene_base::pointlights::Tiles::default(),
             reflection,
@@ -895,7 +901,7 @@ impl Scene {
             rail_fade: RailFade::default(),
             render_laps: [0.0; 4],
             pass_timer: PassTimer::new(device, queue),
-            frame_timer: viewer_foundation::map::gpu_frame_time::FrameTimer::new(device, queue),
+            frame_timer: viewer_gpu::gpu_frame_time::FrameTimer::new(device, queue),
             province_frame: None,
             pass_diagnostics: Default::default(),
             detail_laps: Default::default(),
@@ -1370,7 +1376,7 @@ impl Scene {
     pub fn install_animated_text(
         &mut self,
         assets: &viewer_map_text::animated_map_text::Assets,
-        gui: &viewer_foundation::map::native_resources::GuiResources,
+        gui: &viewer_native_gui::native_resources::GuiResources,
     ) {
         self.animated_text = Some(viewer_map_text::animated_map_text::Player::new(
             assets,
@@ -1405,8 +1411,8 @@ impl Scene {
         >,
         continuity: Continuity,
         anchor: impl Fn(u32) -> Option<[f32; 3]>,
-        heights: viewer_foundation::map::province_map::HeightField<'_>,
-        gui: &viewer_foundation::map::native_resources::GuiResources,
+        heights: viewer_gpu::province_map::HeightField<'_>,
+        gui: &viewer_native_gui::native_resources::GuiResources,
     ) {
         let time = self.last_animation_time.unwrap_or(0.0);
         let mut continuity = continuity;
@@ -1442,7 +1448,7 @@ impl Scene {
             text.reset();
         }
         self.map_text_refusals.clear();
-        viewer_foundation::table_access::refuse(&mut self.map_text_refusals, reason);
+        dashboard_text::table_access::refuse(&mut self.map_text_refusals, reason);
     }
 
     pub fn advance_provinces(&mut self, camera: Camera, size: [u32; 2]) {
@@ -1503,8 +1509,8 @@ impl Scene {
     ) -> io::Result<Option<viewer_aircraft::aircraft::AircraftPlan>> {
         if let Some((pass, _, current)) = &mut self.aircraft {
             plan.carry_presentation(current, continuity)?;
-            viewer_foundation::view_record::add("flights", "installs", 1);
-            viewer_foundation::view_record::add("flights", "restarts", plan.restarts() as u64);
+            viewer_runtime::view_record::add("flights", "installs", 1);
+            viewer_runtime::view_record::add("flights", "restarts", plan.restarts() as u64);
             if continuity == Continuity::Reset {
                 pass.reset_animation();
             }
@@ -1830,7 +1836,7 @@ impl Scene {
         self.city_presentation.as_ref().map(viewer_buildings::sprawl::Presentation::thresholds)
     }
 
-    pub fn holds_country_names(&self, placements: &viewer_foundation::map::name_draw::Placements) -> bool {
+    pub fn holds_country_names(&self, placements: &viewer_runtime::name_draw::Placements) -> bool {
         self.name_pass.holds_placements(placements)
     }
 
@@ -1848,7 +1854,7 @@ impl Scene {
         queue: &wgpu::Queue,
         generation: u64,
         key: u64,
-        names: &[&viewer_foundation::map::name_draw::WorldName],
+        names: &[&viewer_runtime::name_draw::WorldName],
     ) -> io::Result<()> {
         self.name_pass.set_keyed(device, queue, generation, key, names)
     }
@@ -2114,7 +2120,7 @@ impl Scene {
 
     pub fn set_visibility(
         &mut self,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        visibility: viewer_foundation::mode_visibility::Visibility,
     ) {
         self.visibility = visibility;
     }
@@ -2125,7 +2131,7 @@ impl Scene {
         queue: &wgpu::Queue,
         map: &content_reader_core::map::MapData,
         strategic_regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
-        field: &viewer_foundation::map::gradient_math::FieldDefines,
+        field: &viewer_gpu::gradient_math::FieldDefines,
         cache: &viewer_map_modes::political_gpu::Cache,
     ) -> io::Result<()> {
         if self.political.is_some() {
@@ -2330,11 +2336,11 @@ impl Scene {
         zone: &viewer_borders::demilitarized::ZonePlan,
     ) -> io::Result<()> {
         if let Some(pass) = borders {
-            let _border_span = viewer_foundation::profiling::span("ordinary_border_install");
+            let _border_span = viewer_runtime::profiling::span("ordinary_border_install");
             pass.set_plan(device, classes)?;
         }
         if let Some(pass) = demilitarized {
-            let _zone_span = viewer_foundation::profiling::span("dmz_install");
+            let _zone_span = viewer_runtime::profiling::span("dmz_install");
             pass.set_plan(device, zone)?;
             pass.clear_hover();
             pass.set_selection(device, None)?;
@@ -2568,7 +2574,7 @@ impl Scene {
         let _cost = replay_frame::cpu::scope("viewer", Some("render-submit"));
         shader_pipeline::gpu::stats::mark_window_thread();
         let mut timer = self.pass_timer.take();
-        if timer.is_none() && viewer_foundation::map::gpu_passes::recorded() {
+        if timer.is_none() && viewer_gpu::gpu_passes::recorded() {
             PassTimer::unavailable();
         }
         let rendered = viewer_scene_base::lane::Frame::new(self, Self::join_lanes).render_frame(
@@ -2619,7 +2625,7 @@ impl Scene {
         *aircraft = beside.aircraft;
         *sprawl = beside.sprawl;
         *city_presentation = beside.city_presentation;
-        viewer_foundation::profiling::adopt_thread_records(beside.records);
+        viewer_runtime::profiling::adopt_thread_records(beside.records);
     }
 
     fn count_shown_actors(
@@ -2629,7 +2635,7 @@ impl Scene {
         size: [u32; 2],
         ground: Option<[f32; 4]>,
     ) {
-        if !viewer_foundation::view_record::on() {
+        if !viewer_runtime::view_record::on() {
             return;
         }
         let offsets = viewer_scene_base::line_lod::wrap_offsets(ground, camera.map.x());
@@ -2719,7 +2725,7 @@ impl Scene {
                 self.graphics.water_reflections,
             )
         } else {
-            viewer_foundation::map::gpu_contract::SeaBed::Half
+            viewer_gpu::gpu_contract::SeaBed::Half
         };
         let generation_changed = self.targets.as_ref().is_none_or(|t| {
             t.size() != size || t.world_size() != world_size || t.sea_bed() != sea_bed
@@ -2728,7 +2734,7 @@ impl Scene {
             || !self.shadow.sized(size, shadow_screen)
             || !self.post.prepared(size, world_size)
         {
-            let made = viewer_foundation::map::gpu_contract::scoped(
+            let made = viewer_gpu::gpu_contract::scoped(
                 device,
                 || {
                     format!(
@@ -2808,7 +2814,7 @@ impl Scene {
         self.detail_laps.lap("targets_shadow_resize");
         let posing = viewer_models::poses::tick(self.arena.frame());
         let pose_tick = posing != self.posed_tick;
-        viewer_foundation::view_record::add("poses", "ticks", u64::from(pose_tick));
+        viewer_runtime::view_record::add("poses", "ticks", u64::from(pose_tick));
         let province_frame = self.province_frame.take();
         let beside = step::Beside {
             graphics: self.graphics,
@@ -2848,7 +2854,7 @@ impl Scene {
             let beside = beside_lane.take().expect("the beside step was started");
             Self::take_back(beside, aircraft, sprawl, city_presentation);
             aircraft.as_mut().map(|(_, _, plan)| {
-                let _missiles_span = viewer_foundation::profiling::span("step_missiles");
+                let _missiles_span = viewer_runtime::profiling::span("step_missiles");
                 plan.missile_explosions(from, animation_time)
             })
         });
@@ -2921,8 +2927,8 @@ impl Scene {
             }
             pass.judge_poses(animation_time, frame_interval);
         }
-        viewer_foundation::view_record::add("poses", "asked", jobs.len() as u64);
-        viewer_foundation::view_record::add(
+        viewer_runtime::view_record::add("poses", "asked", jobs.len() as u64);
+        viewer_runtime::view_record::add(
             "poses",
             "worked",
             made.iter().map(viewer_models::poses::Made::made).sum(),
@@ -2941,7 +2947,7 @@ impl Scene {
         }
         self.detail_laps.lap("aircraft_trains_resident");
         let targets = self.targets.as_ref().expect("created above");
-        let events_copy_span = viewer_foundation::profiling::span("frame_events");
+        let events_copy_span = viewer_runtime::profiling::span("frame_events");
         let events = step::frame_events(
             step::EventSources {
                 map_frame: self.native_map_frame.as_ref(),
@@ -3013,8 +3019,8 @@ impl Scene {
         }
         self.detail_laps.lap("events");
         let events_count = events.len() as u64;
-        let lights_profile = viewer_foundation::profiling::thread_span("lights");
-        let events_span = viewer_foundation::profiling::span("lights_set_events");
+        let lights_profile = viewer_runtime::profiling::thread_span("lights");
+        let events_span = viewer_runtime::profiling::span("lights_set_events");
         let lights = match self.weather_effects.as_mut() {
             Some(pass) => pass.set_events(events)?,
             None => {
@@ -3025,13 +3031,13 @@ impl Scene {
             }
         };
         drop(events_span);
-        let grid_span = viewer_foundation::profiling::span("point_light_grid");
+        let grid_span = viewer_runtime::profiling::span("point_light_grid");
         self.point_light_tiles.rebuild(camera, &lights);
         self.point_light_maps.write(queue, &self.point_light_tiles);
         drop(grid_span);
-        viewer_foundation::view_record::add("point lights", "lights", lights.len() as u64);
-        viewer_foundation::view_record::add("point lights", "admitted", self.point_light_tiles.count as u64);
-        viewer_foundation::view_record::add("point lights", "events", events_count);
+        viewer_runtime::view_record::add("point lights", "lights", lights.len() as u64);
+        viewer_runtime::view_record::add("point lights", "admitted", self.point_light_tiles.count as u64);
+        viewer_runtime::view_record::add("point lights", "events", events_count);
         drop(lights_profile);
         self.detail_laps.lap("lights");
         let mut globals = FrameInputs {
@@ -3125,7 +3131,7 @@ impl Scene {
             orders.prepare(camera, size, &offsets, |draw| {
                 if draw.air_mode {
                     self.visibility.priorities
-                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+                        == viewer_foundation::mode_visibility::PriorityTable::StrategicAir
                 } else {
                     match draw.kind {
                         dashboard_core::protocol::PlanKind::TradeRoute => trade_routes,
@@ -3154,13 +3160,13 @@ impl Scene {
             transfers.advance(frame_interval);
         }
         self.detail_laps.lap("sprite_sync");
-        let sprite_cpu = viewer_foundation::profiling::thread_span("sprite_upload");
+        let sprite_cpu = viewer_runtime::profiling::thread_span("sprite_upload");
         let draw_cursor = std::cell::Cell::new(clock.map(|_| shader_pipeline::gpu::stats::draws()));
         let sprites = overlay.sprites.unwrap_or(&self.empty_batch);
         self.sprite_pass.upload(device, queue, arena, sprites, size, overlay.ui_scale);
         if let Some(previous) = draw_cursor.get() {
             let now = shader_pipeline::gpu::stats::draws();
-            viewer_foundation::profiling::record_count("draws_gui_bake", now - previous);
+            viewer_runtime::profiling::record_count("draws_gui_bake", now - previous);
             draw_cursor.set(Some(now));
         }
         sprite_cpu.finish();
@@ -3168,16 +3174,16 @@ impl Scene {
         let prepared = clock.map(|clock| clock.elapsed());
         self.pass_cpu_laps.start(clock.map(|_| Instant::now()));
         let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
-        let lap_clock = std::cell::Cell::new(viewer_foundation::view_record::on().then(|| {
-            (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time())
+        let lap_clock = std::cell::Cell::new(viewer_runtime::view_record::on().then(|| {
+            (std::time::Instant::now(), viewer_runtime::profiling::current_thread_cpu_time())
         }));
         let cpu_mark = |label: &'static str| {
             pass_cpu_laps.borrow_mut().lap_sum(label);
             if let Some((wall, cpu)) = lap_clock.get() {
-                let (now, now_cpu) = (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time());
-                viewer_foundation::view_record::add("render_wall_us", label, (now - wall).as_micros() as u64);
+                let (now, now_cpu) = (std::time::Instant::now(), viewer_runtime::profiling::current_thread_cpu_time());
+                viewer_runtime::view_record::add("render_wall_us", label, (now - wall).as_micros() as u64);
                 if let (Some(cpu), Some(now_cpu)) = (cpu, now_cpu) {
-                    viewer_foundation::view_record::add("render_cpu_us", label, now_cpu.saturating_sub(cpu).as_micros() as u64);
+                    viewer_runtime::view_record::add("render_cpu_us", label, now_cpu.saturating_sub(cpu).as_micros() as u64);
                 }
                 lap_clock.set(Some((now, now_cpu)));
             }
@@ -3208,7 +3214,7 @@ impl Scene {
                     name if name.starts_with("post") => "draws_post",
                     _ => "draws_other",
                 };
-                viewer_foundation::profiling::record_count(scope, now - previous);
+                viewer_runtime::profiling::record_count(scope, now - previous);
                 draw_cursor.set(Some(now));
             }
         };
@@ -3390,7 +3396,7 @@ impl Scene {
                         self.orders.as_ref(),
                         &self.graphics,
                         overlay.interface,
-                        self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
+                        self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::mode_visibility::PriorityTable::StrategicAir,
                     );
                     let mut repeated = true;
                     let mut casters = Vec::with_capacity(meshes.len() + 1);
@@ -3954,7 +3960,7 @@ impl Scene {
                 overlay.interface,
                 self.visibility.trade_routes
                     || self.visibility.priorities
-                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
+                        == viewer_foundation::mode_visibility::PriorityTable::StrategicAir,
             )
             .draw(|plans| {
                 for view in 0..offsets.len() {
@@ -4002,7 +4008,7 @@ impl Scene {
         faults.after(failure_tests::Point::Arrows)?;
         mark(&mut encoder, "orders_main");
         let air = self.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir;
+            == viewer_foundation::mode_visibility::PriorityTable::StrategicAir;
         for (radar, admitted) in [
             (self.radar.as_ref(), true),
             (self.air_ranges.as_ref(), air),
@@ -4094,7 +4100,7 @@ impl Scene {
             .as_mut()
             .map(|weather| weather.finish_frame(camera));
         if let Some(packets) = &particle_packets {
-            viewer_foundation::view_record::add("weather packets", "packets", packets.count() as u64);
+            viewer_runtime::view_record::add("weather packets", "packets", packets.count() as u64);
         }
         cpu_mark("weather_packets");
         let leading = std::mem::replace(
@@ -4330,7 +4336,7 @@ impl Scene {
             passes.run(passes::Pass::Sky, || {
                     #[cfg(any(test, feature = "test-support"))]
                     faults.preflight(passes::Pass::Sky)?;
-                    viewer_foundation::map::gpu_contract::compiled(
+                    viewer_gpu::gpu_contract::compiled(
                         self.sky.as_ref().expect("created above"),
                     )?
                 .draw(
@@ -4441,7 +4447,7 @@ impl Scene {
 
     pub fn retire_gpu_frame_times(
         &mut self,
-    ) -> Vec<viewer_foundation::map::gpu_frame_time::FrameTime> {
+    ) -> Vec<viewer_gpu::gpu_frame_time::FrameTime> {
         self.frame_timer
             .as_mut()
             .map_or_else(Vec::new, |frame_timer| frame_timer.retire())
@@ -4450,7 +4456,7 @@ impl Scene {
     pub fn gpu_frame_times(
         &mut self,
         device: &wgpu::Device,
-    ) -> Vec<viewer_foundation::map::gpu_frame_time::FrameTime> {
+    ) -> Vec<viewer_gpu::gpu_frame_time::FrameTime> {
         self.frame_timer
             .as_mut()
             .map_or_else(Vec::new, |frame_timer| frame_timer.take(device))
@@ -4584,7 +4590,7 @@ impl Scene {
             format!("Map shader {technique}: drawn every frame: {reason}")
         }));
         if self.targets.as_ref().is_some_and(|targets| {
-            targets.sea_bed() == viewer_foundation::map::gpu_contract::SeaBed::Full
+            targets.sea_bed() == viewer_gpu::gpu_contract::SeaBed::Full
         }) && let Some(reason) = self.water.sea_bed_refusal()
         {
             warnings.push(format!("Map shader water: {reason}"));

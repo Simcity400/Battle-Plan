@@ -29,7 +29,6 @@ unify-bitflags-1 = { package = "bitflags", version = "1.3.2", default-features =
 unify-bitflags-2 = { package = "bitflags", version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
-unify-either = { package = "either", version = "1.18.0", default-features = false, features = ["default", "std", "use_std"] }
 unify-fdeflate = { package = "fdeflate", version = "0.3.7", default-features = false, features = [] }
 unify-flate2 = { package = "flate2", version = "1.1.10", default-features = false, features = ["any_impl", "default", "miniz_oxide", "runtime_detection", "rust_backend"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
@@ -70,6 +69,11 @@ viewer-aircraft = { path = "crates/viewer-aircraft" }
 viewer-borders = { path = "crates/viewer-borders" }
 viewer-buildings = { path = "crates/viewer-buildings" }
 viewer-foundation = { path = "crates/viewer-foundation" }
+viewer-engagements = { path = "crates/viewer-engagements" }
+viewer-gpu = { path = "crates/viewer-gpu" }
+viewer-native-gui = { path = "crates/viewer-native-gui" }
+viewer-runtime = { path = "crates/viewer-runtime" }
+viewer-unit-reads = { path = "crates/viewer-unit-reads" }
 viewer-map-icons = { path = "crates/viewer-map-icons" }
 viewer-map-modes = { path = "crates/viewer-map-modes" }
 viewer-map-text = { path = "crates/viewer-map-text" }

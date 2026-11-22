@@ -15,10 +15,8 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::{
-    frame::DayNight,
-    presentation::{Continuity, UnitRestart},
-};
+use viewer_gpu::frame::DayNight;
+use viewer_runtime::presentation::{Continuity, UnitRestart};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const BRANCH: BranchId = 1;

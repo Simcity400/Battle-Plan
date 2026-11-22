@@ -13,7 +13,7 @@ use std::{
     thread,
 };
 use viewer_counters::map::counters::BaseValues;
-use viewer_foundation::map::perspective::{Choice, Vision};
+use viewer_foundation::perspective::{Choice, Vision};
 
 enum Job {
     Reset { epoch: u64, model: Box<BaseCounters>, mirrors: Box<Mirrors> },
@@ -228,7 +228,7 @@ impl Layer for BaseCountersFed {
             let (jobs, receive) = mpsc::channel();
             let (send, made) = mpsc::channel();
             thread::Builder::new().name("base counters".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(receive, send)
             })?;
             (self.jobs, self.made) = (Some(jobs), Some(made));

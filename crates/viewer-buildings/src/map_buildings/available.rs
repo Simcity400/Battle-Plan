@@ -411,7 +411,7 @@ impl AvailableRows {
             let reason = match name {
                 Some(name) => name.reason.clone(),
                 None => {
-                    use viewer_foundation::table_access::TokenError;
+                    use dashboard_text::table_access::TokenError;
                     Retained::new(
                         if row.building_type == 0 {
                             TokenError::Rejected
@@ -650,7 +650,7 @@ mod tests {
     use super::*;
     use replay_data::rows::{LexicalTokenRow, ProvinceRow, TableRows};
     use replay_frame::frame::TableView;
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn assets() -> MapBuildingAssets {
         let types = ["infrastructure", "industrial_complex"].map(|name| BuildingType {

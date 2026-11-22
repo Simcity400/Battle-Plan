@@ -7,7 +7,7 @@ use replay_data::{
     rows::StateRow, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::camera::{MapDefines, MapSize, Pose};
+use viewer_gpu::camera::{MapDefines, MapSize, Pose};
 
 fn content() -> Content {
     let definitions = [
@@ -293,7 +293,7 @@ fn occupation_zero_level_uses_stored_target_equality_without_an_active_gate() {
 
 #[test]
 fn occupation_free_view_uses_its_existing_anchor_distance_and_world_family() {
-    use viewer_foundation::map::camera::{Free, Lens};
+    use viewer_gpu::camera::{Free, Lens};
     let content = content();
     let camera = Camera {
         center: [3000., 1450.],
@@ -371,7 +371,7 @@ const GUI: &[u8] = br#"guiTypes = {
 #[test]
 fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::test_support::gui;
+    use viewer_native_gui::test_support::gui;
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
     let context = Context {
@@ -415,7 +415,7 @@ fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
 #[test]
 fn occupation_grid_centres_admitted_badges_and_reuses_retained_windows() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::test_support::gui;
+    use viewer_native_gui::test_support::gui;
     let mut resources = gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = gui::windows(GUI);
@@ -513,7 +513,7 @@ fn lifecycle_windows(parent: &str, entry: &str) -> NativeWindows {
             "name = resistance_compliance_map_icon_modifier_entry size",
             &format!("name = resistance_compliance_map_icon_modifier_entry {entry} size"),
         );
-    viewer_foundation::map::test_support::gui::windows(gui.as_bytes())
+    viewer_native_gui::test_support::gui::windows(gui.as_bytes())
 }
 
 fn lifecycle_prepared(state: u32) -> PreparedOccupationIcons {
@@ -544,7 +544,7 @@ fn lifecycle_prepared(state: u32) -> PreparedOccupationIcons {
 fn lifecycle_draw(
     prepared: &PreparedOccupationIcons,
     view: &mut OccupationIconView,
-    resources: &viewer_foundation::map::test_support::gui::Fixture,
+    resources: &viewer_native_gui::test_support::gui::Fixture,
     windows: &NativeWindows,
     time: f32,
 ) -> Report {
@@ -582,7 +582,7 @@ fn reference_tick(
     time: f32,
     dt: f32,
 ) {
-    let tick = viewer_foundation::map::native_gui::lifecycle::Tick { time, dt };
+    let tick = viewer_native_gui::native_gui::lifecycle::Tick { time, dt };
     parent.tick_clocks(root, resources, tick).unwrap();
     entry.tick_clocks(controls.item, resources, tick).unwrap();
     assert!(entry.registration() > parent.registration());
@@ -610,7 +610,7 @@ fn assert_same_entry(
 #[test]
 fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
     content_reader_core::test_game::enter();
-    let mut resources = viewer_foundation::map::test_support::gui::fixture();
+    let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
         "",
@@ -662,7 +662,7 @@ fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
 #[test]
 fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
     content_reader_core::test_game::enter();
-    let mut resources = viewer_foundation::map::test_support::gui::fixture();
+    let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
         "fade_type = linear fade_time = 200",
@@ -710,7 +710,7 @@ fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
 #[test]
 fn occupation_empty_badges_settle_before_the_same_parent_slot_is_reused() {
     content_reader_core::test_game::enter();
-    let mut resources = viewer_foundation::map::test_support::gui::fixture();
+    let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
         "",
@@ -770,7 +770,7 @@ fn occupation_empty_badges_settle_before_the_same_parent_slot_is_reused() {
         .tick(
             controls.item,
             &resources,
-            viewer_foundation::map::native_gui::lifecycle::Tick {
+            viewer_native_gui::native_gui::lifecycle::Tick {
                 time: 1.5,
                 dt: (1.5_f32 - 1.4).min(icon_windows::GUI_DELTA_CLAMP),
             },

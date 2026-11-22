@@ -4,12 +4,13 @@ use content_reader_localisation::{localisation::Argument, localisation::Localisa
 use replay_data::{rows::NavalCombatSideDetails, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::table_access::{Available, TokenNames};
+use dashboard_text::table_access::{Available, TokenNames};
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::validate;
-use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
+use super::content::Content as StaticContent;
+use viewer_foundation::tables::rows;
 use {
     super::{
         binding::Bindings,

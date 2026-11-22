@@ -15,7 +15,7 @@ use shader_pipeline::{
     gpu::{CONSTANT_BINDINGS, TEXTURE_BINDINGS},
     library::{Library, Selection},
 };
-use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
+use viewer_gpu::gpu_contract::SCENE_FORMAT;
 
 pub(super) type GeometryKey = (String, u32, usize, usize);
 
@@ -562,7 +562,7 @@ const LIT_RECORD: RecordNames = RecordNames {
 fn note_entered(label: &'static str, queue: Queue, entered: &[u64; kept::ENTERED]) {
     for (name, n) in record_names(queue).entered_by.iter().zip(entered) {
         if *n > 0 {
-            viewer_foundation::view_record::add(label, name, *n);
+            viewer_runtime::view_record::add(label, name, *n);
         }
     }
 }
@@ -663,10 +663,10 @@ fn record_names(queue: Queue) -> &'static RecordNames {
 fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     let moved = list.take_moved();
     let wrote = list.take_wrote();
-    if !viewer_foundation::view_record::on() {
+    if !viewer_runtime::view_record::on() {
         return;
     }
-    use viewer_foundation::view_record::add;
+    use viewer_runtime::view_record::add;
     let names = record_names(queue);
     add(label, names.rows_changed, wrote.changed);
     add(label, names.row_bytes_changed, wrote.changed_bytes);
@@ -701,7 +701,7 @@ fn judge_list(label: &'static str, queue: Queue, list: &mut kept::Kept, resident
     let what = if queue == Queue::Caster { "caster draws" } else { "lit draws" };
     list.judge(what, part_programs(residents));
     list.judge_staged(if queue == Queue::Caster { "caster staged" } else { "lit staged" });
-    viewer_foundation::view_record::add(label, record_names(queue).judged, 1);
+    viewer_runtime::view_record::add(label, record_names(queue).judged, 1);
 }
 
 struct Walk<'a> {
@@ -907,7 +907,7 @@ impl DrawList {
         if lists.iter().all(|list| list.draws.is_empty()) {
             return;
         }
-        let clock = viewer_foundation::profile_writer::profiling().then(std::time::Instant::now);
+        let clock = viewer_runtime::profile_writer::profiling().then(std::time::Instant::now);
         {
             let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("native models"),
@@ -920,7 +920,7 @@ impl DrawList {
             }
         }
         if let Some(clock) = clock {
-            viewer_foundation::profiling::record_lap("native_encode_caller", clock.elapsed());
+            viewer_runtime::profiling::record_lap("native_encode_caller", clock.elapsed());
         }
     }
 
@@ -1275,14 +1275,14 @@ impl ModelPass {
     ) -> io::Result<()> {
         let draws = self.prepare_native(arena, frame, inputs, queue, object)?;
         {
-            let wall_profile = viewer_foundation::profile_writer::profiling();
+            let wall_profile = viewer_runtime::profile_writer::profiling();
             let clock = wall_profile.then(std::time::Instant::now);
             draws.record(pass);
             let caller = clock.map_or(std::time::Duration::ZERO, |clock| clock.elapsed());
 
             if wall_profile {
-                viewer_foundation::profiling::record_lap("native_encode_caller", caller);
-                viewer_foundation::profiling::record_lap(
+                viewer_runtime::profiling::record_lap("native_encode_caller", caller);
+                viewer_runtime::profiling::record_lap(
                     "native_turns_finish_wait",
                     std::time::Duration::ZERO,
                 );
@@ -1313,8 +1313,8 @@ impl ModelPass {
         frame: ModelFrame<'_>,
         inputs: Inputs<'_>,
     ) -> io::Result<bool> {
-        let _wall = viewer_foundation::profiling::span("native_caster_prepare");
-        let _pass = viewer_foundation::profiling::span(prepare_span(self.label, Queue::Caster));
+        let _wall = viewer_runtime::profiling::span("native_caster_prepare");
+        let _pass = viewer_runtime::profiling::span(prepare_span(self.label, Queue::Caster));
         if self.field.native_order.is_empty() {
             return Ok(!self.cast.replace(false));
         }
@@ -1348,7 +1348,7 @@ impl ModelPass {
                 native.lent = None;
             }
             let draws = self.prepare_native(arena, frame, inputs, queue, object)?;
-            viewer_foundation::view_record::add(self.label, LIT_RECORD.draws, draws.draws.len() as u64);
+            viewer_runtime::view_record::add(self.label, LIT_RECORD.draws, draws.draws.len() as u64);
             return Ok(draws);
         };
         let ordinal = {
@@ -1360,8 +1360,8 @@ impl ModelPass {
             native.lent = None;
             native.lit_call(arena.frame(), usize::from(queue == Queue::Alternate))
         };
-        let _wall = viewer_foundation::profiling::span("native_lit_prepare");
-        let _pass = viewer_foundation::profiling::span(prepare_span(self.label, queue));
+        let _wall = viewer_runtime::profiling::span("native_lit_prepare");
+        let _pass = viewer_runtime::profiling::span(prepare_span(self.label, queue));
         let own = !matches!(caller, plan_tail::Caller::Unchanged);
         let pixel = if own { None } else { object.pixel };
         let mut shared = inputs.frames.to_vec();
@@ -1439,7 +1439,7 @@ impl ModelPass {
         }
         if self.keep_list(arena, &frame, &inputs, walk, object.as_deref_mut())? {
             if let Some(native) = self.native.borrow_mut().as_mut() {
-                viewer_foundation::view_record::add(self.label, record_names(walk.queue).kept, 1);
+                viewer_runtime::view_record::add(self.label, record_names(walk.queue).kept, 1);
                 let Renderer { casters, lit, residents, admission, queue_slots, .. } = native;
                 let list = list_of(casters, lit, walk.id);
                 list.chosen_by(self.drawn_rule(&frame));
@@ -1485,7 +1485,7 @@ impl ModelPass {
         if walk.queue != Queue::Caster {
             list.replay = Some(list.replay(|key| residents[key].binds()));
         }
-        viewer_foundation::view_record::add(self.label, record_names(walk.queue).walks, 1);
+        viewer_runtime::view_record::add(self.label, record_names(walk.queue).walks, 1);
         note_list(self.label, walk.queue, list);
         judge_list(self.label, walk.queue, list, residents);
         if judged {
@@ -1508,7 +1508,7 @@ impl ModelPass {
         walk: &Walk<'_>,
         object: Option<&mut ObjectConstants>,
     ) -> io::Result<bool> {
-        let began = viewer_foundation::view_record::on().then(std::time::Instant::now);
+        let began = viewer_runtime::view_record::on().then(std::time::Instant::now);
         let change = self.frame_change(arena.frame());
         let mut renderer = self.native.borrow_mut();
         let Some(native) = renderer.as_mut() else {
@@ -1524,7 +1524,7 @@ impl ModelPass {
                 kept::Stale::Whole(why) => names.whole[why as usize],
                 kept::Stale::Input(at) => names.inputs[at],
             };
-            viewer_foundation::view_record::add(self.label, why, 1);
+            viewer_runtime::view_record::add(self.label, why, 1);
             list.forget();
             return Ok(false);
         }
@@ -1545,13 +1545,13 @@ impl ModelPass {
         } else {
             0
         };
-        viewer_foundation::view_record::add(self.label, "cull_crossed_still", crossed);
+        viewer_runtime::view_record::add(self.label, "cull_crossed_still", crossed);
         let flipped = !flips.is_empty() || crossed > 0;
         let waiting = list.waiting();
         let mut demoted = waiting.unwrap_or_else(|| vec![false; list.figures()]);
         let relevelled = self.relevel(list, frame, &mut demoted);
-        viewer_foundation::view_record::add(self.label, names.relevelled, relevelled);
-        viewer_foundation::view_record::add(self.label, record_names(walk.queue).flipped, flips.len() as u64);
+        viewer_runtime::view_record::add(self.label, names.relevelled, relevelled);
+        viewer_runtime::view_record::add(self.label, record_names(walk.queue).flipped, flips.len() as u64);
         if change.change != crate::Change::Whole
             && change.born.is_empty()
             && !flipped
@@ -1565,7 +1565,7 @@ impl ModelPass {
                 .collect();
             if self.pose_epoch != list.posed() {
                 units.extend_from_slice(list.live());
-                viewer_foundation::view_record::add(self.label, names.reposed, 1);
+                viewer_runtime::view_record::add(self.label, names.reposed, 1);
             }
             units.sort_unstable();
             units.dedup();
@@ -1574,7 +1574,7 @@ impl ModelPass {
             if failed.is_empty() {
                 self.kept(arena, native, walk, inputs, object);
                 if let (Some(began), Some(tested)) = (began, tested) {
-                    use viewer_foundation::view_record::add;
+                    use viewer_runtime::view_record::add;
                     add(self.label, names.keep_test_us, (tested - began).as_micros() as u64);
                     add(self.label, names.keep_rewrite_us, tested.elapsed().as_micros() as u64);
                 }
@@ -1596,7 +1596,7 @@ impl ModelPass {
                 Ok(_) => list.dropped().unwrap_or(kept::Whole::Error),
                 Err(_) => kept::Whole::Error,
             };
-            viewer_foundation::view_record::add(self.label, names.whole[why as usize], 1);
+            viewer_runtime::view_record::add(self.label, names.whole[why as usize], 1);
             list.forget_writes();
             list.forget();
             return spliced;
@@ -1892,7 +1892,7 @@ impl ModelPass {
         }
         let targets_ended = std::time::Instant::now();
         let list = native.list(walk.id);
-        let mut entered = viewer_foundation::view_record::on().then_some([0u64; kept::ENTERED]);
+        let mut entered = viewer_runtime::view_record::on().then_some([0u64; kept::ENTERED]);
         let mut next = list.plan_counting(&targets, demoted, entered.as_mut());
         if next.iter().filter(|figure| figure.is_none()).count() * 2 > targets.len() {
             list.drop_for(kept::Whole::MostWalked);
@@ -1995,7 +1995,7 @@ impl ModelPass {
             note_entered(self.label, walk.queue, entered);
         }
         if spliced {
-            use viewer_foundation::view_record::add;
+            use viewer_runtime::view_record::add;
             let names = record_names(walk.queue);
             let own = (walk_began - began) + walk_ended.elapsed();
             add(self.label, names.spliced, 1);
@@ -2022,7 +2022,7 @@ impl ModelPass {
             return failed;
         }
         crate::count(crate::Count::CasterRewritten, units.len() as u64);
-        viewer_foundation::view_record::add(self.label, record_names(walk.queue).rewritten, units.len() as u64);
+        viewer_runtime::view_record::add(self.label, record_names(walk.queue).rewritten, units.len() as u64);
         let mut posed = 0u64;
         let layout = &self.native_walk;
         let Renderer {
@@ -2143,7 +2143,7 @@ impl ModelPass {
                 failed.push(at);
             }
         }
-        viewer_foundation::view_record::add(self.label, ACTORS_POSED, posed);
+        viewer_runtime::view_record::add(self.label, ACTORS_POSED, posed);
         failed
     }
 
@@ -2229,7 +2229,7 @@ impl ModelPass {
     }
 
     pub fn warm_added(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) -> io::Result<()> {
-        let _span = viewer_foundation::profiling::span("model_warm_added");
+        let _span = viewer_runtime::profiling::span("model_warm_added");
         let from = self.warmed.get();
         if from >= self.meshes.len() {
             return Ok(());
@@ -2262,12 +2262,12 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<DrawList> {
-        let _wall = viewer_foundation::profiling::span(if queue == Queue::Caster {
+        let _wall = viewer_runtime::profiling::span(if queue == Queue::Caster {
             "native_caster_prepare"
         } else {
             "native_lit_prepare"
         });
-        let _pass = viewer_foundation::profiling::span(prepare_span(self.label, queue));
+        let _pass = viewer_runtime::profiling::span(prepare_span(self.label, queue));
         self.walk_native(arena, frame, inputs, queue, object, None)
     }
 
@@ -2317,7 +2317,7 @@ impl ModelPass {
         let eye = frame.camera.eye();
         let mut posed = 0u64;
         let mut drawn = 0;
-        let timed = viewer_foundation::view_record::on();
+        let timed = viewer_runtime::view_record::on();
         let spent: [std::cell::Cell<u64>; WALK_STEPS] = Default::default();
         let clock = || timed.then(std::time::Instant::now);
         let spend = |step: usize, since: Option<std::time::Instant>| {
@@ -2387,7 +2387,7 @@ impl ModelPass {
                             (crate::Culled::Planes, false) => "lit_culled_planes",
                             (crate::Culled::Planes, true) => "caster_culled_planes",
                         };
-                        viewer_foundation::view_record::add(self.label, name, 1);
+                        viewer_runtime::view_record::add(self.label, name, 1);
                         if let Some(recording) = recording.as_deref_mut() {
                             recording.culled.push((view, kept::figure_key(group.mesh, &instance)));
                         }
@@ -2398,7 +2398,7 @@ impl ModelPass {
                         continue;
                     }
                     if !every && self.seen.get().is_some() {
-                        viewer_foundation::view_record::add(self.label, if caster { "caster_cull_passed" } else { "lit_cull_passed" }, 1);
+                        viewer_runtime::view_record::add(self.label, if caster { "caster_cull_passed" } else { "lit_cull_passed" }, 1);
                     }
                     let live = recording.is_some()
                         && if let Some(row) = row.filter(|_| layout.installed) {
@@ -2597,7 +2597,7 @@ impl ModelPass {
                                 {
                                     Some(key) => key,
                                     None => {
-                                        let _first = viewer_foundation::profiling::span(
+                                        let _first = viewer_runtime::profiling::span(
                                             "native_first_part",
                                         );
                                         crate::count(crate::Count::FirstParts, 1);
@@ -3055,13 +3055,13 @@ impl ModelPass {
         candidates.clear();
         native.prepared = prepared;
         native.candidates = candidates;
-        viewer_foundation::view_record::add(self.label, ACTORS_POSED, posed);
+        viewer_runtime::view_record::add(self.label, ACTORS_POSED, posed);
         if timed {
             let names = if caster { &CASTER_WALK_STEPS } else { &LIT_WALK_STEPS };
             for (step, name) in names.iter().enumerate() {
                 let value = spent[step].get();
                 let value = if step >= WALK_NODES { value } else { value / 1000 };
-                viewer_foundation::view_record::add(self.label, name, value);
+                viewer_runtime::view_record::add(self.label, name, value);
             }
         }
         Ok(commands)
@@ -3079,9 +3079,9 @@ mod tests {
         use shader_pipeline::{
             Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
         };
-        use viewer_foundation::map::gpu_contract::{buffer, read_texture};
+        use viewer_gpu::gpu_contract::{buffer, read_texture};
         content_reader_core::test_game::enter();
-        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
         let program = content_reader_core::pdxshader::program::read_with(b"slices.shader", &|path| {
             Some(if path == b"slices.shader" {
                 b"Effect Draw { }".to_vec()
@@ -3307,7 +3307,7 @@ mod tests {
                 assert!(lists.iter().any(|list| !list.runs.is_empty()));
             }
             let render = |lists: &[DrawList], encode: bool, empty: bool, bundled: u8| {
-                let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_foundation::map::gpu_contract::SeaBed::Half);
+                let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_gpu::gpu_contract::SeaBed::Half);
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {
                     let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {

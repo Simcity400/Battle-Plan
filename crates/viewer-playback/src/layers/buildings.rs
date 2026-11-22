@@ -21,12 +21,12 @@ use std::{
     },
 };
 use map_display_data::{buildings as wire, value_index::ValueIndex};
-use viewer_foundation::map::perspective::{Choice, MAP_OBJECT_VISIBILITY, Vision};
+use viewer_foundation::perspective::{Choice, MAP_OBJECT_VISIBILITY, Vision};
 use viewer_buildings::{
     map_buildings::{BuildingInput, CityTerrain, FLOATING_HARBOR_VISIBILITY, HarbourCounts, MapBuildingAssets, SlotPages, WIRE_CHUNK as CHUNK, WireHour, MapBuildingSummary, PreparedSlot, READS_DETECTION, READS_FOG, READS_HUB, SlotGates, TokenClass, detected, health_state},
     sprawl::average_health,
 };
-use viewer_foundation::map::building_facts::Scope;
+use viewer_foundation::building_facts::Scope;
 
 const TABLES: [TableId; 2] = [TableId::StateBuildings, TableId::ProvinceBuildings];
 
@@ -578,7 +578,7 @@ impl Buildings {
     }
 
     fn drawn(&self, view: &View) -> bool {
-        let height = |cutoff: f32, at: f32| at - viewer_foundation::map::camera::WATER_HEIGHT < cutoff;
+        let height = |cutoff: f32, at: f32| at - viewer_gpu::camera::WATER_HEIGHT < cutoff;
         let below = |cutoff: f32| view.camera.is_none() || height(cutoff, view.camera_height) || view.target.is_some_and(|target| height(cutoff, target.height));
         let assets = self.content.assets();
         (view.graphics.buildings && below(assets.defines.shrink_distance)) || (view.graphics.city_sprawl && below(self.content.sprawl_cutoff()))

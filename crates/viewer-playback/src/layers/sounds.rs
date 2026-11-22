@@ -193,7 +193,7 @@ impl Sounds {
             let (jobs, inbox) = std::sync::mpsc::channel::<Mix>();
             let out = Arc::clone(&self.published);
             let _ = std::thread::Builder::new().name("battle mix".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 while let Ok(mut job) = inbox.recv() {
                     while let Ok(newer) = inbox.try_recv() {
                         job = newer;

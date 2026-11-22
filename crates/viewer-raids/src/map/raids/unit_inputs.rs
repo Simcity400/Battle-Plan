@@ -9,7 +9,7 @@ const SOURCE_NAVAL_BASE: u32 = engine_native::craid_source::KIND_NAVAL_BASE;
 const SOURCE_CARRIER: u32 = engine_native::craid_source::KIND_CARRIER;
 const SOURCE_SUBMARINE: u32 = engine_native::craid_source::KIND_SUBMARINE;
 const SOURCE_BUILDING: u32 = engine_native::craid_source::KIND_BUILDING;
-use viewer_foundation::map::unit_pose::PLANE_UNRECORDED;
+use viewer_gpu::unit_pose::PLANE_UNRECORDED;
 pub fn source_province<'a>(
     assets: &RaidAssets,
     world: &World<'a>,

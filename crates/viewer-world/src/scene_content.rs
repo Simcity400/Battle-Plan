@@ -1,7 +1,7 @@
 use viewer_scene_base::post::PostAssets;
 use content_reader_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds};
 use std::sync::Arc;
-use viewer_foundation::map::camera::MapSize;
+use viewer_gpu::camera::MapSize;
 
 pub struct MapAssets {
     pub mesh_limit: i32,
@@ -41,7 +41,7 @@ pub struct MapAssets {
     pub trees: IndexedImage,
     pub perm_snow: Arc<[bool]>,
     pub spawn_city: Arc<Vec<bool>>,
-    pub sight: std::sync::OnceLock<viewer_foundation::map::terrain_sight::TerrainSight>,
+    pub sight: std::sync::OnceLock<viewer_gpu::terrain_sight::TerrainSight>,
 }
 
 impl MapAssets {
@@ -49,17 +49,17 @@ impl MapAssets {
         &self.heightmap.indices
     }
 
-    pub fn height_field(&self) -> viewer_foundation::map::province_map::HeightField<'_> {
-        viewer_foundation::map::province_map::HeightField {
+    pub fn height_field(&self) -> viewer_gpu::province_map::HeightField<'_> {
+        viewer_gpu::province_map::HeightField {
             width: self.heightmap.width,
             height: self.heightmap.height,
             values: &self.heightmap.indices,
         }
     }
 
-    pub fn terrain_sight(&self) -> &viewer_foundation::map::terrain_sight::TerrainSight {
+    pub fn terrain_sight(&self) -> &viewer_gpu::terrain_sight::TerrainSight {
         self.sight.get_or_init(|| {
-            viewer_foundation::map::terrain_sight::TerrainSight::new(&self.height_field())
+            viewer_gpu::terrain_sight::TerrainSight::new(&self.height_field())
         })
     }
 

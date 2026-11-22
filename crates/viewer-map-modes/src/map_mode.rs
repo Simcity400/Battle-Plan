@@ -15,12 +15,9 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
-use viewer_foundation::map::color_inheritance::slot_of;
-use viewer_foundation::map::{
-    color_inheritance::active_subject,
-    directed_wars,
-    tables::{Available, core, rows},
-};
+use viewer_foundation::color_inheritance::slot_of;
+use viewer_foundation::{color_inheritance::active_subject, tables::{Available, core, rows}};
+use replay_derive::directed_wars;
 
 #[cfg(test)]
 use super::political::{color_source, inherited_colors};

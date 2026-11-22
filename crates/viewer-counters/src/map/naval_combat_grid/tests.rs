@@ -1,6 +1,6 @@
 use super::*;
 use replay_data::rows::ShipRow;
-use viewer_foundation::map::msvc_stable_sort::sort;
+use viewer_runtime::msvc_stable_sort::sort;
 
 fn member(slot: u32, ship: u64, live_ship: u8, live_convoy: u8) -> NavalCombatShipRow {
     NavalCombatShipRow {

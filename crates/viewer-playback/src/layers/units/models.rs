@@ -13,7 +13,8 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{memo::TableKey, perspective::Choice};
+use viewer_runtime::memo::TableKey;
+use viewer_foundation::perspective::Choice;
 use viewer_unit_models::{
     trade_routes::ConvoyLine,
     unit_models::{KeptChoices, PreparedModels, SelectInputs, StackModel, Told},
@@ -84,7 +85,7 @@ const NAMED: &[TableId] = &[
 ];
 
 pub fn tables() -> Vec<TableId> {
-    let mut tables: Vec<TableId> = NAMED.iter().chain(viewer_foundation::map::perspective::VISION_TABLES).copied().collect();
+    let mut tables: Vec<TableId> = NAMED.iter().chain(viewer_foundation::perspective::VISION_TABLES).copied().collect();
     tables.sort_unstable_by_key(|table| table.index());
     tables.dedup();
     tables
@@ -142,9 +143,9 @@ impl Select for crate::document::Content {
             })?;
             parts("um_session_stands", standing.as_nanos() as u64);
             parts("um_session_choose", choosing.as_nanos() as u64);
-            viewer_foundation::view_record::add("units", "stacks_walked", stacks.len() as u64);
-            viewer_foundation::view_record::add("units", "stacks_asked", asked.len() as u64);
-            viewer_foundation::view_record::add("units", "stacks_sessions", 1);
+            viewer_runtime::view_record::add("units", "stacks_walked", stacks.len() as u64);
+            viewer_runtime::view_record::add("units", "stacks_asked", asked.len() as u64);
+            viewer_runtime::view_record::add("units", "stacks_sessions", 1);
             let mut since = std::time::Instant::now();
             let entities: Vec<String> = models.iter().filter_map(|(_, model)| match model {
                 StackModel::Chosen(chosen) => Some(chosen.entity.clone()),
@@ -431,7 +432,7 @@ impl Models {
         let worker = std::thread::Builder::new().name("unit models".into()).spawn({
             let (shared, reader) = (Arc::clone(&shared), Arc::clone(&reader));
             move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
                 work(&shared, &*select, &reader, maker);
             }
         });

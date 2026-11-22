@@ -16,4 +16,4 @@ On supported Windows systems, thread CPU is calculated from thread cycles and on
 
 `usable_processors` passes live stack outputs to the Windows affinity query and uses the current process pseudo-handle. Thread-cycle sampling, `set`, `current_priority`, `at_least` and its restore guard, and bake's `set_priority` use pseudo-handles for the calling thread. Sampling supplies a live output counter. Priority calls neither take ownership of nor close those handles.
 
-[Scheduling](../../crates/viewer-foundation/src/parallel.rs) · [Priority](../../crates/viewer-foundation/src/worker_priority.rs) · [Retirement](../../crates/viewer-foundation/src/retirement.rs) · [Profiling producer](../../crates/viewer-foundation/src/profiling.rs) · [Profiling writer](../../crates/viewer-foundation/src/profile_writer.rs)
+[Scheduling](../../crates/viewer-runtime/src/parallel.rs) · [Priority](../../crates/viewer-runtime/src/worker_priority.rs) · [Retirement](../../crates/viewer-runtime/src/retirement.rs) · [Profiling producer](../../crates/viewer-runtime/src/profiling.rs) · [Profiling writer](../../crates/viewer-runtime/src/profile_writer.rs)

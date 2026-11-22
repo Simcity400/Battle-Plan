@@ -1,7 +1,7 @@
 use super::*;
-use viewer_foundation::map::{
-    counter_order, directed_wars, naval_region_control, visibility::Relations,
-};
+use viewer_unit_reads::counter_order;
+use replay_derive::{directed_wars, naval_region_control};
+use viewer_foundation::visibility::Relations;
 
 const ONE: i64 = 100_000;
 const REFUSED: i64 = 0xffff_ffff;

@@ -6,8 +6,8 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
 };
-use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
-use viewer_foundation::map::name_draw::{Placements, WorldName, next_generation};
+use viewer_gpu::gpu_contract::DEPTH_FORMAT;
+use viewer_runtime::name_draw::{Placements, WorldName, next_generation};
 
 use viewer_map_modes::map_mode::GroupLabels;
 use eframe::wgpu;
@@ -18,21 +18,18 @@ use content_reader_localisation::{localisation, localisation::Localisation};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
-use {
-    super::{
-        name_shader::Vertex as NameVertex,
-        names::{self, NameInput, PlacedName, ProvinceBounds},
-    },
-    viewer_foundation::map::{
-        camera::{Camera, MapSize},
-        gpu_contract::Targets,
-        province_admission::{admits_box, side_planes},
-        province_map::{ProvinceMap, WATER_HEIGHT, world_from_pixel},
-        sprites::IconTextures,
-        tables::core,
-        text,
-    },
+use super::{
+    name_shader::Vertex as NameVertex,
+    names::{self, NameInput, PlacedName, ProvinceBounds},
 };
+use viewer_gpu::{
+    camera::{Camera, MapSize},
+    gpu_contract::Targets,
+    province_admission::{admits_box, side_planes},
+    province_map::{ProvinceMap, WATER_HEIGHT, world_from_pixel},
+};
+use viewer_native_gui::{sprites::IconTextures, text};
+use viewer_foundation::tables::core;
 
 const HEIGHT_SCALE: f32 = 0.1;
 
@@ -1010,12 +1007,12 @@ impl NamePass {
         self.draws.clear();
         self.unprepared = None;
         let held = self.holds(placements);
-        if viewer_foundation::view_record::on() {
+        if viewer_runtime::view_record::on() {
             let section = self.section;
-            viewer_foundation::view_record::set(section, "handed_generation", placements.generation);
-            viewer_foundation::view_record::set(section, "handed_names", placements.country.len() as u64);
-            viewer_foundation::view_record::set(section, "held_generation", self.generation.unwrap_or(0));
-            viewer_foundation::view_record::add(section, if held { "frames_held" } else { "frames_not_held" }, 1);
+            viewer_runtime::view_record::set(section, "handed_generation", placements.generation);
+            viewer_runtime::view_record::set(section, "handed_names", placements.country.len() as u64);
+            viewer_runtime::view_record::set(section, "held_generation", self.generation.unwrap_or(0));
+            viewer_runtime::view_record::add(section, if held { "frames_held" } else { "frames_not_held" }, 1);
         }
         if held || self.builds_in_upload {
             if !held {
@@ -1238,7 +1235,7 @@ impl NamePass {
         retained: Option<&RefCell<viewer_scene_base::shader_scene::State>>,
     ) -> io::Result<()> {
         self.validate_draw(frames, view)?;
-        let compiled = viewer_foundation::map::gpu_contract::compiled(&self.compiled)?;
+        let compiled = viewer_gpu::gpu_contract::compiled(&self.compiled)?;
         let draws: Vec<_> = self
             .draws
             .iter()

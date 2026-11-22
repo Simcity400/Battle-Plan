@@ -3,21 +3,17 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use viewer_foundation::map::counter_move::{AtHead, Position, SharedMovement};
-use viewer_foundation::map::province_admission::province_boxes;
-use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
-use viewer_foundation::unit_handle::Unit;
+use viewer_unit_reads::counter_move::{AtHead, Position, SharedMovement};
+use viewer_gpu::province_admission::province_boxes;
+use viewer_gpu::province_map::ProvinceMap;
+use viewer_gpu::province_schedule::{FrameRestore, ProvinceFrame, Shared};
+use viewer_runtime::unit_handle::Unit;
 
 use viewer_buildings::map_buildings::BuildingHistory;
 use viewer_scene_base::mesh_budget::Budget;
 use viewer_models::{ModelField, ModelInstance};
-use viewer_foundation::map::{
-    camera::Camera,
-    model_admission::Gates,
-    province_admission::Admission,
-    province_schedule::Update,
-};
+use viewer_gpu::{camera::Camera, province_admission::Admission, province_schedule::Update};
+use viewer_unit_reads::model_admission::Gates;
 
 pub mod naval;
 pub mod naval_combat;
@@ -285,7 +281,7 @@ impl Province {
             }
             placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
         });
-        viewer_foundation::view_record::add("unit models", "history_destroyed", (before - self.entities.len()) as u64);
+        viewer_runtime::view_record::add("unit models", "history_destroyed", (before - self.entities.len()) as u64);
         for (&slot, parts) in targets.into_iter().flatten() {
             let kind = slot.0 as usize;
             if !frame.shown[kind] {
@@ -495,7 +491,7 @@ impl Province {
             return;
         }
         budget.charge();
-        viewer_foundation::view_record::add("unit models", "history_created", 1);
+        viewer_runtime::view_record::add("unit models", "history_created", 1);
         self.entities.insert(
             slot,
             Entity {
@@ -515,7 +511,7 @@ impl Province {
         let before = self.entities.len();
         self.entities
             .retain(|slot, _| !steady && !shown[slot.0 as usize] && !arrows);
-        viewer_foundation::view_record::add("unit models", "history_left_view", (before - self.entities.len()) as u64);
+        viewer_runtime::view_record::add("unit models", "history_left_view", (before - self.entities.len()) as u64);
         self.shown = [false; 2];
         self.arrows = false;
         self.quiet = !steady && self.entities.is_empty();
@@ -595,7 +591,7 @@ struct WalkCounts {
 
 impl WalkCounts {
     fn record(&self) {
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         for (name, value) in [
             ("updates", self.updates),
             ("in_view", self.in_view),
@@ -798,7 +794,7 @@ impl History {
             .ensure(sources.candidates.iter().map(|candidate| candidate.province));
         self.naval.install(sources);
         {
-            let _join_span = viewer_foundation::profiling::span("units_join_naval");
+            let _join_span = viewer_runtime::profiling::span("units_join_naval");
             self.provinces.prepare_inputs(&self.targets, &self.naval);
         }
         if changed {
@@ -851,7 +847,7 @@ impl History {
         changed |= self.provinces.install_targets(&self.targets, &targets);
         self.targets = targets;
         if join {
-            let _join_span = viewer_foundation::profiling::span("units_join_prepared");
+            let _join_span = viewer_runtime::profiling::span("units_join_prepared");
             self.provinces.prepare_inputs(&self.targets, &self.naval);
         }
         self.steady = steady;
@@ -957,7 +953,7 @@ impl History {
     }
 
     fn floor(&self) -> usize {
-        match viewer_foundation::map::frame_budget::BOUND.saturating_sub(self.held_walks) {
+        match viewer_runtime::frame_budget::BOUND.saturating_sub(self.held_walks) {
             0 => usize::MAX,
             left => self.held_slots.div_ceil(left as usize),
         }
@@ -980,15 +976,15 @@ impl History {
         buildings_enabled: bool,
         frame: Option<&ProvinceFrame>,
     ) -> FrameModels {
-        let _update_span = viewer_foundation::profiling::span("step_update_models");
+        let _update_span = viewer_runtime::profiling::span("step_update_models");
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
-        use viewer_foundation::map::frame_budget;
+        use viewer_runtime::frame_budget;
         let deadline = frame_budget::deadline(frame_budget::Mark::Actors);
         if let (Some(spent), Some(room)) = (frame_budget::spent(), frame_budget::room(frame_budget::Mark::Actors)) {
-            viewer_foundation::view_record::add("unit models", "budget_spent_us", spent.as_micros() as u64);
-            viewer_foundation::view_record::add("unit models", "budget_room_us", room.as_micros() as u64);
+            viewer_runtime::view_record::add("unit models", "budget_spent_us", spent.as_micros() as u64);
+            viewer_runtime::view_record::add("unit models", "budget_room_us", room.as_micros() as u64);
         }
         let mut budget = Budget::new(limit, self.steady);
         let placed = self.step_with_frame(
@@ -1007,7 +1003,7 @@ impl History {
             buildings: buildings.finish(&mut budget),
         };
         self.carried(budget.held());
-        viewer_foundation::view_record::add("unit models", "history_held", self.held_slots as u64);
+        viewer_runtime::view_record::add("unit models", "history_held", self.held_slots as u64);
         match deadline {
             None => frame_budget::check::quiet("unit figures", self.held_slots),
             Some(_) => frame_budget::check::carrying("unit figures", self.held_slots, self.held_walks),
@@ -1126,7 +1122,7 @@ impl History {
             ..frame
         };
         self.combats.begin_frame(frame.delta);
-        let schedule_span = viewer_foundation::profiling::span("units_schedule");
+        let schedule_span = viewer_runtime::profiling::span("units_schedule");
         self.queued.clear();
         self.updates.clear();
         match province_frame {
@@ -1145,7 +1141,7 @@ impl History {
             }
         }
         drop(schedule_span);
-        let provinces_span = viewer_foundation::profiling::span("units_provinces");
+        let provinces_span = viewer_runtime::profiling::span("units_provinces");
         let mut counts = WalkCounts::default();
         let judged = viewer_scene_base::actor_check::due(&mut self.checks);
         let mut judged_before = Vec::new();
@@ -1241,7 +1237,7 @@ impl History {
         }
         drop(provinces_span);
         buildings(u32::MAX, budget);
-        let deferred_span = viewer_foundation::profiling::span("units_deferred");
+        let deferred_span = viewer_runtime::profiling::span("units_deferred");
         #[cfg(test)]
         self.queue_trace.clone_from(&self.queued);
         for (id, slot, shown) in self.queued.drain(..) {
@@ -1275,7 +1271,7 @@ impl History {
         counts.record();
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
-        let _collect_span = viewer_foundation::profiling::span("units_collect");
+        let _collect_span = viewer_runtime::profiling::span("units_collect");
         let mut next = std::mem::take(&mut self.standing_next);
         let mut moving = std::mem::take(&mut self.moving);
         next.clear();
@@ -1315,8 +1311,8 @@ impl History {
         self.was_moving
             .extend(moving.iter().map(|&(ordinal, _)| ordinal));
         self.moving = moving;
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add("unit walk", "standing", self.standing.len() as u64);
             add("unit walk", "standing_kept", u64::from(kept));
             add("unit walk", "moved_parts", moved.len() as u64);
@@ -1329,7 +1325,7 @@ impl History {
     }
 
     fn note_motion(&mut self) {
-        use viewer_foundation::view_record::{add, set};
+        use viewer_runtime::view_record::{add, set};
         let distance = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
         let mut now = BTreeMap::new();
         for at in self.provinces.populated.iter() {
@@ -1679,7 +1675,7 @@ pub mod tests {
     #[test]
     fn a_glide_into_a_standing_province_takes_its_heading_whatever_the_standing_rotation() {
         let position = Position::still([3.0, 0.0, 4.0]);
-        let motion = viewer_foundation::map::counter_move::Motion::new(
+        let motion = viewer_unit_reads::counter_move::Motion::new(
             1000.0,
             &[[0.0, 0.0, 0.0], [0.0, 0.0, 100.0]],
         )
@@ -2223,7 +2219,7 @@ pub mod tests {
 
     #[test]
     fn a_frame_that_has_spent_its_room_carries_its_figures_and_makes_them_all_within_the_bound() {
-        use viewer_foundation::map::frame_budget::BOUND;
+        use viewer_runtime::frame_budget::BOUND;
         let targets: Vec<Target> = (1..=8)
             .flat_map(|province| {
                 (0..3).map(move |order| Target {
@@ -2477,7 +2473,7 @@ pub mod tests {
     #[test]
     fn a_map_mode_without_land_models_acts_as_a_camera_above_their_cutoff() {
         use viewer_map_modes::map_mode::{MapMode, Stock, visibility};
-        use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};
+        use viewer_gpu::camera::{MapDefines, MapSize, Placement};
         let targets = vec![target(7, Kind::Land), target(8, Kind::Ship)];
         let bounds = Arc::new(BTreeMap::from([
             (7, [0.0, 0.0, 2.0, 2.0]),
@@ -2510,7 +2506,7 @@ pub mod tests {
 
     #[test]
     fn dumps_settle_for_their_camera_even_with_an_explicit_animation_time() {
-        use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};
+        use viewer_gpu::camera::{MapDefines, MapSize, Placement};
         let mut h = history(vec![target(7, Kind::Land), target(8, Kind::Ship)], true);
         h.bounds = Arc::new(BTreeMap::from([
             (7, [0.0, 0.0, 2.0, 2.0]),
@@ -2519,7 +2515,7 @@ pub mod tests {
         let camera = Placement {
             center: [0.0, 0.0],
             height: 50.0,
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test());
         let full = h.update(camera, [1024, 768], 120.0, GATES);

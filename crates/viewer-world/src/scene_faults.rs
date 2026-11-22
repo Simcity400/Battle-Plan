@@ -6,7 +6,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, OUTPUT_FORMAT, Targets, read_texture};
+use viewer_gpu::gpu_contract::{DEPTH_FORMAT, OUTPUT_FORMAT, Targets, read_texture};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Point {
@@ -262,7 +262,7 @@ impl Probe {
         let arena = shader_pipeline::gpu::Arena::new(device);
         let (_, template) = self.template("Known")?;
         let submission = state.prepare(&arena, "retained Scene fixture", &template, 3, 1)?;
-        let targets = Targets::new(device, [8, 8], [8, 8], 1, viewer_foundation::map::gpu_contract::SeaBed::Half);
+        let targets = Targets::new(device, [8, 8], [8, 8], 1, viewer_gpu::gpu_contract::SeaBed::Half);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {

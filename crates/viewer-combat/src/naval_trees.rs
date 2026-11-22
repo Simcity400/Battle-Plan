@@ -7,7 +7,7 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::table_access::{Available, rows};
+use dashboard_text::table_access::{Available, rows};
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 use viewer_foundation::tooltip_text::TextIcons;

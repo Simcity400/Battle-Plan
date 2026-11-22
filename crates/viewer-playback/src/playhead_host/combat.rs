@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_combat::reads::Reads;
-use viewer_foundation::engagement_history::History;
+use viewer_engagements::engagement_history::History;
 
 const WHOLE: Duration = Duration::from_secs(120);
 
@@ -179,7 +179,7 @@ impl<A: Asking> Maker<A> {
     }
 
     fn tables(learned: &[TableId]) -> Vec<TableId> {
-        let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.iter().chain(learned).copied().collect();
+        let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.iter().chain(learned).copied().collect();
         tables.sort_unstable_by_key(|table| table.index());
         tables.dedup();
         tables

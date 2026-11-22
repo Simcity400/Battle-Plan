@@ -11,7 +11,7 @@ use crate::playhead_host::MapSide;
 use replay_data::BranchId;
 use std::sync::Arc;
 use viewer_counters::map::counters::{HourTables, Kinds, Layered};
-use viewer_foundation::map::perspective::{Choice, Vision};
+use viewer_foundation::perspective::{Choice, Vision};
 
 pub const LAYERS: [(&str, Kinds); 6] = [
     ("counters", Kinds::LAND),

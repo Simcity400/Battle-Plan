@@ -518,7 +518,7 @@ fn libraries_equal(left: &ModelLibrary, right: &ModelLibrary) {
 fn merged_textures_keep_their_storage_and_first_seen_slots() {
     use crate::ModelMaterial;
     use content_reader_image::dds::{MipLevel, Texture, TextureFormat};
-    use viewer_foundation::map::textures::ColorSpace::{Linear, Srgb};
+    use viewer_gpu::textures::ColorSpace::{Linear, Srgb};
 
     let texture = |fill: u8| Texture {
         format: TextureFormat::Rgba8,
@@ -596,7 +596,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
     use crate::{AssetKey, ModelMaterial, identity};
     use content_reader_image::dds::{MipLevel, Texture, TextureFormat};
     use std::collections::BTreeMap;
-    use viewer_foundation::map::textures::ColorSpace::{Linear, Srgb};
+    use viewer_gpu::textures::ColorSpace::{Linear, Srgb};
 
     let root = std::env::temp_dir().join(format!(
         "hoi4_failed_merge_{}_{:?}",
@@ -850,7 +850,7 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
     );
     let mut warnings = Vec::new();
     let names = ["parent", "child", "parent", "other", "missing", "missing"].map(str::to_owned);
-    let before = viewer_foundation::worker_priority::current_priority();
+    let before = viewer_runtime::worker_priority::current_priority();
     let actual = ModelLibrary::load(
         &layers,
         Decode::default(),
@@ -860,7 +860,7 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
     )
     .unwrap();
     assert_eq!(
-        viewer_foundation::worker_priority::current_priority(),
+        viewer_runtime::worker_priority::current_priority(),
         before
     );
     new.failed

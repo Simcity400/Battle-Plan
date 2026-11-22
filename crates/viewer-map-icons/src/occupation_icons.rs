@@ -7,23 +7,20 @@ use std::{
     collections::{BTreeMap, HashMap},
     io,
 };
-use viewer_foundation::map::{
-    camera::Camera,
-    free_icons::{IconAnchor, IconFamily},
+use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
+use viewer_native_gui::{
     gui_resources::{count_noted, count_refused, viewport as gui_viewport},
     icon_windows::{self, Retry},
-    native_gui::{
-        self, HitGeometry, SpriteSetter,
-        lifecycle::{Admission, Held, Instance, MapIconPool, Pool, Rewrote, SlotId, Unknown},
-    },
+    native_gui::{self, HitGeometry, SpriteSetter, lifecycle::{Admission, Held, Instance, MapIconPool, Pool, Rewrote, SlotId, Unknown}},
     native_resources::Context,
     native_text::ICON,
     native_windows::NativeWindows,
     sprites::{self, Batch},
 };
 
-use viewer_foundation::map::native_windows::{
-    OCCUPATION_ITEM_WINDOW as ITEM_WINDOW, OCCUPATION_WINDOW as WINDOW,
+use viewer_native_gui::native_windows::{
+    OCCUPATION_ITEM_WINDOW as ITEM_WINDOW,
+    OCCUPATION_WINDOW as WINDOW,
 };
 const TEXT: &str = "text";
 const GRID: &str = "modifier_grid_list";
@@ -63,7 +60,7 @@ impl IconDefines {
                 .number("NGraphics", "RESISTANCE_MAP_ICON_MODIFIERS_DISTANCE_CUTOFF")?
                 as f32,
             reenable: defines.fixed5("NResistance", "RESISTANCE_TARGET_TO_REENABLE_RESISTANCE")?,
-            priority: sprites::priority(defines, "TOP_MAP_ICON")?,
+            priority: viewer_foundation::mode_visibility::priority(defines, "TOP_MAP_ICON")?,
             resistance_colors: colors("OCCUPATION_RESISTANCE_MAP_MODE_COLORS")?,
             compliance_colors: colors("OCCUPATION_COMPLIANCE_MAP_MODE_COLORS")?,
         })

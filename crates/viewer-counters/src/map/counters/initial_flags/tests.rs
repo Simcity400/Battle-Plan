@@ -5,7 +5,8 @@ use replay_data::rows::{
 };
 use replay_frame::frame::TableView;
 use std::sync::Mutex;
-use viewer_foundation::map::{atlas_pages::CellPages, lazy_icons::FlagReader};
+use viewer_gpu::atlas_pages::CellPages;
+use viewer_native_gui::lazy_icons::FlagReader;
 
 fn frame(step: u32) -> DecodedFrame {
     let mut frame = DecodedFrame {
@@ -409,7 +410,7 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
         |_| {},
         |_| {},
         |inputs| {
-            let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+            let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
             let carry = Carry::default();
             let need = Need {
                 air_missions: false,
@@ -437,7 +438,7 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
                     need,
                     &carry,
                     None,
-                    &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                    &mut viewer_runtime::profiling::BuilderSpans::new(false),
                 )
             };
 

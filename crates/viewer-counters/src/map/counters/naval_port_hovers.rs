@@ -1,8 +1,8 @@
 
 use super::*;
-use viewer_foundation::map::counter_hovers::gui_authored::Authored;
-use viewer_foundation::map::counter_hovers::task_force_port::{Control, Hover, Metadata};
-use viewer_foundation::map::native_gui;
+use viewer_native_gui::counter_hovers::gui_authored::Authored;
+use viewer_native_gui::counter_hovers::task_force_port::{Control, Hover, Metadata};
+use viewer_native_gui::native_gui;
 
 fn control(window: &native::Element, element: &native::Element) -> Option<Control> {
     use native::Kind::{Button, Container, Icon};
@@ -62,7 +62,7 @@ pub(super) fn presented(
     metadata: &Metadata,
     notes: &mut BTreeMap<String, usize>,
 ) -> Vec<Hover> {
-    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
+    let _observe_profile = viewer_runtime::profiling::span("dc_observe");
     let placed = native_gui::Layout {
         size: layout.size,
         parts: holder.place(place, layout),
@@ -196,7 +196,7 @@ mod tests {
     fn port_child_can_hover_when_its_clipped_plate_is_empty() {
         content_reader_core::test_game::enter();
         use native_gui::lifecycle::Instance;
-        use viewer_foundation::map::test_support::{Fixture, VIEWPORT};
+        use viewer_native_gui::test_support::{Fixture, VIEWPORT};
         let gui = native::read(br#"guiTypes = { containerWindowType = {
             name = w size = { width = 66 height = 33 } clipping = no
             buttonType = { name = count_bg quadTextureSprite = GFX_bg }
@@ -254,12 +254,12 @@ mod tests {
         assert_eq!(carrier.unit_hit, 42);
         assert!(carrier.supported && carrier.contains([115., 262.]));
         assert!(!carrier.contains([109., 262.]));
-        let plate = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+        let plate = viewer_native_gui::counter_hovers::unit_hits::Hit {
             plate: None,
             ours: true,
             port: true,
             rect: [140., 252., 0., 28.],
-            kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+            kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
             members,
             layer: 1,
         };

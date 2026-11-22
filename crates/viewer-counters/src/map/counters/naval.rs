@@ -1,6 +1,6 @@
 
 use super::*;
-use viewer_foundation::map::gui_resources::viewport;
+use viewer_native_gui::gui_resources::viewport;
 
 #[derive(Clone)]
 pub(super) struct Flotilla {
@@ -25,7 +25,7 @@ pub(super) struct Flotilla {
     pub(super) moving: bool,
     pub(super) item: Option<ItemIntel>,
     pub(super) port_tooltip:
-        Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
+        Option<viewer_native_gui::counter_hovers::task_force_port::Metadata>,
     pub(super) ideology: Result<Option<i32>, String>,
 }
 
@@ -292,7 +292,7 @@ pub(super) struct NavalContext<'a> {
     pub(super) ideology: &'a Ideology<'a>,
     pub(super) missions: Arc<BTreeMap<u64, u32>>,
     pub(super) forces: &'a [replay_data::rows::TaskForceRow],
-    pub(super) mission_skips: Arc<viewer_foundation::map::task_force_visual::MissionSkips>,
+    pub(super) mission_skips: Arc<viewer_unit_reads::task_force_visual::MissionSkips>,
     pub(super) forces_complete: bool,
 }
 
@@ -362,7 +362,7 @@ pub(super) struct NavalTables {
     ships_complete: bool,
     ships: Arc<BTreeMap<u64, (usize, i64)>>,
     missions: Arc<BTreeMap<u64, u32>>,
-    mission_skips: Arc<viewer_foundation::map::task_force_visual::MissionSkips>,
+    mission_skips: Arc<viewer_unit_reads::task_force_visual::MissionSkips>,
     forces_complete: bool,
 }
 
@@ -401,7 +401,7 @@ impl NavalTables {
                     .collect(),
             ),
             mission_skips: Arc::new(
-                viewer_foundation::map::task_force_visual::MissionSkips::read(frame)?,
+                viewer_unit_reads::task_force_visual::MissionSkips::read(frame)?,
             ),
             forces_complete: forces.is_complete(),
         })
@@ -583,7 +583,7 @@ impl<'a> NavalContext<'a> {
             Ok(type_tint::plate(own, type_tint))
         };
         let port_tooltip = port.then(|| {
-            viewer_foundation::map::counter_hovers::task_force_port::Metadata::from_members(
+            viewer_native_gui::counter_hovers::task_force_port::Metadata::from_members(
                 &native_members,
                 self.aggression,
                 if (first.force.expeditionary_owner as i32) > 0 {

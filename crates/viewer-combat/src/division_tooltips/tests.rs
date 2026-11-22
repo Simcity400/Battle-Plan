@@ -618,7 +618,7 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
         rows::DivisionRow, rows::ModifierBreakdownNode, rows::ModifierDefinitionRow,
         rows::ReserveModifierTreeRow, rows::TableId, rows::TableRows,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
     let mut loc = Localisation::default();
     loc.language = "english".into();
     let leaf = |value: i64, name: &[u8]| {

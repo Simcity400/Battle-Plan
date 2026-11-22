@@ -14,15 +14,12 @@ const TANGENT_STEP: f32 = 0.01;
 const MIN_PIXEL: f32 = i64::MIN as f32;
 
 #[cfg(test)]
-use viewer_foundation::map::text::GlyphBox;
-use viewer_foundation::map::{
-    native_text::CURRENCY,
-    text::{GlyphMetrics, StyledChar, color_runs},
-};
+use viewer_native_gui::text::GlyphBox;
+use viewer_native_gui::{native_text::CURRENCY, text::{GlyphMetrics, StyledChar, color_runs}};
 
-const CURRENCY_ADVANCE: f32 = viewer_foundation::map::native_text::CURRENCY_ADVANCE as f32;
+const CURRENCY_ADVANCE: f32 = viewer_native_gui::native_text::CURRENCY_ADVANCE as f32;
 
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_gpu::province_map::ProvinceMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProvinceBounds {

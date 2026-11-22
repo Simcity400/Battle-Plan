@@ -1,5 +1,5 @@
 use crate::native::kept::*;
-use viewer_foundation::map::camera::{MapDefines, MapSize, Pose};
+use viewer_gpu::camera::{MapDefines, MapSize, Pose};
 
 const ALIGNMENT: usize = 256;
 

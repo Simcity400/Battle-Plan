@@ -1,20 +1,17 @@
 
 use super::*;
 use std::collections::HashMap;
-use viewer_foundation::combat_selection::Hit;
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::Retry;
+use viewer_engagements::combat_selection::Hit;
+use viewer_engagements::combat_selection::Selection;
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::Retry;
 #[cfg(test)]
-use viewer_foundation::map::icon_windows::visible_layout;
-use viewer_foundation::map::{
+use viewer_native_gui::icon_windows::visible_layout;
+use viewer_native_gui::{
     icon_windows::{Owner, Plan, PoolView},
-    native_gui::{
-        self, SpriteSetter,
-        lifecycle::{Instance, MapIconPool, SlotId},
-    },
+    native_gui::{self, SpriteSetter, lifecycle::{Instance, MapIconPool, SlotId}},
     native_resources::Context,
 };
 
@@ -37,7 +34,7 @@ pub(super) struct Placed {
 pub struct View {
     pool: PoolView<u64>,
     terrain: BTreeMap<SlotId, Option<String>>,
-    painted: viewer_foundation::map::icon_windows::Painted<u64, Option<IconAnchor>>,
+    painted: viewer_native_gui::icon_windows::Painted<u64, Option<IconAnchor>>,
 }
 
 impl View {
@@ -237,8 +234,8 @@ impl PreparedCombats {
             batch.at_anchor(anchor);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, &resources, batch);
             match painted.paint(
-                viewer_foundation::map::sprites::WindowKey::new(
-                    viewer_foundation::map::sprites::WindowPool::LandCombat,
+                viewer_native_gui::sprites::WindowKey::new(
+                    viewer_native_gui::sprites::WindowPool::LandCombat,
                     0,
                     drawn.owner,
                 ),
@@ -276,10 +273,8 @@ impl PreparedCombats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {
-        native_gui::{PartKind, Resources},
-        viewer_foundation::map::test_support::gui::fixture,
-    };
+    use native_gui::{PartKind, Resources};
+    use viewer_native_gui::test_support::gui::fixture;
 
     fn window(font: &str) -> native::Element {
         native::read(r#"guiTypes = { containerWindowType = { name = test

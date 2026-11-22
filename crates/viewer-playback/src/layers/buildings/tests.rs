@@ -15,7 +15,7 @@ use content_reader_core::{
 use playhead::{Settings, Timeline};
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;
-use viewer_foundation::map::perspective::{Choice, VISION_TABLES, Vision};
+use viewer_foundation::perspective::{Choice, VISION_TABLES, Vision};
 use viewer_buildings::map_buildings::{CityTerrain, Defines, MapBuildingAssets};
 
 const GAP: std::ops::Range<i32> = 40..48;
@@ -36,7 +36,7 @@ impl Catalogue for Stub {
     }
 
     fn sprawl_cutoff(&self) -> f32 {
-        viewer_foundation::map::camera::MapDefines::test().sprawl_cutoff
+        viewer_gpu::camera::MapDefines::test().sprawl_cutoff
     }
 }
 
@@ -345,7 +345,7 @@ fn vision_side(layer: impl Layer + 'static, name: &str) -> MapSide {
         }
     });
     let content = {
-        use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+        use viewer_foundation::visibility::{FogContent, Topology, test_defines};
         let neighbors = [(1, vec![2]), (2, vec![1, 3]), (3, vec![2, 4]), (4, vec![3, 9]), (9, vec![4])].into_iter().collect();
         Arc::new(sight::Content::new(Ok(FogContent { topology: Topology { land: (1..=4).collect(), sea: BTreeSet::from([9]), neighbors }, defines: test_defines() })))
     };
@@ -481,8 +481,8 @@ fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every
         let mut view = hidden();
         (view.graphics.buildings, view.graphics.city_sprawl) = (true, true);
         view.camera_height = height;
-        view.camera = Some(viewer_foundation::map::camera::Placement::map([0.0, 0.0], height));
-        view.target = target.map(|height| viewer_foundation::map::camera::Placement::map([0.0, 0.0], height));
+        view.camera = Some(viewer_gpu::camera::Placement::map([0.0, 0.0], height));
+        view.target = target.map(|height| viewer_gpu::camera::Placement::map([0.0, 0.0], height));
         view
     };
     for (height, target, tables) in [(110.0, None, 10), (2844.0, None, 0), (2844.0, Some(110.0), 10), (200.0, None, 10), (300.0, None, 0)] {

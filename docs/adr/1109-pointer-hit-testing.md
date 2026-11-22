@@ -6,4 +6,4 @@ Clipping tests the original pointer in the clips' logical space and includes the
 
 Each pointer change keeps its position and order within the frame. The final position follows every button change. Window and clip coordinates are tracked separately for descendants. Across windows the press owner holds the pointer through release, even when the pointer moves over another window. Layout still tests and draws a held button as Down on the release step. A button activates on release over itself after its press. A check box toggles on press, with repeated toggles accumulated by parity for the frame. State transitions schedule the old and new controls' effects, and the next click stops the previous click sound for that control. Nested items qualify their control names with the owner's identity.
 
-[Hit geometry](../../crates/viewer-foundation/src/map/native_gui/hit.rs) · [Pointer dispatch](../../crates/viewer-foundation/src/map/native_gui/pointer.rs)
+[Hit geometry](../../crates/viewer-native-gui/src/native_gui/hit.rs) · [Pointer dispatch](../../crates/viewer-native-gui/src/native_gui/pointer.rs)

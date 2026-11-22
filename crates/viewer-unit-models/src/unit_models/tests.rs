@@ -24,7 +24,7 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
         instance: at(seed),
         origin: [0.0; 3],
     };
-    let (track, heights) = viewer_foundation::map::unit_pose::test_support::test_track();
+    let (track, heights) = viewer_gpu::unit_pose::test_support::test_track();
     let hour = track.place(&heights, 0.0).unwrap();
     let mut prepared = PreparedModels {
         staged_field: Mutex::new(None),
@@ -42,7 +42,7 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
                 slot: 0,
                 priority: 3,
                 ours: true,
-                class: viewer_foundation::unit_class::CounterClass::TaskForce,
+                class: viewer_runtime::unit_class::CounterClass::TaskForce,
                 land_eligible: false,
                 sample_count: 0,
                 next_arc: 0.0,
@@ -685,10 +685,7 @@ fn camouflaged_assets() -> UnitModelAssets {
 fn unit_models_use_native_camera_admission_at_the_edges() {
     use viewer_buildings::map_buildings::BuildingHistory;
     use viewer_unit_history::unit_history::{History, test_support::{GATES, target}};
-    use viewer_foundation::map::{
-        camera::{MapDefines, MapSize, Placement},
-        province_admission::edge_boxes,
-    };
+    use viewer_gpu::{camera::{MapDefines, MapSize, Placement}, province_admission::edge_boxes};
     let bounds = edge_boxes();
     assert_eq!(bounds[&5], [3044.0, 1000.0, 3046.0, 1002.0]);
     let mut assets = UnitModelAssets::off(String::new());
@@ -701,7 +698,7 @@ fn unit_models_use_native_camera_admission_at_the_edges() {
     let camera = Placement {
         center: [3000.0, 1000.0],
         height: 50.0,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     history.advance_schedule(camera, [1024, 768]);
@@ -734,7 +731,7 @@ fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> ModelReport {
                 world: None,
                 terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
-                    motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(
+                    motions: &viewer_unit_reads::task_force_visual::TaskForceMotions::default(
                     ),
                     movement: None,
                     land: &|_| true,
@@ -1876,7 +1873,7 @@ fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_orde
 fn prepared(assets: &UnitModelAssets, frame: &DecodedFrame, naval: bool) -> PreparedModels {
     equipment_graphics::test_support::with_world(frame, &[], |limits| {
         let places = ShipPlaces {
-            motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(),
+            motions: &viewer_unit_reads::task_force_visual::TaskForceMotions::default(),
             movement: None,
             land: &|_| true,
             missions: &Default::default(),
@@ -1916,7 +1913,7 @@ fn models_made_without_ships_say_so_and_take_the_ships_layers_beside_their_own_l
         slot: 0,
         priority: 3,
         ours: true,
-        class: viewer_foundation::unit_class::CounterClass::TaskForce,
+        class: viewer_runtime::unit_class::CounterClass::TaskForce,
         land_eligible: false,
         sample_count: 0,
         next_arc: 0.0,

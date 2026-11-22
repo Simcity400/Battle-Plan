@@ -4,7 +4,8 @@ mod travel;
 use super::{Arg, Context, Localisation, Tooltip, localise, units};
 use replay_data::{rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
-use {crate::map::division_eta::CounterQueries, viewer_foundation::unit_handle::Unit};
+use crate::map::division_eta::CounterQueries;
+use viewer_runtime::unit_handle::Unit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
@@ -457,7 +458,7 @@ mod tests {
         rows::DivisionMovementRow, rows::DivisionRow, rows::OrdersGroupCounterInputRow,
         rows::RailwayGunCounterInputRow, rows::TableRows,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn loc() -> Localisation {
         [

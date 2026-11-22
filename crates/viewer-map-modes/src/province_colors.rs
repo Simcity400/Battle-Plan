@@ -1,7 +1,7 @@
 use super::*;
 use map_display_data::value_index::ValueIndex;
 use std::collections::BTreeMap;
-use viewer_foundation::map::textures::Bound;
+use viewer_gpu::textures::Bound;
 
 pub struct ProvinceColors {
     pub bound: Bound,
@@ -81,7 +81,7 @@ impl ProvinceColors {
             ..Default::default()
         });
         let pipeline =
-            viewer_foundation::map::device_shared::shared(device, "province stripe pixels", || {
+            viewer_runtime::device_shared::shared(device, "province stripe pixels", || {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("province stripe pixels"),
                     source: wgpu::ShaderSource::Wgsl(SHADER.into()),

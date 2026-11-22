@@ -7,27 +7,22 @@ use std::{
 use content_reader_core::{defines::Defines, gui::native};
 use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{
-    map::{
-        camera::Camera,
-        free_icons::{IconAnchor, IconFamily},
-        gui_resources::{count_noted, count_refused, viewport as gui_resources_viewport},
-        icon_windows::{Owner, Plan, PoolView, Retry},
-        mode_visibility::{Priorities, PriorityIcon, Visibility},
-        native_gui::{
-            self,
-            lifecycle::{Instance, MapIconPool, SlotId},
-        },
-        native_resources::Context,
-        native_text::{COLOR, ICON},
-        native_windows::NativeWindows,
-        sprites::{self, Batch},
-    },
-    resource_origins::{self, Definition, Hour, RowColour, Values, whole},
+use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
+use viewer_native_gui::{
+    gui_resources::{count_noted, count_refused, viewport as gui_resources_viewport},
+    icon_windows::{Owner, Plan, PoolView, Retry},
+    native_gui::{self, lifecycle::{Instance, MapIconPool, SlotId}},
+    native_resources::Context,
+    native_text::{COLOR, ICON},
+    native_windows::NativeWindows,
+    sprites::{self, Batch},
 };
+use viewer_foundation::mode_visibility::{Priorities, PriorityIcon, Visibility};
+use viewer_runtime::resource_origins::{self, Definition, Hour, RowColour, Values, whole};
 
-use viewer_foundation::map::native_windows::{
-    RESOURCE_ITEM_WINDOW as ITEM_WINDOW, RESOURCE_WINDOW as WINDOW,
+use viewer_native_gui::native_windows::{
+    RESOURCE_ITEM_WINDOW as ITEM_WINDOW,
+    RESOURCE_WINDOW as WINDOW,
 };
 const LIST: &str = "resources_list";
 const FLAG: &str = "flag";

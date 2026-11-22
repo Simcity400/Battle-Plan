@@ -16,7 +16,8 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use viewer_foundation::{map::presentation::Continuity, table_access::TokenError};
+use viewer_runtime::presentation::Continuity;
+use dashboard_text::table_access::TokenError;
 use viewer_rail::{
     railways::RailNetwork,
     trains::{CreatorAppearance, CreatorRows, Curve, Fallback, NodeValues, PlanCache, TrainPlan, TrainRows, node_weight},

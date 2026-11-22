@@ -16,7 +16,7 @@ use shader_pipeline::{
 };
 
 use viewer_scene_base::shader_scene;
-use viewer_foundation::map::native_text::{self, Font, Glyphs, IconSprite, Special};
+use viewer_native_gui::native_text::{self, Font, Glyphs, IconSprite, Special};
 
 const STRIDE: usize = 28;
 const MAX_GLYPHS: usize = 512;

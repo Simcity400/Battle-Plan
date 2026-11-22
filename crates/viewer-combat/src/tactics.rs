@@ -17,13 +17,12 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::engagement_progress::sides as engagement_progress_sides;
+use viewer_engagements::engagement_progress::sides as engagement_progress_sides;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{map::perspective::Vision, table_access::rows},
-};
+use super::content::Content as StaticContent;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::rows;
 use {
     super::{
         Selection, Values,
@@ -1093,8 +1092,8 @@ pub(super) fn bind(
         },
     };
     let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
-    let combat_members = viewer_foundation::land_combat_math::combat_rows(division_rows.rows(), id);
-    let member_values = viewer_foundation::land_combat_math::member_values(frame, combat_members)?;
+    let combat_members = viewer_engagements::land_combat_math::combat_rows(division_rows.rows(), id);
+    let member_values = viewer_engagements::land_combat_math::member_values(frame, combat_members)?;
     let context = Context {
         detail,
         marker_flags,

@@ -27,7 +27,8 @@ use std::{
     time::Instant,
 };
 use store::{Batch, Forget, Meta, ROWS, class};
-use viewer_foundation::{map::presentation::Continuity, map::province_map::HeightField};
+use viewer_runtime::presentation::Continuity;
+use viewer_gpu::province_map::HeightField;
 use viewer_rail::{railways::RailNetwork, trains::{Curve, PlanCache, TrainPlan, route_curve}};
 
 #[derive(Clone, Copy)]
@@ -600,11 +601,11 @@ impl Trains {
         self.shown
     }
 
-    pub fn notes(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
+    pub fn notes(&self, statuses: &dyn viewer_foundation::tables::Statuses) -> Vec<String> {
         if !self.shown {
             return Vec::new();
         }
-        let mut out = viewer_foundation::map::tables::Limitations::default();
+        let mut out = viewer_foundation::tables::Limitations::default();
         out.note_trains(statuses);
         out.into_lines()
     }
@@ -863,7 +864,7 @@ impl Layer for Trains {
             let (send, made) = mpsc::channel();
             let due = self.fed.due();
             std::thread::Builder::new().name("trains plan".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(receive, send, due)
             })?;
             self.worker = Some((jobs, made));

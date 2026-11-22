@@ -3,19 +3,17 @@ use content_reader_image::native::Decode;
 use std::time::Duration;
 use std::time::Instant;
 use std::{collections::BTreeMap, sync::Arc};
-use viewer_foundation::{
-    combat_selection::Selection,
-    map::{
-        gui_resources::GuiAssets,
-        lazy_icons::{LazyTextures, flag_set},
-        native_gui::{self, Resources},
-        native_resources::GuiResources,
-        native_windows::NativeWindows,
-        sprites::{Batch, CHILD_SLOTS, Interface, NO_TEXTURE},
-        test_support::image::tga,
-    },
+use viewer_engagements::combat_selection::Selection;
+use viewer_native_gui::{
+    gui_resources::GuiAssets,
+    lazy_icons::{LazyTextures, flag_set},
+    native_gui::{self, Resources},
+    native_resources::GuiResources,
+    native_windows::NativeWindows,
+    sprites::{Batch, CHILD_SLOTS, Interface, NO_TEXTURE},
     tooltip_painter,
 };
+use viewer_runtime::test_support::image::tga;
 use {viewer_combat::Assets, viewer_combat::Window, viewer_combat::window_layer};
 use {
     viewer_combat::test_support::Bindings, viewer_combat::test_support::CombatGuiAssets,
@@ -26,7 +24,7 @@ use {
 
 #[test]
 fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
-    viewer_foundation::map::test_support::enter_fixed_modifier_tables();
+    viewer_foundation::test_support::enter_fixed_modifier_tables();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_inline_sprite_{}_{:?}",
         std::process::id(),
@@ -319,7 +317,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     inventory.refresh_portraits(&combat, 0.0, lazy.version());
     let resources =
         CombatGuiResources::new(&combat, &windows, &localisation, &flags, &flags, &inventory);
-    use viewer_foundation::map::native_gui::Sheets;
+    use viewer_native_gui::native_gui::Sheets;
     let portrait = resources.sheet(b"GFX_fixture_portrait").unwrap();
     assert_ne!(portrait.texture, NO_TEXTURE);
     assert_eq!(
@@ -335,7 +333,8 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
 
 #[test]
 fn the_combat_window_sorts_above_every_map_icon() {
-    use {viewer_counters::map::counters, viewer_foundation::map::sprites::layer};
+    use viewer_counters::map::counters;
+    use viewer_native_gui::sprites::layer;
     let top_icon = layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1);
     assert!(window_layer(0) > top_icon);
     assert!(window_layer(1) > window_layer(0));

@@ -1,7 +1,7 @@
 
 #[cfg(test)]
-use viewer_foundation::map::stack_anchors::default_anchor;
-use viewer_foundation::map::stack_anchors::{StackAnchors, seed_default_anchors};
+use viewer_gpu::stack_anchors::default_anchor;
+use viewer_gpu::stack_anchors::{StackAnchors, seed_default_anchors};
 use std::cell::RefCell;
 use std::{
     borrow::Cow,
@@ -9,46 +9,50 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::combat_selection::Hit;
-use viewer_foundation::engagement_history::CombatFlags;
-use viewer_foundation::engagement_history::History;
-use viewer_foundation::engagement_history::LAND_ICON;
-use viewer_foundation::engagement_history::NAVAL_ICON;
-use viewer_foundation::engagement_history::kept_frames;
-use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission};
-use viewer_foundation::map::counter_anchors::stack_anchor;
-use viewer_foundation::map::counter_hovers::land::{CounterControl, CounterHover};
-use viewer_foundation::map::country_index::{CountryIndex, FlagTags};
-use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
-use viewer_foundation::map::lazy_icons::flag_set;
-use viewer_foundation::map::memo::Recent;
-pub use viewer_foundation::map::mode_visibility::{
-    Priorities, PriorityIcon, PriorityTable, UnitKinds, Visibility,
+use viewer_engagements::combat_selection::Hit;
+use viewer_engagements::engagement_history::CombatFlags;
+use viewer_engagements::engagement_history::History;
+use viewer_engagements::engagement_history::LAND_ICON;
+use viewer_engagements::engagement_history::NAVAL_ICON;
+use viewer_engagements::engagement_history::kept_frames;
+use viewer_foundation::building_facts::{self, SiteSlots, SlotAdmission};
+use viewer_unit_reads::counter_anchors::stack_anchor;
+use viewer_native_gui::counter_hovers::land::{CounterControl, CounterHover};
+use viewer_foundation::country_index::{CountryIndex, FlagTags};
+use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
+use viewer_native_gui::lazy_icons::flag_set;
+use viewer_runtime::memo::Recent;
+pub use viewer_foundation::mode_visibility::{
+    Priorities,
+    PriorityIcon,
+    PriorityTable,
+    UnitKinds,
+    Visibility,
 };
-use viewer_foundation::map::native_gui::Assets;
-use viewer_foundation::map::native_gui::Sheets;
-use viewer_foundation::map::native_gui::container_frame;
-use viewer_foundation::map::native_resources::GuiResources;
-use viewer_foundation::map::native_windows::NativeWindows as SharedNativeWindows;
-use viewer_foundation::map::native_windows::WindowCache;
-use viewer_foundation::map::province_map::HeightField;
-use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::map::province_schedule::Shared;
-use viewer_foundation::map::sprites::decode_sheet;
-use viewer_foundation::map::sprites::icon_offset;
-use viewer_foundation::map::terrain_content::TerrainContent;
-use viewer_foundation::map::ui_scale::extent as ui_scale_extent;
-use viewer_foundation::map::ui_scale::project;
-use viewer_foundation::map::visibility::FogContent;
-use viewer_foundation::map::visibility::Relations;
+use viewer_native_gui::native_gui::Assets;
+use viewer_native_gui::native_gui::Sheets;
+use viewer_native_gui::native_gui::container_frame;
+use viewer_native_gui::native_resources::GuiResources;
+use viewer_native_gui::native_windows::NativeWindows as SharedNativeWindows;
+use viewer_native_gui::native_windows::WindowCache;
+use viewer_gpu::province_map::HeightField;
+use viewer_gpu::province_map::ProvinceMap;
+use viewer_gpu::province_schedule::Shared;
+use viewer_native_gui::sprites::decode_sheet;
+use viewer_native_gui::sprites::icon_offset;
+use viewer_gpu::terrain_content::TerrainContent;
+use viewer_gpu::ui_scale::extent as ui_scale_extent;
+use viewer_gpu::ui_scale::project;
+use viewer_foundation::visibility::FogContent;
+use viewer_foundation::visibility::Relations;
 use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::movement_timing::MovementContent;
 use viewer_foundation::movement_timing::Report;
-use viewer_foundation::table_access::TokenKeys;
-use viewer_foundation::table_access::rows as table_access_rows;
-use viewer_foundation::unit_handle::Unit;
+use dashboard_text::table_access::TokenKeys;
+use dashboard_text::table_access::rows as table_access_rows;
+use viewer_runtime::unit_handle::Unit;
 
 use content_reader_core::{
     ResolvedLayers, buildings::Slot, defines::Defines, flags, flags::FlagSet, gui::native,
@@ -60,28 +64,27 @@ use content_reader_regions::regions;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
-use viewer_foundation::map::icon_windows::admitted;
-use {
-    crate::map::counter_groups, crate::map::counter_groups::Bounds,
-    crate::map::counter_groups::Extents, crate::map::counter_groups::GroupDefines,
-    crate::map::counter_groups::Level, crate::map::counter_portraits,
-    viewer_foundation::map::allegiance, viewer_foundation::map::allegiance::Allegiance,
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::camera::MapSize,
-    viewer_foundation::map::counter_action, viewer_foundation::map::counter_inputs,
-    viewer_foundation::map::counter_inputs::NativeInputs, viewer_foundation::map::counter_move,
-    viewer_foundation::map::counter_order, viewer_foundation::map::counter_status,
-    viewer_foundation::map::lazy_icons::LazyFlags,
-    viewer_foundation::map::lazy_icons::LazyTextures,
-    viewer_foundation::map::perspective::SharingUnknown,
-    viewer_foundation::map::perspective::Sight, viewer_foundation::map::perspective::Vision,
-    viewer_foundation::map::province_admission::Admission,
-    viewer_foundation::map::province_admission::province_boxes, viewer_foundation::map::sprites,
-    viewer_foundation::map::sprites::Batch, viewer_foundation::map::sprites::SpriteSheet,
-    viewer_foundation::map::sprites::layer, viewer_foundation::map::sprites::load_sheet,
-    viewer_foundation::map::tables::Available, viewer_foundation::map::tables::core,
-    viewer_foundation::map::tables::rows,
-    viewer_foundation::map::task_force_visual::TaskForceMotions, viewer_foundation::map::templates,
-    viewer_foundation::map::text,
+use viewer_native_gui::icon_windows::admitted;
+use crate::map::{counter_groups::{self, Bounds, Extents, GroupDefines, Level}, counter_portraits};
+use viewer_foundation::{
+    allegiance::{self, Allegiance},
+    perspective::{SharingUnknown, Sight, Vision},
+    tables::{Available, core, rows},
+    templates,
+};
+use viewer_gpu::{camera::{Camera, MapSize}, province_admission::{Admission, province_boxes}};
+use viewer_unit_reads::{
+    counter_action,
+    counter_inputs::{self, NativeInputs},
+    counter_move,
+    counter_order,
+    counter_status,
+    task_force_visual::TaskForceMotions,
+};
+use viewer_native_gui::{
+    lazy_icons::{LazyFlags, LazyTextures},
+    sprites::{self, Batch, SpriteSheet, layer, load_sheet},
+    text,
 };
 
 mod air_grid;
@@ -110,7 +113,7 @@ use gun_members::TodayGunJoins;
 pub mod gui_windows;
 mod initial_flags;
 pub use initial_flags::warm_initial_flags;
-use viewer_foundation::map::native_windows::NativeWindows;
+use viewer_native_gui::native_windows::NativeWindows;
 mod hovers;
 mod land;
 pub use land::{DivisionStatus, StatusFields};
@@ -150,38 +153,41 @@ use naval::*;
 use naval_markers::*;
 use naval_missions::*;
 
-use viewer_foundation::map::native_windows::MAPICONS_GUI;
+use viewer_native_gui::native_windows::MAPICONS_GUI;
 
 pub const ZOOMED_IN_OFFSET: &str = "unit_counter_zoomed_in_offset";
 pub const LAND_WINDOW: &str = "unit_counter";
-use viewer_foundation::map::native_windows::NAVY_WINDOW;
+use viewer_native_gui::native_windows::NAVY_WINDOW;
 pub const STACK_WINDOW: &str = "unit_mapicon";
-use viewer_foundation::map::native_windows::AIR_BASE_WINDOW;
-use viewer_foundation::map::native_windows::FACILITY_WINDOW;
-use viewer_foundation::map::native_windows::NAVAL_BASE_WINDOW;
-use viewer_foundation::map::native_windows::NAVAL_HEADQUARTER_WINDOW;
-use viewer_foundation::map::native_windows::{
-    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW, STRATEGIC_LOCATION_WINDOW,
+use viewer_native_gui::native_windows::AIR_BASE_WINDOW;
+use viewer_native_gui::native_windows::FACILITY_WINDOW;
+use viewer_native_gui::native_windows::NAVAL_BASE_WINDOW;
+use viewer_native_gui::native_windows::NAVAL_HEADQUARTER_WINDOW;
+use viewer_native_gui::native_windows::{
+    GUN_EMPLACEMENT_WINDOW,
+    RADAR_WINDOW,
+    ROCKET_SITE_WINDOW,
+    STRATEGIC_LOCATION_WINDOW,
 };
 pub const FACILITY_SPRITE_PREFIX: &str = "GFX_mapicon_facility_";
-use viewer_foundation::map::native_windows::LAND_COMBAT_WINDOW;
-use viewer_foundation::map::native_windows::NAVAL_COMBAT_WINDOW;
-use viewer_foundation::map::native_windows::NAVAL_RESULT_WINDOW;
+use viewer_native_gui::native_windows::LAND_COMBAT_WINDOW;
+use viewer_native_gui::native_windows::NAVAL_COMBAT_WINDOW;
+use viewer_native_gui::native_windows::NAVAL_RESULT_WINDOW;
 pub const GUN_WINDOW: &str = "unit_counter_railway_gun";
 pub const ABILITY_WINDOW: &str = "active_ability_item";
 
 #[cfg(test)]
-use viewer_foundation::map::counter_anchors::STACK_KINDS;
-use viewer_foundation::map::label_reads::VICTORY_POINT;
-use viewer_foundation::map::unit_rules::DEFENDING;
-use viewer_foundation::map::unit_rules::SHIP_IN_PORT;
-use viewer_foundation::map::unit_rules::STANDSTILL;
+use viewer_unit_reads::counter_anchors::STACK_KINDS;
+use viewer_runtime::label_reads::VICTORY_POINT;
+use viewer_foundation::unit_rules::DEFENDING;
+use viewer_foundation::unit_rules::SHIP_IN_PORT;
+use viewer_foundation::unit_rules::STANDSTILL;
 
 pub const MEDIUM_FLAG_OVERLAY: &str = "gfx/interface/small_flag_overlay.tga";
 
 pub const UNKNOWN_COUNT: &str = "?";
 
-use viewer_foundation::map::templates::NO_INTEL_SPRITE;
+use viewer_foundation::templates::NO_INTEL_SPRITE;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -232,7 +238,7 @@ pub struct CounterDefines {
     pub priorities: Priorities,
     pub groups: GroupDefines,
     pub split_selected_limit: i32,
-    pub naval_counts: viewer_foundation::map::naval_count_approx::Defines,
+    pub naval_counts: viewer_unit_reads::naval_count_approx::Defines,
     pub supply: counter_status::SupplyThresholds,
     pub tints: allegiance::Tints,
     pub land_combat: LandCombatDefines,
@@ -245,7 +251,7 @@ impl CounterDefines {
         let fixed = |name| {
             defines
                 .fixed5("NGraphics", name)
-                .map(viewer_foundation::map::camera::fixed5_camera_distance)
+                .map(viewer_gpu::camera::fixed5_camera_distance)
         };
         let int = |name| defines.int32("NGraphics", name).map(|value| value as f32);
         Ok(Self {
@@ -275,7 +281,7 @@ impl CounterDefines {
                 .int32("NGraphics", "MAP_ICONS_GROUP_SPLIT_SELECTED_LIMIT")?,
             naval_mission_cutoff: number("NAVAL_MISSION_ICONS_DISTANCE_CUTOFF")?,
             groups: GroupDefines::read(defines)?,
-            naval_counts: viewer_foundation::map::naval_count_approx::Defines::read(defines)?,
+            naval_counts: viewer_unit_reads::naval_count_approx::Defines::read(defines)?,
             supply: counter_status::SupplyThresholds::read(defines)?,
             tints: allegiance::Tints::read(defines)?,
             land_combat: LandCombatDefines::read(defines)?,
@@ -320,7 +326,7 @@ impl CounterDefines {
         ]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
-        naval_counts: viewer_foundation::map::naval_count_approx::Defines::VANILLA,
+        naval_counts: viewer_unit_reads::naval_count_approx::Defines::VANILLA,
         supply: counter_status::SupplyThresholds {
             very_low: 20_000,
             low: 35_000,
@@ -388,7 +394,7 @@ pub struct AbilityGrid {
     pub centred: bool,
 }
 
-use viewer_foundation::map::native_windows::TINY_UNIT_COUNTER_WINDOW;
+use viewer_native_gui::native_windows::TINY_UNIT_COUNTER_WINDOW;
 
 pub const CONVOY_ADDITION_ICON: &str = "GFX_unit_transport_icon_medium_white";
 
@@ -564,7 +570,7 @@ impl ActionContent {
 }
 
 pub struct CounterAssets {
-    air_sortie_defines: Result<viewer_foundation::map::aircraft_count::SortieDefines, String>,
+    air_sortie_defines: Result<replay_derive::aircraft_count::SortieDefines, String>,
     pub layouts: Layouts,
     pub windows: SharedNativeWindows,
     pub window_cache: Arc<WindowCache>,
@@ -800,7 +806,7 @@ impl CounterAssets {
         });
         Ok(Self {
             layouts,
-            air_sortie_defines: viewer_foundation::map::aircraft_count::load_defines(
+            air_sortie_defines: viewer_unit_reads::air_sortie_defines::load_defines(
                 defines,
             )
             .map_err(|e| e.to_string()),
@@ -854,12 +860,12 @@ impl CounterAssets {
     pub fn operative_portrait_texture(
         &self,
         name: &[u8],
-    ) -> Option<viewer_foundation::map::native_gui::Texture> {
+    ) -> Option<viewer_native_gui::native_gui::Texture> {
         let name = std::str::from_utf8(name).ok()?;
         let counter_portraits::Resolved::Sheet(sheet) = self.portraits.sprite(name) else {
             return None;
         };
-        Some(viewer_foundation::map::native_gui::Texture {
+        Some(viewer_native_gui::native_gui::Texture {
             texture: sheet.texture,
             uv: [0.0, 0.0, 1.0 / sheet.frames.max(1) as f32, 1.0],
             size: [
@@ -925,7 +931,7 @@ impl CounterAssets {
 
     pub fn census(&self, batch: &Batch, fonts: &text::Fonts, ui_scale: f32) -> serde_json::Value {
         use serde_json::json;
-        use viewer_foundation::map::text::GlyphMetrics;
+        use viewer_native_gui::text::GlyphMetrics;
 
         let mut plates: BTreeMap<u64, Vec<serde_json::Value>> = BTreeMap::new();
         for quad in &batch.quads {
@@ -1045,8 +1051,8 @@ pub struct CounterContent {
     pub terrain: Arc<TerrainContent>,
     pub wing_types: Result<Arc<content_reader_core::unit_leader::SubUnits>, String>,
     mission_content: Result<naval_mission_inputs::Content, String>,
-    pub recorded_labels: Option<Arc<viewer_foundation::naval_labels::RecordedLabels>>,
-    pub port_mission_defines: viewer_foundation::map::port_mission_defines::Defines,
+    pub recorded_labels: Option<Arc<viewer_runtime::recorded_labels::RecordedLabels>>,
+    pub port_mission_defines: viewer_unit_reads::port_mission_defines::Defines,
     pub anchors: Arc<BTreeMap<(u32, u32), [f32; 3]>>,
     stack_scales: BTreeMap<(u32, u32), f32>,
     pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,
@@ -1058,7 +1064,7 @@ pub struct CounterContent {
     pub bounds: Arc<BTreeMap<u32, Bounds>>,
     geography: geography::Memo,
     template_icons: TemplateIconMemo,
-    pub routes: viewer_foundation::map::counter_move::RouteMemo,
+    pub routes: viewer_unit_reads::counter_move::RouteMemo,
     pub region_of: Arc<BTreeMap<u32, u32>>,
     region_provinces: BTreeMap<u32, Vec<u32>>,
     region_icons: BTreeMap<u32, [f32; 3]>,
@@ -1074,7 +1080,7 @@ pub struct CounterContent {
     pub supply_grace: Result<i32, String>,
     pub comms_max_distance: Result<i32, String>,
     pub dig_in_factor: Result<i64, String>,
-    pub attrition: Result<Arc<viewer_foundation::map::counter_attrition::Content>, String>,
+    pub attrition: Result<Arc<viewer_unit_reads::counter_attrition::Content>, String>,
     pub ability_comms_scaling: Result<Arc<Vec<i64>>, String>,
     pub ability_no_hq_scaling: Result<i64, String>,
     pub subunit_tokens: Result<TokenKeys, String>,
@@ -1120,7 +1126,7 @@ impl CounterContent {
         let admit = |spawn: &content_reader_core::buildings::SpawnPoint,
                      slot: &content_reader_core::positions::BuildingPosition,
                      province: Option<u32>| {
-            viewer_foundation::map::building_facts::admit_slot(
+            viewer_foundation::building_facts::admit_slot(
                 spawn,
                 slot,
                 province,
@@ -1178,7 +1184,7 @@ impl CounterContent {
         let wing_types = content_reader_core::unit_leader::sub_units(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
-        let attrition = viewer_foundation::map::counter_attrition::Content::read(
+        let attrition = viewer_unit_reads::counter_attrition::Content::read(
             defines,
             &terrain,
             wing_types.clone(),
@@ -1192,7 +1198,7 @@ impl CounterContent {
             wing_types,
             mission_content,
             recorded_labels: None,
-            port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
+            port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
                 defines,
             ),
             terrain: Arc::new(TerrainContent {
@@ -1271,7 +1277,7 @@ impl CounterContent {
                     FogContent::load(layers, map, defines).map_err(|error| error.to_string()),
                 ),
             },
-            subunit_tokens: viewer_foundation::map::subunit_files::subunit_keys(layers)
+            subunit_tokens: dashboard_text::subunit_files::subunit_keys(layers)
                 .map(|keys| TokenKeys::new(&keys))
                 .map_err(|error| error.to_string()),
             ideologies: content_reader_core::ideologies::Ideologies::default(),
@@ -1457,7 +1463,7 @@ pub struct CounterInputs<'a> {
     pub pressed: Option<Unit>,
     pub plate_hovered: Option<Unit>,
     pub schedule: &'a Shared,
-    pub movement_history: &'a viewer_foundation::map::counter_move::SharedMovement,
+    pub movement_history: &'a viewer_unit_reads::counter_move::SharedMovement,
     pub visibility: Visibility,
     pub art: u64,
 }
@@ -1658,7 +1664,7 @@ pub struct AirMissionHover {
 }
 impl AirMissionHover {
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        viewer_foundation::map::gui_resources::contains(self.rect, point)
+        viewer_runtime::geometry::contains(self.rect, point)
     }
 }
 
@@ -1673,7 +1679,7 @@ pub struct NavalMissionHit {
 
 impl NavalMissionHit {
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        viewer_foundation::map::gui_resources::contains(self.rect, point)
+        viewer_runtime::geometry::contains(self.rect, point)
     }
 }
 
@@ -1691,14 +1697,14 @@ pub struct NavalRegionalHover {
     pub control: NavalRegionalControl,
     pub rect: [f32; 4],
     pub layer: u64,
-    pub hit: Option<viewer_foundation::map::native_gui::HitGeometry>,
+    pub hit: Option<viewer_native_gui::native_gui::HitGeometry>,
     pub supported: bool,
     pub text: Option<Arc<viewer_foundation::tooltip_text::Tooltip>>,
 }
 impl NavalRegionalHover {
     pub fn contains(&self, point: [f32; 2]) -> bool {
         self.hit.as_ref().map_or_else(
-            || viewer_foundation::map::gui_resources::contains(self.rect, point),
+            || viewer_runtime::geometry::contains(self.rect, point),
             |hit| hit.contains(point),
         )
     }
@@ -1713,8 +1719,8 @@ pub struct AirGridHover {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CounterReport {
-    pub unit_hits: Vec<viewer_foundation::map::counter_hovers::unit_hits::Hit>,
-    pub base_hits: Vec<viewer_foundation::map::counter_hovers::unit_hits::Blocker>,
+    pub unit_hits: Vec<viewer_native_gui::counter_hovers::unit_hits::Hit>,
+    pub base_hits: Vec<viewer_native_gui::counter_hovers::unit_hits::Blocker>,
     pub radar_hits: BTreeMap<usize, u32>,
     pub air_base_hits: BTreeMap<usize, (u32, i32)>,
     pub naval_base_hits: BTreeMap<usize, u32>,
@@ -1726,8 +1732,8 @@ pub struct CounterReport {
     pub combat_hits: Vec<Hit>,
     pub naval_marker_hovers: Vec<Hit>,
     pub land_hovers: Vec<CounterHover>,
-    pub task_force_hovers: Vec<viewer_foundation::map::counter_hovers::task_force::Hover>,
-    pub task_force_port_hovers: Vec<viewer_foundation::map::counter_hovers::task_force_port::Hover>,
+    pub task_force_hovers: Vec<viewer_native_gui::counter_hovers::task_force::Hover>,
+    pub task_force_port_hovers: Vec<viewer_native_gui::counter_hovers::task_force_port::Hover>,
     pub eta: Report,
     pub land_counters: usize,
     pub railway_guns: usize,
@@ -2676,7 +2682,7 @@ impl HourTables {
 
     pub fn naval_dominance_sources(
         &self,
-    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+    ) -> Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap> {
         self.missions
             .naval_dominance_sources
             .clone()
@@ -2731,7 +2737,7 @@ pub fn hour_tables(
     air_passes: Option<&dyn AirPasses>,
     type_tints: &type_tint::Memo,
     mission_memo: &MissionMemo,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
             &content_reader_core::province_graph::ProvinceGraph,
@@ -2760,12 +2766,12 @@ pub fn hour_tables(
         Need::WHOLE,
         &Carry::default(),
         None,
-        &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        &mut viewer_runtime::profiling::BuilderSpans::new(false),
     )
 }
 
 pub struct Carry {
-    country_index: viewer_foundation::map::memo::Settled<CountryIndex>,
+    country_index: viewer_runtime::memo::Settled<CountryIndex>,
     countries: carry::Carried<CountryInputs, u32>,
     pins: carry::Carried<HourPins, u32>,
     abilities: carry::Carried<AbilityInputs, ()>,
@@ -2795,7 +2801,7 @@ fn country_inputs(
     frame: &DecodedFrame,
     map: &MapData,
     ours: u32,
-    index_memo: Option<&viewer_foundation::map::memo::Settled<CountryIndex>>,
+    index_memo: Option<&viewer_runtime::memo::Settled<CountryIndex>>,
 ) -> io::Result<CountryInputs> {
     let index = match index_memo {
         Some(memo) => CountryIndex::settled(memo, frame)?,
@@ -2926,7 +2932,7 @@ pub fn naval_dominance_sources(
     content: &CounterContent,
     ours: u32,
     region: u32,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
             &content_reader_core::province_graph::ProvinceGraph,
@@ -2934,7 +2940,7 @@ pub fn naval_dominance_sources(
         ),
         String,
     >,
-) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+) -> viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap {
     if frame.complete::<tables::NavalMissionLedgers>().is_ok_and(|rows| rows.is_empty()) {
         return Ok(BTreeMap::new());
     }
@@ -2947,10 +2953,10 @@ pub fn naval_dominance_sources(
         .map(|row| (row.id, row))
         .collect();
     let world = dashboard_text::triggers::World::new(frame, reads.trigger_content.facts()).map_err(|error| error.to_string());
-    let cells = viewer_foundation::map::movement_reads::Cells::default();
+    let cells = viewer_unit_reads::movement_reads::Cells::default();
     let moves = world
         .as_ref()
-        .map(|world| viewer_foundation::map::movement_reads::Moves::new(world, reads, &cells))
+        .map(|world| viewer_unit_reads::movement_reads::Moves::new(world, reads, &cells))
         .map_err(Clone::clone);
     naval_mission_inputs::Hour::read(frame, content, &native, (index.links(), index.ids()), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
 }
@@ -2969,7 +2975,7 @@ pub fn hour_tables_profiled(
     air_passes: Option<&dyn AirPasses>,
     type_tints: &type_tint::Memo,
     mission_memo: &MissionMemo,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     mission_topology: Result<
         (
             &content_reader_core::province_graph::ProvinceGraph,
@@ -2981,7 +2987,7 @@ pub fn hour_tables_profiled(
     need: Need,
     carry: &Carry,
     deferred_passes: Option<Arc<dyn AirPasses + Send + Sync>>,
-    spans: &mut viewer_foundation::profiling::BuilderSpans,
+    spans: &mut viewer_runtime::profiling::BuilderSpans,
 ) -> io::Result<HourTables> {
     let carry = need.by_key.then_some(carry);
     let ours = vision.ours();
@@ -3127,11 +3133,11 @@ pub fn hour_tables_profiled(
                             )
                             .map_err(|error| error.to_string())
                         });
-                    let cells = viewer_foundation::map::movement_reads::Cells::default();
+                    let cells = viewer_unit_reads::movement_reads::Cells::default();
                     let moves = world
                         .as_ref()
                         .map(|world| {
-                            viewer_foundation::map::movement_reads::Moves::new(world, reads, &cells)
+                            viewer_unit_reads::movement_reads::Moves::new(world, reads, &cells)
                         })
                         .map_err(Clone::clone);
                     naval_mission_inputs::decorate_profiled(&mut icons, spans, || {
@@ -3373,13 +3379,13 @@ fn prepare_with(
     let land = tables.land();
 
     faction_pings(inputs, &tables.pings, &mut out);
-    let span = viewer_foundation::profiling::span("pc_bases");
+    let span = viewer_runtime::profiling::span("pc_bases");
     match retained.as_deref_mut() {
         Some(retained) => retained.bases(inputs, frame, tables, &mut out)?,
         None => bases(inputs, frame, tables, None, &mut out)?,
     }
     drop(span);
-    let span = viewer_foundation::profiling::span("pc_air");
+    let span = viewer_runtime::profiling::span("pc_air");
     if inputs.visibility.priorities == PriorityTable::StrategicAir {
         out.native_air = Some(match &layered.air {
             Some(values) => {
@@ -3404,7 +3410,7 @@ fn prepare_with(
         aggression: &inputs.content.aggression,
         ideology: &ideology,
     };
-    let span = viewer_foundation::profiling::span("pc_naval_context");
+    let span = viewer_runtime::profiling::span("pc_naval_context");
     let context = NavalContext::cached(frame, sources, &tables.naval)?;
     let naval = units_shown(inputs, tables.peace_conference).then_some(&context);
     drop(span);
@@ -3415,7 +3421,7 @@ fn prepare_with(
         });
     }
     out.naval.countries = Some(Arc::clone(&tables.countries));
-    let span = viewer_foundation::profiling::span("pc_land");
+    let span = viewer_runtime::profiling::span("pc_land");
     let layered_divisions = layered.land.as_deref().map(land::division_counters_of);
     let prepared_land = match &naval {
         Some(naval) => Some(land_counters(
@@ -3457,7 +3463,7 @@ fn prepare_with(
         }
     }
     out.report.grouping_gaps = grouping_gaps.into_inner();
-    let span = viewer_foundation::profiling::span("pc_ports");
+    let span = viewer_runtime::profiling::span("pc_ports");
     if let Some(retained) = retained {
         retained.ports(
             inputs,
@@ -3595,8 +3601,8 @@ pub(crate) fn draw_pointed_plate(
             .find(native::Kind::Button, "count_bg")
             .ok_or_else(|| format!("{window} has no count_bg button"))?;
         let resources = gui_windows::gui_assets(inputs, None);
-        let mut bindings = viewer_foundation::map::native_gui::Bindings::default();
-        bindings.viewport = Some(viewer_foundation::map::gui_resources::viewport(
+        let mut bindings = viewer_native_gui::native_gui::Bindings::default();
+        bindings.viewport = Some(viewer_native_gui::gui_resources::viewport(
             inputs.viewport,
             inputs.ui_scale,
         ));
@@ -3606,10 +3612,10 @@ pub(crate) fn draw_pointed_plate(
         bound.frame = plate.frame;
         if let Some(sprite) = plate.sprite {
             bound.sprite = Some(sprite.as_bytes().to_vec());
-            bound.setter = viewer_foundation::map::native_gui::SpriteSetter::Button;
+            bound.setter = viewer_native_gui::native_gui::SpriteSetter::Button;
         }
-        let cause = viewer_foundation::map::gui_resources::refused_cause;
-        let layout = viewer_foundation::map::native_gui::pointed_button(
+        let cause = viewer_native_gui::gui_resources::refused_cause;
+        let layout = viewer_native_gui::native_gui::pointed_button(
             root, element, &resources, bindings, down, since,
         )
         .map_err(|refusals| {
@@ -3623,7 +3629,7 @@ pub(crate) fn draw_pointed_plate(
         if at.map(|value| value as f32) != origin {
             return Err(format!("{window} is placed between whole interface pixels"));
         }
-        viewer_foundation::map::native_gui::draw(&layout, at, &resources, batch)
+        viewer_native_gui::native_gui::draw(&layout, at, &resources, batch)
             .map_err(|refusal| cause(window, &refusal))?;
         Ok::<_, String>(layout.parts.iter().any(|part| part.shading.changing()))
     })();
@@ -3682,9 +3688,9 @@ impl PreparedCounters {
     pub fn detached_flag_source<'a>(
         &self,
         assets: &'a CounterAssets,
-    ) -> Option<impl viewer_foundation::map::native_flags::FlagSource + Send + Sync + 'a + use<'a>>
+    ) -> Option<impl viewer_native_gui::native_flags::FlagSource + Send + Sync + 'a + use<'a>>
     {
-        use viewer_foundation::map::native_flags::{FlagRecord, FlagSource};
+        use viewer_native_gui::native_flags::{FlagRecord, FlagSource};
         struct Flags<'a> {
             countries: Arc<Countries>,
             assets: &'a CounterAssets,
@@ -3745,7 +3751,7 @@ impl PreparedCounters {
         combats.clear();
         report.assign_all_but_flags(&fixed.report);
         missing_owners.clear();
-        let span = viewer_foundation::profiling::span("dc_pings");
+        let span = viewer_runtime::profiling::span("dc_pings");
         fixed.native_pings.draw(
             inputs,
             pings,
@@ -3755,7 +3761,7 @@ impl PreparedCounters {
             report,
         );
         drop(span);
-        let span = viewer_foundation::profiling::span("dc_bases");
+        let span = viewer_runtime::profiling::span("dc_bases");
         fixed.native_bases.draw(
             inputs,
             bases,
@@ -3766,7 +3772,7 @@ impl PreparedCounters {
         );
         drop(span);
         let mut at_sea = Vec::new();
-        let span = viewer_foundation::profiling::span("dc_land_combats");
+        let span = viewer_runtime::profiling::span("dc_land_combats");
         fixed.native_land_combats.draw(
             inputs,
             land_combats,
@@ -3776,7 +3782,7 @@ impl PreparedCounters {
             report,
         );
         drop(span);
-        let span = viewer_foundation::profiling::span("dc_land");
+        let span = viewer_runtime::profiling::span("dc_land");
         let columns = match land.as_mut() {
             Some(land) => {
                 land.pointer = counter_pointer;
@@ -3788,7 +3794,7 @@ impl PreparedCounters {
         };
         drop(span);
         {
-            let _span = viewer_foundation::profiling::span("dc_naval");
+            let _span = viewer_runtime::profiling::span("dc_naval");
             let plates: Vec<_> = at_sea
                 .iter()
                 .filter_map(|plate| {
@@ -3828,7 +3834,7 @@ impl PreparedCounters {
                 .retain(|(unit, _)| running.contains(unit));
         }
         batch.quads.extend_from_slice(&fixed.counters.quads);
-        let span = viewer_foundation::profiling::span("dc_air");
+        let span = viewer_runtime::profiling::span("dc_air");
         let empty_air = air_missions::Prepared::default();
         fixed.native_air.as_deref().unwrap_or(&empty_air).draw(
             inputs,
@@ -3856,12 +3862,12 @@ impl PreparedCounters {
         &mut self,
         inputs: &CounterInputs<'_>,
         time: f32,
-        owners: viewer_foundation::profiling::FrameOwners,
+        owners: viewer_runtime::profiling::FrameOwners,
         naval: &mut naval_windows::Windows,
         pings: &mut PoolView,
         bases: &mut BaseView,
         land_combats: &mut land_windows::View,
-    ) -> io::Result<Option<viewer_foundation::profiling::OwnerSample>> {
+    ) -> io::Result<Option<viewer_runtime::profiling::OwnerSample>> {
         let Self { fixed, land, drawn, motion_continuity: _ } = self;
         let (counter_pointer, counter_exit) =
             hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
@@ -3899,13 +3905,13 @@ impl PreparedCounters {
             let report = &mut *report;
             move || {
                 owners.measure("counters_branch", || {
-                    let span = viewer_foundation::profiling::span("dc_pings");
+                    let span = viewer_runtime::profiling::span("dc_pings");
                     native_pings.draw(inputs, pings, time, countries, ping_batch, report);
                     drop(span);
-                    let span = viewer_foundation::profiling::span("dc_bases");
+                    let span = viewer_runtime::profiling::span("dc_bases");
                     native_bases.draw(inputs, bases, time, held_countries, base_batch, report);
                     drop(span);
-                    let _span = viewer_foundation::profiling::span("dc_land_combats");
+                    let _span = viewer_runtime::profiling::span("dc_land_combats");
                     native_land_combats.draw(
                         inputs,
                         land_combats,
@@ -3924,7 +3930,7 @@ impl PreparedCounters {
             let missing_owners = &mut *missing_owners;
             let at_sea = &mut at_sea;
             move || {
-                let _span = viewer_foundation::profiling::span("dc_land");
+                let _span = viewer_runtime::profiling::span("dc_land");
                 match land.as_mut() {
                     Some(land) => land.draw(inputs, batch, land_report, missing_owners, at_sea),
                     None => Ok(Vec::new()),
@@ -3936,7 +3942,7 @@ impl PreparedCounters {
         let columns = columns?;
         drawn_columns.clone_from(&columns);
         {
-            let _span = viewer_foundation::profiling::span("dc_naval");
+            let _span = viewer_runtime::profiling::span("dc_naval");
             let plates: Vec<_> = at_sea
                 .iter()
                 .filter_map(|plate| {
@@ -3977,7 +3983,7 @@ impl PreparedCounters {
         }
         *drawn_at_sea = at_sea;
         batch.quads.extend_from_slice(&fixed.counters.quads);
-        let span = viewer_foundation::profiling::span("dc_air");
+        let span = viewer_runtime::profiling::span("dc_air");
         let empty_air = air_missions::Prepared::default();
         fixed.native_air.as_deref().unwrap_or(&empty_air).draw(
             inputs,
@@ -4005,7 +4011,7 @@ impl PreparedCounters {
         &mut self,
         inputs: &CounterInputs<'_>,
         time: f32,
-        pools: viewer_foundation::map::icon_windows::Pools,
+        pools: viewer_native_gui::icon_windows::Pools,
         naval: &mut naval_windows::Windows,
         pings: &mut PoolView,
         bases: &mut BaseView,
@@ -4208,7 +4214,7 @@ impl Countries {
 #[derive(Clone, Debug, Default)]
 struct UiColors {
     colors: BTreeMap<u32, Option<[f32; 4]>>,
-    inheritance: viewer_foundation::map::color_inheritance::Inheritance,
+    inheritance: viewer_foundation::color_inheritance::Inheritance,
     gap: String,
     unavailable: Option<String>,
 }
@@ -4239,7 +4245,7 @@ impl UiColors {
             })
             .collect();
         Ok(
-            match viewer_foundation::map::color_inheritance::inheritance(map, frame, links) {
+            match viewer_foundation::color_inheritance::inheritance(map, frame, links) {
                 Ok(inheritance) => Self {
                     colors,
                     inheritance,

@@ -3,18 +3,10 @@ use content_reader_gfx::gfx;
 use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
-use viewer_foundation::map::native_windows::NativeWindows;
-use {
-    viewer_counters::map::counters::CounterAssets,
-    viewer_foundation::{
-        errors::invalid,
-        map::{
-            lazy_icons::{DYNAMIC_BASE, LazyTextures},
-            sprites::Interface,
-            text,
-        },
-    },
-};
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_counters::map::counters::CounterAssets;
+use viewer_runtime::errors::invalid;
+use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
 
 pub struct MapIcons {
     pub combat: Arc<combat::Assets>,
@@ -76,7 +68,7 @@ impl MapIcons {
             let windows = NativeWindows::load_at(layers, gui_viewport)?;
             let layouts = viewer_counters::map::counters::Layouts::read(&windows);
             let mut font_warnings = Vec::new();
-            let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
+            let arrow_font = viewer_gpu::ribbon_content::arrow_text_font(layers)?;
             let registry = content_reader_core::gui::native::resources::Registry::from_files(
                 content_reader_core::gui::native::sprites::read_object_layers(layers)?,
             );

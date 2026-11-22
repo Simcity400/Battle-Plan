@@ -18,9 +18,9 @@ fn background() -> io::Result<Arc<Pool>> {
         return Ok(Arc::clone(pool));
     }
     let pool = Arc::new(Pool::new(
-        viewer_foundation::retirement::builder_count(),
+        viewer_runtime::retirement::builder_count(),
         "map background",
-        viewer_foundation::worker_priority::background_priority,
+        viewer_runtime::worker_priority::background_priority,
     )?);
     Ok(Arc::clone(BACKGROUND.get_or_init(|| pool)))
 }
@@ -61,7 +61,7 @@ impl MapSource {
         materialize: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<Current> {
-        let priority = viewer_foundation::worker_priority::current_priority();
+        let priority = viewer_runtime::worker_priority::current_priority();
         let behind = priority.is_some_and(|priority| priority < 0);
         self.cursor.set_pool(if behind { Some(background()?) } else { None });
         let gap = |reason: String| Current::Gap {

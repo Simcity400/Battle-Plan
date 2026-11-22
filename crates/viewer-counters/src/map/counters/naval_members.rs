@@ -1,6 +1,6 @@
 
 use super::*;
-use viewer_foundation::map::task_force_visual::Placement;
+use viewer_unit_reads::task_force_visual::Placement;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ForceFields {
@@ -43,7 +43,7 @@ impl SeaGround<'_> {
     }
 
     pub fn place(&self, province: u32, route: &counter_move::UnitRoute<'_>) -> Result<Placement, &'static str> {
-        viewer_foundation::map::task_force_visual::visual_of(
+        viewer_unit_reads::task_force_visual::visual_of(
             province,
             route,
             self.movement,
@@ -348,7 +348,7 @@ pub(super) struct Fake<'a> {
     pub(super) row: &'a replay_data::rows::TaskForceRow,
     pub(super) kind: u32,
     pub(super) region: Option<u32>,
-    pub(super) skips: viewer_foundation::map::task_force_visual::MissionSkips,
+    pub(super) skips: viewer_unit_reads::task_force_visual::MissionSkips,
     pub(super) order: Option<counter_order::RecordedOrder>,
     pub(super) ships: BTreeMap<u64, (usize, i64)>,
     pub(super) ships_complete: bool,

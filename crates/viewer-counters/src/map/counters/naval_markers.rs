@@ -5,11 +5,17 @@ use replay_data::{
     rows::NavalResultRow,
 };
 use std::cell::OnceCell;
-use viewer_foundation::map::gui_resources::HitRectangle;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::viewport;
+use viewer_native_gui::gui_resources::HitRectangle;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::viewport;
 use super::combat_markers::{Held, missing_of, whole_of};
-use viewer_foundation::naval_icon_frames::{Census, CensusMember, admitted_of, censuses_of, convoy_variant};
+use viewer_engagements::naval_icon_frames::{
+    Census,
+    CensusMember,
+    admitted_of,
+    censuses_of,
+    convoy_variant,
+};
 use {
     super::super::naval_combat_grid as grid, crate::map::naval_combat_occurrences as occurrences,
     crate::map::naval_combat_occurrences::Combat, crate::map::naval_combat_occurrences::Direct,
@@ -17,14 +23,12 @@ use {
     crate::map::naval_combat_occurrences::Sources, crate::map::naval_combat_occurrences::Transfers,
     crate::map::naval_combat_occurrences::Units,
 };
-use {
-    viewer_foundation::engagement_history::CombatFlags,
-    viewer_foundation::{
-        engaged::Engaged,
-        icon_frames::{self, Kept},
-        map::native_gui,
-    },
+use viewer_engagements::{
+    engagement_history::CombatFlags,
+    engaged::Engaged,
+    icon_frames::{self, Kept},
 };
+use viewer_native_gui::native_gui;
 
 pub const NAVAL_RESULT_SPRITES: [&str; 4] = [
     "GFX_naval_combat_result_navalstrikes",
@@ -775,7 +779,7 @@ fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<C
     }
     let forward: Result<BTreeMap<u64, Vec<&CensusMember>>, String> = inputs.members.as_ref().map_err(Clone::clone).map(|members| {
         let mut forward: BTreeMap<u64, Vec<&CensusMember>> = BTreeMap::new();
-        for member in members.iter().filter(|member| member.member_source == 0 && member.group_index != viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP) {
+        for member in members.iter().filter(|member| member.member_source == 0 && member.group_index != viewer_foundation::unit_rules::PAIRED_ONLY_GROUP) {
             forward.entry(member.combat).or_default().push(member);
         }
         forward

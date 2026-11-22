@@ -4,7 +4,7 @@ use std::cell::OnceCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use viewer_foundation::map::native_text::FLAG;
+use viewer_native_gui::native_text::FLAG;
 #[test]
 fn controller_flag_uses_native_control_and_three_codepoints() {
     use dashboard_text::flag_choices::FlagChoice;

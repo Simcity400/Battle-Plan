@@ -7,10 +7,7 @@ use shader_pipeline::{
     Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, library::Effect,
 };
 use std::sync::Arc;
-use viewer_foundation::map::{
-    native_shader::draw,
-    sprites::{Batch, Exact, Quad},
-};
+use viewer_native_gui::{native_shader::draw, sprites::{Batch, Exact, Quad}};
 
 pub(super) struct Sprites {
     sample: Arc<Effect>,
@@ -169,7 +166,7 @@ impl Sprites {
             draws: vec![background],
         }));
         let quad = Quad {
-            texture: viewer_foundation::map::sprites::NO_TEXTURE,
+            texture: viewer_native_gui::sprites::NO_TEXTURE,
             rect: [2., 2., 12., 12.],
             uv: [0., 0., 1., 1.],
             color: [1.; 4],
@@ -177,7 +174,7 @@ impl Sprites {
             layer: 0,
             shade: 0.,
             anchor: None,
-            present: (frame % 8 == 6).then_some(viewer_foundation::map::free_icons::Present {
+            present: (frame % 8 == 6).then_some(viewer_native_gui::free_icons::Present {
                 pivot: [8., 8.],
                 scale: 0.5,
                 alpha: 0.5,
@@ -189,7 +186,7 @@ impl Sprites {
                 uv: [[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
                 scissor: None,
                 technique: 0,
-                blend: viewer_foundation::map::native_effects::Blend::Off,
+                blend: viewer_native_gui::native_effects::Blend::Off,
                 samplers: 0,
                 lod_bias: [0.; 3],
                 second: None,

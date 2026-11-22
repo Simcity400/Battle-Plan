@@ -1,6 +1,6 @@
 use eframe::wgpu;
 use shader_pipeline::gpu::stats::CountedPasses as _;
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use shader_pipeline::{gpu, stream, vertices::NativeBuffer};
 use std::sync::MutexGuard;
 use std::{

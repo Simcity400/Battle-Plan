@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use viewer_foundation::retirement::Dropper;
+use viewer_runtime::retirement::Dropper;
 use viewer_borders::{borders::{BorderClass, BorderMesh, BorderMeshes}, demilitarized::Zone};
 use map_display_data::landscape::Regions;
 

@@ -8,7 +8,7 @@ use content_reader_localisation::localisation::Argument;
 use content_reader_core::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::movement_reads::RuleReason;
+use viewer_unit_reads::movement_reads::RuleReason;
 
 type Loc<'a> = dyn Fn(&str, &[(&str, Argument<'_>)]) -> Result<String, String> + 'a;
 
