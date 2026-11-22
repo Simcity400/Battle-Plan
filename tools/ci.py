@@ -243,12 +243,13 @@ def dependents_closure(crates, names):
 
 def load_weights(crates, text):
     """Each crate's measured cost, (build, test): the core-seconds its library build takes, and
-    its test builds and test runs, from the committed table `ci.py weights` writes. A crate the
-    table lacks takes the median of those it has."""
+    its test builds and test runs, from the committed table `ci.py weights` writes, in whole
+    seconds so that a sum is exact in any order and every runner splits alike. A crate the table
+    lacks takes the median of those it has."""
     table = json.loads(text).get("crates", {}) if text else {}
-    known = {name: (float(cost["build"]), float(cost["test"])) for name, cost in table.items() if name in crates}
+    known = {name: (round(cost["build"]), round(cost["test"])) for name, cost in table.items() if name in crates}
     builds, tests = sorted(cost[0] for cost in known.values()), sorted(cost[1] for cost in known.values())
-    median = (builds[len(builds) // 2], tests[len(tests) // 2]) if known else (1.0, 1.0)
+    median = (builds[len(builds) // 2], tests[len(tests) // 2]) if known else (1, 1)
     return {name: known.get(name, median) for name in crates}
 
 

@@ -401,7 +401,12 @@ class Sharding(unittest.TestCase):
     def test_a_crate_the_table_lacks_takes_the_median_and_no_table_weighs_all_alike(self):
         weights = ci.load_weights(crates(a=[], b=[], c=[], new=[]), self.table({"a": (1, 10), "b": (2, 20), "c": (3, 30), "gone": (9, 90)}))
         self.assertEqual(weights, {"a": (1, 10), "b": (2, 20), "c": (3, 30), "new": (2, 20)})
-        self.assertEqual(ci.load_weights(crates(a=[]), ""), {"a": (1.0, 1.0)})
+        self.assertEqual(ci.load_weights(crates(a=[]), ""), {"a": (1, 1)})
+
+    def test_a_split_is_the_same_whatever_order_a_runner_sums_costs_in(self):
+        weights = ci.load_weights(crates(a=[], b=[], c=[]), self.table({"a": (0.1, 0.2), "b": (0.2, 0.3), "c": (0.3, 0.1)}))
+        self.assertTrue(all(type(cost) is int for pair in weights.values() for cost in pair))
+        self.assertEqual(sum(cost for cost, _ in weights.values()), sum(cost for cost, _ in reversed(list(weights.values()))))
 
     def test_a_cold_runs_timings_and_test_report_give_each_crate_its_build_and_test(self):
         units = [{"name": "app", "target": "", "duration": 10}, {"name": "app", "target": " build-script (run)", "duration": 1},
