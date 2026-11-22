@@ -8,10 +8,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use viewer_foundation::map::{counter_move::RouteWorld, presentation::Continuity, province_map::HeightField, task_force_visual::TaskForceMotions};
-use viewer_world::map::{
-    aircraft::{AircraftPlan, Kept, KeptModels, ModelsMade},
-    equipment_graphics::{Decided, LimitValues, Limits},
-};
+use viewer_aircraft::aircraft::{AircraftPlan, Kept, KeptModels, ModelsMade};
+use viewer_unit_models::equipment_graphics::{Decided, LimitValues, Limits};
 
 pub const TABLES: &[TableId] = &[
     TableId::AirWings,

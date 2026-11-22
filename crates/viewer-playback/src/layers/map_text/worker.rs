@@ -21,7 +21,7 @@ use viewer_foundation::map::{
     perspective::{Choice, VISION_TABLES, VisionKey, Vision as Seen, cached_vision},
     visibility::FogContent,
 };
-use viewer_world::map::animated_map_text::events::Prepared;
+use viewer_map_text::animated_map_text::events::Prepared;
 
 const LOOK: Duration = Duration::from_millis(50);
 

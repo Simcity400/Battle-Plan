@@ -672,7 +672,7 @@ impl Layer for GunCounters {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let shown = viewer_world::map::map_mode::visibility::of(&view.map_mode);
+        let shown = viewer_map_modes::map_mode::visibility::of(&view.map_mode);
         let high = view.camera.is_some_and(|camera| matches!(camera.pose, Pose::Map) && camera.height >= self.content.icons_cutoff());
         if !shown.unit_counters || shown.unit_kinds != UnitKinds::All || !view.overlay.counters.railway_guns || high {
             self.hidden = true;

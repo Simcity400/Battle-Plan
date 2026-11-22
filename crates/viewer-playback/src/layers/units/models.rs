@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_foundation::map::{memo::TableKey, perspective::Choice};
-use viewer_world::map::{
+use viewer_unit_models::{
     trade_routes::ConvoyLine,
     unit_models::{KeptChoices, PreparedModels, SelectInputs, StackModel, Told},
 };
@@ -114,12 +114,12 @@ impl Select for crate::document::Content {
                 since = now;
             };
             let hour = crate::document::Hour::new(self, frame, 0.0);
-            let values = viewer_world::map::equipment_graphics::LimitValues::default();
+            let values = viewer_unit_models::equipment_graphics::LimitValues::default();
             let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
             let (mut standing, mut choosing) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
             let inputs = SelectInputs {
                 frame,
-                limits: viewer_world::map::equipment_graphics::Limits::new(&values, &evaluate),
+                limits: viewer_unit_models::equipment_graphics::Limits::new(&values, &evaluate),
                 ours,
                 terrain: &self.counters.terrain.combat_terrain,
                 localisation: &self.names.localisation,

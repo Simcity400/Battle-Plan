@@ -23,8 +23,8 @@ pub struct MapIcons {
     pub counters: Arc<CounterAssets>,
     pub raids: Arc<viewer_raids::map::raids::RaidAssets>,
     pub intel: Arc<viewer_raids::map::intel_icons::IntelAssets>,
-    pub occupation: Result<viewer_world::map::occupation_icons::Content, String>,
-    pub animated_text: Arc<viewer_world::map::animated_map_text::Assets>,
+    pub occupation: Result<viewer_map_icons::occupation_icons::Content, String>,
+    pub animated_text: Arc<viewer_map_text::animated_map_text::Assets>,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -34,7 +34,7 @@ pub struct LoadedIcons {
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
     pub counters: CounterAssets,
-    pub animated_text: viewer_world::map::animated_map_text::Assets,
+    pub animated_text: viewer_map_text::animated_map_text::Assets,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -156,7 +156,7 @@ impl MapIcons {
             counters
                 .gui
                 .load(layers, &raids.gui_assets(), &mut images)?;
-            let animated_text = viewer_world::map::animated_map_text::Assets::load(
+            let animated_text = viewer_map_text::animated_map_text::Assets::load(
                 layers,
                 (defines, graphics),
                 map_size,
@@ -168,7 +168,7 @@ impl MapIcons {
                 .load(layers, &animated_text.gui_assets(), &mut images)?;
             counters.gui.load(
                 layers,
-                &viewer_world::map::resource_icons::gui_assets(),
+                &viewer_map_icons::resource_icons::gui_assets(),
                 &mut images,
             )?;
             if images.len() >= DYNAMIC_BASE {

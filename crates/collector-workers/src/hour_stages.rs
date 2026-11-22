@@ -15,7 +15,7 @@ thread_local! {
     static WORKER: Cell<u8> = const { Cell::new(CALLBACK) };
 }
 
-pub fn enter_worker(index: usize) {
+pub(crate) fn enter_worker(index: usize) {
     WORKER.set(u8::try_from(index).unwrap_or(CALLBACK - 1));
 }
 
@@ -49,7 +49,9 @@ impl Log {
         let Some(span) = self.spans.get(at) else {
             return;
         };
-        let offset = started.saturating_sub(self.begin.load(Ordering::Relaxed)).max(0) as u64;
+        let offset = started
+            .saturating_sub(self.begin.load(Ordering::Relaxed))
+            .max(0) as u64;
         let worker = WORKER.try_with(Cell::get).unwrap_or(CALLBACK);
         span[0].store(
             ((role as u64) << 56) | (u64::from(worker) << OFFSET_BITS) | offset.min(OFFSET_MASK),
@@ -256,7 +258,9 @@ pub fn keep(hour: Option<i32>, held_ns: u64, forced: bool, ns: &dyn Fn(i64) -> u
 
 pub fn status() -> impl serde::Serialize {
     let (forced, slowest) = {
-        let kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kept = KEPT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (kept.forced, kept.slowest)
     };
     collector_status::status::status!({
@@ -301,7 +305,8 @@ mod tests {
         assert_eq!(PARTS.len(), Part::VariantsSetup as usize + 1);
         assert_eq!(status["template_fallback"], serde_json::Value::Null);
         assert_eq!(FALLBACKS.len(), TemplateFallback::Redecided as usize + 1);
-        log.template_fallback.store(TemplateFallback::Redecided as u8 + 1, Ordering::Relaxed);
+        log.template_fallback
+            .store(TemplateFallback::Redecided as u8 + 1, Ordering::Relaxed);
         timeline.fill(&log, Some(7), 99, &|ticks| ticks as u64 * 100);
         let status = serde_json::to_value(timeline.status()).unwrap();
         assert_eq!(

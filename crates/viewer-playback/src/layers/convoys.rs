@@ -19,9 +19,22 @@ use viewer_foundation::map::{
     province_map::HeightField,
     ribbon_content::{ArrowType, OrderDraw, OrderField, OrderVertex},
 };
-use viewer_world::map::{
-    map_mode::visibility,
-    trade_routes::{self, ClientFields, Countries, Emit, ExchangeOrder, LinksGap, OriginFields, RegionalFields, RouteFields, RouteKey, Shaped, Stops, Tables, TradeRoutes},
+use viewer_map_modes::map_mode::visibility;
+use viewer_unit_models::trade_routes::{
+    self,
+    ClientFields,
+    Countries,
+    Emit,
+    ExchangeOrder,
+    LinksGap,
+    OriginFields,
+    RegionalFields,
+    RouteFields,
+    RouteKey,
+    Shaped,
+    Stops,
+    Tables,
+    TradeRoutes,
 };
 
 #[derive(Clone, Debug, PartialEq)]

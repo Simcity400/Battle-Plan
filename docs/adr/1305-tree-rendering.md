@@ -10,4 +10,4 @@ The three techniques share the fixed tree vertex declaration. The caster replace
 
 Build the canopy mask at half river-bitmap resolution. Classify indices below the bulk land/sea classes as river, flip input rows for the filter, and use the last 2 × 2 write for each output texel. That write begins on the odd row and column of the input pair. Clamp the last row and column to avoid indexing past the recorded bitmap. Average the four bytes with integer truncation so the authored mask threshold divides canopy pixels as expected.
 
-[Tree field and masks](../../crates/viewer-world/src/map/trees.rs) · [Tree ordering](../../crates/viewer-world/src/map/tree_order.rs) · [Caster](../../crates/viewer-world/src/map/tree_caster.rs) · [Receiver](../../crates/viewer-world/src/map/tree_receiver.rs) · [Lit pass](../../crates/viewer-world/src/map/tree_shader.rs)
+[Tree field and masks](../../crates/viewer-terrain/src/trees.rs) · [Tree ordering](../../crates/viewer-terrain/src/tree_order.rs) · [Caster](../../crates/viewer-scene-base/src/tree_caster.rs) · [Receiver](../../crates/viewer-terrain/src/tree_receiver.rs) · [Lit pass](../../crates/viewer-terrain/src/tree_shader.rs)

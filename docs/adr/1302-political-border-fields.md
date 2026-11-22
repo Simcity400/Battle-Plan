@@ -8,4 +8,4 @@ Country thickness interpolates from region area using the configured bounds dire
 
 Resolve each key into a dense index and evaluate its colour once on the calling thread so per-pixel work needs neither a hash lookup nor a caller closure. Grid cells hold four-neighbour boundaries, wrap at the horizontal seam, and have no neighbours beyond the poles. The distance to nonempty cells skips empty interior work. Keep the original bucket scan order and close-distance early exit even when using a lower-bound test to skip a bucket. The CPU oracle writes disjoint, top-down row bands without materialising a full-resolution plane. Production uses the GPU path.
 
-[Field and CPU oracle](../../crates/viewer-world/src/map/gradient.rs) · [GPU field](../../crates/viewer-world/src/map/political_gpu.rs) · [Parity fixtures](../../crates/viewer-world/src/map/gradient/tests.rs)
+[Field and CPU oracle](../../crates/viewer-scene-base/src/gradient.rs) · [GPU field](../../crates/viewer-map-modes/src/political_gpu.rs) · [Parity fixtures](../../crates/viewer-scene-base/src/gradient/tests.rs)

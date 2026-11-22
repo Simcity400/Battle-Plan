@@ -16,7 +16,9 @@ fn held_pool(
 ) -> (Pool<u8, u8>, Held, Ticket) {
     let release = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&release);
-    let pool = Pool::start(1, capacity + 1, move |job: &mut u8| {
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, capacity + 1, move |job: &mut u8| {
         if *job == HOLD {
             while !held.load(Ordering::Acquire) {
                 std::thread::yield_now();
@@ -24,14 +26,17 @@ fn held_pool(
             return HOLD;
         }
         run(*job)
-    })
+    }) }
     .unwrap();
     pool.reserve_worker_slots(capacity + 1).unwrap();
     pool.set_callback_help(eligible);
     let hold = unsafe { pool.submit_with_priority(&mut Some(HOLD), 0, true, true) }.unwrap();
     let until = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
     while pool.calibration().active == 0 {
-        assert!(std::time::Instant::now() < until, "worker never took the held job");
+        assert!(
+            std::time::Instant::now() < until,
+            "worker never took the held job"
+        );
         std::thread::yield_now();
     }
     (pool, Held(release), hold)
@@ -182,7 +187,10 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
                 .unwrap();
         }
     }
-    let pool = Arc::new(Pool::start(1, 1, |_: &mut Work| 7).unwrap());
+    let pool = Arc::new(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { Pool::start(1, 1, |_: &mut Work| 7) }.unwrap(),
+    );
     pool.set_on_completed(|work, _| {
         work.0
             .as_ref()
@@ -241,7 +249,9 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
 
 #[test]
 fn publication_transfer_panic_still_publishes_and_drains_the_failed_job() {
-    let pool = Pool::start(1, 1, |_: &mut u8| 7).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 1, |_: &mut u8| 7) }.unwrap();
     pool.set_on_completed(|_, _| panic!("synthetic publication transfer failure"));
     let ticket = unsafe { pool.submit(&mut Some(1)).unwrap() };
     assert_eq!(pool.finish(ticket).unwrap().report, Err(Failure::Panicked));
@@ -258,7 +268,9 @@ fn publication_notification_panic_still_retires_its_active_lease() {
             panic!("synthetic continuation failure")
         }
     }
-    let pool = Pool::start(1, 1, |_: &mut u8| 7).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 1, |_: &mut u8| 7) }.unwrap();
     pool.set_on_completed(|_, _| Some(Arc::new(Notify)));
     let ticket = unsafe { pool.submit(&mut Some(1)).unwrap() };
     assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
@@ -278,7 +290,9 @@ fn readiness_dispatches_dependents_before_an_unrelated_fixed_join() {
     let (release, released) = mpsc::channel();
     let released = Mutex::new(released);
     let (started, running) = mpsc::channel();
-    let pool = Pool::start(2, 3, move |job: &mut Job| {
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(2, 3, move |job: &mut Job| {
         if job.stage == 0 {
             started.send(()).unwrap();
             released
@@ -291,7 +305,7 @@ fn readiness_dispatches_dependents_before_an_unrelated_fixed_join() {
             job.loan[job.stage - 1] = job.stage;
         }
         job.stage
-    })
+    }) }
     .unwrap();
     let submit = |job| unsafe { pool.submit(&mut Some(job)).unwrap() };
     let unrelated = submit(Job {
@@ -332,14 +346,16 @@ fn readiness_cannot_lose_publication_before_registration_or_before_address_wait(
     for before_registration in [true, false] {
         let (release, released) = mpsc::channel();
         let released = Mutex::new(released);
-        let pool = Pool::start(1, 1, move |job: &mut u8| {
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { Pool::start(1, 1, move |job: &mut u8| {
             released
                 .lock()
                 .unwrap()
                 .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                 .unwrap();
             *job
-        })
+        }) }
         .unwrap();
         let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
         let mut calls = 0;
@@ -374,7 +390,9 @@ fn readiness_failure_and_cancellation_keep_partial_requests_and_loans() {
     let (release, released) = mpsc::channel();
     let released = Mutex::new(released);
     let (started, running) = mpsc::channel();
-    let pool = Pool::start(1, 2, move |job: &mut Job| -> u8 {
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 2, move |job: &mut Job| -> u8 {
         started.send(()).unwrap();
         released
             .lock()
@@ -383,7 +401,7 @@ fn readiness_failure_and_cancellation_keep_partial_requests_and_loans() {
             .unwrap();
         job.value = 9;
         panic!("synthetic producer panic");
-    })
+    }) }
     .unwrap();
     let first = Job {
         value: 1,
@@ -420,8 +438,12 @@ fn readiness_failure_and_cancellation_keep_partial_requests_and_loans() {
 
 #[test]
 fn readiness_report_inspection_does_not_collect_or_accept_stale_foreign_or_parked_tickets() {
-    let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
-    let other = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
+    let other =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
     let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
     pool.wait_ready(|| pool.is_complete(ticket).then_some(()));
     collector_test_support::with_allocations_denied(|| {
@@ -441,7 +463,9 @@ fn readiness_report_inspection_does_not_collect_or_accept_stale_foreign_or_parke
 
 #[test]
 fn readiness_registration_is_removed_on_unwind() {
-    let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
     let mut calls = 0;
     assert!(
         catch_unwind(AssertUnwindSafe(|| {
@@ -463,7 +487,9 @@ fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
         let (release, released) = mpsc::channel();
         let released = Mutex::new(released);
         let (finished, finishes) = mpsc::channel();
-        let pool = Pool::start(2, 3, move |slot: &mut usize| {
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { Pool::start(2, 3, move |slot: &mut usize| {
             if *slot == 0 {
                 released
                     .lock()
@@ -477,7 +503,7 @@ fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
             } else {
                 Ok(*slot)
             }
-        })
+        }) }
         .unwrap();
         pool.reserve_worker_slots(2).unwrap();
         let tickets = [0, 1].map(|slot| unsafe {
@@ -536,7 +562,9 @@ fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
 
 #[test]
 fn a_detached_handoff_notification_between_readiness_recheck_and_park_is_not_lost() {
-    let pool = Pool::start(1, 2, |_: &mut u8| 0_u8).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Pool::start(1, 2, |_: &mut u8| 0_u8) }.unwrap();
     let mut polls = 0;
     let result = pool.park_until_ready(|| {
         polls += 1;

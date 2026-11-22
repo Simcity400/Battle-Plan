@@ -627,15 +627,27 @@ pub mod tests {
             let (at, len) = healthy.calls.borrow()[fault];
             if len == 8 && [FIRST, LAST].contains(&at.wrapping_sub(cstate::CATEGORY)) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
-                assert!(actual.census.payload[..2].iter().any(|row| row.category.is_none()));
+                assert!(
+                    actual.census.payload[..2]
+                        .iter()
+                        .any(|row| row.category.is_none())
+                );
             } else if healthy.calls.borrow()[fault] == (0x033d_d4b8, 8) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
-                assert!(actual.census.payload[..2].iter().all(|row| row.continent.is_none()));
+                assert!(
+                    actual.census.payload[..2]
+                        .iter()
+                        .all(|row| row.continent.is_none())
+                );
             } else if snapshot.contains(&fault) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
-                assert!(actual.census.payload[..2].iter().all(|row| row.infrastructure.is_none()));
+                assert!(
+                    actual.census.payload[..2]
+                        .iter()
+                        .all(|row| row.infrastructure.is_none())
+                );
             } else {
                 assert!(
                     matches!(report.census.result, Outcome::Unavailable { .. })
@@ -660,12 +672,14 @@ pub mod tests {
     fn states_pool_returns_single_census_storage_and_visitor() {
         for workers in [0, 1, 3] {
             let bytes = fixture();
-            let pool = Pool::start(workers, 1, move |request: &mut Request| {
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, 1, move |request: &mut Request| {
                 request.run(&Movement(SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 }))
-            })
+            }) }
             .unwrap();
             let owned = request(3);
             let pointer = owned.census.payload.as_ptr();

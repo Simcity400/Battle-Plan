@@ -15,10 +15,8 @@ use replay_data::rows::{CountryLinkRow, CountryRow, Recorded, StateResistanceRow
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::Arc;
 use viewer_foundation::resource_origins::fixture::put;
-use viewer_world::map::{
-    map_mode::{ColorList, MapMode, Stock},
-    occupation_icons::{self as icons, IconDefines, hour_marks},
-};
+use viewer_map_modes::map_mode::{ColorList, MapMode, Stock};
+use viewer_map_icons::occupation_icons::{self as icons, IconDefines, hour_marks};
 
 const TABLES: [TableId; 4] = [TableId::States, TableId::CountryLinks, TableId::Countries, TableId::StateResistance];
 

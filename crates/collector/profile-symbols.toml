@@ -213,3 +213,18 @@ debug = 2
 
 [profile.release.package.collector-workers]
 debug = 2
+
+[profile.release.package.collector-capture]
+debug = 2
+
+[profile.release.package.collector-map-capture]
+debug = 2
+
+[profile.release.package.collector-player-commands]
+debug = 2
+
+[profile.release.package.collector-spool]
+debug = 2
+
+[profile.release.package.collector-runtime]
+debug = 2

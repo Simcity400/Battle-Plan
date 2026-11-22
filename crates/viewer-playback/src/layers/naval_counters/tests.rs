@@ -15,7 +15,7 @@ use viewer_foundation::map::{
     task_force_visual,
     unit_rules::SHIP_IN_PORT,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 struct Shore {
     land: HashSet<u32>,

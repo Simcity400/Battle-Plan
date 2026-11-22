@@ -10,4 +10,4 @@ Effects carry elapsed entity age separately from clip phase. Hidden actors can s
 
 Owners that retire an entity at the end of its played root clip read its play position and the clip's length. When it has completed, that owner reads the old clip's length even if the successor has started. Nonlooping timing reaches completion in animation seconds, and an animationless root can still hold the previous played clip. These rules let a launch or crash determine its exact retirement boundary without relying on the actor's total age.
 
-[Entity players and timing](../../crates/viewer-world/src/map/entity_animation.rs)
+[Entity players and timing](../../crates/viewer-models/src/entity_animation.rs)

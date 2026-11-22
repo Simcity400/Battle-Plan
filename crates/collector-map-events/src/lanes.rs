@@ -571,7 +571,10 @@ fn spilled_in<'a>(
         .iter()
         .filter(move |&&(address, _)| address == generation)
         .filter_map(move |&(_, sequence)| {
-            while spill.next_if(|spilled| spilled.sequence < sequence).is_some() {}
+            while spill
+                .next_if(|spilled| spilled.sequence < sequence)
+                .is_some()
+            {}
             spill.next_if(|spilled| spilled.sequence == sequence)
         })
 }
@@ -593,13 +596,14 @@ impl Assembled {
         self.spilled
             .iter()
             .enumerate()
-            .filter(|&(index, &(address, _))| {
-                index == 0 || self.spilled[index - 1].0 != address
-            })
+            .filter(|&(index, &(address, _))| index == 0 || self.spilled[index - 1].0 != address)
             .map(|(_, &(address, _))| address)
     }
 
-    pub fn admitted(&self) {
+    /// # Safety
+    /// Acknowledge actual admission by the originating session, before its observer lanes are
+    /// released.
+    pub unsafe fn admitted(&self) {
         if self.admitted.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -622,7 +626,10 @@ impl Assembled {
         }
     }
 
-    pub fn commit(&self) {
+    /// # Safety
+    /// Acknowledge a confirmed writer receipt, before the originating session releases the observer
+    /// lanes retained by this publication.
+    pub unsafe fn commit(&self) {
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
@@ -649,7 +656,10 @@ impl Assembled {
                 .map(|&(_, sequence)| sequence)
                 .peekable();
             spill.retain(|spilled| {
-                while written.next_if(|&sequence| sequence < spilled.sequence).is_some() {}
+                while written
+                    .next_if(|&sequence| sequence < spilled.sequence)
+                    .is_some()
+                {}
                 written.next_if_eq(&spilled.sequence).is_none()
             });
         }
@@ -674,7 +684,10 @@ impl Assembled {
     }
 }
 
-pub fn reset_admitted() {
+/// # Safety
+/// Only the session's spool may reset the frontier after invalidating its pending writes and before
+/// its event lanes are freed.
+pub unsafe fn reset_admitted() {
     for log in generations() {
         for lane in log.lanes.iter() {
             lane.assembled
