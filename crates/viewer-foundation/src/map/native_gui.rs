@@ -4998,7 +4998,7 @@ fn draw_fixture_part(
         rect: [0.0; 4],
         uv: [0.0; 4],
         color,
-        rotation: 0.0,
+        rotation: None,
         layer: 0,
         shade: 0.0,
         exact: Some(exact),

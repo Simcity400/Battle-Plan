@@ -143,9 +143,10 @@ async fn choose_content_folder(
 fn set_dashboard_maps(
     window: WebviewWindow,
     host: State<'_, NativeHost>,
+    clock_id: String,
     views: Vec<DashboardMapView>,
 ) -> Result<(), String> {
-    host.set_dashboard_views(&window, &views)
+    host.set_dashboard_views(&window, &clock_id, &views)
 }
 
 pub(crate) fn replay_path(path: &str) -> Result<String, String> {

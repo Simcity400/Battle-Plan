@@ -39,17 +39,15 @@ impl Apart {
     #[cfg(any(test, feature = "test-support"))]
     pub fn drive(&mut self, hour: Hour) -> bool {
         let entry = Arc::clone(&self.entry);
-        let reached = entry.playhead().wait_for(|| loop {
-            self.step(hour);
-            if self.applied == Some((hour, entry.playhead().epoch())) && self.home() {
-                return true;
-            }
-            if self.consumer.reaches(hour) == Some(false) {
-                return false;
-            }
-            std::thread::yield_now();
+        self.consumer.advance_blocking(hour);
+        let reached = entry.playhead().wait_for(|| {
+            self.take_to(hour, true);
+            self.applied == Some((hour, entry.playhead().epoch())) && self.home()
         });
         if reached.is_ok() {
+            if let Some((applied, epoch)) = self.applied {
+                self.store.post(&self.mirrors, applied, self.branch, epoch, false);
+            }
             self.store.settled();
         }
         reached.is_ok()
@@ -68,12 +66,21 @@ impl Apart {
         for_the_makers(&self.entry).keys().all(|&table| self.mirrors.get(replay_data::rows::TableId::ALL[table]).is_some())
     }
 
-    fn step(&mut self, hour: Hour) {
+    fn take_to(&mut self, hour: Hour, blocking: bool) {
         self.store.settled();
         let Some(mirrors) = Arc::get_mut(&mut self.mirrors) else { return };
         let mut steps: Vec<Arc<Step>> = Vec::new();
-        self.consumer.advance(hour);
-        self.consumer.take(hour, &mut steps);
+        #[cfg(any(test, feature = "test-support"))]
+        if blocking {
+            self.consumer.take_blocking(hour, &mut steps);
+        } else {
+            self.consumer.take(hour, &mut steps);
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = blocking;
+            self.consumer.take(hour, &mut steps);
+        }
         let mut tables = Vec::new();
         for step in &steps {
             if step.last() > hour {
@@ -91,6 +98,11 @@ impl Apart {
             mirrors.apply_timed(step, &mut tables, &mut Default::default(), &mut self.store.noting(&[]));
             self.applied = Some((step.last(), step.epoch()));
         }
+    }
+
+    fn step(&mut self, hour: Hour) {
+        self.consumer.advance(hour);
+        self.take_to(hour, false);
         if let Some((applied, epoch)) = self.applied {
             self.store.post(&self.mirrors, applied, self.branch, epoch, false);
         }

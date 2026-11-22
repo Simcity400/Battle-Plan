@@ -184,7 +184,11 @@ fn same_drawn(a: &Quad, b: &Quad) -> bool {
         && floats(&a.rect, &b.rect)
         && floats(&a.uv, &b.uv)
         && floats(&a.color, &b.color)
-        && a.rotation.to_bits() == b.rotation.to_bits()
+        && match (a.rotation, b.rotation) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
         && a.shade.to_bits() == b.shade.to_bits()
         && match (a.anchor, b.anchor) {
             (None, None) => true,
@@ -286,13 +290,16 @@ mod tests {
             rect: values(&mut next),
             uv: values(&mut next),
             color: values(&mut next),
-            rotation: values::<1>(&mut next)[0],
+            rotation: Some(values::<1>(&mut next)[0]),
             shade: values::<1>(&mut next)[0],
             exact: None,
             anchor: None,
             present: None,
         };
         assert!(same_quad(&quad, &quad.clone()));
+        let mut unrotated = quad.clone();
+        unrotated.rotation = None;
+        assert!(!same_quad(&quad, &unrotated));
         for index in 0..14 {
             let mut changed = quad.clone();
             let value = changed
@@ -300,7 +307,7 @@ mod tests {
                 .iter_mut()
                 .chain(&mut changed.uv)
                 .chain(&mut changed.color)
-                .chain(std::iter::once(&mut changed.rotation))
+                .chain(changed.rotation.iter_mut())
                 .chain(std::iter::once(&mut changed.shade))
                 .nth(index)
                 .unwrap();

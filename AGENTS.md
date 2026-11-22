@@ -81,7 +81,7 @@ All Rust is in `crates/`; names group by prefix.
 
 ## Verifying
 
-- GitHub CI (`.github/workflows/ci.yml`, the jobs in `tools/ci.toml`) is the only test runner and the gate: merge only when its `check` passes. A pull request runs the changed crates and their direct dependents; each push to main runs the whole workspace. Before pushing, `python tools/ci.py check` runs the touched jobs that test nothing here (repo checks, UI typecheck, Clippy on Boat). New checks are jobs in `tools/ci.toml`.
+- GitHub CI (`.github/workflows/ci.yml`, the jobs in `tools/ci.toml`) is the only test runner and the gate: merge only when its `check` passes. A pull request runs the changed crates and their direct dependents; main runs the whole workspace. Before pushing, `python tools/ci.py check` runs the touched jobs that test nothing here (repo checks, UI typecheck, Clippy on Boat). New checks are jobs in `tools/ci.toml`.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.

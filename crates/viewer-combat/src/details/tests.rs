@@ -96,7 +96,8 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
         test_support::ui_scale::{MONITOR, borderless},
         ui_scale::{Setting, extent},
     };
-    let (raster, note) = Setting::MatchGame.resolve_raster(Ok(&borderless()), Ok(&[MONITOR]));
+    let (raster, note) =
+        Setting::MatchGame.resolve_raster(Ok(&borderless()), Ok(&[Ok(MONITOR)]));
     assert!(note.is_none());
     let pixels = raster.target(MONITOR.physical);
     let mut resources = fixture();
@@ -194,7 +195,7 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
         glyph.yoffset = yoffset;
     }
     let (raster, note) =
-        Setting::MatchGame.resolve_raster(Ok(&tests::borderless()), Ok(&[tests::MONITOR]));
+        Setting::MatchGame.resolve_raster(Ok(&tests::borderless()), Ok(&[Ok(tests::MONITOR)]));
     assert!(note.is_none());
     let pixels = raster.target([2560, 1440]);
     let extent = ui_scale_extent(pixels, raster.ui_scale);

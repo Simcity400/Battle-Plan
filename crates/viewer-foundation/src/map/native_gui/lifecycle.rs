@@ -4340,12 +4340,14 @@ mod retained_work_tests {
         fn output_bits(batch: &Batch) -> Vec<u8> {
             let mut bytes = Vec::new();
             for quad in &batch.quads {
+                bytes.push(u8::from(quad.rotation.is_some()));
                 for value in quad
                     .rect
                     .into_iter()
                     .chain(quad.uv)
                     .chain(quad.color)
-                    .chain([quad.rotation, quad.shade])
+                    .chain(quad.rotation)
+                    .chain([quad.shade])
                 {
                     bytes.extend(value.to_ne_bytes());
                 }
