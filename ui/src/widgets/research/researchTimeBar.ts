@@ -1,7 +1,7 @@
 import { researchNumber } from './researchBreakdown.ts';
 import type { ResearchTimeSplit } from './researchJourney.ts';
 
-export type ResearchSegmentTone = 'base' | 'penalty' | 'core' | 'slower' | 'paused' | 'saved' | 'juggle' | 'earlier' | 'remaining' | 'rest';
+export type ResearchSegmentTone = 'base' | 'penalty' | 'core' | 'slower' | 'paused' | 'saved' | 'juggle' | 'earlier' | 'remaining' | 'rest' | 'rounding';
 
 export interface ResearchSegment { key: string; value: bigint; tone: ResearchSegmentTone; name: string; kind?: string; effect: string; index?: number }
 
@@ -17,6 +17,7 @@ export interface ResearchTimeRows {
 const days = (raw: bigint) => { const text = researchNumber(raw < 0n ? -raw : raw); return `${text} ${text === '1' ? 'day' : 'days'}`; };
 const kindOf = (m: { label: string; kind: string }) =>
   m.label.toLowerCase().includes(m.kind) ? undefined : m.kind.charAt(0).toUpperCase() + m.kind.slice(1);
+const DAY = 100_000n;
 const total = (segments: readonly ResearchSegment[]) => segments.reduce((sum, s) => sum + s.value, 0n);
 
 export const researchDaysLeftMissing = (split: ResearchTimeSplit, active: boolean, daysLeft: number | null) =>
@@ -25,8 +26,10 @@ export const researchDaysLeftMissing = (split: ResearchTimeSplit, active: boolea
 export function researchTimeRows(split: ResearchTimeSplit, active: boolean, daysLeft: number | null): ResearchTimeRows | null {
   const expectedTotal = split.base + split.penalty;
   if (expectedTotal <= 0n || researchDaysLeftMissing(split, active, daysLeft)) return null;
-  const left = active && daysLeft !== null && split.remaining > 0n ? BigInt(daysLeft) * 100_000n : null;
-  const rest = left === null ? 0n : split.remaining - left;
+  const left = active && daysLeft !== null && split.remaining > 0n ? BigInt(daysLeft) * DAY : null;
+  const rounded = left === null ? 0n : (split.remaining + DAY - 1n) / DAY * DAY;
+  const rounding = rounded - (left === null ? rounded : split.remaining);
+  const rest = left === null ? 0n : rounded - left;
   const slowed = split.modifiers.filter(m => m.days < 0n);
   const saved = split.modifiers.filter(m => m.days > 0n);
   const expected: ResearchSegment[] = [
@@ -36,6 +39,7 @@ export function researchTimeRows(split: ResearchTimeSplit, active: boolean, days
     { key: 'other-slower', value: -split.other, tone: 'slower' as const, name: 'Other effects', effect: `+${days(split.other)}` },
     { key: 'juggle-returned', value: -split.juggle, tone: 'slower' as const, name: 'Saved days returned', effect: `+${days(split.juggle)}` },
     { key: 'rest-slower', value: -rest, tone: 'slower' as const, name: 'Slower on the rest', effect: `+${days(rest)}` },
+    { key: 'rounding', value: rounding, tone: 'rounding' as const, name: 'Rounded up to whole days', effect: `+${days(rounding)}` },
   ].filter(s => s.value > 0n);
   const took: ResearchSegment[] = [
     { key: 'core', value: split.taken, tone: 'core' as const, name: active ? 'Time researched so far' : 'Time researched', effect: days(split.taken) },

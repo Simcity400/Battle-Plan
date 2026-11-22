@@ -234,4 +234,12 @@ test('with the game days left, the rest of an active research reads in calendar 
   const paused = researchTimeRows(split, false, null)!;
   assert.equal(researchDaysLeftMissing(split, false, null), false);
   assert.equal(paused.took.find(s => s.key === 'remaining')?.name, 'Base research time still to do');
+  const half = { ...split, remaining: 5650000n, taken: 2670000n };
+  const exact = researchTimeRows(half, true, 57)!;
+  assert.equal(exact.expected.find(s => s.key === 'rest-slower'), undefined, 'the game rounding its estimate up is no slowdown');
+  assert.deepEqual(exact.expected.filter(s => s.key === 'rounding').map(s => [s.value, s.name]), [[50000n, 'Rounded up to whole days']]);
+  assert.equal(total(exact.took), total(exact.expected));
+  const slower = researchTimeRows(half, true, 58)!;
+  assert.deepEqual(slower.expected.filter(s => s.key === 'rest-slower' || s.key === 'rounding').map(s => [s.key, s.value]), [['rest-slower', 100000n], ['rounding', 50000n]]);
+  assert.equal(total(slower.took), total(slower.expected));
 });
