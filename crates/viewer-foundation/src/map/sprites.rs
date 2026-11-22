@@ -523,45 +523,51 @@ impl Batch {
     pub fn bar(
         &mut self,
         sheet: &SpriteSheet,
-        center: [f32; 2],
+        at: [f32; 2],
         size: [f32; 2],
         pixels: f32,
         rotation: f32,
         color: [f32; 4],
     ) {
-        let frame = sheet.frame_size();
-        let vertical = frame[1] > frame[0];
-        let (length, thickness) = if vertical {
-            (size[1], size[0])
-        } else {
-            (size[0], size[1])
-        };
+        let [fw, fh] = sheet.frame_size();
+        let vertical = fh > fw;
+        let length = if vertical { size[1] } else { size[0] };
         let drawn = pixels.clamp(0.0, length + 1.0).floor();
         if drawn < 1.0 {
             return;
         }
         let fill = (drawn / length).min(1.0);
         let [u0, v0, u1, v1] = sheet.frame_uv(0);
-        let delta = (drawn - length) * 0.5;
-        let (sin, cos) = rotation.sin_cos();
-        let (rect, uv) = if vertical {
-            let cx = center[0] + delta * sin;
-            let cy = center[1] + delta * cos;
+        let bottom = at[1] + size[1].trunc();
+        let pivot = [at[0] + fw * 0.5, bottom - fh * 0.5];
+        let (unrot_center, rw, rh, uv) = if vertical {
             (
-                [cx - thickness * 0.5, cy - drawn * 0.5, thickness, drawn],
+                [at[0] + size[0] * 0.5, bottom - size[1] * 0.5],
+                size[0],
+                drawn,
                 [u0, v0, u1, v0 + (v1 - v0) * fill],
             )
         } else {
-            let cx = center[0] + delta * cos;
-            let cy = center[1] - delta * sin;
             (
-                [cx - drawn * 0.5, cy - thickness * 0.5, drawn, thickness],
+                [at[0] + drawn * 0.5, bottom - size[1] * 0.5],
+                drawn,
+                size[1],
                 [u0, v0, u0 + (u1 - u0) * fill, v1],
             )
         };
+        let [cx, cy] = if rotation == 0.0 {
+            unrot_center
+        } else {
+            let (sin, cos) = rotation.sin_cos();
+            let [dx, dy] = [unrot_center[0] - pivot[0], unrot_center[1] - pivot[1]];
+            [
+                pivot[0] + dx * cos + dy * sin,
+                pivot[1] + dy * cos - dx * sin,
+            ]
+        };
         self.quads.push(Quad {
             texture: sheet.texture,
-            rect,
+            rect: [cx - rw * 0.5, cy - rh * 0.5, rw, rh],
             uv,
             color,
             rotation,
@@ -3606,7 +3612,7 @@ mod tests {
         let mut batch = Batch::default();
         batch.bar(
             &vertical,
-            [32.5, 29.5],
+            [26.5, 21.0],
             [3.0, 17.0],
             8.5,
             std::f32::consts::FRAC_PI_2,
@@ -3621,7 +3627,7 @@ mod tests {
         }
         batch.bar(
             &vertical,
-            [32.5, 29.5],
+            [31.5, 21.0],
             [3.0, 17.0],
             30.0,
             std::f32::consts::FRAC_PI_2,
@@ -3635,16 +3641,16 @@ mod tests {
         }
         batch.bar(
             &vertical,
-            [32.5, 29.5],
+            [26.5, 21.0],
             [3.0, 17.0],
             0.0,
             std::f32::consts::FRAC_PI_2,
             [1.0; 4],
         );
         assert_eq!(batch.quads.len(), 2);
-        batch.bar(&vertical, [15.5, 16.5], [3.0, 17.0], 10.0, 0.0, [1.0; 4]);
+        batch.bar(&vertical, [14.0, 8.0], [3.0, 17.0], 10.0, 0.0, [1.0; 4]);
         assert_eq!(batch.quads[2].rotation, 0.0);
-        assert_eq!(batch.quads[2].rect, [14.0, 8.0, 3.0, 10.0]);
+        assert_eq!(batch.quads[2].rect, [14.0, 11.5, 3.0, 10.0]);
         assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
         let horizontal = SpriteSheet {
             name: "GFX_bar_h".into(),
@@ -3652,7 +3658,7 @@ mod tests {
             frames: 1,
             size: [17, 3],
         };
-        batch.bar(&horizontal, [32.5, 29.5], [17.0, 3.0], 8.5, 0.0, [1.0; 4]);
+        batch.bar(&horizontal, [24.0, 28.0], [17.0, 3.0], 8.5, 0.0, [1.0; 4]);
         assert_eq!(batch.quads[3].rotation, 0.0);
         assert_eq!(batch.quads[3].rect, [24.0, 28.0, 8.0, 3.0]);
         assert_eq!(batch.quads[3].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
@@ -3710,7 +3716,7 @@ mod tests {
         let mut batch = Batch::default();
         batch.bar(
             &vertical,
-            [10.5, 5.5],
+            [4.5, -3.0],
             [3.0, 17.0],
             8.0,
             15708.0_f32 / 10_000.0,
@@ -3729,7 +3735,7 @@ mod tests {
         batch.clear();
         batch.bar(
             &vertical,
-            [10.5, 5.5],
+            [9.5, -3.0],
             [3.0, 17.0],
             18.0,
             std::f32::consts::FRAC_PI_2,
@@ -3761,7 +3767,7 @@ mod tests {
         batch.clear();
         batch.bar(
             &vertical,
-            [10.5, 5.5],
+            [13.5, -3.0],
             [3.0, 17.0],
             8.0,
             -std::f32::consts::FRAC_PI_2,
@@ -3781,7 +3787,7 @@ mod tests {
         assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
 
         batch.clear();
-        batch.bar(&horizontal, [10.5, 5.5], [17.0, 3.0], 8.0, 0.0, [1.0; 4]);
+        batch.bar(&horizontal, [2.0, 4.0], [17.0, 3.0], 8.0, 0.0, [1.0; 4]);
         let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
         for dx in 0..8usize {
             for dy in 0..3usize {
@@ -3793,7 +3799,7 @@ mod tests {
         assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
 
         batch.clear();
-        batch.bar(&horizontal, [10.5, 5.5], [17.0, 3.0], 18.0, 0.0, [1.0; 4]);
+        batch.bar(&horizontal, [2.0, 4.0], [17.0, 3.0], 18.0, 0.0, [1.0; 4]);
         let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
         assert!(
             near(pixel(&pixels, 2, 4), [40, 10, 150]),

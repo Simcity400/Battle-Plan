@@ -3973,10 +3973,25 @@ fn the_naval_base_frame_pairs_ships_with_the_known_and_foreign_arms() {
 fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
     let layouts = layouts();
     let origin = [943.0, 846.0];
-    let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_org, [3.0, 17.0], origin);
-    assert_eq!(rect, [957.0, 861.0, 17.0, 3.0]);
-    let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_str, [3.0, 17.0], origin);
-    assert_eq!(rect, [957.0, 865.0, 17.0, 3.0]);
+    let land = layouts.land.as_ref().unwrap();
+    let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &bar, &land.bar_org, origin, 0.5);
+    draw_bar(&mut batch, &bar, &land.bar_str, origin, 0.5);
+    for (got, want) in batch.quads[0]
+        .screen_bounds()
+        .iter()
+        .zip([957.5, 861.0, 10.0, 3.0])
+    {
+        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[0].screen_bounds());
+    }
+    for (got, want) in batch.quads[1]
+        .screen_bounds()
+        .iter()
+        .zip([957.5, 865.0, 10.0, 3.0])
+    {
+        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[1].screen_bounds());
+    }
     let upright = Child {
         sprite: "GFX_test".into(),
         at: [4.0, 5.0],
@@ -3986,10 +4001,9 @@ fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
         centered: false,
         order: 0,
     };
-    assert_eq!(
-        turned_rect(&upright, [10.0, 10.0], origin),
-        [947.0, 851.0, 10.0, 10.0]
-    );
+    let square = sheet("GFX_test", 1, [10, 10]);
+    draw_bar(&mut batch, &square, &upright, origin, 0.9);
+    assert_eq!(batch.quads[2].rect, [947.0, 851.0, 10.0, 10.0]);
 }
 
 #[test]
@@ -4968,7 +4982,7 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
     batch.bar(
         &bar,
-        [32.5, 29.5],
+        [26.5, 21.0],
         [3.0, 17.0],
         8.5,
         std::f32::consts::FRAC_PI_2,
@@ -4978,7 +4992,7 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
     batch.bar(
         &bar,
-        [32.5, 29.5],
+        [26.5, 21.0],
         [3.0, 17.0],
         0.0,
         std::f32::consts::FRAC_PI_2,
@@ -4987,7 +5001,7 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     assert_eq!(batch.quads.len(), 2);
     batch.bar(
         &bar,
-        [32.5, 29.5],
+        [31.5, 21.0],
         [3.0, 17.0],
         30.0,
         std::f32::consts::FRAC_PI_2,
@@ -5708,7 +5722,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     assert_eq!(partial.rotation, bar_org.rotation);
     assert_eq!(partial.uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
     let bounds = partial.screen_bounds();
-    for (got, want) in bounds.iter().zip([957.0, 861.0, 10.0, 3.0]) {
+    for (got, want) in bounds.iter().zip([957.5, 861.0, 10.0, 3.0]) {
         assert!((got - want).abs() < 1e-4, "{bounds:?}");
     }
     draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 1.0);
@@ -5717,7 +5731,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     assert_eq!(full.rotation, bar_org.rotation);
     assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
     let bounds = full.screen_bounds();
-    for (got, want) in bounds.iter().zip([957.0, 861.0, 18.0, 3.0]) {
+    for (got, want) in bounds.iter().zip([957.5, 861.0, 18.0, 3.0]) {
         assert!((got - want).abs() < 1e-4, "{bounds:?}");
     }
     let upright = Child {
@@ -5743,13 +5757,9 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
         centered: false,
         order: 0,
     };
-    assert_eq!(
-        turned_rect(&upright_tall, [3.0, 17.0], [0.0, 0.0]),
-        [14.0, 8.0, 3.0, 17.0]
-    );
     draw_bar(&mut batch, &patterned, &upright_tall, [0.0, 0.0], 0.5);
     assert_eq!(batch.quads[3].rotation, 0.0);
-    assert_eq!(batch.quads[3].rect, [14.0, 8.0, 3.0, 10.0]);
+    assert_eq!(batch.quads[3].rect, [18.0, 11.5, 3.0, 10.0]);
     assert_eq!(batch.quads[3].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
 }
 
@@ -5867,18 +5877,107 @@ fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
     draw_bar(&mut tall_above, &vertical, &tall(45.1), origin, 1.0);
     assert_eq!(tall_below.quads[0].rect[3], 18.0);
     assert_eq!(tall_above.quads[0].rect[3], 18.0);
-    let (tc_below, tc_above) = (centre(&tall_below.quads[0]), centre(&tall_above.quads[0]));
-    assert!(
-        (tc_below[0] - tc_above[0]).abs() < 0.05 && (tc_below[1] - tc_above[1]).abs() < 0.05,
-        "tall 45-degree jump: {tc_below:?} vs {tc_above:?}"
-    );
-    let mut tall_full = Batch::default();
-    draw_bar(&mut tall_full, &vertical, &tall(30.0), origin, 1.0);
-    let mut tall_partial = Batch::default();
-    draw_bar(&mut tall_partial, &vertical, &tall(30.0), origin, 0.5);
-    let (tp_full, tp_partial) = (corner0(&tall_full.quads[0]), corner0(&tall_partial.quads[0]));
-    assert!(
-        (tp_full[0] - tp_partial[0]).abs() < 1e-4 && (tp_full[1] - tp_partial[1]).abs() < 1e-4,
-        "tall source texel moved under partial fill: {tp_full:?} vs {tp_partial:?}"
-    );
+    assert_eq!(centre(&tall_below.quads[0]), centre(&tall_above.quads[0]));
+}
+
+#[test]
+fn tall_bar_matches_native_geometry_across_rotations() {
+    let quad_corners = |q: &sprites::Quad| {
+        let [x, y, w, h] = q.rect;
+        let cx = x + w * 0.5;
+        let cy = y + h * 0.5;
+        let (sin, cos) = q.rotation.sin_cos();
+        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|[px, py]| {
+            if q.rotation == 0.0 {
+                [px, py]
+            } else {
+                let (dx, dy) = (px - cx, py - cy);
+                [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
+            }
+        })
+    };
+    let bar = sheet("GFX_bar_2x16", 1, [2, 16]);
+    let fill = 0.9_f32;
+    let step = counter_inputs::bar_step(fill, 16.0) as f32;
+    assert_eq!(step, 7.0);
+    assert_eq!(counter_inputs::bar_pixels(fill, 16.0), 16.0);
+    for rotation in [
+        0.0_f32,
+        std::f32::consts::FRAC_PI_4,
+        std::f32::consts::FRAC_PI_2,
+        -std::f32::consts::FRAC_PI_2,
+    ] {
+        let child = Child {
+            sprite: "GFX_bar_2x16".into(),
+            at: [14.0, 8.0],
+            scale: 1.0,
+            frame: 0,
+            rotation,
+            centered: false,
+            order: 0,
+        };
+        let mut batch = Batch::default();
+        draw_bar(&mut batch, &bar, &child, [0.0, 0.0], fill);
+        assert_eq!(batch.quads.len(), 1);
+        let quad = &batch.quads[0];
+        let x = 14.0 + step;
+        let native = viewer_foundation::map::native_gui::Geometry {
+            rect: [x, 8.0, 2.0, 16.0],
+            rotation,
+            pivot: [x + 1.0, 16.0],
+            local: [0.0, 0.0, 2.0, 16.0],
+        };
+        let got_center = [
+            quad.rect[0] + quad.rect[2] * 0.5,
+            quad.rect[1] + quad.rect[3] * 0.5,
+        ];
+        assert!(
+            (got_center[0] - native.pivot[0]).abs() < 1e-4
+                && (got_center[1] - native.pivot[1]).abs() < 1e-4,
+            "rotation {rotation}: pivot {got_center:?} vs {:?}",
+            native.pivot
+        );
+        for (got, want) in quad_corners(quad).iter().zip(native.corners()) {
+            assert!(
+                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+                "rotation {rotation}: corner {got:?} vs {want:?}"
+            );
+        }
+    }
+
+    let scaled_bar = sheet("GFX_bar_3x17", 1, [3, 17]);
+    let scale = 0.69_f32;
+    let rotation = 15708.0_f32 / 10_000.0;
+    let child = Child {
+        sprite: "GFX_bar_3x17".into(),
+        at: [13.0, 15.0],
+        scale,
+        frame: 0,
+        rotation,
+        centered: false,
+        order: 0,
+    };
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &scaled_bar, &child, [0.0, 0.0], fill);
+    let extent_h = (17.0 * scale).trunc();
+    let scaled_step = counter_inputs::bar_step(fill, extent_h) as f32;
+    let drawn = counter_inputs::bar_pixels(fill, 17.0 * scale);
+    let x = 13.0 + scaled_step;
+    let bottom = 15.0 + extent_h;
+    let inset = (17.0 * scale - drawn) * 0.5;
+    let native_scaled = viewer_foundation::map::native_gui::Geometry {
+        rect: [x, bottom - inset - drawn, 3.0 * scale, drawn],
+        rotation,
+        pivot: [x + 1.5, bottom - 8.5],
+        local: [0.0, inset, 3.0 * scale, drawn],
+    };
+    for (got, want) in quad_corners(&batch.quads[0])
+        .iter()
+        .zip(native_scaled.corners())
+    {
+        assert!(
+            (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+            "scaled corner {got:?} vs {want:?}"
+        );
+    }
 }
