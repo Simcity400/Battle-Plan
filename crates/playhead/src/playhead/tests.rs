@@ -2562,14 +2562,25 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
     }
     let at_end = playhead.step_state();
     assert!(!consumer.wait_step_after(at_end, last).unwrap(), "at end with all tables caught up and ring drained, wait_step_after reports exhausted");
-    playhead.redeclare(reader, every(&[0, 1])).unwrap();
-    let after_redeclare = playhead.step_state();
+    let dropped = playhead.consumer(reader);
+    let dropped_id = dropped.id;
+    drop(dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(dropped_id);
+        control.caught_up_at = None;
+    });
     assert!(
-        consumer.wait_step_after(after_redeclare, last).unwrap(),
+        !consumer.wait_step_after(playhead.step_state(), last).unwrap(),
+        "a dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
+    let before_redeclare = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    assert!(
+        consumer.wait_step_after(before_redeclare, last).unwrap(),
         "redeclaring table 1 at the last hour delivers a same-hour join step instead of reporting exhausted",
     );
     playhead.wait_until(|| {
-        playhead.step_state().1 > after_redeclare.1
+        playhead.step_state().1 > before_redeclare.1
             && playhead.held().2.joins_open == 0
             && playhead.held().2.declarations_applied == playhead.declarations()
     });
@@ -2601,7 +2612,6 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
         }
     }
     let gate = Arc::new(HookGate::default());
-    let _open = OpenGate(Arc::clone(&gate));
     let hook_gate = Arc::clone(&gate);
     let hook: super::Hook = Box::new(move |step, _| {
         for table in [1usize, 2] {
@@ -2640,6 +2650,7 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
         Some(hook),
     )
     .unwrap();
+    let _open = OpenGate(Arc::clone(&gate));
     let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
     let mut consumer = playhead.consumer(reader);
     playhead.seek(0);
@@ -2659,14 +2670,19 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     wait_hook(1);
     let before_t1_land = playhead.step_state();
     playhead.redeclare(reader, every(&[0, 1, 2])).unwrap();
-    release_hook();
+    {
+        let mut control = super::lock(&playhead.shared.control);
+        release_hook();
+        while control.published_steps == before_t1_land.1 {
+            control = playhead.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        assert_eq!(control.caught_up_at, None, "table 1's completion nudge did not clobber table 2's pending declaration");
+    }
     wait_hook(2);
-    playhead.wait_until(|| playhead.step_state().1 > before_t1_land.1);
     let before_take = steps.len();
     consumer.take(last, &mut steps);
     assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "table 1 landed while table 2 is still joining");
     assert!(steps[before_take..].iter().all(|step| step.table(2).is_none()), "table 2 has not landed yet");
-    assert_eq!(super::lock(&playhead.shared.control).caught_up_at, None, "table 1's completion did not clobber table 2's pending declaration");
     let after_t1 = playhead.step_state();
     let opener = {
         let gate = Arc::clone(&gate);
@@ -2688,4 +2704,29 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     assert!(steps[before_t2..].iter().any(|step| step.table(2).is_some()), "table 2 landed after release");
     let drained = playhead.step_state();
     assert!(!consumer.wait_step_after(drained, last).unwrap(), "after both joins drain at end, wait_step_after reports exhausted");
+
+    let mut stepper = super::Stepper::new(Arc::clone(&playhead.shared), None, Vec::new());
+    stepper.epoch = playhead.epoch();
+    stepper.selection_seen = playhead.declarations();
+    let mut control = super::lock(&playhead.shared.control);
+    let original_selection = control.selection;
+    control.caught_up_at = None;
+    control.selection = stepper.selection_seen + 1;
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "newer selection blocks setting caught_up_at");
+    control.selection = original_selection;
+    control.seek = Some((0, stepper.epoch + 1));
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending seek blocks setting caught_up_at");
+    control.seek = None;
+    control.lands.push(0);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending land blocks setting caught_up_at");
+    control.lands.clear();
+    stepper.epoch = playhead.epoch().wrapping_add(1);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "mismatched epoch blocks setting caught_up_at");
+    stepper.epoch = playhead.epoch();
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, Some(last), "current control state accepts caught_up_at");
 }

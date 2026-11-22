@@ -2619,6 +2619,7 @@ impl Stepper {
             let ring = lock(&self.shared.ring);
             self.lands.iter().map(|&id| (id, ring.reader_of(id))).collect()
         };
+        let had_lands = !asked.is_empty();
         self.lands.clear();
         for (id, reader) in asked {
             let Some(reader) = reader else { continue };
@@ -2630,6 +2631,10 @@ impl Stepper {
             targets.push((Some(id), reader, tables.into_iter().filter(|&table| self.slot_of(table).is_some()).collect()));
         }
         if targets.is_empty() {
+            if had_lands && self.lands.is_empty() {
+                let caught_up = self.caught_up_at();
+                self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
+            }
             return Ok(false);
         }
         let mut work: Vec<(usize, usize, Reader, Vec<usize>, Rebuild)> = Vec::new();
