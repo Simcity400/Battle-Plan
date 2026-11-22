@@ -652,6 +652,7 @@ struct TaskState {
     fleet_sequence: Option<(u64, u64)>,
     held: Option<HeldTask>,
     night_factor: Option<u64>,
+    all_carried: bool,
 }
 
 fn doctrine_certificate(
@@ -1063,18 +1064,26 @@ impl Captured {
             .and_then(|held| held.weather)
             .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
         carrying.task_modifiers = None;
+        let mut modifiers_ok = false;
+        let mut country_ok = false;
+        let mut doctrine_ok = false;
+        let mut weather_ok = task.location == 0;
+        let mut location_ok = task.location == 0;
+        let mut fleet_ok = false;
         if let Some(held) = held.as_ref() {
             if let Some(entries) = held.modifiers.as_ref()
                 && held.mine_exposure == task.mine_exposure
             {
                 carrying.task_modifiers = Some((task.modifiers, Arc::clone(entries)));
                 carrying.counts.task_terms_carried += 1;
+                modifiers_ok = true;
             }
             if let Some((certificate, terms)) = held.country_terms
                 && carrying.changes.tree_sequence(held.country) == Some(certificate)
             {
                 self.doctrine.hold_country(held.country, terms);
                 carrying.counts.task_terms_carried += 1;
+                country_ok = true;
             }
             if let Some((certificate, contribution)) = held.doctrine
                 && doctrine_certificate(carrying.changes, sequence, held.country)
@@ -1082,6 +1091,7 @@ impl Captured {
             {
                 self.doctrine.hold_doctrine(task.pointer, contribution);
                 carrying.counts.task_terms_carried += 1;
+                doctrine_ok = true;
             }
             if let Some((weather, certificate, factor)) = held.weather
                 && held.mine_exposure == task.mine_exposure
@@ -1091,6 +1101,7 @@ impl Captured {
             {
                 self.doctrine.hold_weather(weather);
                 carrying.counts.task_terms_carried += 1;
+                weather_ok = task.location != 0;
             }
             if let Some((epoch, location, definition, terrain)) = held.location
                 && location == task.location
@@ -1098,6 +1109,7 @@ impl Captured {
             {
                 self.doctrine.hold_location(location, definition, terrain);
                 carrying.counts.task_terms_carried += 1;
+                location_ok = task.location != 0;
             }
             if let Some(fleet) = held.fleet
                 && fleet.fleet == task.fleet
@@ -1107,14 +1119,26 @@ impl Captured {
                 self.doctrine
                     .hold_fleet(fleet.fleet, fleet.leader, fleet.terms);
                 carrying.counts.task_terms_carried += 1;
+                fleet_ok = true;
             }
         }
+        let all_carried = modifiers_ok
+            && country_ok
+            && doctrine_ok
+            && weather_ok
+            && location_ok
+            && fleet_ok
+            && (task.location != 0
+                || held
+                    .as_ref()
+                    .is_some_and(|held| held.weather.is_none() && held.location.is_none()));
         carrying.task = Some(TaskState {
             fields: task,
             sequence,
             fleet_sequence,
             held,
             night_factor,
+            all_carried,
         });
     }
 
@@ -1226,6 +1250,33 @@ impl Captured {
         if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
             self.begin_task(memory, task, carrying);
         }
+        if let Some(state) = carrying.task.as_ref()
+            && state.all_carried
+            && task.influences_count == Some(0)
+            && engine_sites::at(base, engine_native::ctask_force::VTABLE_RVA)
+                .is_some_and(|vtable| task.vtable == vtable as u64)
+            && let Some(held) = state.held.as_ref()
+            && let Some((terms, identity)) = held.terms
+            && fields.game_state() == Some(terms.0.owner().0)
+            && terms.0.owner().1 == task.roster_owner
+            && terms.0.owner().2 == held.country
+            && terms.0.support() == [0; 4]
+            && self.doctrine.read_pride(memory, held.country) == Some(terms.0.pride())
+        {
+            let leader = match terms.0.leader() {
+                Some(leader) => carrying.changes.tree_sequence(leader).map(Some),
+                None => Some(None),
+            };
+            if leader == Some(terms.1) {
+                self.doctrine.hold_owner(terms.0.owner());
+                self.doctrine.hold_support(task.pointer, [0; 4]);
+                if self.doctrine.task_terms(&task) == Some(terms.0) {
+                    carrying.terms = Some((task.pointer, terms));
+                    carrying.terms_identity = identity;
+                    return;
+                }
+            }
+        }
         if self.doctrine.location_source(task.location).is_none() {
             fields.visit_location(memory);
         }
@@ -1259,7 +1310,7 @@ impl Captured {
         hot: &mut Hot,
         held: &mut Held,
     ) -> bool {
-        if hot.receivers[2] != 0 || hot.terms_identity == 0 {
+        if hot.terms_identity == 0 {
             return false;
         }
         self.read_terms(memory, base, hot.task, fields, carrying);
@@ -1349,6 +1400,25 @@ impl Captured {
             }
             Some(organisation)
         };
+        let air_capacity = if hot.receivers[2] != 0 {
+            let held_row = &held.row.as_ref().expect("a carried row").0;
+            let kind = self.air_capacity.capture(
+                memory,
+                base,
+                hot.pointer,
+                held_row,
+                carrying.changes,
+            );
+            if held_row.carrier_air_base != 0
+                && held_row.formation_flags & 0x80 == 0
+                && kind.is_none()
+            {
+                self.optional_refusals[13] += 1;
+            }
+            (kind != held_row.air_capacity_kind).then_some(kind)
+        } else {
+            None
+        };
         let len = self.len;
         if hot.at == (self.previous_serial, len)
             && self
@@ -1360,6 +1430,9 @@ impl Captured {
             if let Some(organisation) = organisation {
                 self.rows.rows[len].maximum_organisation = organisation;
             }
+            if let Some(kind) = air_capacity {
+                self.rows.rows[len].air_capacity_kind = kind;
+            }
             self.record_kept(source.roster_ordinal);
         } else {
             #[cfg(any(test, feature = "test-support"))]
@@ -1369,12 +1442,19 @@ impl Captured {
             if let Some(organisation) = organisation {
                 row.maximum_organisation = organisation;
             }
+            if let Some(kind) = air_capacity {
+                row.air_capacity_kind = kind;
+            }
             self.record(|_| Ok(row));
         }
         if self.len != len {
-            let unchanged = hot.roster_ordinal == source.roster_ordinal;
+            let unchanged =
+                hot.roster_ordinal == source.roster_ordinal && air_capacity.is_none();
             hot.at = (self.rows_serial, len);
             hot.roster_ordinal = source.roster_ordinal;
+            if let Some(kind) = air_capacity {
+                held.row.as_mut().expect("a carried row").0.air_capacity_kind = kind;
+            }
             if let Some(organisation) = organisation {
                 let (row, kept) = held.row.as_mut().expect("a carried row");
                 row.maximum_organisation = organisation;
@@ -1510,33 +1590,9 @@ impl Captured {
         if carrying.store
             && let Some(held) = carry.as_ref()
             && held.row.is_some()
-            && held.fields.carrier_air_base() == 0
             && carrying.terms.map(|(task, _)| task) != Some(held.fields.task_force())
-            && let Some(task) = fields.task_force_of(memory, &held.fields)
         {
-            if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
-                self.begin_task(memory, task, carrying);
-            }
-            if self.doctrine.location_source(task.location).is_none() {
-                fields.visit_location(memory);
-            }
-            let gathered = fields.memory(memory);
-            let read = ModifierMemory {
-                inner: &gathered,
-                arena: &self.modifiers,
-                held_task: carrying
-                    .task_modifiers
-                    .as_ref()
-                    .map(|(address, entries)| (*address, entries.as_slice())),
-            };
-            let started = qpc();
-            let terms = cship::read_task_terms(&read, base, &task, &mut self.doctrine)
-                .ok()
-                .flatten()
-                .and_then(|terms| task_terms(carrying.changes, task.pointer, terms));
-            self.set_terms(carrying, terms);
-            carrying.counts.terms_reads += 1;
-            carrying.counts.terms_ticks += qpc().saturating_sub(started).max(0) as u64;
+            self.read_terms(memory, base, held.fields.task_force(), fields, carrying);
         }
         let certified = carry
             .as_ref()
@@ -1547,17 +1603,15 @@ impl Captured {
             });
         let variants_and_terms = !carrying.guard_fallback
             && carry.as_ref().is_some_and(|held| {
-                held.fields.carrier_air_base() == 0
-                    && held.row.as_ref().is_some_and(|(row, terms)| {
-                        model_carry_complete(row)
-                            && carrying.terms.is_some_and(|(task, current)| {
-                                task == held.fields.task_force() && current == *terms
-                            })
-                    })
-                    && (certified || {
-                        carrying.counts.variants_read += 1;
-                        fields.held_variants_unchanged(memory, &held.fields)
-                    })
+                held.row.as_ref().is_some_and(|(row, terms)| {
+                    model_carry_complete(row)
+                        && carrying.terms.is_some_and(|(task, current)| {
+                            task == held.fields.task_force() && current == *terms
+                        })
+                }) && (certified || {
+                    carrying.counts.variants_read += 1;
+                    fields.held_variants_unchanged(memory, &held.fields)
+                })
             });
         let revalidated_criticals = carrying.revalidated
             && carry
@@ -1585,7 +1639,6 @@ impl Captured {
             };
         if !row_carry
             && let Some(held) = carry.as_ref()
-            && held.fields.carrier_air_base() == 0
             && let Some((_, kept)) = held.row.as_ref()
         {
             let reasons = &mut carrying.counts.terms_changed;
@@ -1610,7 +1663,6 @@ impl Captured {
         let model_carry = row_carry
             || carry.as_ref().is_some_and(|held| {
                 model_carry_enabled()
-                    && held.fields.carrier_air_base() == 0
                     && held
                         .row
                         .as_ref()
@@ -1626,7 +1678,6 @@ impl Captured {
             });
         let stale_model = stale.as_ref().is_some_and(|held| {
             model_carry_enabled()
-                && held.fields.carrier_air_base() == 0
                 && held
                     .row
                     .as_ref()
@@ -1634,6 +1685,25 @@ impl Captured {
                 && fields.same_variants(&held.fields)
         });
         if row_carry && let Some(mut held) = carry.take() {
+            let air_capacity = if held.fields.carrier_air_base() != 0 {
+                let held_row = &held.row.as_ref().expect("a carried row").0;
+                let kind = self.air_capacity.capture(
+                    memory,
+                    base,
+                    held.pointer,
+                    held_row,
+                    carrying.changes,
+                );
+                if held_row.carrier_air_base != 0
+                    && held_row.formation_flags & 0x80 == 0
+                    && kind.is_none()
+                {
+                    self.optional_refusals[13] += 1;
+                }
+                (kind != held_row.air_capacity_kind).then_some(kind)
+            } else {
+                None
+            };
             let len = self.len;
             if held.at == (self.previous_serial, len)
                 && self
@@ -1642,21 +1712,31 @@ impl Captured {
                     .get(len)
                     .is_some_and(|kept| kept.ship == held.ship)
             {
+                if let Some(kind) = air_capacity {
+                    self.rows.rows[len].air_capacity_kind = kind;
+                }
                 self.record_kept(row.roster_ordinal);
             } else {
                 #[cfg(any(test, feature = "test-support"))]
                 carry_cost(|cost| cost.row_clones += 1);
                 let mut carried = held.row.as_ref().expect("a carried row").0.clone();
                 carried.roster_ordinal = row.roster_ordinal;
+                if let Some(kind) = air_capacity {
+                    carried.air_capacity_kind = kind;
+                }
                 self.record(|_| Ok(carried));
             }
             if self.len != len {
                 carrying.counts.rows_carried += 1;
                 self.unchanged_rows += usize::from(
-                    original_hot.is_some_and(|hot| hot.roster_ordinal == row.roster_ordinal),
+                    air_capacity.is_none()
+                        && original_hot.is_some_and(|hot| hot.roster_ordinal == row.roster_ordinal),
                 );
                 if let Some((kept, _)) = held.row.as_mut() {
                     kept.roster_ordinal = row.roster_ordinal;
+                    if let Some(kind) = air_capacity {
+                        kept.air_capacity_kind = kind;
+                    }
                 }
                 held.at = (self.rows_serial, len);
                 if !self.store.keep_held(held) {

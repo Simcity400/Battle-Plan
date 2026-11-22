@@ -866,6 +866,27 @@ impl OrganisationMemo {
         })
     }
 
+    pub fn hold_owner(&mut self, owner: (usize, u32, usize)) {
+        self.owner = Some(owner);
+    }
+
+    pub fn hold_support(&mut self, task: usize, support: [i64; 4]) {
+        self.support = Some((task, support));
+    }
+
+    pub fn read_pride(
+        &mut self,
+        memory: &impl Memory,
+        country: usize,
+    ) -> Option<[u8; 8]> {
+        if let Some(pride) = self.pride.get(&country) {
+            return Some(pride);
+        }
+        let pride = crate::cnaval_combatant::field::<[u8; 8]>(memory, country, 0x250).ok()?;
+        self.pride.insert(country, pride);
+        Some(pride)
+    }
+
     pub fn country(&self) -> Option<usize> {
         self.owner.map(|(_, _, country)| country)
     }
@@ -938,6 +959,18 @@ pub struct TaskTerms {
 }
 
 impl TaskTerms {
+    pub fn owner(&self) -> (usize, u32, usize) {
+        self.owner
+    }
+
+    pub fn pride(&self) -> [u8; 8] {
+        self.pride
+    }
+
+    pub fn support(&self) -> [i64; 4] {
+        self.support
+    }
+
     pub fn leader(&self) -> Option<usize> {
         self.fleet.1
     }

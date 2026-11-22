@@ -729,13 +729,16 @@ impl Captured {
         self.swap_raid_state(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidStateRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
             force_full,
             packs,
-            stores,
+            states_store: Some(stores.states),
+            buildings_store: Some(stores.buildings),
+            routes_store: stores.routes,
         }
     }
 
@@ -745,7 +748,15 @@ impl Captured {
         completed: bool,
     ) -> RaidStateStores {
         let mut packs = request.packs;
-        let mut stores = request.stores;
+        let mut stores = RaidStateStores {
+            states: request
+                .states_store
+                .unwrap_or_else(|| Box::new(crate::slicing::SliceFingerprints::new())),
+            buildings: request
+                .buildings_store
+                .unwrap_or_else(|| Box::new(crate::slicing::SliceFingerprints::new())),
+            routes: request.routes_store,
+        };
         if !completed {
             packs.fail(
                 request.hour,
@@ -959,6 +970,7 @@ impl Captured {
         rail_store: Option<Box<naval_history::RailStore>>,
     ) -> crate::acquisition_jobs::ScoresRailsRequest {
         crate::acquisition_jobs::ScoresRailsRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
@@ -1881,6 +1893,18 @@ impl RaidStatePacks {
         .ok()
     }
 
+    pub(crate) fn record_ticks(
+        &mut self,
+        state: [u64; raid_state_inputs::N],
+        resource: [u64; resource_map::N],
+    ) {
+        let mut ticks = [0; TABLE_COUNT];
+        scatter(&raid_state_inputs::TABLES, state, &mut ticks);
+        scatter(&resource_map::TABLES, resource, &mut ticks);
+        self.ticks = ticks;
+    }
+
+    #[cfg(test)]
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1891,8 +1915,7 @@ impl RaidStatePacks {
         stores: &mut RaidStateStores,
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
-        let mut ticks = [0; TABLE_COUNT];
-        let cost = self.raid_state_inputs.capture_sliced(
+        let state = self.raid_state_inputs.capture_sliced(
             memory,
             base,
             game_state,
@@ -1904,8 +1927,7 @@ impl RaidStatePacks {
                 changes: &crate::raid_changes::Observer,
             }),
         );
-        scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
-        let cost = self.resource_map.capture_deferred(
+        let resource = self.resource_map.capture_deferred(
             memory,
             base,
             game_state,
@@ -1916,8 +1938,7 @@ impl RaidStatePacks {
                 changes: &crate::raid_changes::Observer,
             }),
         );
-        scatter(&resource_map::TABLES, cost, &mut ticks);
-        self.ticks = ticks;
+        self.record_ticks(state, resource);
     }
 }
 

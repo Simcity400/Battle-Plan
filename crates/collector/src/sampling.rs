@@ -2427,6 +2427,30 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 }};
             }
             batch.hold();
+            let radar_due = replay_data::cadence::should_walk(
+                TableId::RadarCoverage,
+                clock.hour,
+                force_full,
+            );
+            let world_scheduled = world_schedule(clock.hour, force_full);
+            let construction_active = world_scheduled.1;
+            let projects_omitted =
+                projects_refresh && !frame.extended.records_any(&decode::PROJECTS);
+            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+            );
+            let intel_ctx = frame
+                .extended
+                .intel_pilot()
+                .intel_copy_context(shared.base, state);
+            frame.extended.radar_pilot().radar_raw_mode = radar_due;
+            frame.extended.radar_pilot().registrations_raw_mode = true;
+            frame.extended.intel_pilot().intel_raw_mode = true;
+            frame.extended.projects_pilot().raw_mode = projects_refresh;
+            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
             let (gated_pending, gated_projects_pending) = out_of_line(|| {
                 let mut request = frame.extended.take_gated_request(
                     shared.base,
@@ -2671,7 +2695,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                 )));
             }
-            let world_scheduled = world_schedule(clock.hour, force_full);
             let world_pending = (frame.extended.records_any(&decode::PRODUCTION_REST)
                 || frame.extended.records_any(&decode::CONSTRUCTION_REST))
             .then(|| {
@@ -2685,7 +2708,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     )))
                 })
             });
-            let construction_active = world_scheduled.1;
             let economy_pending = queue!(acquisition::Job::Economy(acquire_economy_request(
                 &country_snapshot,
                 shared.base,
@@ -3010,24 +3032,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.sunk_pilot().sunk_raw_mode = sunk_omitted;
                 None
             };
-            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
-                shared.base,
-                state,
-                clock.hour,
-                force_full,
-            );
-            let radar_pending = if replay_data::cadence::should_walk(
-                TableId::RadarCoverage,
-                clock.hour,
-                force_full,
-            ) {
+            let radar_pending = if radar_due {
                 Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
                     countries: engine_allocation::SharedBox::clone(&country_snapshot),
                     context: radar_ctx,
                     payload: decode::acquire_radar_job(),
                 })))
             } else {
-                frame.extended.radar_pilot().radar_raw_mode = false;
                 None
             };
             let projects_ctx = extended::projects::ProjectsCopyContext {
@@ -3035,8 +3046,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 game_state: state,
                 active: projects_refresh,
             };
-            let projects_omitted =
-                projects_refresh && !frame.extended.records_any(&decode::PROJECTS);
             let projects_pending = if projects_refresh && !projects_omitted {
                 Some(queue!(acquisition::Job::Projects(
                     acquisition::RawRequest {
@@ -3046,19 +3055,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                 )))
             } else {
-                frame.extended.projects_pilot().raw_mode = false;
                 None
             };
-            let intel_ctx = frame
-                .extended
-                .intel_pilot()
-                .intel_copy_context(shared.base, state);
-            frame.extended.radar_pilot().radar_raw_mode = radar_pending.is_some();
-            frame.extended.radar_pilot().registrations_raw_mode = true;
-            frame.extended.intel_pilot().intel_raw_mode = true;
-            frame.extended.projects_pilot().raw_mode =
-                projects_pending.is_some() || projects_omitted;
-            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
             let lexical_ctx = extended::lexical::LexicalCopyContext { base: shared.base };
             let lexical_pending = if lexical_refresh {
                 Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {

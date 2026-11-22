@@ -25,6 +25,8 @@ pub(crate) enum Work {
     ProjectsRestPrimary(Box<projects::RestPrimary>),
     ProjectsRestAux(Box<projects::RestAux>),
     Buildings(Box<super::BuildingsPart>),
+    RaidStateInputs(Box<super::RaidStateInputsPart>),
+    Rails(Box<super::RailsPart>),
 }
 impl Work {
     pub(super) fn role(&self) -> Role {
@@ -34,6 +36,8 @@ impl Work {
             Self::TemplateWalk(_) => Role::Templates,
             Self::ProjectsRestPrimary(_) | Self::ProjectsRestAux(_) => Role::GatedProjects,
             Self::Buildings(_) => Role::Governance,
+            Self::RaidStateInputs(_) => Role::RaidState,
+            Self::Rails(_) => Role::ScoresRails,
             _ => Role::Variants,
         }
     }
@@ -60,6 +64,8 @@ impl Work {
             Self::ProjectsRestPrimary(rest) => rest.capture(memory, base),
             Self::ProjectsRestAux(rest) => rest.capture(memory, base),
             Self::Buildings(part) => part.capture(memory),
+            Self::RaidStateInputs(part) => part.capture(memory, base),
+            Self::Rails(part) => part.capture(memory, base),
         }
     }
 }

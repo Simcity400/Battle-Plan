@@ -2807,6 +2807,73 @@ impl MovementRows {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaticMovementProvince {
+    pub pointer: usize,
+    pub state: usize,
+    pub strategic_region: usize,
+    pub terrain_flags: Result<u8, &'static str>,
+}
+
+const CONTROLLER_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: CONTROLLER,
+        destination_offset: 0,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER_AREA,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const CONTROLLER_BYTES: usize = 16;
+const CONTROLLER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_FIELDS, CONTROLLER_BYTES).expect("valid record layout");
+
+pub fn movement_province_controllers(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [(Result<u32, &'static str>, Result<usize, &'static str>)],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * CONTROLLER_BYTES];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_LAYOUT,
+            &mut payload[..chunk_pointers.len() * CONTROLLER_BYTES],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                let pointer = chunk_pointers[slot];
+                let controller = pointer
+                    .checked_add(CONTROLLER)
+                    .and_then(|address| crate::read::<u32>(memory, address))
+                    .ok_or("movement province controller unreadable");
+                let controller_area = pointer
+                    .checked_add(CONTROLLER_AREA)
+                    .and_then(|address| crate::read::<u64>(memory, address))
+                    .map(|value| value as usize)
+                    .ok_or("movement province field unreadable");
+                chunk_out[slot] = (controller, controller_area);
+            } else {
+                let record = &payload[slot * CONTROLLER_BYTES..][..CONTROLLER_BYTES];
+                let controller = u32::from_le_bytes(record[0..4].try_into().unwrap());
+                let controller_area =
+                    u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
+                chunk_out[slot] = (Ok(controller), Ok(controller_area));
+            }
+        }
+    }
+}
+
 pub fn movement_provinces(
     memory: &impl Memory,
     base: usize,
@@ -2814,10 +2881,23 @@ pub fn movement_provinces(
     ids: &[u32],
     mut each: impl FnMut(u32, Result<MovementProvince, &'static str>),
 ) {
+    movement_provinces_with_pointers(memory, base, provinces, ids, |id, _, result| {
+        each(id, result);
+    });
+}
+
+pub fn movement_provinces_with_pointers(
+    memory: &impl Memory,
+    base: usize,
+    provinces: Array,
+    ids: &[u32],
+    mut each: impl FnMut(u32, Option<usize>, Result<MovementProvince, &'static str>),
+) {
     const MISMATCH: &str = "movement province identity mismatch";
     let vtable = engine_sites::at(base, VTABLE_RVA).map(|pointer| pointer as u64);
     for ids in ids.chunks(BATCH_ROWS) {
         let mut results: MovementResults = [const { None }; BATCH_ROWS];
+        let mut pointers = [None; BATCH_ROWS];
         let alone = |row: usize| movement_province(memory, base, provinces, ids[row]);
         let mut open = MovementRows::EMPTY;
         for (row, &id) in ids.iter().enumerate() {
@@ -2855,6 +2935,7 @@ pub fn movement_provinces(
                 results[row] = Some(Err(MISMATCH));
                 continue;
             }
+            pointers[row] = Some(open.sources[slot]);
             let definition = word(16);
             results[row] = Some(Ok(MovementProvince {
                 state: Ok(word(24) as usize),
@@ -2883,7 +2964,11 @@ pub fn movement_provinces(
             }
         }
         for (row, result) in results.into_iter().enumerate().take(ids.len()) {
-            each(ids[row], result.expect("every province has an outcome"));
+            each(
+                ids[row],
+                pointers[row],
+                result.expect("every province has an outcome"),
+            );
         }
     }
 }

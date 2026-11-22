@@ -100,9 +100,11 @@ pub(crate) enum Part {
     VariantsSnapshot,
     VariantsContext,
     VariantsSetup,
+    ScoresRailsWait,
+    RaidStateWait,
 }
 
-const PARTS: [&str; 19] = [
+const PARTS: [&str; 21] = [
     "settle_sources",
     "settle_certify",
     "settle_daily",
@@ -122,6 +124,8 @@ const PARTS: [&str; 19] = [
     "variants_snapshot",
     "variants_context",
     "variants_setup",
+    "scores_rails_wait",
+    "raid_state_wait",
 ];
 
 pub(crate) fn record_part(part: Part, started: i64, ended: i64) {

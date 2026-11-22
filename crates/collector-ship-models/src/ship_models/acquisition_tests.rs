@@ -1146,12 +1146,14 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
     let world = Fleet::new();
     let task = cship::TaskForceFields {
         pointer: TASK,
+        vtable: 0,
         handle: 7,
         roster_owner: 1,
         location: 0,
         fleet: FLEET,
         mine_exposure: 0,
         modifiers: TASK + 0x668,
+        influences_count: Some(0),
     };
     let certificate = || {
         (

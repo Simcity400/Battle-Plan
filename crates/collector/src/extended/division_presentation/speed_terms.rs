@@ -148,6 +148,47 @@ fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
 }
 
 #[derive(Default)]
+struct HeldMap {
+    provinces_key: Option<(u64, usize, Array)>,
+    provinces: std::collections::HashMap<u32, cprovince::StaticMovementProvince>,
+    regions_key: Option<(u64, usize)>,
+    regions: std::collections::HashMap<usize, u32>,
+    charge: crate::raw_memory::Charge,
+}
+#[cfg(not(test))]
+static HELD_MAP: Mutex<Option<HeldMap>> = Mutex::new(None);
+#[cfg(test)]
+thread_local! {
+    static HELD_MAP: Mutex<Option<HeldMap>> = const { Mutex::new(None) };
+}
+
+fn held_map<R>(visit: impl FnOnce(&mut HeldMap) -> R) -> R {
+    let with = |slot: &Mutex<Option<HeldMap>>| {
+        visit(
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(HeldMap::default),
+        )
+    };
+    #[cfg(not(test))]
+    return with(&HELD_MAP);
+    #[cfg(test)]
+    HELD_MAP.with(with)
+}
+
+impl HeldMap {
+    fn update_charge(&mut self) {
+        self.charge.set(crate::raw_memory::Capacity {
+            index_vectors: (self.provinces.capacity()
+                * (size_of::<(u32, cprovince::StaticMovementProvince)>() + 1)
+                + self.regions.capacity() * (size_of::<(usize, u32)>() + 1))
+                as u64,
+            ..Default::default()
+        });
+    }
+}
+
+#[derive(Default)]
 struct Hostility {
     provinces: Option<Array>,
     destinations: std::collections::HashMap<u32, Option<i32>>,
@@ -257,6 +298,15 @@ impl Hostility {
 #[derive(Default)]
 struct Scratch {
     ids: Vec<u32>,
+    cached_provinces: Vec<(usize, cprovince::StaticMovementProvince)>,
+    cached_pointers: Vec<usize>,
+    #[allow(
+        clippy::type_complexity,
+        reason = "reused per-hour scratch for batched province controller and controller area reads"
+    )]
+    cached_controllers: Vec<(Result<u32, &'static str>, Result<usize, &'static str>)>,
+    missing_ids: Vec<(usize, u32)>,
+    missing_query: Vec<u32>,
     states: Vec<usize>,
     templates: Vec<usize>,
     #[allow(
@@ -279,6 +329,13 @@ struct Scratch {
 impl Scratch {
     fn allocated_bytes(&self) -> usize {
         self.ids.capacity() * size_of::<u32>()
+            + self.cached_provinces.capacity()
+                * size_of::<(usize, cprovince::StaticMovementProvince)>()
+            + self.cached_pointers.capacity() * size_of::<usize>()
+            + self.cached_controllers.capacity()
+                * size_of::<(Result<u32, &'static str>, Result<usize, &'static str>)>()
+            + self.missing_ids.capacity() * size_of::<(usize, u32)>()
+            + self.missing_query.capacity() * size_of::<u32>()
             + self.states.capacity() * size_of::<usize>()
             + self.templates.capacity() * size_of::<usize>()
             + self.wanted_states.capacity() * size_of::<(u32, u32, u32, usize, u32, bool)>()
@@ -755,6 +812,14 @@ impl SpeedTerms {
         reserve(&mut self.combat, seeds.len())?;
         reserve(&mut self.combat_order, seeds.len())?;
         for seed in seeds {
+            if seed
+                .ordinary_route
+                .and_then(|header| Array::from_header(header, 4))
+                .is_some_and(|route| route.count == 0)
+            {
+                self.combat.push((seed.division, Some(None)));
+                continue;
+            }
             let demand = memo(&self.combat_demand, seed.division).unwrap_or(Ok(false));
             let value = (|| -> Result<Option<i64>, &'static str> {
                 let Some(list) = list(seed, demand)? else {
@@ -902,9 +967,110 @@ impl SpeedTerms {
             .ok_or("movement province array invalid");
         match provinces {
             Ok(provinces) => {
-                cprovince::movement_provinces(memory, base, provinces, ids, |id, facts| {
-                    self.provinces.push((id, facts))
-                })
+                let world = crate::world_lifetime::token()
+                    .filter(|_| crate::world_input_changes::map_content_stable());
+                if let Some(world) = world {
+                    let key = (world, base, provinces);
+                    let cached_provinces = &mut self.scratch.cached_provinces;
+                    let cached_pointers = &mut self.scratch.cached_pointers;
+                    let cached_controllers = &mut self.scratch.cached_controllers;
+                    let missing_ids = &mut self.scratch.missing_ids;
+                    let missing_query = &mut self.scratch.missing_query;
+                    cached_provinces.clear();
+                    cached_pointers.clear();
+                    cached_controllers.clear();
+                    missing_ids.clear();
+                    missing_query.clear();
+                    reserve(cached_provinces, ids.len())?;
+                    reserve(cached_pointers, ids.len())?;
+                    reserve(cached_controllers, ids.len())?;
+                    reserve(missing_ids, ids.len())?;
+                    reserve(missing_query, ids.len())?;
+                    held_map(|held| {
+                        if held.provinces_key != Some(key) {
+                            held.provinces.clear();
+                            held.provinces_key = Some(key);
+                        }
+                        for (slot, &id) in ids.iter().enumerate() {
+                            if let Some(&entry) = held.provinces.get(&id) {
+                                cached_provinces.push((slot, entry));
+                                cached_pointers.push(entry.pointer);
+                            } else {
+                                missing_ids.push((slot, id));
+                                missing_query.push(id);
+                            }
+                        }
+                    });
+                    self.provinces
+                        .extend(ids.iter().map(|&id| (id, Err("movement province unread"))));
+                    if !cached_pointers.is_empty() {
+                        cached_controllers.resize(
+                            cached_pointers.len(),
+                            (
+                                Err("movement province controller unreadable"),
+                                Err("movement province field unreadable"),
+                            ),
+                        );
+                        cprovince::movement_province_controllers(
+                            memory,
+                            cached_pointers,
+                            cached_controllers,
+                        );
+                        for (&(slot, entry), &(controller, controller_area)) in
+                            cached_provinces.iter().zip(cached_controllers.iter())
+                        {
+                            self.provinces[slot].1 = Ok(cprovince::MovementProvince {
+                                state: Ok(entry.state),
+                                controller,
+                                controller_area,
+                                strategic_region: Ok(entry.strategic_region),
+                                terrain_flags: entry.terrain_flags,
+                            });
+                        }
+                    }
+                    if !missing_query.is_empty() {
+                        let mut index = 0;
+                        held_map(|held| {
+                            let store = held.provinces_key == Some(key);
+                            cprovince::movement_provinces_with_pointers(
+                                memory,
+                                base,
+                                provinces,
+                                missing_query,
+                                |id, pointer, facts| {
+                                    let (slot, expected) = missing_ids[index];
+                                    debug_assert_eq!(id, expected);
+                                    index += 1;
+                                    if store
+                                        && let (Some(pointer), Ok(facts)) = (pointer, facts)
+                                        && let (Ok(state), Ok(strategic_region)) =
+                                            (facts.state, facts.strategic_region)
+                                        && engine_allocation::advisory(|| {
+                                            engine_allocation::reserve_map(&mut held.provinces, 1)
+                                        })
+                                        .is_ok()
+                                    {
+                                        held.provinces.insert(
+                                            id,
+                                            cprovince::StaticMovementProvince {
+                                                pointer,
+                                                state,
+                                                strategic_region,
+                                                terrain_flags: facts.terrain_flags,
+                                            },
+                                        );
+                                    }
+                                    self.provinces[slot].1 = facts;
+                                },
+                            );
+                            held.update_charge();
+                        });
+                    }
+                } else {
+                    cprovince::movement_provinces(memory, base, provinces, ids, |id, facts| {
+                        self.provinces.push((id, facts))
+                    });
+                }
             }
             Err(reason) => self
                 .provinces
@@ -1678,13 +1844,51 @@ impl SpeedTerms {
             let located = &mut self.scratch.located;
             located.clear();
             reserve(located, pointers.len())?;
-            for &pointer in pointers.iter() {
-                match engine_native::cstrategic_region::id(memory, base, pointer) {
-                    Ok(Some(id)) => {
-                        self.regions.push(TransportRegion { id, pointer });
-                        located.push((pointer, id));
+            let world = crate::world_lifetime::token()
+                .filter(|_| crate::world_input_changes::map_content_stable());
+            if let Some(world) = world {
+                let key = (world, base);
+                held_map(|held| {
+                    if held.regions_key != Some(key) {
+                        held.regions.clear();
+                        held.regions_key = Some(key);
                     }
-                    Ok(None) | Err(_) => self.counts[4][2] += 1,
+                    let mut inserted = false;
+                    for &pointer in pointers.iter() {
+                        if let Some(&id) = held.regions.get(&pointer) {
+                            self.regions.push(TransportRegion { id, pointer });
+                            located.push((pointer, id));
+                            continue;
+                        }
+                        match engine_native::cstrategic_region::id(memory, base, pointer) {
+                            Ok(Some(id)) => {
+                                if engine_allocation::advisory(|| {
+                                    engine_allocation::reserve_map(&mut held.regions, 1)
+                                })
+                                .is_ok()
+                                {
+                                    held.regions.insert(pointer, id);
+                                    inserted = true;
+                                }
+                                self.regions.push(TransportRegion { id, pointer });
+                                located.push((pointer, id));
+                            }
+                            Ok(None) | Err(_) => self.counts[4][2] += 1,
+                        }
+                    }
+                    if inserted {
+                        held.update_charge();
+                    }
+                });
+            } else {
+                for &pointer in pointers.iter() {
+                    match engine_native::cstrategic_region::id(memory, base, pointer) {
+                        Ok(Some(id)) => {
+                            self.regions.push(TransportRegion { id, pointer });
+                            located.push((pointer, id));
+                        }
+                        Ok(None) | Err(_) => self.counts[4][2] += 1,
+                    }
                 }
             }
             self.regions.sort_unstable_by_key(|region| region.id);
