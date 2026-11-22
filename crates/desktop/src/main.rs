@@ -17,7 +17,7 @@ use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::http::HeaderValue;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 
@@ -202,7 +202,7 @@ fn context() -> tauri::Context {
 #[derive(Default)]
 struct UnsavedWork {
     unsaved: AtomicBool,
-    discarded: AtomicBool,
+    discarding: AtomicUsize,
 }
 
 impl UnsavedWork {
@@ -210,7 +210,7 @@ impl UnsavedWork {
         "BattlePlan has unsaved changes. Save or discard them in BattlePlan, then restart to update.";
 
     fn kept(&self) -> bool {
-        self.unsaved.load(Ordering::Acquire) && !self.discarded.load(Ordering::Acquire)
+        self.unsaved.load(Ordering::Acquire) && self.discarding.load(Ordering::Acquire) == 0
     }
 
     fn update_refused(&self) -> Option<String> {
@@ -227,13 +227,13 @@ impl UnsavedWork {
         true
     }
 
-    fn close_discarding<E>(&self, close: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
-        self.discarded.store(true, Ordering::Release);
-        let closed = close();
-        if closed.is_err() {
-            self.discarded.store(false, Ordering::Release);
+    fn discarding<E>(&self, leave: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        self.discarding.fetch_add(1, Ordering::AcqRel);
+        let left = leave();
+        if left.is_err() {
+            self.discarding.fetch_sub(1, Ordering::AcqRel);
         }
-        closed
+        left
     }
 }
 
@@ -244,7 +244,17 @@ fn set_unsaved_work(work: State<'_, UnsavedWork>, unsaved: bool) {
 
 #[tauri::command]
 fn close_discarding_unsaved_work(window: WebviewWindow, work: State<'_, UnsavedWork>) -> Result<(), String> {
-    work.close_discarding(|| window.close()).map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+    work.discarding(|| window.close()).map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+}
+
+#[tauri::command]
+async fn install_update_discarding_unsaved_work(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let updates = Arc::clone(app.state::<Arc<app_update::Updates>>().inner());
+        app.state::<UnsavedWork>().discarding(|| updates.install(&app))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn ask_before_close(app: &tauri::AppHandle) -> bool {
@@ -354,6 +364,7 @@ fn main() {
             playback_pressure_merges,
             set_unsaved_work,
             close_discarding_unsaved_work,
+            install_update_discarding_unsaved_work,
             set_map_view,
             select_native_view,
             map_action,
@@ -501,9 +512,9 @@ mod tests {
         assert_eq!(work.update_refused(), None, "nothing unsaved lets the update close the app");
         work.unsaved.store(true, Ordering::Release);
         assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        work.discarded.store(true, Ordering::Release);
+        work.discarding.store(1, Ordering::Release);
         assert_eq!(work.update_refused(), None, "work the user chose to discard no longer holds the update");
-        work.discarded.store(false, Ordering::Release);
+        work.discarding.store(0, Ordering::Release);
         work.unsaved.store(false, Ordering::Release);
         assert_eq!(work.update_refused(), None, "saved work no longer holds the update");
     }
@@ -526,11 +537,38 @@ mod tests {
     fn a_failed_discarding_close_leaves_the_work_guarded() {
         let work = UnsavedWork::default();
         work.unsaved.store(true, Ordering::Release);
-        assert_eq!(work.close_discarding(|| Err("no window")), Err("no window"));
+        assert_eq!(work.discarding(|| Err("no window")), Err("no window"));
         assert!(work.kept(), "a close that failed doesn’t authorise a later close or update");
         assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        assert_eq!(work.close_discarding(|| Ok::<(), &str>(())), Ok(()));
+        assert_eq!(work.discarding(|| Ok::<(), &str>(())), Ok(()));
         assert!(!work.kept(), "the closing window isn’t asked again");
+    }
+
+    #[test]
+    fn discarding_lasts_only_for_the_attempt_and_keeps_what_the_page_says_meanwhile() {
+        let work = UnsavedWork::default();
+        work.unsaved.store(true, Ordering::Release);
+        let installed = work.discarding(|| {
+            assert_eq!(work.update_refused(), None, "the install the user chose to discard for may close the app");
+            work.unsaved.store(false, Ordering::Release);
+            work.unsaved.store(true, Ordering::Release);
+            Err("installer didn’t start")
+        });
+        assert_eq!(installed, Err("installer didn’t start"));
+        assert!(work.kept(), "a new edit made during a failed install is still guarded");
+        work.discarding(|| {
+            work.unsaved.store(false, Ordering::Release);
+            Err("installer didn’t start")
+        })
+        .unwrap_err();
+        assert!(!work.kept(), "work saved during a failed install isn’t guarded again");
+        work.unsaved.store(true, Ordering::Release);
+        let closing = work.discarding(|| {
+            assert_eq!(work.discarding(|| Err("installer didn’t start")), Err("installer didn’t start"));
+            assert!(!work.kept(), "a failed install doesn’t take back a close the user chose");
+            Ok::<(), &str>(())
+        });
+        assert_eq!(closing, Ok(()));
     }
 
     #[test]

@@ -4,6 +4,7 @@ import {
   closeDiscardingUnsavedWork,
   desktopAvailable,
   errorMessage,
+  installUpdateDiscardingUnsavedWork,
   onCloseRequested,
   openReplay,
   selectNativeView,
@@ -44,7 +45,8 @@ import { useDiagnosticsShortcut } from './diagnosticsSetting';
 import { RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
-import type { RestartGuard } from '../update/UpdateControl';
+import type { Restart, RestartGuard } from '../update/UpdateControl';
+import { installUpdate } from '../update/api';
 import { leavePrompt, unsavedDetail } from './unsaved';
 import { closeGuard, type CloseGuard, type CloseGuardFailure } from './closeGuard.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
@@ -242,7 +244,7 @@ export default function App() {
   const [unsavedPages, setUnsavedPages] = useState<readonly PageId[]>([]);
   const layoutsUnsaved = unsavedPages.length > 0;
   const [saveRequest, setSaveRequest] = useState(0);
-  const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: () => Promise<boolean> } | null>(null);
+  const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: Restart } | null>(null);
   const [guardFailure, setGuardFailure] = useState<CloseGuardFailure | null>(null);
   const guard = useRef<CloseGuard | null>(null);
   useEffect(() => {
@@ -383,7 +385,7 @@ export default function App() {
   const themeUnsaved = !!themeEditing && (!!themeEditing.typing || JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]));
   const unsavedWork = layoutsUnsaved || themeUnsaved;
   useEffect(() => {
-    const current = closeGuard({ mark: setUnsavedWork, listen: onCloseRequested },
+    const current = closeGuard({ mark: setUnsavedWork, listen: onCloseRequested, close: closeDiscardingUnsavedWork },
       () => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement }), setGuardFailure);
     guard.current = current;
     return () => { current.end(); if (guard.current === current) guard.current = null; };
@@ -401,7 +403,7 @@ export default function App() {
   const unsavedRef = useRef(unsavedNames);
   unsavedRef.current = unsavedNames;
   const guardRestart = useCallback<RestartGuard>((restart, opener) => {
-    if (!unsavedRef.current) { void restart(); return; }
+    if (!unsavedRef.current) { void restart(installUpdate); return; }
     setLeaving({ kind: 'update', opener, restart });
   }, []);
   const stayHere = () => {
@@ -411,10 +413,7 @@ export default function App() {
   };
   const discardAndLeave = async () => {
     if (leaving?.kind !== 'update' || !leaving.restart) return closeDiscardingUnsavedWork();
-    const { restart } = leaving;
-    await setUnsavedWork(false);
-    if (await restart()) return;
-    guard.current?.mark(true);
+    if (await leaving.restart(installUpdateDiscardingUnsavedWork)) return;
     stayHere();
   };
   const saveBeforeClose = () => {

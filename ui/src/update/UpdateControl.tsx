@@ -32,13 +32,14 @@ export function UpdateIcon({ state }: { state: UpdateState | null }) {
 
 export interface ActionFailure { text: string; detail?: string; retry(): void }
 
-export type RestartGuard = (restart: () => Promise<boolean>, opener: HTMLElement | null) => void;
+export type Restart = (install: () => Promise<void>) => Promise<boolean>;
+export type RestartGuard = (restart: Restart, opener: HTMLElement | null) => void;
 
 export const RestartGuardContext = createContext<RestartGuard | null>(null);
 
 export function useGuardedRestart(): RestartGuard {
   const guard = useContext(RestartGuardContext);
-  return (restart, opener) => { if (guard) guard(restart, opener); else void restart(); };
+  return (restart, opener) => { if (guard) guard(restart, opener); else void restart(api.installUpdate); };
 }
 
 const shownByState = (state: UpdateState) => updateFailure(state) != null;
@@ -59,7 +60,7 @@ export function useUpdateActions() {
     finally { setPending(false); }
   };
   const install = (opener: HTMLElement | null = null): void =>
-    guard(() => run('Couldn’t install the update.', api.installUpdate, true, () => install(opener)), opener);
+    guard(installing => run('Couldn’t install the update.', installing, true, () => install(opener)), opener);
   return {
     pending, failure, run, install, dismiss: () => setFailure(null),
     check: () => run('Couldn’t check for updates.', api.checkForUpdate, true),

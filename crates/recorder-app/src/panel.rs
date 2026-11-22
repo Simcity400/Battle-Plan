@@ -58,6 +58,24 @@ struct State {
     shown: bool,
     opening: bool,
     recordings_panel: Option<String>,
+    answered: Option<(String, bool, Ask)>,
+}
+
+impl State {
+    fn answer(&mut self, panel: &str) -> (bool, Ask) {
+        let ask_stop = std::mem::take(&mut self.ask_stop);
+        let ask = std::mem::take(&mut self.ask);
+        let answered = match self.answered.take() {
+            Some((answered, previous_stop, mut previous)) if answered == panel => {
+                previous.join(ask);
+                (answered, previous_stop || ask_stop, previous)
+            }
+            _ => (panel.to_owned(), ask_stop, ask),
+        };
+        let reply = (answered.1, answered.2);
+        self.answered = Some(answered);
+        reply
+    }
 }
 
 #[derive(Default)]
@@ -230,6 +248,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 state.shown = false;
                 state.ask_stop = false;
                 state.ask = Ask::default();
+                state.answered = None;
                 if let Some(panel) = state.recordings_panel.take() {
                     handle.state::<crate::recordings::Library>().close(&panel);
                 }
@@ -250,11 +269,8 @@ pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
         }
         library.register_panel(panel);
     }
-    (
-        std::mem::take(&mut state.ask_stop),
-        state.compact,
-        std::mem::take(&mut state.ask),
-    )
+    let (ask_stop, ask) = state.answer(panel);
+    (ask_stop, state.compact, ask)
 }
 
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
@@ -470,6 +486,26 @@ pub fn with_dialog<T>(app: &AppHandle, dialog: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panel_that_asks_again_hears_the_same_prompt_and_a_new_panel_hears_only_new_ones() {
+        let mut state = State {
+            ask_stop: true,
+            ask: Ask::of(Opening::QuitPrompt),
+            ..State::default()
+        };
+        let quit = (true, Ask::of(Opening::QuitPrompt));
+        assert_eq!(state.answer("first"), quit);
+        assert_eq!(state.answer("first"), quit, "a reply the page lost is given again");
+        state.ask_stop = true;
+        state.ask = Ask::of(Opening::DiscardPrompt);
+        assert_eq!(
+            state.answer("first"),
+            (true, Ask { quitting: true, discarding: true }),
+            "a prompt asked since is added to it"
+        );
+        assert_eq!(state.answer("second"), (false, Ask::default()), "another page isn’t asked again");
+    }
 
     #[test]
     fn a_click_while_the_panel_is_being_created_opens_no_second_window() {

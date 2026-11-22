@@ -457,6 +457,8 @@ export default function RecorderPanel() {
   const [panel] = useState(newId);
   const visit = useRef({ number: 0, open: false });
   const opened = useRef<ReturnType<typeof api.panelOpened> | null>(null);
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
+  const [openAttempt, setOpenAttempt] = useState(0);
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
   const { state: updateState, error: updateReadFailure, retry: retryUpdateRead } = useUpdateState();
   const updates = useUpdateActions();
@@ -482,15 +484,24 @@ export default function RecorderPanel() {
       api.onSettings(() => { if (active) loadSettings(); }),
     ];
     loadSettings();
-    void (opened.current ??= api.panelOpened(panel)).then(({ askStop, compact: alone, quitting: quit, discarding: discard }) => {
+    return () => { active = false; status.stop(); for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
+  }, [queue, panel]);
+
+  useEffect(() => {
+    let active = true;
+    const asked = opened.current ??= api.panelOpened(panel);
+    void asked.then(({ askStop, compact: alone, quitting: quit, discarding: discard }) => {
       if (!active) return;
       setCompact(alone);
       if (askStop) setAsking(true);
       if (quit) setQuitting(true);
       if (discard) { discardStepped.current = false; setDiscarding(true); }
-    }, () => { if (active) setCompact(false); });
-    return () => { active = false; status.stop(); for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
-  }, [queue, panel]);
+    }, cause => {
+      if (opened.current === asked) opened.current = null;
+      if (active) setOpenFailure(errorMessage(cause));
+    });
+    return () => { active = false; };
+  }, [panel, openAttempt]);
 
   const listing = compact === false;
   const [changed, setChanged] = useState(0);
@@ -603,9 +614,9 @@ export default function RecorderPanel() {
     if (compact && snapshot && !prompting) void api.closePanel();
   }, [compact, snapshot, prompting]);
 
-  if (stage === 'pending') return <PanelPending root={root} failure={snapshot ? null : statusFailure} retry={() => {
-    setStatusFailure(null);
-    retryStatus.current?.();
+  if (stage === 'pending') return <PanelPending root={root} failure={openFailure ?? (snapshot ? null : statusFailure)} retry={() => {
+    if (openFailure) { setOpenFailure(null); setOpenAttempt(count => count + 1); }
+    if (!snapshot && statusFailure) { setStatusFailure(null); retryStatus.current?.(); }
   }} />;
   if (!snapshot || compact == null) return <div ref={root} className="recorder" />;
   const run = (sentence: string, work: () => Promise<unknown>) => {

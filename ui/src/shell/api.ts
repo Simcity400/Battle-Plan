@@ -98,6 +98,11 @@ export function closeDiscardingUnsavedWork(): Promise<void> {
   return invoke<void>('close_discarding_unsaved_work');
 }
 
+export function installUpdateDiscardingUnsavedWork(): Promise<void> {
+  requireDesktop();
+  return invoke<void>('install_update_discarding_unsaved_work');
+}
+
 export { errorMessage } from './errors';
 
 export function recordingName(path: string): string {

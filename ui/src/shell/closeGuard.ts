@@ -3,6 +3,7 @@ import { errorMessage } from './errors.ts';
 export interface CloseGuardHost {
   mark(unsaved: boolean): Promise<void>;
   listen(onClose: () => void): Promise<() => void>;
+  close(): Promise<void>;
 }
 
 export interface CloseGuardFailure { message: string; detail: string }
@@ -14,48 +15,79 @@ export interface CloseGuard {
 }
 
 export const UNGUARDED = 'Couldn’t guard your unsaved changes, so closing BattlePlan won’t ask before discarding them.';
-export const UNCLEARED = 'Couldn’t tell BattlePlan your changes are saved, so it won’t close or restart to update yet.';
+export const UNCLEARED = 'Couldn’t tell BattlePlan your changes are saved, so it won’t restart to update yet.';
 export const UNHEARD = 'Couldn’t watch for BattlePlan closing, so it won’t close while changes are unsaved.';
+export const UNCLOSED = 'Couldn’t close BattlePlan.';
 
 export function closeGuard(host: CloseGuardHost, onClose: () => void, report: (failure: CloseGuardFailure | null) => void): CloseGuard {
-  let wanted: boolean | null = null, sent = 0, ended = false;
-  let marking: CloseGuardFailure | null = null, listening: CloseGuardFailure | null = null;
+  let wanted: boolean | null = null, held: boolean | null = null;
+  let marking = false, listening = false, ended = false;
+  let unmarked: CloseGuardFailure | null = null, unheard: CloseGuardFailure | null = null, unclosed: CloseGuardFailure | null = null;
   let stop: (() => void) | null = null;
   let shown: CloseGuardFailure | null = null;
   const publish = () => {
-    const failure = marking ?? listening;
+    const failure = unmarked ?? unheard ?? unclosed;
     if (ended || failure === shown) return;
     shown = failure;
     report(failure);
   };
-  const mark = (unsaved: boolean) => {
-    wanted = unsaved;
-    const ticket = ++sent;
+  const send = () => {
+    if (marking || ended || wanted === null) return;
+    marking = true;
+    const unsaved = wanted;
     host.mark(unsaved).then(() => {
-      if (ticket === sent) marking = null;
+      held = unsaved;
+      unmarked = null;
     }, cause => {
-      if (ticket === sent) marking = { message: unsaved ? UNGUARDED : UNCLEARED, detail: errorMessage(cause) };
+      held = null;
+      unmarked = { message: unsaved ? UNGUARDED : UNCLEARED, detail: errorMessage(cause) };
+    }).finally(() => {
+      marking = false;
+      if (wanted !== unsaved) send();
+      else publish();
+    });
+  };
+  const requested = () => {
+    if (ended) return;
+    unclosed = null;
+    if (wanted) {
+      publish();
+      onClose();
+      return;
+    }
+    host.close().catch(cause => {
+      unclosed = { message: UNCLOSED, detail: errorMessage(cause) };
     }).finally(publish);
   };
   const listen = () => {
-    host.listen(onClose).then(unlisten => {
+    if (listening || stop || ended) return;
+    listening = true;
+    host.listen(requested).then(unlisten => {
       if (ended) { unlisten(); return; }
       stop = unlisten;
-      listening = null;
+      unheard = null;
     }, cause => {
-      listening = { message: UNHEARD, detail: errorMessage(cause) };
-    }).finally(publish);
+      unheard = { message: UNHEARD, detail: errorMessage(cause) };
+    }).finally(() => {
+      listening = false;
+      publish();
+    });
   };
   listen();
   return {
-    mark,
+    mark(unsaved) {
+      wanted = unsaved;
+      if (unsaved !== held || unmarked) send();
+    },
     retry() {
-      if (marking && wanted !== null) mark(wanted);
-      if (listening) listen();
+      if (unmarked) send();
+      if (unheard) listen();
+      if (unclosed) requested();
     },
     end() {
       ended = true;
       stop?.();
+      stop = null;
     },
   };
 }
