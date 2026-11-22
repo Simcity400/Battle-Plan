@@ -468,15 +468,22 @@ fn standalone_parse_file_refuses_a_file_that_appeared_within_the_same_generation
         std::thread::current().id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    let file = root.join("late.txt");
+    fs::create_dir_all(root.join("gfx/world")).unwrap();
+    let file = root.join("gfx/world/late.mesh");
     let _generation = Generation::enter();
-    let missing = Generation::parse_file(&file, "synthetic late", 1, &[], |bytes| {
-        Ok(bytes.to_vec())
-    })
-    .unwrap_err();
-    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    for _ in 0..2 {
+        let missing = Generation::parse_file(&file, "synthetic late", 1, &[], |bytes| {
+            Ok(bytes.to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
     fs::write(&file, b"appeared").unwrap();
+    assert_eq!(
+        layers.read_uncovered("gfx/world/late.mesh").unwrap(),
+        b"appeared"
+    );
     let appeared = Generation::parse_file(&file, "synthetic late", 1, &[], |bytes| {
         Ok(bytes.to_vec())
     })
@@ -499,6 +506,8 @@ fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("gfx/world")).unwrap();
+    let extra = root.join("extra");
+    fs::create_dir_all(&extra).unwrap();
     let file = root.join("gfx/world/a.mesh");
     fs::write(&file, b"old").unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
@@ -511,21 +520,87 @@ fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
     }
     let fresh = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     assert_eq!(fresh.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
-    let _scope = fresh.enter_generation();
-    fresh.admit_generation().unwrap();
-    let validations = fresh
+    {
+        let _scope = fresh.enter_generation();
+        fresh.admit_generation().unwrap();
+        let validations = fresh
+            .generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        fresh.admit_generation().unwrap();
+        assert_eq!(
+            fresh
+                .generation
+                .changes
+                .validations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            validations
+        );
+    }
+    let mid = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    assert_eq!(mid.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
+    assert!(mid.generation.has_unwatched_roots());
+    mid.admit_generation().unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+    let registered = std::sync::Mutex::new(Vec::new());
+    let mid_ref = &mid;
+    let registered_ref = &registered;
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut paused = false;
+            mid_ref.generation.arm_pending_watches_with(|path, subtree| {
+                if !paused {
+                    paused = true;
+                    entered_tx.send(()).unwrap();
+                    checked_rx.recv().unwrap();
+                }
+                registered_ref.lock().unwrap().push(path.to_path_buf());
+                mid_ref.generation.changes.watch_root(path, subtree);
+            });
+            drop(entered_tx);
+        });
+        entered_rx.recv().expect("arming entered watch registration");
+        assert!(mid.generation.has_unwatched_roots());
+        let before = mid
+            .generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        mid.admit_generation().unwrap();
+        assert_eq!(
+            mid.generation
+                .changes
+                .validations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            before + 1
+        );
+        mid.generation.watch_root(&extra, true);
+        checked_tx.send(()).unwrap();
+    });
+    assert!(!mid.generation.has_unwatched_roots());
+    assert!(registered.lock().unwrap().iter().any(|path| path == &extra));
+    let after_arm = mid
         .generation
         .changes
         .validations
         .load(std::sync::atomic::Ordering::Relaxed);
-    fresh.admit_generation().unwrap();
+    mid.admit_generation().unwrap();
     assert_eq!(
-        fresh
-            .generation
+        mid.generation
             .changes
             .validations
             .load(std::sync::atomic::Ordering::Relaxed),
-        validations
+        after_arm + 1
+    );
+    mid.admit_generation().unwrap();
+    assert_eq!(
+        mid.generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        after_arm + 1
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -583,6 +658,30 @@ fn unscoped_visual_defines_rebuild_when_an_unverified_script_changes() {
                 read.outcome,
                 ReadOutcome::Bytes { digest, .. } if digest == payload_digest(updated)
             )
+    }));
+    let parent_script = b"NDefines.NGraphics.X = 4";
+    fs::write(&visual_script, parent_script).unwrap();
+    log.lock().unwrap().clear();
+    let parent_value = traced
+        .product("parent over unscoped visual defines", 1, &[], |reader| {
+            let defines = crate::defines::read(reader)?;
+            Ok(defines.number("NGraphics", "X").unwrap() as u32)
+        })
+        .unwrap();
+    assert_eq!(*parent_value, 4);
+    let visual_reads: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|read| read.path == b"common/defines/zz_visual.lua")
+        .cloned()
+        .collect();
+    assert!(!visual_reads.is_empty());
+    assert!(visual_reads.iter().all(|read| {
+        matches!(
+            read.outcome,
+            ReadOutcome::Bytes { digest, .. } if digest == payload_digest(parent_script)
+        )
     }));
     fs::remove_dir_all(root).unwrap();
 }

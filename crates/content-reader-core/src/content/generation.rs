@@ -288,7 +288,12 @@ fn metadata_in(
         }
         Err(error) => return Err(error),
     };
-    let context = Sha256::digest(b"physical-content-source/v1").into();
+    let context = Sha256::digest(if file.is_some() {
+        b"physical-content-source/v1".as_slice()
+    } else {
+        b"standalone-content-source/v1".as_slice()
+    })
+    .into();
     if let Some(parent) = path.parent() {
         graph.watch_root(parent, true);
     }

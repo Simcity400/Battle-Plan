@@ -122,6 +122,10 @@ impl Product {
     pub(super) fn request(&self) -> Digest {
         self.metadata.request
     }
+
+    pub(super) fn identity(&self) -> (Digest, Digest) {
+        (self.metadata.request, self.metadata.content)
+    }
     pub(super) fn value<T: Send + Sync + 'static>(&self) -> io::Result<Arc<T>> {
         Arc::clone(self.value.as_ref().map_err(Failure::error)?)
             .downcast::<T>()
@@ -172,12 +176,20 @@ impl Node {
     }
 }
 
+#[derive(Default)]
+struct WatchState {
+    pending: BTreeSet<(std::path::PathBuf, bool)>,
+    arming: bool,
+    ready: bool,
+}
+
 pub(super) struct Graph {
     state: Arc<Mutex<State>>,
     pub witnesses: Arc<super::generation::Witnesses>,
     pub(super) changes: Arc<super::changes::Changes>,
-    pending_watches: Arc<Mutex<BTreeSet<(std::path::PathBuf, bool)>>>,
-    arming_watches: Arc<AtomicUsize>,
+    watches: Arc<Mutex<WatchState>>,
+    arming_lock: Arc<Mutex<()>>,
+    watches_ready: Arc<AtomicBool>,
     pub(super) inventories: Arc<Mutex<Vec<std::sync::Weak<super::generation::Witnesses>>>>,
     loading: Arc<AtomicBool>,
     scoped: Arc<AtomicBool>,
@@ -192,8 +204,9 @@ impl Default for Graph {
             state: Arc::clone(&current.state),
             witnesses: Arc::clone(&current.witnesses),
             changes: Arc::clone(&current.changes),
-            pending_watches: Arc::clone(&current.pending_watches),
-            arming_watches: Arc::clone(&current.arming_watches),
+            watches: Arc::clone(&current.watches),
+            arming_lock: Arc::clone(&current.arming_lock),
+            watches_ready: Arc::clone(&current.watches_ready),
             inventories: Arc::clone(&current.inventories),
             loading: Arc::clone(&current.loading),
             scoped: Arc::clone(&current.scoped),
@@ -245,8 +258,9 @@ impl Graph {
             state: Arc::default(),
             witnesses: Arc::default(),
             changes: Arc::default(),
-            pending_watches: Arc::default(),
-            arming_watches: Arc::new(AtomicUsize::new(0)),
+            watches: Arc::default(),
+            arming_lock: Arc::default(),
+            watches_ready: Arc::new(AtomicBool::new(false)),
             inventories: Arc::default(),
             loading: Arc::new(AtomicBool::new(false)),
             scoped: Arc::new(AtomicBool::new(false)),
@@ -261,13 +275,13 @@ impl Graph {
     }
 
     pub(super) fn watch_root(&self, root: &std::path::Path, subtree: bool) {
-        if !self.is_scoped() {
-            let mut pending = self
-                .pending_watches
+        if !self.watches_ready.load(Ordering::Acquire) {
+            let mut watches = self
+                .watches
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if !self.is_scoped() {
-                pending.insert((root.to_path_buf(), subtree));
+            if !watches.ready {
+                watches.pending.insert((root.to_path_buf(), subtree));
                 return;
             }
         }
@@ -275,19 +289,18 @@ impl Graph {
     }
 
     pub(super) fn has_unwatched_roots(&self) -> bool {
-        if self.arming_watches.load(Ordering::Acquire) != 0 {
-            return true;
+        if self.watches_ready.load(Ordering::Acquire) {
+            return false;
         }
-        !self.is_scoped()
-            && !self
-                .pending_watches
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .is_empty()
+        let watches = self
+            .watches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        !watches.ready && (watches.arming || !watches.pending.is_empty())
     }
 
     pub(super) fn acquire(&self) {
-        let pending = {
+        {
             let mut users = self.users.lock().unwrap_or_else(|error| error.into_inner());
             if *users == 0 {
                 self.snapshots
@@ -297,32 +310,57 @@ impl Graph {
                 self.prune();
             }
             *users += 1;
-            let pending = {
-                let mut pending = self
-                    .pending_watches
+            self.scoped.store(true, Ordering::Release);
+            self.loading.store(true, Ordering::Release);
+        }
+        if !self.watches_ready.load(Ordering::Acquire) {
+            self.arm_pending_watches_with(|root, subtree| self.changes.watch_root(root, subtree));
+        }
+    }
+
+    pub(super) fn arm_pending_watches_with(
+        &self,
+        mut register: impl FnMut(&std::path::Path, bool),
+    ) {
+        let _arm = self
+            .arming_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut armed_any = false;
+        struct ResetArming<'a>(&'a Mutex<WatchState>);
+        impl Drop for ResetArming<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .arming = false;
+            }
+        }
+        let _reset = ResetArming(&self.watches);
+        loop {
+            let batch = {
+                let mut watches = self
+                    .watches
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let taken = std::mem::take(&mut *pending);
-                if !taken.is_empty() {
-                    self.arming_watches.fetch_add(1, Ordering::AcqRel);
+                if watches.ready {
+                    return;
                 }
-                self.scoped.store(true, Ordering::Release);
-                taken
+                if watches.pending.is_empty() {
+                    if armed_any {
+                        self.changes.changed();
+                    }
+                    watches.arming = false;
+                    watches.ready = true;
+                    self.watches_ready.store(true, Ordering::Release);
+                    return;
+                }
+                watches.arming = true;
+                armed_any = true;
+                std::mem::take(&mut watches.pending)
             };
-            self.loading.store(true, Ordering::Release);
-            pending
-        };
-        if !pending.is_empty() {
-            struct Arming<'a>(&'a AtomicUsize, &'a super::changes::Changes);
-            impl Drop for Arming<'_> {
-                fn drop(&mut self) {
-                    self.1.changed();
-                    self.0.fetch_sub(1, Ordering::AcqRel);
-                }
-            }
-            let _arming = Arming(&self.arming_watches, &self.changes);
-            for (root, subtree) in pending {
-                self.changes.watch_root(&root, subtree);
+            for (root, subtree) in batch {
+                register(&root, subtree);
             }
         }
     }

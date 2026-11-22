@@ -2618,12 +2618,17 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     ));
     let (base, top) = (root.join("base"), root.join("top"));
     let name = "gfx/Élementlongname.gfx";
+    let unopened = "gfx/Unopenedlongname.gfx";
     let mut layers = ResolvedLayers {
         layers: vec![
             folder_of(
                 "base",
                 &base,
-                &[(name, b"verified"), ("gfx/älternate.gfx", b"base")],
+                &[
+                    (name, b"verified"),
+                    (unopened, b"never opened"),
+                    ("gfx/älternate.gfx", b"base"),
+                ],
             ),
             folder_of("top", &top, &[("gfx/Älternate.gfx", b"top")]),
         ],
@@ -2631,26 +2636,40 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     };
     layers.finish().unwrap();
     assert_eq!(layers.read("gfx/älternate.gfx").unwrap(), b"top");
+    let short_name_of = |file_path: PathBuf| -> String {
+        let wide: Vec<_> = file_path
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let mut short = vec![0; 32768];
+        let length =
+            unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+        assert!(length > 0 && (length as usize) < short.len());
+        let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..length as usize]));
+        short.file_name().unwrap().to_str().unwrap().to_owned()
+    };
     let mut aliases = vec![
         format!("{name}."),
         format!("{name} "),
         "gfx/éLEMENTLONGNAME.GFX".into(),
     ];
     assert!(!covered(&aliases[0]) && !covered(&aliases[1]));
-    let path: Vec<_> = base
-        .join(name)
-        .as_os_str()
-        .encode_wide()
-        .chain([0])
-        .collect();
-    let mut short = vec![0; 32768];
-    let length =
-        unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
-    assert!(length > 0 && (length as usize) < short.len());
-    let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..length as usize]));
-    let short_name = short.file_name().unwrap().to_str().unwrap();
+    let short_name = short_name_of(base.join(name));
     if !short_name.eq_ignore_ascii_case("Élementlongname.gfx") {
         aliases.push(format!("gfx/{short_name}"));
+    }
+    let unopened_short = short_name_of(base.join(unopened));
+    fs::remove_file(base.join(unopened)).unwrap();
+    if !unopened_short.eq_ignore_ascii_case("Unopenedlongname.gfx") {
+        let short_alias = format!("gfx/{unopened_short}");
+        for error in [
+            layers.read_uncovered(&short_alias).unwrap_err(),
+            layers.read(&short_alias).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(unopened), "{short_alias}: {error}");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
     }
     for alias in &aliases {
         for _ in 0..2 {
@@ -2682,15 +2701,6 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         }
     }
-    layers.layers[0]
-        .lookup
-        .folder_aliases
-        .lock()
-        .unwrap()
-        .insert(b"gfx/short~1.gfx".to_vec(), name.as_bytes().to_vec());
-    let short_error = layers.read_uncovered("gfx/SHORT~1.GFX").unwrap_err();
-    assert!(short_error.to_string().contains(name), "{short_error}");
-    assert_eq!(short_error.kind(), io::ErrorKind::InvalidData);
     fs::write(base.join(name), b"verified").unwrap();
     fs::write(top.join(name), b"appeared").unwrap();
     assert_eq!(
