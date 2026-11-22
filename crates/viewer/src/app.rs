@@ -788,6 +788,7 @@ pub struct Viewer {
     overlay_head_before: Option<viewer_foundation::map::anchored::Head>,
     overlay_counted: viewer_foundation::map::overlay_count::Watch,
     overlay_unpainted: bool,
+    overlay_clock_unavailable: bool,
     overlay_drawn_fraction: Option<f32>,
     overlay_lookups: Option<(usize, u64, u64)>,
     overlay_installed: u64,
@@ -1324,6 +1325,7 @@ impl Viewer {
             overlay_head_before: None,
             overlay_counted: Default::default(),
             overlay_unpainted: false,
+            overlay_clock_unavailable: false,
             overlay_shifts: Default::default(),
             overlay_camera_before: None,
             overlay_placed: None,
@@ -1935,8 +1937,32 @@ impl Viewer {
         self.held_within(hour, given_up, what, ctx).map(drop)
     }
 
-    fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made) {
+    fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
         let crate::playhead_host::overlay::Made { hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
+        let current_epoch = self
+            .counter_view
+            .presentation
+            .movement()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .continuity();
+        let stale_before_reset = self.presented.last.as_ref().is_some_and(|(shown_branch, shown_hour, shown_viewing)| {
+            rows.branch != *shown_branch
+                || shown_viewing.as_deref().is_some_and(|viewing| viewing != tables.ours().to_string())
+                || viewer_foundation::map::presentation::crosses_gap(
+                    gaps,
+                    *shown_branch,
+                    rows.hour.min(*shown_hour),
+                    rows.hour.max(*shown_hour),
+                )
+        });
+        if let Some(layout) = prepared.motion_layout() {
+            layout.set_continuity(if stale_before_reset {
+                current_epoch.saturating_sub(1)
+            } else {
+                current_epoch
+            });
+        }
         self.overlay_moved = moved;
         if let Some(old) = self.prepared_overlay.as_mut()
             && self.overlay_view.as_ref() == Some(&view)
@@ -2129,6 +2155,7 @@ impl Viewer {
         self.overlay_shifts.clear();
         self.overlay_placed_view = None;
         (self.overlay_shown, self.overlay_view, self.overlay_hour, self.overlay_drawn_fraction, self.overlay_lookups) = (None, None, None, None, None);
+        self.overlay_clock_unavailable = false;
         self.overlay_layered = None;
         self.overlay_loading.clear();
         self.overlay_missed.clear();
@@ -2140,6 +2167,7 @@ impl Viewer {
         }
         self.free_overlay = Batch::default();
         self.overlay_written += 1;
+        self.overlay_clock_unavailable = false;
         self.overlay_shifts.clear();
         self.counter_report = CounterReport::default();
         self.overlay_hits = Default::default();
@@ -2270,7 +2298,31 @@ impl Viewer {
         let (continuity, restart) = (continuity(previous, shown, sought, gaps), unit_restart(previous, shown, sought));
         if continuity == Continuity::Reset {
             self.day_night = Default::default();
-            self.counter_view.presentation.movement().lock().unwrap_or_else(|error| error.into_inner()).clear();
+            let epoch = self
+                .counter_view
+                .presentation
+                .movement()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            if self.overlay_unpainted
+                && let (Some(prepared), Some(rows), Some(tables)) = (
+                    self.prepared_overlay.as_ref(),
+                    self.overlay_frame.as_ref(),
+                    self.overlay_tables.as_ref(),
+                )
+                && rows.branch == next.0
+                && next.2.as_deref().is_none_or(|viewing| viewing == tables.ours().to_string())
+                && !viewer_foundation::map::presentation::crosses_gap(
+                    gaps,
+                    next.0,
+                    rows.hour.min(next.1),
+                    rows.hour.max(next.1),
+                )
+                && let Some(layout) = prepared.motion_layout()
+            {
+                layout.set_continuity(epoch);
+            }
         }
         if continuity == Continuity::Reset || restart != UnitRestart::Keep {
             self.audio_reset = true;
@@ -3869,7 +3921,7 @@ impl Viewer {
                 self.forget_overlay();
             }
             if let Some(made) = installed {
-                self.install_overlay(made);
+                self.install_overlay(made, &document.playback.replay().gaps);
             }
             if let Some(side) = live_of(&self.playhead_map) {
                 self.overlay_hour = side.products().overlay_hour;
@@ -4907,12 +4959,14 @@ impl Viewer {
                 .head_rows
                 .map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed)
                 .flatten();
-            let clockless_moving = clock_speed.is_none()
-                && self.overlay.as_ref().is_some_and(Batch::moves);
-            if clockless_moving {
+            let clock_lost = clock_speed.is_none()
+                && (self.overlay.as_ref().is_some_and(Batch::moves)
+                    || (self.overlay.is_some() && !self.overlay_clock_unavailable));
+            let clock_recovered = clock_speed.is_some() && self.overlay_clock_unavailable;
+            if clock_lost || clock_recovered {
                 self.overlay_fraction = None;
             }
-            let moved_now = !clockless_moving
+            let moved_now = !clock_lost
                 && self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
             let placed_now = !moved_now
                 && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);
@@ -5090,7 +5144,7 @@ impl Viewer {
                             }
                             Err(_) => break,
                         };
-                        self.install_overlay(made);
+                        self.install_overlay(made, &document.playback.replay().gaps);
                         installed = true;
                         rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
                     }
@@ -5102,6 +5156,7 @@ impl Viewer {
                     self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                     self.overlay_shifts.clear();
                     self.overlay_unpainted = false;
+                    self.overlay_clock_unavailable = clock_speed.is_none();
                     self.place_painting(overlay_camera, pixels, ui_scale, at)?;
                 }
                 self.overlay_fraction = Some(document.hour_fraction);

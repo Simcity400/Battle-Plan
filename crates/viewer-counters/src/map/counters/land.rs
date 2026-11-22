@@ -256,7 +256,7 @@ impl PreparedLand {
             let world = inputs.route_world();
             let mut places: Vec<viewer_foundation::map::free_icons::Place> = Vec::new();
             for ((icon, position), &unit) in self.icons.iter_mut().zip(&self.positions).zip(&self.units) {
-                let drawn = history.sample(unit, position);
+                let drawn = history.sample_for(&self.layout, unit, position);
                 let placed = drawn.map_or_else(|| position.at(), |drawn| drawn.motion.position());
                 icon.anchor = placed;
                 places.clear();

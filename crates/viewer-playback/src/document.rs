@@ -732,6 +732,9 @@ impl PreparedOverlay {
         match hour.prepare_overlay_with(camera, viewport, ui_scale, tables, view, rows, &mut spans, Some(&mut still)) {
             Ok(mut placed) => {
                 placed.icons.keep_drawn(&mut self.icons);
+                if let (Some(old), Some(new)) = (self.icons.motion_layout(), placed.icons.motion_layout()) {
+                    new.set_continuity(old.continuity());
+                }
                 *self = placed;
                 Ok(())
             }

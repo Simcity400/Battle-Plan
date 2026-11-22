@@ -1667,13 +1667,13 @@ fn continuity_reset_keeps_live_layout_tracks_without_leaking_to_fresh_same_hour_
         Err(TrackRefusal::ContinuityReset),
         "untracked pre-reset layout is refused without seeding post-reset places"
     );
-    let post_gap = DrawnLayout::new(196);
+    let post_gap = DrawnLayout::at_continuity(196, history.continuity());
     assert_eq!(
         history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
         Err(TrackRefusal::NoPriorPlacement),
         "pre-reset repaint must not seed a track across the continuity gap"
     );
-    let fresh_same_hour = DrawnLayout::new(148);
+    let fresh_same_hour = DrawnLayout::at_continuity(148, history.continuity());
     assert_eq!(history.layout_track(&fresh_same_hour, unit), None);
     drop(held_layout);
     drop(untracked_pre_reset);
@@ -1758,6 +1758,170 @@ fn reused_painted_layout_keeps_figure_on_track_when_clock_speed_drops() {
         Err(TrackRefusal::ClockSpeedUnavailable)
     );
     assert_eq!(history.at_head(unit, &moving), None);
+}
+
+#[test]
+fn destination_layout_created_before_continuity_reset_is_not_rejected() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 1, 148, 2.0);
+    let destination = DrawnLayout::new(196);
+    let epoch = history.clear();
+    destination.set_continuity(epoch);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 190, fraction: 0.0 },
+            overlay_layout: Some(destination.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 196, 2.0)
+        },
+        SEEN,
+    );
+    let track = history
+        .track(
+            &destination,
+            unit,
+            &[at_hour(180, [100.0, 0.0, 0.0]), at_hour(196, [130.0, 0.0, 0.0])],
+            0.0,
+        )
+        .expect("destination layout must not be rejected as pre-reset");
+    assert_eq!(track.places().len(), 2);
+}
+
+#[test]
+fn reprojected_pre_reset_layout_cannot_seed_post_gap_track() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    next_frame(&mut history, 2, 148, 2.0);
+    let old_layout = DrawnLayout::new(148);
+    let _ = history
+        .track(&old_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("pre-reset track");
+    let epoch = history.clear();
+    let reprojected = old_layout.reproject();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(reprojected.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.3, 196, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&reprojected, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ContinuityReset)
+    );
+    let post_gap = DrawnLayout::at_continuity(196, epoch);
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
+        "reprojected stale layout must not seed a track across the gap"
+    );
+}
+
+#[test]
+fn pre_reset_repaint_sample_does_not_continue_old_route_after_reset() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let old_route = live_position(1, &[2, 3], 0.0, false);
+    let post_gap_route = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old_route, &[unit]);
+    next_frame(&mut history, 1, 148, 2.0);
+    let old_layout = DrawnLayout::new(148);
+    let _ = history.track(&old_layout, unit, &[at_hour(148, [1.0, 0.0, 0.0])], 0.0);
+    let epoch = history.clear();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(old_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 196, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(history.sample_for(&old_layout, unit, &old_route), None);
+    let _ = history.track(&old_layout, unit, &[at_hour(148, [1.0, 0.0, 0.0])], 0.0);
+    let post_gap = DrawnLayout::at_continuity(196, epoch);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(post_gap.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.3, 196, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history.at_head(unit, &post_gap_route).expect("post-gap sampled");
+    assert!(
+        figure.at[0] >= post_gap_route.standing[0],
+        "pre-reset sample leaked old arrival route across reset: {:?}",
+        figure.at
+    );
+    assert!(history.sample_for(&post_gap, unit, &post_gap_route).is_some());
+}
+
+#[test]
+fn clock_recovery_does_not_diverge_from_clockless_painted_layout() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let layout = DrawnLayout::new(148);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 124, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert!(history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0).is_ok());
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: None,
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 136, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.4, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.at_head(unit, &moving),
+        None,
+        "reused clockless painted layout must keep figure settled until repainted"
+    );
+    assert_eq!(
+        history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    assert!(
+        history.at_head(unit, &moving).is_some(),
+        "once repainted with clock speed available, figure and counter resume moving together"
+    );
 }
 
 #[test]

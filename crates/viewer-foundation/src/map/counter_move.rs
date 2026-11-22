@@ -1255,6 +1255,7 @@ static NEXT_LAYOUT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 struct LayoutToken {
     id: u64,
     hour: i32,
+    continuity: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -1264,14 +1265,34 @@ pub struct DrawnLayout {
 
 impl DrawnLayout {
     pub fn new(hour: i32) -> Self {
+        Self::at_continuity(hour, 0)
+    }
+
+    pub fn at_continuity(hour: i32, continuity: u64) -> Self {
         let id = NEXT_LAYOUT_ID.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Self {
-            token: Arc::new(LayoutToken { id, hour }),
+            token: Arc::new(LayoutToken {
+                id,
+                hour,
+                continuity: std::sync::atomic::AtomicU64::new(continuity),
+            }),
         }
     }
 
     pub fn hour(&self) -> i32 {
         self.token.hour
+    }
+
+    pub fn continuity(&self) -> u64 {
+        self.token.continuity.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn set_continuity(&self, continuity: u64) {
+        self.token.continuity.store(continuity, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn reproject(&self) -> Self {
+        Self::at_continuity(self.hour(), self.continuity())
     }
 
     fn id(&self) -> u64 {
@@ -1341,7 +1362,7 @@ pub struct MovementHistory {
     units: BTreeMap<Unit, Moving>,
     placed: BTreeMap<Unit, Placements>,
     layouts: std::collections::HashMap<u64, HandedLayout>,
-    reset_before_id: u64,
+    continuity: u64,
     largest_glide: f32,
     #[cfg(test)]
     force_judge: bool,
@@ -1545,12 +1566,17 @@ impl MovementHistory {
         judging()
     }
 
-    pub fn clear(&mut self) {
+    pub fn continuity(&self) -> u64 {
+        self.continuity
+    }
+
+    pub fn clear(&mut self) -> u64 {
         self.frame = None;
         self.units.clear();
         self.placed.clear();
-        self.reset_before_id = NEXT_LAYOUT_ID.load(std::sync::atomic::Ordering::Acquire);
+        self.continuity += 1;
         self.prune_layouts();
+        self.continuity
     }
 
     pub fn set_overlay_layout(&mut self, layout: Option<DrawnLayout>) {
@@ -1590,6 +1616,18 @@ impl MovementHistory {
             self.placed
                 .retain(|_, places| places.newest().is_some_and(|place| (frame_hour - place.hour).abs() <= KEPT_HOURS));
         }
+    }
+
+    pub fn sample_for(
+        &mut self,
+        layout: &DrawnLayout,
+        unit: Unit,
+        position: &Position,
+    ) -> Option<Drawn> {
+        if layout.continuity() != self.continuity {
+            return None;
+        }
+        self.sample(unit, position)
     }
 
     pub fn sample(&mut self, unit: Unit, position: &Position) -> Option<Drawn> {
@@ -1660,7 +1698,7 @@ impl MovementHistory {
             self.record_layout_track(layout, unit, Err(TrackRefusal::ClockSpeedUnavailable), None);
             return refused(TrackRefusal::ClockSpeedUnavailable);
         }
-        if layout.id() < self.reset_before_id {
+        if layout.continuity() != self.continuity {
             if let Some(outcome) = self
                 .layouts
                 .get(&layout.id())
@@ -1814,6 +1852,9 @@ impl MovementHistory {
                     record_judge(unit, JudgeOutcome::Refused(refusal));
                 }
                 on_the_hour(self.placed.get_mut(&unit));
+                if refusal == TrackRefusal::ClockSpeedUnavailable {
+                    return None;
+                }
                 return standing();
             }
             None => {
