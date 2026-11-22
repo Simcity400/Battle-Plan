@@ -614,7 +614,7 @@ fn check_native_read(
     Ok((read.items, misreads))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ObjectNode {
     Top,
     ObjectTypes,
@@ -688,18 +688,18 @@ fn read_object_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>,
     check_native_read(read, path)
 }
 
-fn read_object_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
-    let mut dispatch = object_dispatch;
-    parser::native::read_recovering(
+fn recover_object_names(bytes: &[u8]) -> BTreeSet<String> {
+    let explored = parser::native::recover_declared_names(
         bytes,
         parser::native::Mode::SkipMark,
-        parser::native::Top::File(ObjectNode::Top),
-        None,
-        &mut dispatch,
-    )
+        ObjectNode::Top,
+        |node| matches!(node, ObjectNode::Mesh | ObjectNode::NamedObject),
+        object_dispatch,
+    );
+    recovered_utf8_names(explored.names)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EntityNode {
     Top,
     Entity,
@@ -815,15 +815,74 @@ fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>,
     check_native_read(read, path)
 }
 
-fn read_entity_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
-    let mut dispatch = entity_dispatch;
-    parser::native::read_recovering(
+fn entity_recovery_dispatch(
+    node: EntityNode,
+    field: &parser::native::Field<'_>,
+) -> parser::native::Shape<EntityNode> {
+    if matches!(node, EntityNode::State) && field.keyword_is("game_data") {
+        return parser::native::Shape::ByKey;
+    }
+    entity_dispatch(node, field)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NamedBlockNode {
+    Top,
+    Body,
+}
+
+fn recover_named_block(bytes: &[u8], block_key: &str, with_file: bool) -> BTreeSet<String> {
+    let explored = parser::native::recover_declared_names(
         bytes,
         parser::native::Mode::SkipMark,
-        parser::native::Top::File(EntityNode::Top),
-        None,
-        &mut dispatch,
-    )
+        NamedBlockNode::Top,
+        |node| matches!(node, NamedBlockNode::Body),
+        |node, field| match node {
+            NamedBlockNode::Top => {
+                if field.keyword_is(block_key) {
+                    parser::native::Shape::Object(NamedBlockNode::Body)
+                } else {
+                    parser::native::Shape::Skip
+                }
+            }
+            NamedBlockNode::Body => {
+                if field.keyword_is("name") || (with_file && field.keyword_is("file")) {
+                    parser::native::Shape::One
+                } else {
+                    parser::native::untraced(field)
+                }
+            }
+        },
+    );
+    recovered_utf8_names(explored.names)
+}
+
+fn recover_asset_names(bytes: &[u8]) -> BTreeSet<String> {
+    let entities = parser::native::recover_declared_names(
+        bytes,
+        parser::native::Mode::SkipMark,
+        EntityNode::Top,
+        |node| matches!(node, EntityNode::Entity),
+        entity_recovery_dispatch,
+    );
+    let mut names = recovered_utf8_names(entities.names);
+    names.extend(recover_named_block(bytes, "animation", true));
+    names.extend(recover_named_block(bytes, "light", false));
+    names
+}
+
+fn recovered_utf8_names(raw_names: BTreeSet<Vec<u8>>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for raw in raw_names {
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            continue;
+        };
+        let name = unquote(text);
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    }
+    names
 }
 
 fn collect(
@@ -931,7 +990,7 @@ impl Roster {
                 &path,
                 &OBJECTS,
                 read_object_items,
-                read_object_items_recovering,
+                recover_object_names,
             )? {
                 add_objects(&items, &mut objects);
             }
@@ -948,7 +1007,7 @@ impl Roster {
                 &file,
                 &["entity", "animation", "light"],
                 read_entity_items,
-                read_entity_items_recovering,
+                recover_asset_names,
             )?
             else {
                 continue;
@@ -1014,7 +1073,7 @@ impl Roster {
         file: &ScriptPath,
         words: &[&str],
         native: fn(&[u8], &str) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
-        recover: fn(&[u8]) -> parser::native::RecoveredRead,
+        recover: fn(&[u8]) -> BTreeSet<String>,
     ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
         let text = file.text();
         let path: &str = &text;
@@ -1057,14 +1116,16 @@ impl Roster {
         {
             layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
             let (overlay_names, recorded_names) = match &parsed {
-                Some(overlay) => (
-                    recover_names(&bytes, overlay, words, recover),
+                Some(_) => (
+                    recover(&bytes),
                     declared_names_from(&items, &document, words),
                 ),
                 None => {
+                    let mut overlay_names = lexical_names(&bytes);
+                    overlay_names.extend(recover(&bytes));
                     let mut recorded_names = lexical_names(&recorded_bytes);
                     recorded_names.extend(declared_names_from(&items, &document, words));
-                    (lexical_names(&bytes), recorded_names)
+                    (overlay_names, recorded_names)
                 }
             };
             for name in overlay_names {
@@ -1078,8 +1139,12 @@ impl Roster {
             return Ok(Some((document, items)));
         }
         let names = match &parsed {
-            Some(document) => recover_names(&bytes, document, words, recover),
-            None => lexical_names(&bytes),
+            Some(_) => recover(&bytes),
+            None => {
+                let mut names = lexical_names(&bytes);
+                names.extend(recover(&bytes));
+                names
+            }
         };
         for name in names {
             self.unreadable_names
@@ -1359,7 +1424,6 @@ fn declared_names_in(
     items: &[parser::Item],
     words: &[&str],
     include_variables: bool,
-    recovered: Option<&parser::native::RecoveredRead>,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut add = |raw: &[u8], quoted: bool| {
@@ -1374,39 +1438,27 @@ fn declared_names_in(
             names.insert(name);
         }
     };
-    let mut record = |item: &parser::Item, prefix: &[usize]| {
+    let mut record = |item: &parser::Item| {
         let Some(fields) = item.value.items() else {
             return;
         };
-        let Some((field_index, field)) = fields
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, field)| field.keyword_is("name"))
-        else {
+        let Some(field) = fields.iter().rev().find(|field| field.keyword_is("name")) else {
             return;
         };
         let Some(raw) = field.value.scalar() else {
             return;
         };
         add(raw, field.quoted());
-        if let Some(recovered) = recovered {
-            let mut path = prefix.to_vec();
-            path.push(field_index);
-            for candidate in recovered.candidates_at(&path) {
-                add(candidate, false);
-            }
-        }
     };
-    for (item_index, item) in items.iter().enumerate() {
+    for item in items {
         if item.keyword_is("objectTypes") {
-            for (block_index, block) in item.value.items().unwrap_or(&[]).iter().enumerate() {
+            for block in item.value.items().unwrap_or(&[]) {
                 if words.iter().any(|word| block.keyword_is(word)) {
-                    record(block, &[item_index, block_index]);
+                    record(block);
                 }
             }
         } else if words.iter().any(|word| item.keyword_is(word)) {
-            record(item, &[item_index]);
+            record(item);
         }
     }
     names
@@ -1417,20 +1469,15 @@ fn declared_names_from(
     document: &parser::Document,
     words: &[&str],
 ) -> BTreeSet<String> {
-    let mut names = declared_names_in(native_items, words, true, None);
-    names.extend(declared_names_in(&document.items, words, false, None));
-    names
-}
-
-fn recover_names(
-    bytes: &[u8],
-    document: &parser::Document,
-    words: &[&str],
-    recover: fn(&[u8]) -> parser::native::RecoveredRead,
-) -> BTreeSet<String> {
-    let recovered = recover(bytes);
-    let mut names = declared_names_in(&recovered.read.items, words, true, Some(&recovered));
-    names.extend(declared_names_in(&document.items, words, false, None));
+    let mut names = declared_names_in(native_items, words, true);
+    let document_words: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|word| matches!(*word, "animation" | "light"))
+        .collect();
+    if !document_words.is_empty() {
+        names.extend(declared_names_in(&document.items, &document_words, false));
+    }
     names
 }
 

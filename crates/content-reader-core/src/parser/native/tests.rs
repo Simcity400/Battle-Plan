@@ -1458,97 +1458,68 @@ fn eof_variable_copy_warning_keeps_retained_source_name() {
 }
 
 #[test]
-fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
-    let dispatch = |(), field: &Field<'_>| match field.keyword().as_deref() {
-        Some(b"a" | b"b" | b"c" | b"d" | b"e" | b"f" | b"g") => Shape::Object(()),
-        Some(b"opaque") => Shape::ByKey,
-        _ => Shape::One,
+fn recover_declared_names_explores_mixed_unknown_dispatch_and_merges_states() {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Node {
+        Top,
+        Decl,
+        Inner,
+    }
+    let dispatch = |node: Node, field: &Field<'_>| match node {
+        Node::Top => match field.keyword().as_deref() {
+            Some(b"a" | b"b" | b"c" | b"d" | b"e" | b"f" | b"g" | b"entity") => {
+                Shape::Object(Node::Decl)
+            }
+            _ => Shape::Skip,
+        },
+        Node::Decl => match field.keyword().as_deref() {
+            Some(b"opaque" | b"atlas_size") => Shape::ByKey,
+            Some(b"game_data") => Shape::Object(Node::Inner),
+            Some(b"name") => Shape::One,
+            _ => Shape::Skip,
+        },
+        Node::Inner => match field.keyword().as_deref() {
+            Some(b"atlas_size") => Shape::ByKey,
+            _ => Shape::Skip,
+        },
     };
-
-    let bytes = br#"
-        a = { opaque = { @v = from_opaque x = 1 } name = @v }
-        @v = redef
-        b = { opaque = { @blk = { inner = 1 } x = 2 } name = "after_block_def" }
-        c = { opaque = { x = 3 @tail = trailing_val } name = @tail }
-        d = { opaque = { @empty = } name = "after_empty_def" }
-        e = { opaque = { @copy = @missing } name = "after_no_eq_def" }
-        f = { opaque = { loose k = } name = "after_balanced_valueless" }
-        @after = final_name
-        g = { name = @after }
-    "#;
-
-    let strict = read(bytes, Mode::KeepMark, Top::File(()), None, &mut |s, f| {
-        dispatch(s, f)
-    });
-    assert!(strict.unsettled.is_some(), "{strict:?}");
-
-    let recovered = read_recovering(bytes, Mode::KeepMark, Top::File(()), None, &mut |s, f| {
-        dispatch(s, f)
-    });
-    assert!(recovered.read.unsettled.is_none(), "{recovered:?}");
-    let names: Vec<(&str, Vec<u8>)> = ["a", "b", "c", "d", "e", "f", "g"]
-        .into_iter()
-        .map(|entry| {
-            let value = block(&recovered.read.items, entry)
-                .iter()
-                .find(|item| item.keyword_is("name"))
-                .and_then(|item| item.value.scalar())
-                .expect(entry)
-                .to_vec();
-            (entry, value)
-        })
-        .collect();
-    assert_eq!(
-        names,
-        vec![
-            ("a", b"from_opaque".to_vec()),
-            ("b", b"after_block_def".to_vec()),
-            ("c", b"trailing_val".to_vec()),
-            ("d", b"after_empty_def".to_vec()),
-            ("e", b"after_no_eq_def".to_vec()),
-            ("f", b"after_balanced_valueless".to_vec()),
-            ("g", b"final_name".to_vec()),
-        ]
-    );
+    let recover = |bytes: &[u8]| {
+        recover_declared_names(
+            bytes,
+            Mode::KeepMark,
+            Node::Top,
+            |node| matches!(node, Node::Decl),
+            dispatch,
+        )
+    };
+    let to_strings = |explored: ExploredNames| -> (std::collections::BTreeSet<String>, bool) {
+        (
+            explored
+                .names
+                .into_iter()
+                .map(|raw| String::from_utf8(raw).unwrap())
+                .collect(),
+            explored.exhausted,
+        )
+    };
 
     let redef_only = b"a = { opaque = { @v = one x = 1 } } @v = two b = { name = old name = @v }";
     assert!(
         read(
             redef_only,
             Mode::KeepMark,
-            Top::File(()),
+            Top::File(Node::Top),
             None,
             &mut |s, f| dispatch(s, f)
         )
         .unsettled
         .is_some()
     );
-    let redef_recovered = read_recovering(
-        redef_only,
-        Mode::KeepMark,
-        Top::File(()),
-        None,
-        &mut |s, f| dispatch(s, f),
-    );
-    assert!(
-        redef_recovered.read.unsettled.is_none(),
-        "{redef_recovered:?}"
-    );
-    let (b_index, b_item) = redef_recovered
-        .read
-        .items
-        .iter()
-        .enumerate()
-        .find(|(_, item)| item.keyword_is("b"))
-        .expect("b item");
-    let b_fields = b_item.value.items().expect("b block");
-    assert_eq!(b_fields.len(), 2);
-    assert_eq!(b_fields[0].value, Value::Scalar(b"old".to_vec()));
-    assert!(redef_recovered.candidates_at(&[b_index, 0]).is_empty());
-    assert_eq!(b_fields[1].value, Value::Scalar(b"one".to_vec()));
+    let (names, exhausted) = to_strings(recover(redef_only));
+    assert!(!exhausted);
     assert_eq!(
-        redef_recovered.candidates_at(&[b_index, 1]),
-        &[b"two".to_vec()]
+        names,
+        ["one", "two"].into_iter().map(str::to_owned).collect()
     );
 
     let multi_redef = b"a = { opaque = { @v = one x = 1 } } b = { opaque = { @v = two @v = ignored x = 1 } } @v = three @v = also_ignored @copy = @v c = { name = @copy }";
@@ -1556,149 +1527,88 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         read(
             multi_redef,
             Mode::KeepMark,
-            Top::File(()),
+            Top::File(Node::Top),
             None,
             &mut |s, f| dispatch(s, f)
         )
         .unsettled
         .is_some()
     );
-    let multi_recovered = read_recovering(
-        multi_redef,
-        Mode::KeepMark,
-        Top::File(()),
-        None,
-        &mut |s, f| dispatch(s, f),
-    );
-    assert!(
-        multi_recovered.read.unsettled.is_none(),
-        "{multi_recovered:?}"
-    );
-    let (c_index, c_item) = multi_recovered
-        .read
-        .items
-        .iter()
-        .enumerate()
-        .find(|(_, item)| item.keyword_is("c"))
-        .expect("c item");
-    let c_fields = c_item.value.items().expect("c block");
-    assert_eq!(c_fields[0].value, Value::Scalar(b"one".to_vec()));
+    let (names, exhausted) = to_strings(recover(multi_redef));
+    assert!(!exhausted);
     assert_eq!(
-        multi_recovered.candidates_at(&[c_index, 0]),
-        &[b"two".to_vec(), b"three".to_vec()]
+        names,
+        ["one", "two", "three"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     );
 
-    let embedded_dispatch = |(), field: &Field<'_>| match field.keyword().as_deref() {
-        Some(b"entity" | b"game_data") => Shape::Object(()),
-        Some(b"atlas_size") => Shape::ByKey,
-        _ => Shape::One,
-    };
     for (bytes, expected) in [
         (
             b"@id = wanted entity = { game_data = { atlas_size = { loose k = 1\xff x = 1 } } name = @id }"
                 .as_slice(),
-            b"wanted".as_slice(),
+            "wanted",
         ),
         (
             b"@id = wanted_keyed entity = { game_data = { atlas_size = { a = 1 \xff x = 1 } } name = @id }"
                 .as_slice(),
-            b"wanted_keyed".as_slice(),
+            "wanted_keyed",
         ),
         (
             b"@id = wanted_after_def entity = { game_data = { atlas_size = { @x = 1 \xff } } name = @id }"
                 .as_slice(),
-            b"wanted_after_def".as_slice(),
+            "wanted_after_def",
         ),
     ] {
         assert!(
             read(
                 bytes,
                 Mode::KeepMark,
-                Top::File(()),
+                Top::File(Node::Top),
                 None,
-                &mut |s, f| embedded_dispatch(s, f)
+                &mut |s, f| dispatch(s, f)
             )
             .unsettled
             .is_some()
         );
-        let recovered = read_recovering(
-            bytes,
-            Mode::KeepMark,
-            Top::File(()),
-            None,
-            &mut |s, f| embedded_dispatch(s, f),
-        );
-        assert!(recovered.read.unsettled.is_none(), "{recovered:?}");
-        let entity_name = block(&recovered.read.items, "entity")
-            .iter()
-            .find(|item| item.keyword_is("name"))
-            .and_then(|item| item.value.scalar())
-            .expect("entity name");
-        assert_eq!(entity_name, expected);
+        let (names, exhausted) = to_strings(recover(bytes));
+        assert!(!exhausted);
+        assert_eq!(names, [expected.to_owned()].into_iter().collect());
     }
 
     let copy_revisit = b"entity = { game_data = { atlas_size = { @v = wanted x = 1 } } } @copy = @v entity = { name = @copy }";
-    assert!(
-        read(
-            copy_revisit,
-            Mode::KeepMark,
-            Top::File(()),
-            None,
-            &mut |s, f| embedded_dispatch(s, f)
-        )
-        .unsettled
-        .is_some()
-    );
-    let copy_recovered = read_recovering(
-        copy_revisit,
-        Mode::KeepMark,
-        Top::File(()),
-        None,
-        &mut |s, f| embedded_dispatch(s, f),
-    );
-    assert!(
-        copy_recovered.read.unsettled.is_none(),
-        "{copy_recovered:?}"
-    );
-    let copied_name = copy_recovered
-        .read
-        .items
-        .iter()
-        .filter(|item| item.keyword_is("entity"))
-        .filter_map(|item| item.value.items())
-        .flatten()
-        .find(|item| item.keyword_is("name"))
-        .and_then(|item| item.value.scalar())
-        .expect("copied entity name");
-    assert_eq!(copied_name, b"wanted");
+    let (names, exhausted) = to_strings(recover(copy_revisit));
+    assert!(!exhausted);
+    assert_eq!(names, ["wanted".to_owned()].into_iter().collect());
 
     let brace_value = b"@o = { a = { opaque = { loose k = @o } name = \"after_brace_var\" } }";
-    assert!(
-        read(
-            brace_value,
-            Mode::KeepMark,
-            Top::File(()),
-            None,
-            &mut |s, f| dispatch(s, f)
-        )
-        .unsettled
-        .is_some()
-    );
-    let brace_recovered = read_recovering(
-        brace_value,
-        Mode::KeepMark,
-        Top::File(()),
-        None,
-        &mut |s, f| dispatch(s, f),
-    );
-    assert!(
-        brace_recovered.read.unsettled.is_none(),
-        "{brace_recovered:?}"
-    );
-    let a_name = block(&brace_recovered.read.items, "a")
-        .iter()
-        .find(|item| item.keyword_is("name"))
-        .and_then(|item| item.value.scalar())
-        .expect("a name");
-    assert_eq!(a_name, b"after_brace_var");
+    let (names, exhausted) = to_strings(recover(brace_value));
+    assert!(!exhausted);
+    assert_eq!(names, ["after_brace_var".to_owned()].into_iter().collect());
+
+    let mut converging = String::from("entity = { name = \"merged\"\n");
+    for i in 0..64 {
+        converging.push_str(&format!(
+            "game_data = {{ atlas_size = {{ @dead_{i} = {i} x = 1 y = 2 }} }}\n"
+        ));
+    }
+    converging.push_str("}\n");
+    let (names, exhausted) = to_strings(recover(converging.as_bytes()));
+    assert!(!exhausted, "converging blocks should merge without exhausting state budget");
+    assert_eq!(names, ["merged".to_owned()].into_iter().collect());
+
+    let mut exploding = String::from("entity = { name = \"overflow_target\"\n");
+    for i in 0..24 {
+        exploding.push_str(&format!(
+            "game_data = {{ atlas_size = {{ @live_{i} = {i} x = 1 }} }}\n"
+        ));
+    }
+    for i in 0..24 {
+        exploding.push_str(&format!("ref_{i} = @live_{i}\n"));
+    }
+    exploding.push_str("}\n");
+    let (names, exhausted) = to_strings(recover(exploding.as_bytes()));
+    assert!(exhausted, "exponential live variables should hit budget and fail closed");
+    assert!(names.contains("overflow_target"));
 }

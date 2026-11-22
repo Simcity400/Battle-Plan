@@ -2361,7 +2361,11 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.unreadable_names.get("other_file_valid"), None);
     assert_eq!(roster.unreadable_names.get("m"), None);
     assert_eq!(roster.unreadable_names.get("@model"), None);
-    assert_eq!(roster.unreadable_names.get("@extra"), None);
+    assert_eq!(
+        roster.unreadable_names.get("@extra").map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert!(roster.refused_declaration("@extra").is_some());
     assert_eq!(roster.unreadable_names.get("@after_extra"), None);
     assert_eq!(roster.unreadable_names.get("@broken_var"), None);
     assert_eq!(roster.unreadable_names.get("@redef"), None);
@@ -2435,5 +2439,225 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
             .any(|entry| entry.contains("gfx/entities/broken.asset")),
         "{:?}",
         roster.unreadable
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn mixed_unknown_dispatch_recovery_handles_brace_shifts_variables_and_lexer_rules() {
+    let mut mixed_brace_file = Vec::new();
+    mixed_brace_file.extend_from_slice(
+        br#"
+        entity = {
+            game_data = { atlas_size = { @a = 1 } }
+        }
+        }
+        locator = { position = { @b = 1 } }
+        name = "mixed_moved_in"
+        pdxmesh = "m"
+        }
+        entity = {
+            game_data = { atlas_size = { @c = 1 } }
+            name = "mixed_kept_early"
+            locator = { position = { @d = 1 } }
+            name = "all_skipped_late"
+            pdxmesh = "m"
+        }
+        entity = {
+            game_data = { atlas_size = { @liquid = id_first x = 1 } }
+            locator = { position = { @costarring = id_middle x = 1 } }
+        }
+        @liquid = id_last
+        entity = { name = @liquid pdxmesh = "m" }
+        entity = {
+            game_data = { atlas_size = { @op = scalar_first x = 1 } }
+            locator = { position = { @op = { } x = 1 } }
+        }
+        entity = {
+            name = "opener_kept"
+            locator = { position = @op }
+            name = "opener_after"
+            pdxmesh = "m"
+        }
+        entity = {
+            name = @late_unused
+            name = "final_overwrites_var"
+            game_data = { atlas_size = { @late_unused = never_declared_1 x = 1 } }
+            pdxmesh = "m"
+        }
+        @late_unused = never_declared_2
+        "#,
+    );
+
+    let embedded_precision =
+        b"entity = { name = unrelated_mesh game_data = { atlas_size = { a = 1 one two k = 1\xff } name = embedded_real } name = embedded_real pdxmesh = \"m\" }";
+
+    let quoted_keys = br#"
+        "@q_entity" = quoted_key_entity
+        entity = {
+            game_data = { atlas_size = { "@q_inner" = quoted_inner_entity x = 1 } }
+            name = @q_entity
+            pdxmesh = "m"
+        }
+        entity = { name = @q_inner pdxmesh = "m" }
+        "@q_anim" = quoted_key_anim
+        animation = { name = @q_anim file = "a.anim" }
+    "#;
+
+    let semicolon_comments = br#"
+        ; entity = { name = semicolon_commented_out pdxmesh = "m" }
+        ; {
+        entity = {
+            game_data = { atlas_size = { @sc = 1 } }
+            name = semicolon_split_entity;trailing_comment
+            pdxmesh = "m"
+        }
+        animation = { name = semicolon_split_anim;trailing_comment file = "a.anim" }
+    "#;
+
+    let retained_name = br#"
+        entity = {
+            game_data = { atlas_size = { @ret = retained_from_block x = 1 } }
+            @ret = retained_from_outer
+            pdxmesh = @ret
+            name trailing_token
+        }
+        entity = {
+            game_data = { atlas_size = { retained_from_list } }
+            name trailing_token
+        }
+        animation = {
+            file = "retained_anim_name"
+            name trailing_token
+        }
+    "#;
+
+    let unbound_blocks = br#"
+        animation = { name = @unbound_anim file = "a.anim" }
+        light = { name = @unbound_light }
+        entity = { game_data = { atlas_size = { @x = 1 } } }
+    "#;
+
+    let roster = roster_of(
+        "mixed-dispatch-recovery",
+        &[
+            (
+                "gfx/models/m.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+            ),
+            ("gfx/entities/mixed.asset", &mixed_brace_file),
+            ("gfx/entities/embedded.asset", embedded_precision),
+            ("gfx/entities/quoted.asset", quoted_keys),
+            ("gfx/entities/semicolon.asset", semicolon_comments),
+            ("gfx/entities/retained.asset", retained_name),
+            ("gfx/entities/unbound.asset", unbound_blocks),
+        ],
+        &[],
+    );
+
+    for (name, file) in [
+        ("mixed_moved_in", "gfx/entities/mixed.asset"),
+        ("mixed_kept_early", "gfx/entities/mixed.asset"),
+        ("all_skipped_late", "gfx/entities/mixed.asset"),
+        ("id_first", "gfx/entities/mixed.asset"),
+        ("id_middle", "gfx/entities/mixed.asset"),
+        ("id_last", "gfx/entities/mixed.asset"),
+        ("opener_kept", "gfx/entities/mixed.asset"),
+        ("opener_after", "gfx/entities/mixed.asset"),
+        ("final_overwrites_var", "gfx/entities/mixed.asset"),
+        ("embedded_real", "gfx/entities/embedded.asset"),
+        ("quoted_key_entity", "gfx/entities/quoted.asset"),
+        ("quoted_inner_entity", "gfx/entities/quoted.asset"),
+        ("@q_inner", "gfx/entities/quoted.asset"),
+        ("quoted_key_anim", "gfx/entities/quoted.asset"),
+        ("semicolon_split_entity", "gfx/entities/semicolon.asset"),
+        ("semicolon_split_anim", "gfx/entities/semicolon.asset"),
+        ("retained_from_block", "gfx/entities/retained.asset"),
+        ("retained_from_outer", "gfx/entities/retained.asset"),
+        ("retained_from_list", "gfx/entities/retained.asset"),
+        ("retained_anim_name", "gfx/entities/retained.asset"),
+        ("@unbound_anim", "gfx/entities/unbound.asset"),
+        ("@unbound_light", "gfx/entities/unbound.asset"),
+    ] {
+        assert_eq!(
+            roster.unreadable_names.get(name).map(String::as_str),
+            Some(file),
+            "expected {name} to be refused from {file}; refused={:?}",
+            roster.unreadable_names
+        );
+    }
+
+    for absent in [
+        "unrelated_mesh",
+        "never_declared_1",
+        "never_declared_2",
+        "semicolon_commented_out",
+        "semicolon_split_entity;trailing_comment",
+        "semicolon_split_anim;trailing_comment",
+    ] {
+        assert_eq!(
+            roster.unreadable_names.get(absent),
+            None,
+            "did not expect {absent} to be refused"
+        );
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn recovery_merges_identical_unknown_dispatch_states_without_exponential_blowup() {
+    let mut benign = String::from("entity = { name = \"converging_entity\" pdxmesh = \"m\"\n");
+    for i in 0..64 {
+        benign.push_str(&format!(
+            "locator = {{ name = \"l{i}\" position = {{ @dead_{i} = {i} x = 1 y = 2 }} }}\n"
+        ));
+    }
+    benign.push_str("locator = { name = \"tail\" position = { @unsettled = 1 } }\n");
+    benign.push_str("}\nentity = { name = \"after_many_blocks\" pdxmesh = \"m\" }\n");
+
+    let mut pathological = String::from("entity = { name = \"many_live_vars\" pdxmesh = \"m\"\n");
+    for i in 0..24 {
+        pathological.push_str(&format!(
+            "locator = {{ name = \"v{i}\" position = {{ @live_{i} = v_{i} x = 1 }} }}\n"
+        ));
+    }
+    for i in 0..24 {
+        pathological.push_str(&format!("unused_{i} = @live_{i}\n"));
+    }
+    pathological.push_str("}\nentity = { name = \"after_budget_overflow\" pdxmesh = \"m\" }\n");
+
+    let roster = roster_of(
+        "recovery-state-merge-perf",
+        &[
+            (
+                "gfx/models/m.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+            ),
+            ("gfx/entities/benign.asset", benign.as_bytes()),
+            ("gfx/entities/pathological.asset", pathological.as_bytes()),
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("converging_entity")
+            .map(String::as_str),
+        Some("gfx/entities/benign.asset")
+    );
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("after_many_blocks")
+            .map(String::as_str),
+        Some("gfx/entities/benign.asset")
+    );
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("after_budget_overflow")
+            .map(String::as_str),
+        Some("gfx/entities/pathological.asset")
     );
 }
