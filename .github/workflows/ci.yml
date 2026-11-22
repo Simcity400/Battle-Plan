@@ -70,6 +70,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          filter: ${{ matrix.needs_rust && 'blob:none' || '' }}
           persist-credentials: false
       - if: needs.changes.outputs.exact != ''
         shell: bash
