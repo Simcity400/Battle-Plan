@@ -93,6 +93,13 @@ impl RowCodec for SharedDivisionHistoryRow {
     ) -> io::Result<()> {
         self.as_ref().visit_wire(visit)
     }
+    fn visit_wire_masked(
+        &self,
+        mask: u64,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.as_ref().visit_wire_masked(mask, visit)
+    }
     fn recorded_fields_bytes(&self) -> io::Result<usize> {
         self.as_ref().recorded_fields_bytes()
     }
@@ -304,6 +311,13 @@ impl RowCodec for SharedDivisionPanelSourceRow {
         visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.as_ref().visit_wire(visit)
+    }
+    fn visit_wire_masked(
+        &self,
+        mask: u64,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.as_ref().visit_wire_masked(mask, visit)
     }
     fn recorded_fields_bytes(&self) -> io::Result<usize> {
         self.as_ref().recorded_fields_bytes()

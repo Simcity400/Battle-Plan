@@ -290,7 +290,15 @@ fn visit<R: RowCodec>(
     coverage: Coverage<'_>,
     rows: &[R],
 ) -> io::Result<Prepared> {
-    stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(|row| Ok((row, None))))
+    stage(
+        writer,
+        dictionary,
+        cells,
+        coverage,
+        rows.len(),
+        false,
+        rows.iter().map(|row| Ok((row, None))),
+    )
 }
 
 fn visit_keyed<R: RowCodec>(
@@ -306,7 +314,15 @@ fn visit_keyed<R: RowCodec>(
             .map(|at| (&rows[at], None))
             .map_err(|_| invalid_static("A changed key names no row"))
     });
-    stage(writer, dictionary, cells, Coverage::Changes { removed }, keys.len(), changed)
+    stage(
+        writer,
+        dictionary,
+        cells,
+        Coverage::Changes { removed },
+        keys.len(),
+        false,
+        changed,
+    )
 }
 
 fn stage<'r, R: RowCodec + 'r>(
@@ -315,6 +331,7 @@ fn stage<'r, R: RowCodec + 'r>(
     cells: &mut RowCells,
     coverage: Coverage<'_>,
     count: usize,
+    sparse: bool,
     rows: impl Iterator<Item = io::Result<(&'r R, Option<&'r R>)>>,
 ) -> io::Result<Prepared> {
     let heavy = heavy(writer.kinds());
@@ -328,6 +345,32 @@ fn stage<'r, R: RowCodec + 'r>(
         }
     };
     match cells.staging {
+        Staging::Columns if sparse => {
+            let kinds = writer.kinds();
+            let wide = kinds.len() > MAX_FIELDS;
+            cells.batch.begin_sparse(kinds, count)?;
+            for row in rows {
+                let (row, previous) = row?;
+                cells.batch.key(row.key())?;
+                match previous {
+                    Some(previous) => {
+                        if previous.key() != row.key() {
+                            return Err(invalid_static("A row's previous row has another key"));
+                        }
+                        let diff = row.differing_fields(previous);
+                        if diff != 0 || wide {
+                            row.visit_wire_masked(diff, &mut |column, field| {
+                                put(&mut cells.batch, column, field)
+                            })?;
+                        }
+                    }
+                    None => {
+                        row.visit_wire(&mut |column, field| put(&mut cells.batch, column, field))?;
+                    }
+                }
+            }
+            writer.prepare(dictionary, coverage, &cells.batch)
+        }
         Staging::Columns => {
             cells.batch.begin(writer.kinds(), count)?;
             for row in rows {
@@ -446,6 +489,7 @@ pub fn table_hour<'d, R: RowCodec>(
                     cells,
                     Coverage::Changes { removed },
                     pairs.len(),
+                    true,
                     changed,
                 )?),
                 evidence: evidence(Status::Complete, read, sample),
@@ -473,6 +517,7 @@ pub fn table_hour<'d, R: RowCodec>(
                     cells,
                     Coverage::Complete,
                     rows.len(),
+                    true,
                     aligned,
                 )?),
                 evidence: evidence(Status::Complete, read, sample),

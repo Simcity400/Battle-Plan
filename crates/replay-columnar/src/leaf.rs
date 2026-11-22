@@ -8,6 +8,11 @@ mod tests;
 pub trait Le: Copy + Default {
     const WIDTH: usize;
     fn put(self, out: &mut Vec<u8>);
+    fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+        for &value in values {
+            value.put(out);
+        }
+    }
     fn get(bytes: &[u8]) -> Self;
 }
 
@@ -17,6 +22,21 @@ macro_rules! le {
             const WIDTH: usize = std::mem::size_of::<$kind>();
             fn put(self, out: &mut Vec<u8>) {
                 out.extend_from_slice(&self.to_le_bytes());
+            }
+            fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+                #[cfg(target_endian = "little")]
+                {
+                    let bytes = values.len() * Self::WIDTH;
+                    // SAFETY: primitive integer slices are contiguous initialized little-endian bytes.
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), bytes)
+                    };
+                    out.extend_from_slice(raw);
+                }
+                #[cfg(not(target_endian = "little"))]
+                for &value in values {
+                    value.put(out);
+                }
             }
             fn get(bytes: &[u8]) -> Self {
                 Self::from_le_bytes(bytes.try_into().expect("width"))
@@ -93,18 +113,26 @@ impl Writer {
         self.bytes
     }
 
+    #[inline]
     fn reserve(&mut self, bytes: usize) -> io::Result<()> {
-        engine_allocation::reserve(&mut self.bytes, bytes)
+        if self.bytes.capacity() - self.bytes.len() < bytes {
+            engine_allocation::reserve(&mut self.bytes, bytes)?;
+        }
+        Ok(())
     }
 
+    #[inline]
     pub fn u8(&mut self, value: u8) -> io::Result<()> {
         self.reserve(1)?;
         self.bytes.push(value);
         Ok(())
     }
 
+    #[inline]
     pub fn varint(&mut self, mut value: u64) -> io::Result<()> {
-        self.reserve(varint_len(value))?;
+        if self.bytes.capacity() - self.bytes.len() < 10 {
+            self.reserve(varint_len(value))?;
+        }
         while value >= 0x80 {
             self.bytes.push(value as u8 | 0x80);
             value >>= 7;
@@ -128,6 +156,7 @@ impl Writer {
     }
 
     pub fn lengths(&mut self, ends: &[u32]) -> io::Result<()> {
+        self.reserve(ends.len())?;
         let mut start = 0;
         for &end in ends {
             let length = end
@@ -140,6 +169,7 @@ impl Writer {
     }
 
     pub fn keys(&mut self, keys: &[u128]) -> io::Result<()> {
+        self.reserve(keys.len())?;
         let mut previous = 0u128;
         for &key in keys {
             let difference = key.wrapping_sub(previous) as i128;
@@ -165,9 +195,7 @@ impl Writer {
     pub fn values<T: Le>(&mut self, values: &[T]) -> io::Result<()> {
         self.align(T::WIDTH)?;
         self.reserve(values.len() * T::WIDTH)?;
-        for &value in values {
-            value.put(&mut self.bytes);
-        }
+        T::put_slice(values, &mut self.bytes);
         Ok(())
     }
 
@@ -191,6 +219,7 @@ impl Writer {
             self.bitmap(words, slots)
         } else {
             self.u8(SLOT_DELTAS)?;
+            self.reserve(deltas)?;
             for (index, &slot) in slots.iter().enumerate() {
                 self.varint(u64::from(match index {
                     0 => slot,
@@ -220,6 +249,7 @@ impl Writer {
             self.bitmap(words, positions)
         } else {
             self.u8(POSITION_RUNS)?;
+            self.reserve(run_bytes)?;
             self.varint(count)?;
             let mut end = 0;
             for (start, length) in runs(positions) {
@@ -233,14 +263,13 @@ impl Writer {
 
     fn bitmap(&mut self, words: usize, bits: &[u32]) -> io::Result<()> {
         self.align(u64::WIDTH)?;
-        self.reserve(words * u64::WIDTH)?;
-        let mut bits = bits.iter().copied().peekable();
-        for word in 0..words {
-            let mut value = 0u64;
-            while let Some(bit) = bits.next_if(|&bit| bit as usize / 64 == word) {
-                value |= 1 << (bit % 64);
-            }
-            value.put(&mut self.bytes);
+        let len = words * u64::WIDTH;
+        self.reserve(len)?;
+        let start = self.bytes.len();
+        self.bytes.resize(start + len, 0);
+        let out = &mut self.bytes[start..start + len];
+        for &bit in bits {
+            out[bit as usize / 8] |= 1 << (bit % 8);
         }
         Ok(())
     }

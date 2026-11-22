@@ -1,4 +1,5 @@
 use super::*;
+use crate::section::Scratch;
 
 const KINDS: [Kind; 6] = [
     Kind::U32,
