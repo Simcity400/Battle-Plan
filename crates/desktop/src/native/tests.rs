@@ -561,3 +561,47 @@ fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_o
         Some((Some("page-B"), 0))
     );
 }
+
+#[test]
+fn select_view_and_restore_after_stamped_campaign_seek_stamp_empty_clear_with_active_origin() {
+    let host = NativeHost::default();
+    host.seek(
+        "campaign.battleplan".into(),
+        "rev-1".into(),
+        "1".into(),
+        100,
+        Some(dashboard::protocol::MapPlayback {
+            playing: false,
+            seek_sequence: 1,
+            fraction: 0.0,
+            hours_per_second: 24.0,
+            composed_at: 100.0,
+            clock_id: "page-A".into(),
+        }),
+    )
+    .unwrap();
+    assert!(host.shared.lock().unwrap().dashboard_views.is_none());
+
+    host.select_view(true).unwrap();
+    let commands = host.shared.lock().unwrap().pending.take_commands(true);
+    assert_eq!(
+        commands,
+        vec![NativeCommand::MapViews {
+            clock_id: Some("page-A".into()),
+            views: Vec::new(),
+        }],
+        "switching from the campaign map to Settings with no cached dashboard views must stamp the empty clear with the active origin"
+    );
+
+    let mut inner = host.shared.lock().unwrap();
+    inner.restore_commands();
+    let restored = inner.pending.take_commands(true);
+    assert_eq!(
+        restored,
+        vec![NativeCommand::MapViews {
+            clock_id: Some("page-A".into()),
+            views: Vec::new(),
+        }],
+        "restoring an empty active dashboard must also stamp the active origin"
+    );
+}

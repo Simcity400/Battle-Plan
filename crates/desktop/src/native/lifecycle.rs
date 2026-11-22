@@ -275,8 +275,7 @@ impl NativeHost {
         inner.status.fly_aircraft = None;
         inner.last_diagnostic = None;
         if inner.active_dashboard {
-            let views = inner.dashboard_views.clone().unwrap_or_default();
-            inner.pending.maps = Some(views);
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);

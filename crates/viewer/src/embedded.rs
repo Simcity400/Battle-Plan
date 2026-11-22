@@ -1809,5 +1809,35 @@ mod tests {
         };
         assert!(!same_ack(&state_a, &state_b));
         assert!(!clock_only(&state_a, &state_b));
+
+        let mut after_seek = Pending::default();
+        after_seek
+            .push(NativeCommand::Seek {
+                path: "campaign.battleplan".into(),
+                revision: "rev-1".into(),
+                branch: "1".into(),
+                hour: 100,
+                playback: Some(dashboard::protocol::MapPlayback {
+                    playing: false,
+                    seek_sequence: 1,
+                    fraction: 0.0,
+                    hours_per_second: 24.0,
+                    composed_at: 100.0,
+                    clock_id: "page-A".into(),
+                }),
+            })
+            .unwrap();
+        let _ = after_seek.take();
+        after_seek
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            after_seek.take().map_views,
+            Some((Some("page-A".into()), Vec::new())),
+            "a stamped empty clear for the active origin is admitted to hide the campaign map"
+        );
     }
 }

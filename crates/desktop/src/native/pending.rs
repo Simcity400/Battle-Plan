@@ -30,7 +30,7 @@ impl SeekTarget {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct DashboardSnapshot {
     pub(super) clock_id: Option<String>,
     pub(super) views: Vec<DashboardMapView>,
@@ -148,7 +148,7 @@ impl Inner {
 
     pub(super) fn restore_commands(&mut self) {
         if self.active_dashboard {
-            self.pending.maps = Some(self.dashboard_views.clone().unwrap_or_default());
+            self.pending.maps = Some(self.dashboard_snapshot());
             return;
         }
         let target = self

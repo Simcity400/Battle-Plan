@@ -113,6 +113,15 @@ impl Inner {
         Ok(answered)
     }
 
+    pub(super) fn dashboard_snapshot(&self) -> DashboardSnapshot {
+        self.dashboard_views
+            .clone()
+            .unwrap_or_else(|| DashboardSnapshot {
+                clock_id: self.clock_origins.active().map(str::to_owned),
+                views: Vec::new(),
+            })
+    }
+
     fn apply_dashboard_views(
         &mut self,
         clock_id: &str,
@@ -216,7 +225,7 @@ impl NativeHost {
             inner.pending.visibility = None;
             inner.pending.open = None;
             inner.pending.seek = None;
-            inner.pending.maps = Some(inner.dashboard_views.clone().unwrap_or_default());
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.maps = None;
             inner.pending.campaign_map = true;
