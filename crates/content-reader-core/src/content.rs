@@ -2049,13 +2049,9 @@ impl ResolvedLayer {
                     if password.is_none() {
                         return Ok(None);
                     }
-                    let bytes = physfs_zip::decode_stored(
-                        entry,
-                        stored.decode_bytes(),
-                        password,
-                        observed.enabled,
-                    )
-                    .map_err(|failure| failure.context(context))?;
+                    let bytes =
+                        physfs_zip::decode_stored(entry, &stored, password, observed.enabled)
+                            .map_err(|failure| failure.context(context))?;
                     Ok(bytes.map(|bytes| {
                         io_counts::layer_bytes(self, &entry.name, &bytes);
                         observed.bytes((), &bytes).map(|()| bytes)

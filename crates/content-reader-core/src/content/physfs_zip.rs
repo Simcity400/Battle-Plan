@@ -214,11 +214,9 @@ impl Archive {
             let data = entry.local.saturating_add(30 + lengths);
             let digest_end = data.saturating_add(entry.compressed).min(len);
             let extra = u64::from(entry.encrypted()) * 12;
+            let header_end = data.saturating_add(extra).min(len);
             let decode_end = if entry.method == 0 {
-                data.saturating_add(extra)
-                    .checked_add(entry.size)
-                    .filter(|&end| end <= len)
-                    .map_or(digest_end, |end| end.max(digest_end))
+                header_end.max(digest_end)
             } else {
                 data.saturating_add(extra)
                     .saturating_add(entry.compressed)
@@ -234,6 +232,7 @@ impl Archive {
         Ok(Stored {
             bytes,
             digest_len: (digest_end - start) as usize,
+            file_len: len,
         })
     }
 
@@ -575,29 +574,27 @@ fn parse_local_header(entry: &Entry, header: &[u8]) -> Option<u64> {
 pub(super) struct Stored {
     bytes: Vec<u8>,
     digest_len: usize,
+    file_len: u64,
 }
 
 impl Stored {
     pub(super) fn digest_bytes(&self) -> &[u8] {
         &self.bytes[..self.digest_len]
     }
-
-    pub(super) fn decode_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
 }
 
 pub(super) fn decode_stored(
     entry: &Entry,
-    stored: &[u8],
+    stored: &Stored,
     password: Option<&[u8]>,
     traced: bool,
 ) -> ObservedResult<Option<Vec<u8>>> {
+    let raw = &stored.bytes;
     let mut evidence = traced.then(ReadEvidence::default);
-    if stored.len() < 30 {
+    if raw.len() < 30 {
         return Ok(None);
     }
-    let header = &stored[..30];
+    let header = &raw[..30];
     if let Some(evidence) = &mut evidence {
         evidence.update(header);
     }
@@ -611,10 +608,10 @@ pub(super) fn decode_stored(
         let Some(end) = data_rel.checked_add(12) else {
             return Ok(None);
         };
-        if end > stored.len() {
+        if end > raw.len() {
             return Ok(None);
         }
-        let header_bytes: [u8; 12] = stored[data_rel..end].try_into().unwrap();
+        let header_bytes: [u8; 12] = raw[data_rel..end].try_into().unwrap();
         if let Some(evidence) = &mut evidence {
             evidence.update(&header_bytes);
         }
@@ -633,14 +630,24 @@ pub(super) fn decode_stored(
         }
         (None, data_rel)
     };
-    let payload = &stored[pos..];
+    let verified_payload = if pos <= stored.digest_len {
+        Some(&raw[pos..stored.digest_len])
+    } else {
+        None
+    };
     let result = if entry.method == 0 {
-        let size = usize::try_from(entry.size).ok();
-        if size.is_none_or(|size| size > payload.len()) {
+        if entry
+            .local
+            .checked_add(pos as u64)
+            .and_then(|start| start.checked_add(entry.size))
+            .is_none_or(|end| end > stored.file_len)
+        {
             Err(short("its stored data ends before its uncompressed size"))
-        } else {
-            let size = size.unwrap();
-            let mut bytes = payload[..size].to_vec();
+        } else if let Some(verified) = verified_payload
+            && usize::try_from(entry.size).is_ok_and(|size| size <= verified.len())
+        {
+            let size = entry.size as usize;
+            let mut bytes = verified[..size].to_vec();
             if let Some(evidence) = &mut evidence {
                 evidence.update(&bytes);
             }
@@ -648,15 +655,39 @@ pub(super) fn decode_stored(
                 keys.decrypt_all(&mut bytes);
             }
             Ok(bytes)
+        } else {
+            Err(invalid(
+                "the archive member reads past its verified stored range",
+            ))
         }
     } else {
-        inflate_slice(
-            payload,
-            entry.compressed,
-            entry.size,
-            keys.as_mut(),
-            evidence.as_mut(),
-        )
+        let verified = verified_payload.and_then(|slice| {
+            let mut verified_keys = keys.clone();
+            inflate_slice(
+                slice,
+                entry.compressed,
+                entry.size,
+                verified_keys.as_mut(),
+                None,
+            )
+            .ok()
+        });
+        if let Some(bytes) = verified {
+            Ok(bytes)
+        } else {
+            match inflate_slice(
+                &raw[pos..],
+                entry.compressed,
+                entry.size,
+                keys.as_mut(),
+                evidence.as_mut(),
+            ) {
+                Ok(_) => Err(invalid(
+                    "the archive member reads past its verified stored range",
+                )),
+                Err(error) => Err(error),
+            }
+        }
     };
     result.map(Some).map_err(|error| ReadFailure {
         error,
@@ -734,6 +765,7 @@ impl Mounted {
     }
 }
 
+#[derive(Clone)]
 struct Keys([u32; 3]);
 
 impl Keys {

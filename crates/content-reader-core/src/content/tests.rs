@@ -3880,6 +3880,103 @@ fn password_decode_failure_records_its_own_input_not_the_prior_verification_read
 }
 
 #[test]
+fn verified_encrypted_read_refuses_bytes_outside_its_record_digest() {
+    let root = std::env::temp_dir().join(format!(
+        "verified-encrypted-suffix-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    for (name, raw, request) in [
+        (
+            "stored.zip",
+            include_bytes!("testdata/zipcrypto_stored.zip").as_slice(),
+            "gfx/interface/e.dds$secret",
+        ),
+        (
+            "deflated.zip",
+            include_bytes!("testdata/zipcrypto_deflated.zip").as_slice(),
+            "gfx/fonts/x.fnt$secret",
+        ),
+    ] {
+        let mut bytes = raw.to_vec();
+        let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+        let compressed =
+            u32::from_le_bytes(bytes[central + 20..central + 24].try_into().unwrap()) - 4;
+        bytes[18..22].copy_from_slice(&compressed.to_le_bytes());
+        bytes[central + 20..central + 24].copy_from_slice(&compressed.to_le_bytes());
+        let path = root.join(name);
+        fs::write(&path, &bytes).unwrap();
+        let layers =
+            ResolvedLayers::from_test_layers(vec![archive_layer(name, &path, &[])]).unwrap();
+        let error = layers.read(request).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{name}: {error}");
+        assert!(
+            error
+                .to_string()
+                .contains("reads past its verified stored range"),
+            "{name}: {error}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn truncated_encrypted_stored_member_preserves_short_read_error_and_header_evidence() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-truncated-stored-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("truncated.zip");
+    let mut bytes = include_bytes!("testdata/zipcrypto_stored.zip").to_vec();
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    let compressed = 4_u32;
+    let size = bytes.len() as u32 + 16;
+    bytes[18..22].copy_from_slice(&compressed.to_le_bytes());
+    bytes[central + 20..central + 24].copy_from_slice(&compressed.to_le_bytes());
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("truncated", &path, &[])]).unwrap();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+    let error = traced.read("gfx/interface/e.dds$secret").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("its stored data ends before its uncompressed size"),
+        "{error}"
+    );
+    let data = 30
+        + u16::from_le_bytes(bytes[26..28].try_into().unwrap()) as usize
+        + u16::from_le_bytes(bytes[28..30].try_into().unwrap()) as usize;
+    let expected = [&bytes[..30], &bytes[data..data + 12]].concat();
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(
+        reads[0].outcome,
+        ReadOutcome::Error {
+            kind: "InvalidData".into(),
+            message: error.to_string(),
+            payload: Some(ReadPayload {
+                length: expected.len() as u64,
+                digest: Sha256::digest(&expected).into(),
+            }),
+        }
+    );
+    drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_paths() {
     use std::sync::{Arc, Mutex};
     let root = std::env::temp_dir().join(format!(
