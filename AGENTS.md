@@ -85,7 +85,7 @@ All Rust is in `crates/`; names group by prefix.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
 - Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
-- Never run a suite. Run only the UI or Python test you added or changed; leave Rust tests to CI, not Boat.
+- Never run a suite. Run only the test you added or changed, where it needs no Rust compile; leave Rust tests to CI, not Boat.
 - A user-visible UI change gets one pass in the running app (`npm.cmd run dev`), done once by the primary agent after integrating. Subagents don't launch their own.
 
 ## Code
