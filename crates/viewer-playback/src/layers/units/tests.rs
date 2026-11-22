@@ -1036,3 +1036,119 @@ fn a_stack_asked_and_withdrawn_before_the_meshes_worker_takes_them_is_not_waited
     assert!(!choices.asked.lock().unwrap()[before..].contains(&103), "the withdrawn stack is never chosen");
     assert_eq!(meshes.meshes.keys().copied().collect::<BTreeSet<u64>>(), BTreeSet::from([101, 102, 104]), "the stacks held keep their meshes");
 }
+
+fn legacy_fast_inverse() -> u64 {
+    let factor = 0x517c_c1b7_2722_0a95_u64;
+    let mut inv = 1u64;
+    for _ in 0..6 {
+        inv = inv.wrapping_mul(2u64.wrapping_sub(factor.wrapping_mul(inv)));
+    }
+    debug_assert_eq!(factor.wrapping_mul(inv), 1);
+    inv
+}
+
+fn legacy_fast_colliding_u64(count: usize, shift: u32) -> Vec<u64> {
+    let inv = legacy_fast_inverse();
+    (1..=count as u64).map(|i| (i << shift).wrapping_mul(inv)).collect()
+}
+
+fn legacy_fast_hash_stack_key(key: super::StackKey) -> u64 {
+    let factor = 0x517c_c1b7_2722_0a95_u64;
+    let step = |state: u64, word: u64| (state.rotate_left(5) ^ word).wrapping_mul(factor);
+    let state = step(step(0, u64::from(key.0)), u64::from(key.1));
+    match key.2 {
+        None => step(state, 0),
+        Some([a, b]) => step(step(step(state, 1), u64::from(a)), u64::from(b)),
+    }
+}
+
+fn legacy_fast_colliding_stacks(count: usize, bucket_mask: u64) -> Vec<super::StackKey> {
+    let mut keys = Vec::with_capacity(count);
+    let mut province = 1u32;
+    while keys.len() < count {
+        let key = (province, 3, None);
+        if legacy_fast_hash_stack_key(key) & bucket_mask == 0 {
+            keys.push(key);
+        }
+        province += 1;
+    }
+    keys
+}
+
+#[test]
+fn units_hash_indexes_randomize_instances_and_avoid_fixed_fast_collisions() {
+    use std::hash::BuildHasher;
+    let first = Units::new(flat());
+    let second = Units::new(flat());
+    let u64_keys = legacy_fast_colliding_u64(512, 12);
+    let u32_keys: Vec<u32> = (1..=32).collect();
+    let stack_keys = legacy_fast_colliding_stacks(512, 511);
+
+    assert!(u64_keys[..32].iter().any(|&k| first.asking.hasher().hash_one(k) != second.asking.hasher().hash_one(k)), "asking map must randomize per instance");
+    assert!(u64_keys[..32].iter().any(|&k| first.combat.hasher().hash_one(k) != second.combat.hasher().hash_one(k)), "combat map must randomize per instance");
+    assert!(u32_keys.iter().any(|&k| first.readers.hasher().hash_one(k) != second.readers.hasher().hash_one(k)), "readers map must randomize per instance");
+    assert!(u32_keys.iter().any(|&k| first.links.hasher().hash_one(k) != second.links.hasher().hash_one(k)), "links map must randomize per instance");
+    assert!(stack_keys[..32].iter().any(|&k| first.by_key.hasher().hash_one(k) != second.by_key.hasher().hash_one(k)), "by_key map must randomize per instance");
+
+    let buckets = 512usize;
+    let max_load = |hashes: Vec<u64>| {
+        let mut load = vec![0u32; buckets];
+        for hash in hashes {
+            load[hash as usize & (buckets - 1)] += 1;
+        }
+        *load.iter().max().unwrap()
+    };
+    let combat_max = max_load(u64_keys.iter().map(|&k| first.combat.hasher().hash_one(k)).collect());
+    assert!(combat_max <= 16, "{combat_max} legacy-Fast colliding division keys shared a bucket");
+    let asking_max = max_load(u64_keys.iter().map(|&k| first.asking.hasher().hash_one(k)).collect());
+    assert!(asking_max <= 16, "{asking_max} legacy-Fast colliding asking keys shared a bucket");
+    let stack_max = max_load(stack_keys.iter().map(|&k| first.by_key.hasher().hash_one(k)).collect());
+    assert!(stack_max <= 16, "{stack_max} legacy-Fast colliding stack keys shared a bucket");
+
+    let ids = legacy_fast_colliding_u64(32, 12);
+    let held_ids = ids.clone();
+    let recording = recorded::record("units-adversarial-keys", 96, move |at, store| {
+        for table in TABLES {
+            store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        }
+        if at == 0 {
+            let mut links = store.table(TableId::CountryLinks.index()).unwrap();
+            links.insert_at(0, 7).unwrap();
+            links.write(0, column(TableId::CountryLinks, "canonical_slot"), Cell::U32(3)).unwrap();
+            for (slot, &id) in held_ids.iter().enumerate() {
+                let province = if slot % 2 == 0 { 10 } else { 20 };
+                division(store, slot as u32, id, province, 7);
+            }
+        } else if at == 32 {
+            let mut combats = store.table(TableId::LandCombats.index()).unwrap();
+            combats.insert_at(0, 1).unwrap();
+            combats.write(0, column(TableId::LandCombats, "defenders"), Cell::U64List(&held_ids)).unwrap();
+        } else if at == 64 {
+            let min_even = held_ids.iter().enumerate().filter(|(slot, _)| slot % 2 == 0).min_by_key(|(_, id)| *id).unwrap().0 as u32;
+            store.table(TableId::Divisions.index()).unwrap().delete(min_even).unwrap();
+            store.table(TableId::DivisionStatus.index()).unwrap().delete(min_even).unwrap();
+        }
+    });
+    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Units::new(flat()))], View::default()).unwrap();
+    layer(&side).set_vision(Choice::default(), Arc::new(Vision::default()));
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    let expected_min_even = *ids.iter().enumerate().filter(|(slot, _)| slot % 2 == 0).map(|(_, id)| id).min().unwrap();
+    let expected_min_odd = *ids.iter().enumerate().filter(|(slot, _)| slot % 2 == 1).map(|(_, id)| id).min().unwrap();
+    assert_eq!(oldest(&side), vec![((10, 3, None), expected_min_even), ((20, 3, None), expected_min_odd)]);
+    composed_equal(&side);
+
+    through(&mut side, 40);
+    side.settle_all().unwrap();
+    let figure = layer(&side).figures()[&(10, 3, None)].placed.as_ref().unwrap().as_ref().map(|(target, _)| target.instance.animation).unwrap();
+    assert_eq!(figure, DEFEND);
+    composed_equal(&side);
+
+    through(&mut side, 72);
+    side.settle_all().unwrap();
+    let second_min_even = *ids.iter().enumerate().filter(|(slot, _)| slot % 2 == 0).map(|(_, id)| id).filter(|&&id| id != expected_min_even).min().unwrap();
+    assert_eq!(oldest(&side), vec![((10, 3, None), second_min_even), ((20, 3, None), expected_min_odd)]);
+    composed_equal(&side);
+}

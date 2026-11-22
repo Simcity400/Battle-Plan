@@ -37,47 +37,7 @@ use viewer_world::map::{
 
 const NONE: u32 = u32::MAX;
 
-#[derive(Clone, Copy, Default)]
-struct Fast(u64);
-
-impl Fast {
-    #[inline]
-    fn add(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-}
-
-impl std::hash::Hasher for Fast {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
-            let mut word = [0; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            self.add(u64::from_le_bytes(word));
-        }
-    }
-
-    fn write_u8(&mut self, value: u8) {
-        self.add(u64::from(value));
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.add(u64::from(value));
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.add(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.add(value as u64);
-    }
-}
-
-type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fast>>;
+type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 pub trait Ground: Send + Sync {
     fn anchor(&self, province: u32, slot: u32) -> Option<[f32; 3]>;
