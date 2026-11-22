@@ -44,7 +44,10 @@ impl Captured {
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
     }
-    pub fn capture(
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of building-bombing events
+    /// while observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         _memory: &impl Memory,
         _base: usize,
@@ -52,7 +55,8 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let started = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        // SAFETY: Caller holds hourly capture admission as the sole building-bombing consumer.
+        self.rows.outcome = match unsafe { producer::drain(&mut self.rows.rows) } {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

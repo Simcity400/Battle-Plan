@@ -372,7 +372,8 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
                 "{id:?}"
             );
         }
-        changes::boundary(false);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(false) };
         let (forces, bases) = memory.capture();
         let quiet = encoder
             .encode_bytes(input(hour + 1, &forces, &bases), false)
@@ -382,7 +383,8 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
         assert_values(decoder.advance(&quiet).unwrap(), 0);
 
         memory = Census::populated(1);
-        changes::boundary(true);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(true) };
         let (forces, bases) = memory.capture();
         let recovered = encoder
             .encode_bytes(input(hour + 3, &forces, &bases), true)
@@ -469,7 +471,8 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
     for table in capture().tables {
         assert_eq!(table.err(), Some("naval repair base registration refused"));
     }
-    changes::boundary(false);
+    // SAFETY: Unit test exclusively owns naval-management watch tables.
+    unsafe { changes::boundary(false) };
     let captured = capture();
     let TableRows::NavalRepairBases(rows) = captured.tables[0].as_ref().unwrap().as_ref() else {
         panic!("repair bases");

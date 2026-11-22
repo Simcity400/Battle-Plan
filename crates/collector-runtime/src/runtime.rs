@@ -66,7 +66,8 @@ use windows_sys::Win32::{
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
-        collector_land_events::land_events::stop_observation();
+        // SAFETY: Session detach refusal owns teardown of land-event observation.
+        unsafe { collector_land_events::land_events::stop_observation() };
         collector_combat_log::history_events::stop();
         ($retain)(reason);
         return Err(reason);
@@ -2140,9 +2141,10 @@ fn run(
             collector_politics::politics_changes::release();
             collector_map_events::lanes::release();
         }
-        if let Err(reason) = collector_land_events::land_events::release()
+        // SAFETY: Detach has disabled hooks and quiesced callbacks before releasing observer storage.
+        if let Err(reason) = unsafe { collector_land_events::land_events::release() }
             .and_then(|()| collector_combat_log::history_events::release_storage())
-            .and_then(|()| collector_combat_log::combat_log_prune::release_storage())
+            .and_then(|()| unsafe { collector_combat_log::combat_log_prune::release_storage() })
             .and_then(|()| collector_equipment_destruction::equipment_destruction::release())
             .and_then(|()| collector_naval_results::naval_result_sources::release())
             .and_then(|()| collector_fuel_awards::fuel_awards::release())
@@ -2321,16 +2323,16 @@ impl ObserverState for RestoreFamily {
                 "opinion callbacks did not quiesce; collector retained",
             ),
             Self::Construction => (
-                collector_output::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_output::construction_ic::active() != 0,
                 "construction callbacks did not quiesce; collector retained",
             ),
             Self::LineOutput => (
-                collector_output::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+                collector_output::line_output::active() != 0
                     || collector_output::line_output::native_retention_required(),
                 "production output callbacks did not quiesce; collector retained",
             ),
             Self::CombatLogPrune => (
-                collector_combat_log::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
+                collector_combat_log::combat_log_prune::active() != 0
                     || collector_combat_log::history_events::active() != 0
                     || collector_combat_log::history_events::retention_required(),
                 "combat log prune callbacks did not quiesce; collector retained",
@@ -4253,7 +4255,8 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
             // SAFETY: This is the runtime's frame pool for the current session.
             shared.frames()[idle_index].captured_mut()
         };
-        // SAFETY: The sizing path owns this frame exclusively while the observer storage is live.
+        // SAFETY: Sizing holds exclusive `&mut` access to this idle frame while session observer
+        // storage stays live and teardown is excluded; shared observers synchronize concurrent growth.
         unsafe { capacities.grow_frame(idle) };
         sizing.account_homes(shared);
         // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
@@ -5187,8 +5190,9 @@ impl SizingShared {
                     // SAFETY: This is the runtime's frame pool for the current session.
                     shared.frames()[index].captured_mut()
                 };
-                // SAFETY: The sizing path owns this frame exclusively while the observer storage
-                // is live.
+                // SAFETY: Spool recycling holds exclusive `&mut` access to this frame while session
+                // observer storage stays live and teardown is excluded; shared observers synchronize
+                // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
@@ -5841,7 +5845,9 @@ fn sizing_pass(
             ]
         });
         if collector_lifetime::world_lifetime::token().is_some() {
-            collector_naval_management::changes::presize(&live, base);
+            // SAFETY: Periodic sizing runs for the active session against the authenticated `base`
+            // while naval-management watch storage stays live and teardown is excluded.
+            unsafe { collector_naval_management::changes::presize(&live, base) };
         }
         let destruction_demand = collector_equipment_destruction::equipment_destruction::demand();
         sizing.raise(shared, |capacities| {

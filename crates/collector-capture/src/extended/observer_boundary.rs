@@ -70,7 +70,10 @@ impl ObserverBoundaryRequest {
         collector_observers::raid_changes::boundary(!self.continuous || self.recovery);
         collector_observers::naval_tree_changes::boundary(!self.continuous || self.recovery);
         collector_observers::unit_leader_changes::boundary(!self.continuous || self.recovery);
-        collector_naval_management::changes::boundary(!self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while naval watches live.
+        unsafe {
+            collector_naval_management::changes::boundary(!self.continuous || self.recovery);
+        }
         collector_observers::census_changes::boundary(!self.continuous || self.recovery);
         collector_observers::orders_group_changes::boundary(!self.continuous || self.recovery);
         collector_observers::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
@@ -114,10 +117,13 @@ impl ObserverBoundaryRequest {
         self.finished[3] = true;
         report.ticks[3] = elapsed(begin);
         let begin = qpc();
-        // SAFETY: Admitted hour's sole observer boundary drains the construction-IC interval once.
-        unsafe { self.construction.drain() };
-        collector_output::construction_ic::install_offered();
-        collector_output::line_output::install_offered();
+        // SAFETY: Admitted hour's sole observer boundary drains construction-IC and installs
+        // offered output logs under the capture gate.
+        unsafe {
+            self.construction.drain();
+            collector_output::construction_ic::install_offered();
+            collector_output::line_output::install_offered();
+        }
         self.finished[4] = true;
         report.ticks[4] = elapsed(begin);
         let begin = qpc();
@@ -159,7 +165,8 @@ impl ObserverBoundaryRequest {
             collector_observers::raid_changes::boundary(true);
             collector_observers::naval_tree_changes::boundary(true);
             collector_observers::unit_leader_changes::boundary(true);
-            collector_naval_management::changes::boundary(true);
+            // SAFETY: Admitted hour's sole observer boundary invalidates naval watches on failure.
+            unsafe { collector_naval_management::changes::boundary(true) };
             collector_observers::census_changes::boundary(true);
             collector_observers::orders_group_changes::boundary(true);
             collector_observers::unit_leader_trait_changes::boundary(true);
@@ -393,8 +400,11 @@ mod tests {
             );
             collector_output::construction_ic::presize_from_live(&memory, 0).unwrap();
             collector_test_support::with_allocations_denied(|| {
-                collector_output::line_output::install_offered();
-                collector_output::construction_ic::install_offered();
+                // SAFETY: Test holds output test locks with no live hooks running.
+                unsafe {
+                    collector_output::line_output::install_offered();
+                    collector_output::construction_ic::install_offered();
+                }
             });
             assert!(
                 serde_json::to_value(collector_output::line_output::status()).unwrap()["capacity"]

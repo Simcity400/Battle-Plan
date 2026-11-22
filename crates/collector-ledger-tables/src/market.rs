@@ -64,7 +64,10 @@ impl Captured {
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
-    pub fn capture(
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of market events while
+    /// observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -74,7 +77,8 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let begin = crate::clock::qpc();
-        self.event_refusal = producer::drain(&mut self.events).err();
+        // SAFETY: Caller holds hourly capture admission as the sole market-events consumer.
+        self.event_refusal = unsafe { producer::drain(&mut self.events) }.err();
         let full = full || held::full_publication_required();
         if !full && let Some(reason) = self.event_refusal {
             held::refuse(reason);
@@ -274,7 +278,7 @@ mod tests {
         held::finish_seed(true);
         held::recover_contracts(&NoRetry, 0, 0x100);
         let mut pack = Captured::vacant();
-        pack.capture(&NoRetry, 0, 0x100, 100, false);
+        unsafe { pack.capture(&NoRetry, 0, 0x100, 100, false) };
         for outcome in &pack.outcomes()[..3] {
             assert_eq!(
                 *outcome,
@@ -337,7 +341,7 @@ mod tests {
             held::recover_contracts(&NoRetry, 0, 0x100);
             held::recover_contracts(&NoRetry, 0, 0x100);
             let mut pack = Captured::vacant();
-            pack.capture(&NoRetry, 0, 0x100, 100, false);
+            unsafe { pack.capture(&NoRetry, 0, 0x100, 100, false) };
             assert_eq!(pack.outcomes()[0], Outcome::Rows { len: 0 });
             assert!(matches!(pack.outcomes()[1], Outcome::Unavailable { .. }));
             assert_eq!(pack.outcomes()[2], Outcome::Rows { len: 0 });
@@ -443,7 +447,7 @@ mod tests {
                     });
                 }
                 let mut pack = Captured::vacant();
-                pack.capture(&NoReads, 0, 0, hour, false);
+                unsafe { pack.capture(&NoReads, 0, 0, hour, false) };
                 for outcome in &pack.outcomes()[..3] {
                     assert!(
                         matches!(outcome, Outcome::Rows { len } if !reseeded || *len == usize::from(populated)),

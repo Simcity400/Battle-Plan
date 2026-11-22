@@ -37,7 +37,7 @@ unsafe extern "system" fn retain_log() {
     );
     let storage = LOG.load(Ordering::SeqCst);
     let enabled = ENABLED.swap(false, Ordering::SeqCst);
-    let retained = release();
+    let retained = unsafe { release() };
     ENABLED.store(enabled, Ordering::SeqCst);
     assert_eq!(
         retained,
@@ -167,7 +167,7 @@ fn production_verdict_indirect_foreign_unwind() {
                 "unwind flight retains patch"
             );
             assert_eq!(unsafe { *(site as *const u8) }, 0xe8);
-            assert!(release().is_err());
+            assert!(unsafe { release() }.is_err());
             let mut output = vec![0; 16];
             for (hour, load) in [(10, false), (11, true), (12, false)] {
                 let refused = drain(&mut output, hour, load);
@@ -260,6 +260,6 @@ fn production_verdict_indirect_foreign_unwind() {
     BASE.store(previous_base, Ordering::SeqCst);
     DISPATCH.set(previous_dispatch);
     test_support::disable();
-    release().unwrap();
+    unsafe { release() }.unwrap();
     assert!(LOG.load(Ordering::SeqCst).is_null());
 }

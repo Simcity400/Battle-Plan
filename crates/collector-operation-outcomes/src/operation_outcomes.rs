@@ -406,6 +406,11 @@ fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
     }
 }
 fn seal_offered(log: &'static Log) -> &'static Log {
+    let _retained = match LOGS.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return log,
+    };
     let Some(offered) = offered() else {
         return log;
     };
@@ -453,7 +458,28 @@ pub unsafe fn resize(entries: usize) {
 pub(crate) fn presize(entries: usize, bytes: usize) {
     presize_with(entries, bytes, || {});
 }
-fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) {
+fn same_log(a: Option<&Log>, b: Option<&Log>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+fn sources_contain(sources: [Option<&Log>; 2], target: &Log) -> bool {
+    sources
+        .into_iter()
+        .flatten()
+        .any(|source| std::ptr::eq(source, target))
+}
+fn presize_with(entries: usize, bytes: usize, before_publish: impl FnMut()) {
+    presize_with_hooks(entries, bytes, || {}, before_publish);
+}
+fn presize_with_hooks(
+    entries: usize,
+    bytes: usize,
+    mut before_grow: impl FnMut(),
+    mut before_publish: impl FnMut(),
+) {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
@@ -463,9 +489,16 @@ fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) 
         let sources = [log(), offered()];
         let generations = || sources.into_iter().flatten();
         let target_entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
+        before_grow();
         for log in generations() {
-            for lane in &log.lanes {
-                let _ = lane.grow_bytes_for(bytes);
+            for (index, lane) in log.lanes.iter().enumerate() {
+                let floor = generations()
+                    .filter_map(|other| other.lanes.get(index))
+                    .map(|other| other.ring().bytes.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(bytes);
+                let _ = lane.grow_bytes_for(floor);
             }
         }
         let lanes =
@@ -494,7 +527,7 @@ fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) 
                 .unwrap_or(0)
                 .max(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed)),
         );
-        if generations().any(|log| {
+        let satisfies = |log: &Log| {
             log.entries >= target_entries
                 && log.lanes.len() >= lanes
                 && log.shared.len() >= shared.0
@@ -504,8 +537,26 @@ fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) 
                     .iter()
                     .enumerate()
                     .all(|(index, lane)| lane.records.len() >= required(index).0)
-        }) {
-            return;
+        };
+        if generations().any(satisfies) {
+            let retained = LOGS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = [log(), offered()];
+            let latest = current[1].or(current[0]);
+            let changed = !same_log(sources[0], current[0]) || !same_log(sources[1], current[1]);
+            let needs_byte_growth = current.into_iter().flatten().any(|existing| {
+                !sources_contain(sources, existing)
+                    && existing.lanes.iter().enumerate().any(|(index, lane)| {
+                        lane.ring().bytes.len() < bytes.max(required(index).1)
+                    })
+            });
+            let satisfied = latest.is_some_and(satisfies) && !needs_byte_growth;
+            drop(retained);
+            if satisfied || (!changed && latest.is_some_and(satisfies)) {
+                return;
+            }
+            continue;
         }
         let fresh = (|| {
             let required = engine_allocation::collect_vec((0..lanes).map(required))
@@ -529,17 +580,18 @@ fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) 
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = [log(), offered()];
         let current_generations = || current.into_iter().flatten();
-        let satisfied_by_current = current_generations().any(|existing| {
+        let latest = current[1].or(current[0]);
+        let satisfied_by_latest = latest.is_some_and(|existing| {
             existing.entries >= target_entries
                 && existing.lanes.len() >= lanes
                 && existing.shared.len() >= shared.0
                 && existing.shared.stride() >= shared.1
                 && existing.lanes.iter().enumerate().all(|(index, lane)| {
                     lane.records.len() >= required(index).0
-                        && lane.ring().bytes.len() >= bytes
+                        && lane.ring().bytes.len() >= bytes.max(required(index).1)
                 })
         });
-        if satisfied_by_current {
+        if satisfied_by_latest {
             return;
         }
         let dominates_current = current_generations().all(|existing| {
@@ -1374,8 +1426,9 @@ pub mod tests {
         assert_eq!(drain(log).unwrap().0.len(), 0);
     }
     /// # Safety
-    /// Caller must be the sole writer to `log.lanes[0]` (no concurrent lane-0 callback or
-    /// `complete` call on `log`).
+    /// Caller must hold [`serial()`] with no concurrent native or fixture operation completions
+    /// (completion advances process-wide `EVENT_SEQUENCE`) and must be the sole writer to
+    /// `log.lanes[0]`.
     pub unsafe fn complete(log: &Log, fixture: &Fixture, result: usize) {
         observe_return(
             log,
@@ -2589,6 +2642,84 @@ pub mod tests {
         });
         assert!(raced);
         assert_eq!(offered().unwrap().entries, 256);
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+    }
+
+    #[test]
+    fn concurrent_mixed_entry_and_byte_presize_preserves_both_dimensions() {
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+        presize(8, 64);
+        let mut raced_entry = false;
+        presize_with(64, 0, || {
+            if !raced_entry {
+                raced_entry = true;
+                presize(0, 4096);
+            }
+        });
+        assert!(raced_entry);
+        let offer = offered().unwrap();
+        assert_eq!(offer.entries, 64);
+        assert!(offer.lanes.iter().all(|lane| lane.ring().bytes.len() >= 4096));
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+        presize(8, 64);
+        let mut raced_bytes = false;
+        presize_with_hooks(
+            0,
+            4096,
+            || {
+                if !raced_bytes {
+                    raced_bytes = true;
+                    presize(64, 0);
+                }
+            },
+            || {},
+        );
+        assert!(raced_bytes);
+        let offer = offered().unwrap();
+        assert_eq!(offer.entries, 64);
+        assert!(offer.lanes.iter().all(|lane| lane.ring().bytes.len() >= 4096));
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+    }
+
+    #[test]
+    fn promotion_during_presize_revalidation_does_not_install_smaller_offer() {
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+        presize(8, 64);
+        let old = log().unwrap();
+        let mut promoted = false;
+        presize_with(32, 64, || {
+            if !promoted {
+                promoted = true;
+                presize(256, 64);
+                let _ = seal_offered(old);
+            }
+        });
+        assert!(promoted);
+        assert_eq!(log().unwrap().entries, 256);
+        assert!(offered().is_none());
+        let active = log().unwrap();
+        let mut promoted_mixed = false;
+        presize_with(512, 4096, || {
+            if !promoted_mixed {
+                promoted_mixed = true;
+                presize(1024, 64);
+                let _ = seal_offered(active);
+            }
+        });
+        assert!(promoted_mixed);
+        let current = log().unwrap();
+        assert_eq!(current.entries, 1024);
+        assert!(current.lanes.iter().all(|lane| lane.ring().bytes.len() >= 4096));
+        assert!(offered().is_none());
         // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
         unsafe { release() };
     }

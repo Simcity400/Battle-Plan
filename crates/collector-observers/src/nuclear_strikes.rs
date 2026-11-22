@@ -149,11 +149,15 @@ pub fn boundary(clock: Option<Clock>) {
         LEDGER.boundary(clock);
     }
 }
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining nuclear-strike events while
+/// observer storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if foreign_test() || UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("nuclear strike hooks unavailable (see status unhooked)");
     }
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole nuclear-strikes consumer.
+    unsafe { LEDGER.drain(output) }
 }
 
 pub fn forwarder(part: Part, forwarding: bool) {

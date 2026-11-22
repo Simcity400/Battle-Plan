@@ -136,9 +136,13 @@ pub fn boundary(clock: Option<Clock>) {
     }
     LEDGER.boundary(clock);
 }
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining air-loss events while observer
+/// storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_admitted()?;
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole air-loss consumer.
+    unsafe { LEDGER.drain(output) }
 }
 fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]

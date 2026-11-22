@@ -116,7 +116,7 @@ fn reset() {
 }
 
 fn drain(hour: i32) -> replay_data::rows::MapEventsRow {
-    let sealed = interval::seal(hour, Some(crate::world_lifetime::generation()));
+    let sealed = unsafe { interval::seal(hour, Some(crate::world_lifetime::generation())) };
     let mut assembled = lanes::Assembled::default();
     // SAFETY: tests serialize lane access with `LOCK` and are the sole assembler.
     unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
@@ -384,7 +384,7 @@ fn an_event_left_pending_by_an_ended_world_is_never_listed_by_the_next_one() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset();
     let seal = |hour, world| {
-        let sealed = interval::seal(hour, world);
+        let sealed = unsafe { interval::seal(hour, world) };
         let mut assembled = lanes::Assembled::default();
         // SAFETY: test holds `LOCK` as the sole assembler.
         unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
@@ -465,7 +465,7 @@ fn a_world_change_while_the_operands_are_read_refuses_the_event() {
         Ok(())
     })
     .unwrap();
-    let sealed = interval::seal(8, Some(new));
+    let sealed = unsafe { interval::seal(8, Some(new)) };
     let mut assembled = lanes::Assembled::default();
     // SAFETY: test holds `LOCK` as the sole assembler.
     unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
@@ -593,7 +593,7 @@ fn hook_cost_map_events() {
     world.array(unit + cunit::VIEWER_DATA, intel, countries as u32);
     lanes::grow(2, crate::largest_event(countries) * 8).unwrap();
     let drain = || {
-        let sealed = interval::seal(5, Some(crate::world_lifetime::generation()));
+        let sealed = unsafe { interval::seal(5, Some(crate::world_lifetime::generation())) };
         let mut assembled = lanes::Assembled::default();
         // SAFETY: test holds `LOCK` as the sole assembler.
         unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
@@ -633,7 +633,7 @@ fn hook_cost_map_events() {
     });
     let quiet_hour = collector_test_support::per_call_ns(CALLS, || {
         for _ in 0..CALLS {
-            std::hint::black_box(interval::seal(5, Some(crate::world_lifetime::generation())));
+            std::hint::black_box(unsafe { interval::seal(5, Some(crate::world_lifetime::generation())) });
         }
     });
     let quiet_assembly = collector_test_support::per_call_ns(256, || {
@@ -673,7 +673,7 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
                 Err(refusal) => hooks::refuse_for_tests(family, refusal),
             }
         }
-        let sealed = interval::seal(hour, Some(world));
+        let sealed = unsafe { interval::seal(hour, Some(world)) };
         let mut assembled = lanes::Assembled::default();
         // SAFETY: test holds `LOCK` as the sole assembler.
         unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();

@@ -43,7 +43,7 @@ fn ready() -> Owner {
     OPEN.store(0, Ordering::SeqCst);
     EQUIPMENT.store(IDLE, Ordering::SeqCst);
     LEDGER.prepare(64);
-    assert!(LEDGER.drain(&mut Vec::new()).is_err());
+    assert!(unsafe { LEDGER.drain(&mut Vec::new()) }.is_err());
     LEDGER.boundary(clock(1));
     LEDGER.boundary(clock(2));
     Owner { _serial: serial }
@@ -52,7 +52,7 @@ fn ready() -> Owner {
 fn drained() -> Vec<Item> {
     let mut entries = Vec::with_capacity(64);
     LEDGER.boundary(clock(3));
-    LEDGER.drain(&mut entries).unwrap();
+    unsafe { LEDGER.drain(&mut entries) }.unwrap();
     entries.into_iter().map(|entry| entry.item).collect()
 }
 
@@ -232,5 +232,5 @@ fn an_unreadable_strike_makes_its_interval_unavailable() {
     ENABLED.store(false, Ordering::SeqCst);
     assert!(!current());
     LEDGER.boundary(clock(3));
-    assert!(LEDGER.drain(&mut Vec::with_capacity(8)).is_err());
+    assert!(unsafe { LEDGER.drain(&mut Vec::with_capacity(8)) }.is_err());
 }

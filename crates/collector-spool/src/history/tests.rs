@@ -669,11 +669,11 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
     losses.restore_sequence(seeds[0]).unwrap();
     bombing.restore_sequence(seeds[1]).unwrap();
     market.prepare(1);
-    assert!(market.drain(&mut Vec::new()).is_err());
+    assert!(unsafe { market.drain(&mut Vec::new()) }.is_err());
     losses.prepare(1);
     bombing.prepare(1);
-    assert!(losses.drain(&mut Vec::new()).is_err());
-    assert!(bombing.drain(&mut Vec::new()).is_err());
+    assert!(unsafe { losses.drain(&mut Vec::new()) }.is_err());
+    assert!(unsafe { bombing.drain(&mut Vec::new()) }.is_err());
     let clock = |hour| {
         Some(engine_native::cgame_state::Clock {
             hour,
@@ -722,12 +722,12 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
         )
         .unwrap();
     let mut market_rows = Vec::with_capacity(1);
-    market.drain(&mut market_rows).unwrap();
+    unsafe { market.drain(&mut market_rows) }.unwrap();
     assert_eq!(market_rows[0].id, 181);
     let mut loss_rows = Vec::with_capacity(1);
     let mut damage_rows = Vec::with_capacity(1);
-    losses.drain(&mut loss_rows).unwrap();
-    bombing.drain(&mut damage_rows).unwrap();
+    unsafe { losses.drain(&mut loss_rows) }.unwrap();
+    unsafe { bombing.drain(&mut damage_rows) }.unwrap();
     assert_eq!(loss_rows[0].id, 81);
     assert_eq!(damage_rows[0].id, 151);
     assert_eq!(

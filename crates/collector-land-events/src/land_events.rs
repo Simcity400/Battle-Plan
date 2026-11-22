@@ -177,7 +177,10 @@ fn install_offered_owned() {
     RESIZING.store(false, Ordering::SeqCst);
 }
 
-pub fn release() -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session teardown/detach after land-event observation is disabled and callbacks
+/// have quiesced (or own an isolated test fixture with no live hooks).
+pub unsafe fn release() -> Result<(), &'static str> {
     unless_foreign(|| Ok(()), release_owned)
 }
 fn release_owned() -> Result<(), &'static str> {
@@ -235,11 +238,13 @@ pub fn active() -> usize {
 fn observing() -> bool {
     ENABLED.load(Ordering::Relaxed) && escaped_unwind_reason().is_none()
 }
-pub fn stop_observation() {
+/// # Safety
+/// Caller must own session teardown/detach or isolated test cleanup for land-event observation.
+pub unsafe fn stop_observation() {
     unless_foreign(|| (), || ENABLED.store(false, Ordering::SeqCst));
 }
 static BASE: AtomicUsize = AtomicUsize::new(0);
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static PRODUCERS: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 const FINALIZE: usize = 0;
 const DESTROYED: usize = 1;
@@ -1306,7 +1311,9 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         if !self.publication_attempted {
-            let _ = release();
+            // SAFETY: Publication was never attempted, so hooks were never enabled and no
+            // callbacks are active.
+            let _ = unsafe { release() };
         }
     }
 }
@@ -1448,7 +1455,7 @@ pub mod test_support {
         LAST_DISPATCHED.set((0, 0, 0));
         ENABLED.store(true, Ordering::SeqCst);
     }
-    pub fn free_spill() {
+    fn free_spill() {
         drop(SPILL.take());
         drop(std::mem::take(&mut *spilled()));
     }
@@ -1589,7 +1596,7 @@ mod tests {
         CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
         assert!(group.set_enabled(false).unwrap());
         drop(group);
-        release().unwrap();
+        unsafe { release() }.unwrap();
         assert_ne!(unsafe { VirtualFree(page.cast(), 0, MEM_RELEASE) }, 0);
     }
     #[test]
@@ -1598,7 +1605,7 @@ mod tests {
         // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
         unsafe { reset(&mut owned) };
         test_support::disable();
-        release().unwrap();
+        unsafe { release() }.unwrap();
         static TRACKER: collector_primitives::raw_memory::Tracker =
             collector_primitives::raw_memory::Tracker::new();
         let buffer = |size| {
@@ -1615,10 +1622,10 @@ mod tests {
         drop(swap);
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
         ACTIVE.store(1, Ordering::SeqCst);
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
         ACTIVE.store(0, Ordering::SeqCst);
-        release().unwrap();
+        unsafe { release() }.unwrap();
         assert!(LOG.load(Ordering::SeqCst).is_null());
         assert_eq!(TRACKER.snapshot().current, Default::default());
         LOG_SWAP.lock().unwrap().next = Some(buffer(3));
@@ -2498,7 +2505,7 @@ mod tests {
         assert_eq!(TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst), escaped + 1);
         assert!(active() != 0);
         assert!(!ENABLED.load(Ordering::SeqCst));
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         assert_eq!(LOG.load(Ordering::SeqCst), storage);
         let mut out = vec![0; 32];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
@@ -2516,7 +2523,7 @@ mod tests {
         TAP_ESCAPED_UNWINDS.store(escaped, Ordering::SeqCst);
         ACTIVE.store(0, Ordering::SeqCst);
         CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
-        release().unwrap();
+        unsafe { release() }.unwrap();
     }
     #[test]
     fn original_unwind_retains_active_and_restores_nested_tls() {
@@ -2578,7 +2585,7 @@ mod tests {
         }
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 4);
         assert!(active() != 0);
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         let mut output = vec![0; 8];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
             let refused = drain(&mut output, hour, load);
@@ -2962,7 +2969,7 @@ mod ownership_tests {
             assert_eq!(drained.reason, "land event log owned by another test");
             // SAFETY: test verifies foreign-thread ownership guard rejects `presize`.
             unsafe { presize(1 << 16) };
-            stop_observation();
+            unsafe { stop_observation() };
             append_record(&[5]);
         })
         .join()

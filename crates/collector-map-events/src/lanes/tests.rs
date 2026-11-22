@@ -338,7 +338,8 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     // SAFETY: test holds `LOCK` and dropped all uncommitted intervals above.
     unsafe { reset_admitted() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
-    let lost = crate::interval::seal(3, Some(1));
+    // SAFETY: Unit test exclusively owns map-event observation and sealing.
+    let lost = unsafe { crate::interval::seal(3, Some(1)) };
     assert!(
         lost.health
             .iter()
@@ -355,7 +356,8 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     // SAFETY: test holds `LOCK` with no in-flight intervals remaining.
     unsafe { reset_admitted() };
     assert!(
-        crate::interval::seal(4, Some(1))
+        // SAFETY: Unit test exclusively owns map-event observation and sealing.
+        unsafe { crate::interval::seal(4, Some(1)) }
             .health
             .iter()
             .all(|health| !health.faults.contains(Fault::OutputLost))

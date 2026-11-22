@@ -36,10 +36,11 @@ impl Captured {
     }
     pub(crate) fn seal(&mut self, hour: i32) -> u64 {
         let started = collector_primitives::clock::qpc();
-        self.interval = Some(map_events::interval::seal(
-            hour,
-            collector_lifetime::world_lifetime::token(),
-        ));
+        // SAFETY: Runs on the admitted hourly capture boundary as the sole map-events consumer
+        // while map-event lanes remain live.
+        self.interval = Some(unsafe {
+            map_events::interval::seal(hour, collector_lifetime::world_lifetime::token())
+        });
         collector_primitives::clock::qpc()
             .saturating_sub(started)
             .max(0) as u64
@@ -64,8 +65,8 @@ impl Publication {
         unsafe { self.0.admitted() };
     }
     /// # Safety
-    /// Acknowledge only after the originating session's writer confirms this publication, before
-    /// detaching or releasing its event lanes.
+    /// Acknowledge only after the originating session's writer confirms this publication, once per
+    /// assembled publication in assembly order, before detaching or releasing its event lanes.
     pub unsafe fn commit(self) {
         // SAFETY: The originating spool has the writer receipt and still owns the observers.
         unsafe { self.0.commit() };

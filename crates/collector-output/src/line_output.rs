@@ -97,7 +97,10 @@ fn presize_storage(events: usize) {
     }
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Caller must run on the admitted post-drain observer boundary under the capture gate (or an
+/// isolated test holding `test_lock()` with hooks quiesced) as the sole log-swap consumer.
+pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
     };
@@ -143,7 +146,10 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static CREDIT_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -564,7 +570,8 @@ impl Hooks {
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize, events: usize) -> Self {
         presize(events);
-        install_offered();
+        // SAFETY: Caller exclusively owns this hook family during attach before enabling hooks.
+        unsafe { install_offered() };
         let domain = output_hooks::Domain {
             failure: output_hooks::Failure::Propagate,
             observation: &OBSERVATION,
@@ -656,8 +663,8 @@ pub unsafe fn reset_log_for_test(capacity: usize) {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
+#[cfg(test)]
+fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
     if let Some(amount) = delivered {
         observe_delivery(
             DELIVERY.callers[producer].0,
@@ -813,7 +820,7 @@ mod tests {
             offered
         );
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             population * 2
@@ -860,7 +867,7 @@ mod tests {
         assert_eq!(OBSERVATION.required.load(Ordering::Relaxed), 5000);
         assert!(SPILL.is_empty());
         presize(0);
-        install_offered();
+        unsafe { install_offered() };
         collect();
         assert_eq!(CAPACITY.load(Ordering::Acquire), 5000);
         for line in 5001..=10_000 {
@@ -893,31 +900,31 @@ mod tests {
             append(tick(line));
         }
         presize(20);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         let (first, mut entries) = drained(2);
         let first = first.unwrap();
         assert!(first.complete());
         let writer = Call::enter();
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         drop(writer);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             capacity_for_lines(20)
         );
         assert!(LOG_SWAP.lock().unwrap().retired.is_some());
         presize(2000);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             capacity_for_lines(20)
         );
         collect();
-        install_offered();
+        unsafe { install_offered() };
         collect();
         for line in 4..=6 {
             let _writer = Call::enter();
@@ -1204,7 +1211,7 @@ mod tests {
             produce_for_test(a.address(), NAVAL, count, None);
         }
         presize(20);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         let (result, entries) = drained(4);
         let whole = result.unwrap();
@@ -1218,7 +1225,7 @@ mod tests {
             serde_json::to_value(status()).unwrap()["overflowed_logs"],
             overflows
         );
-        install_offered();
+        unsafe { install_offered() };
         collect();
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],

@@ -65,7 +65,10 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -122,7 +125,10 @@ fn presize_storage(events: usize) {
     }
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Caller must run on the admitted post-drain observer boundary under the capture gate (or an
+/// isolated test holding `test_lock()` with hooks quiesced) as the sole log-swap consumer.
+pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
     };
@@ -552,7 +558,8 @@ impl Hooks {
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let _ = presize_from_live(memory, base);
-        install_offered();
+        // SAFETY: Caller exclusively owns this hook family during attach before enabling hooks.
+        unsafe { install_offered() };
         let domain = output_hooks::Domain {
             failure: output_hooks::Failure::Unavailable,
             observation: &OBSERVATION,

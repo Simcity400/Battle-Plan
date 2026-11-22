@@ -145,12 +145,16 @@ pub fn forget_reads() {
     FORGET.with(|forget| forget.store(true, Ordering::Release));
 }
 
-fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
+/// # Safety
+/// Caller holds hourly capture admission (or test lock) as the sole prune-log consumer while prune
+/// storage stays live.
+unsafe fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
     #[cfg(any(test, feature = "test-support"))]
     if !DRAINS.get() {
         return false;
     }
-    crate::combat_log_prune::drain(signal, output).is_ok()
+    // SAFETY: Caller holds hourly capture admission as the sole prune-log consumer.
+    unsafe { crate::combat_log_prune::drain(signal, output) }.is_ok()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -301,7 +305,8 @@ impl Captured {
                 let _reads = crate::read_accounting::table(TABLES[1]);
                 let started = qpc();
                 self.viewing = native::viewing_country(memory, game_state).ok_or(VIEWING_UNREAD);
-                self.prune_observed = self.begin(store, hour, force_full);
+                // SAFETY: Caller holds hourly capture admission as the sole combat-log consumer.
+                self.prune_observed = unsafe { self.begin(store, hour, force_full) };
                 qpc().saturating_sub(started).max(0) as u64
             };
             let log_cost = {
@@ -332,7 +337,10 @@ impl Captured {
         costs
     }
 
-    fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
+    /// # Safety
+    /// Caller holds hourly capture admission as the sole combat-log consumer while prune storage
+    /// stays live.
+    unsafe fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
         let new_session =
             store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
         if new_session {
@@ -361,7 +369,8 @@ impl Captured {
             })
         });
         self.drained.clear();
-        let observed = drain_prune_log(self.signal, &mut self.drained);
+        // SAFETY: Caller holds hourly capture admission as the sole prune-log consumer.
+        let observed = unsafe { drain_prune_log(self.signal, &mut self.drained) };
         if allocation::reserve(&mut store.finals, self.drained.len()).is_err() {
             return false;
         }

@@ -91,7 +91,7 @@ impl Store {
     /// # Safety
     /// Caller holds hourly capture admission for the active session (or isolated fixture control)
     /// so global `faction_companion_changes` account demand updates belong to this pass.
-    pub unsafe fn acquire_members(
+    pub(crate) unsafe fn acquire_members(
         &mut self,
         memory: &impl Memory,
         base: usize,

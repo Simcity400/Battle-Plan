@@ -1276,7 +1276,8 @@ mod tests {
         memory.reads.set(0);
         let _ = Session::begin(&memory, 0, 0).finish(complete());
         assert_eq!(memory.reads.get(), 0);
-        changes::boundary(true);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(true) };
         memory.fleet(0x10000, 90_000, 9);
         let mut reset = Session::begin(&memory, 0, 0);
         reset.visit(native::CensusVisit::Fleet {

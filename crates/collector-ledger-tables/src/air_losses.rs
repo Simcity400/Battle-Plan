@@ -66,10 +66,14 @@ impl Captured {
         self.rows.fail(outcome);
         self.roster_outcome = outcome;
     }
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of air-loss events while
+    /// observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        // SAFETY: Caller holds hourly capture admission as the sole air-loss consumer.
+        self.rows.outcome = match unsafe { producer::drain(&mut self.rows.rows) } {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

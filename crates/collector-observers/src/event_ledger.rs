@@ -422,7 +422,10 @@ impl<T: Event> EventLedger<T> {
                 .try_lock()
                 .map_or(true, |store| store.partial || store.refusal.is_some())
     }
-    pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
+    /// # Safety
+    /// Caller must be the admitted sole consumer draining this ledger while its storage stays live
+    /// and teardown is excluded (or own an isolated test ledger).
+    pub unsafe fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
         self.drain_buffer(output)
     }
     fn drain_buffer(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
@@ -524,7 +527,7 @@ mod tests {
     fn prepared() -> EventLedger<Row> {
         let ledger = EventLedger::new();
         ledger.prepare(8);
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger
     }
     #[test]
@@ -534,23 +537,23 @@ mod tests {
         let mut rows = Vec::new();
         ledger.boundary(clock(1));
         assert!(ledger.interval_incomplete());
-        assert!(ledger.drain(&mut rows).is_err());
+        assert!(ledger.drain_buffer(&mut rows).is_err());
         ledger.boundary(clock(2));
         assert!(!ledger.interval_incomplete());
-        assert_eq!(ledger.drain(&mut rows), Ok(0));
+        assert_eq!(ledger.drain_buffer(&mut rows), Ok(0));
         ledger.refuse("synthetic lost interval");
         ledger.boundary(clock(3));
         assert!(ledger.interval_incomplete());
         assert_eq!(
-            ledger.drain(&mut rows),
+            ledger.drain_buffer(&mut rows),
             Err("synthetic lost interval")
         );
         ledger.boundary(clock(4));
         assert!(ledger.interval_incomplete());
-        assert!(ledger.drain(&mut rows).is_err());
+        assert!(ledger.drain_buffer(&mut rows).is_err());
         ledger.boundary(clock(5));
         assert!(!ledger.interval_incomplete());
-        assert_eq!(ledger.drain(&mut rows), Ok(0));
+        assert_eq!(ledger.drain_buffer(&mut rows), Ok(0));
     }
 
     #[test]
@@ -558,14 +561,14 @@ mod tests {
         let ledger = EventLedger::<Row>::new();
         ledger.prepare(1);
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         for owner in 0..5000 {
             let token = ledger.claim((owner, 0)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
         }
         let mut rows = Vec::new();
-        assert_eq!(ledger.drain(&mut rows), Ok(5000));
+        assert_eq!(ledger.drain_buffer(&mut rows), Ok(5000));
         assert_eq!(rows[4999].0, 4999);
         assert_eq!(ledger.lost_events.load(Ordering::Relaxed), 0);
         assert!(ledger.demand() >= 5000);
@@ -576,7 +579,7 @@ mod tests {
         let ledger = EventLedger::<Row>::new();
         ledger.prepare(1);
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         let pointer = ledger.store.lock().unwrap().entries.as_ptr();
         let result = crate::test_support::with_allocations_denied(|| {
@@ -594,15 +597,15 @@ mod tests {
         ledger.prepare(ledger.demand());
         ledger.boundary(clock(3));
         let mut rows = Vec::with_capacity(2);
-        assert!(ledger.drain(&mut rows).is_err());
+        assert!(ledger.drain_buffer(&mut rows).is_err());
         ledger.boundary(clock(4));
-        assert_eq!(ledger.drain(&mut rows).unwrap(), 0);
+        assert_eq!(ledger.drain_buffer(&mut rows).unwrap(), 0);
         ledger.boundary(clock(5));
         for owner in [1, 2] {
             let token = ledger.claim((owner, 0)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
         }
-        assert_eq!(ledger.drain(&mut rows).unwrap(), 2);
+        assert_eq!(ledger.drain_buffer(&mut rows).unwrap(), 2);
     }
     fn clock(hour: i32) -> Option<Clock> {
         Some(Clock {
@@ -625,7 +628,7 @@ mod tests {
                 std::array::from_fn(|_| crate::table_capture::CaptureRows::new(8));
             ledger.prepare(8);
             ledger.boundary(clock(1));
-            assert!(ledger.drain(&mut frames[0].rows).is_err());
+            assert!(ledger.drain_buffer(&mut frames[0].rows).is_err());
             ledger.prepare(0);
 
             ledger.prepare(9);
@@ -636,7 +639,7 @@ mod tests {
                     ledger.boundary(clock(hour));
                     let token = ledger.claim((1, 0)).unwrap();
                     ledger.complete(token, Ok(Some(T::default()))).unwrap();
-                    assert_eq!(ledger.drain(&mut frame.rows).unwrap(), 1);
+                    assert_eq!(ledger.drain_buffer(&mut frame.rows).unwrap(), 1);
                 });
                 ledger.prepare(0);
                 capacity = capacity.max(ledger.demand());
@@ -660,10 +663,10 @@ mod tests {
         let mut frame = crate::table_capture::CaptureRows::new(8);
         ledger.prepare(1);
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut frame.rows).is_err());
+        assert!(ledger.drain_buffer(&mut frame.rows).is_err());
         ledger.prepare(0);
         ledger.boundary(clock(2));
-        assert_eq!(ledger.drain(&mut frame.rows).unwrap(), 0);
+        assert_eq!(ledger.drain_buffer(&mut frame.rows).unwrap(), 0);
         assert_eq!(ledger.demand(), 1);
         crate::test_support::with_allocations_denied(|| {
             for _ in 0..8 {
@@ -688,7 +691,7 @@ mod tests {
             ledger.demand()
         ));
         ledger.boundary(clock(3));
-        assert!(ledger.drain(&mut frame.rows).is_err());
+        assert!(ledger.drain_buffer(&mut frame.rows).is_err());
         ledger.prepare(0);
         ledger.boundary(clock(4));
         for _ in 0..9 {
@@ -697,7 +700,7 @@ mod tests {
                 .complete(token, Ok(Some(Default::default())))
                 .unwrap();
         }
-        assert_eq!(ledger.drain(&mut frame.rows).unwrap(), 9);
+        assert_eq!(ledger.drain_buffer(&mut frame.rows).unwrap(), 9);
         assert_eq!(ledger.overflow.load(Ordering::Relaxed), 1);
     }
 
@@ -708,16 +711,16 @@ mod tests {
         ledger.prepare(0);
         assert!(ledger.retired.lock().unwrap().is_none());
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         let pointer = ledger.store.lock().unwrap().entries.as_ptr();
         let mut empty = Vec::new();
-        assert_eq!(ledger.drain(&mut empty).unwrap(), 0);
+        assert_eq!(ledger.drain_buffer(&mut empty).unwrap(), 0);
         assert_eq!(ledger.store.lock().unwrap().entries.as_ptr(), pointer);
         let token = ledger.claim((1, 0)).unwrap();
         ledger.complete(token, Ok(Some(Row(0)))).unwrap();
         let mut short = Vec::with_capacity(1);
-        assert_eq!(ledger.drain(&mut short).unwrap(), 1);
+        assert_eq!(ledger.drain_buffer(&mut short).unwrap(), 1);
         assert_eq!(ledger.store.lock().unwrap().entries.as_ptr(), pointer);
         crate::test_support::with_allocations_denied(|| {
             for owner in 1..=8 {
@@ -735,14 +738,14 @@ mod tests {
         assert!(store.claim.is_none());
         drop(store);
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         for country in 0..5000 {
             let token = ledger.claim((country, 0)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
         }
         let mut rows = Vec::with_capacity(5000);
-        assert_eq!(ledger.drain(&mut rows).unwrap(), 5000);
+        assert_eq!(ledger.drain_buffer(&mut rows).unwrap(), 5000);
         assert_eq!(rows[4999].0, 4999);
         assert!(ledger.store.lock().unwrap().claim.is_none());
     }
@@ -753,13 +756,13 @@ mod tests {
             let mut frame = Vec::new();
             ledger.prepare(5000);
             ledger.boundary(clock(1));
-            assert!(ledger.drain(&mut frame).is_err());
+            assert!(ledger.drain_buffer(&mut frame).is_err());
             ledger.boundary(clock(2));
             for (hour, count) in [(2, 5000), (3, 10003)] {
                 if hour > 2 {
                     ledger.prepare(count);
                     ledger.boundary(clock(hour));
-                    assert_eq!(ledger.drain(&mut frame), Ok(0));
+                    assert_eq!(ledger.drain_buffer(&mut frame), Ok(0));
                 }
                 crate::test_support::with_allocations_denied(|| {
                     for country in 0..count {
@@ -767,7 +770,7 @@ mod tests {
                         ledger.complete(token, Ok(Some(T::default()))).unwrap();
                     }
                 });
-                assert_eq!(ledger.drain(&mut frame), Ok(count));
+                assert_eq!(ledger.drain_buffer(&mut frame), Ok(count));
                 assert_eq!(frame.len(), count);
                 assert_eq!(ledger.overflow.load(Ordering::Relaxed), 0);
                 assert_eq!(ledger.lost_events.load(Ordering::Relaxed), 0);
@@ -782,7 +785,7 @@ mod tests {
         let ledger = EventLedger::<Row>::new();
         ledger.prepare(1);
         ledger.boundary(clock(1));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(2));
         let token = ledger.claim((1, 0)).unwrap();
         ledger.complete(token, Ok(Some(Row::default()))).unwrap();
@@ -801,29 +804,29 @@ mod tests {
         assert_eq!(ledger.demand(), 10003);
         ledger.prepare(0);
         ledger.boundary(clock(3));
-        assert!(ledger.drain(&mut Vec::new()).is_err());
+        assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
         ledger.boundary(clock(4));
         let mut frame = Vec::new();
-        assert_eq!(ledger.drain(&mut frame), Ok(0));
+        assert_eq!(ledger.drain_buffer(&mut frame), Ok(0));
         crate::test_support::with_allocations_denied(|| {
             for country in 0..10003 {
                 let token = ledger.claim((country, 0)).unwrap();
                 ledger.complete(token, Ok(Some(Row::default()))).unwrap();
             }
         });
-        assert_eq!(ledger.drain(&mut frame), Ok(10003));
+        assert_eq!(ledger.drain_buffer(&mut frame), Ok(10003));
     }
     #[test]
     fn published_ordinals_survive_active_and_contended_valid_clock_boundaries() {
         for active in [true, false] {
             let ledger = prepared();
             ledger.boundary(clock(1));
-            assert!(ledger.drain(&mut Vec::new()).is_err());
+            assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
             ledger.boundary(clock(2));
             let token = ledger.claim((1, 1)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             let mut published = Vec::with_capacity(8);
-            assert_eq!(ledger.drain(&mut published).unwrap(), 1);
+            assert_eq!(ledger.drain_buffer(&mut published).unwrap(), 1);
             let before = published[0].0;
 
             let store = if active {
@@ -833,7 +836,7 @@ mod tests {
                 Some(ledger.store.lock().unwrap())
             };
             ledger.boundary(clock(3));
-            assert!(ledger.drain(&mut Vec::new()).is_err());
+            assert!(ledger.drain_buffer(&mut Vec::new()).is_err());
             if active {
                 ledger.leave();
             }
@@ -841,28 +844,28 @@ mod tests {
             ledger.boundary(clock(4));
             assert!(
                 ledger
-                    .drain(&mut Vec::new())
+                    .drain_buffer(&mut Vec::new())
                     .unwrap_err()
                     .contains("partial")
             );
             ledger.boundary(clock(5));
             let token = ledger.claim((1, 1)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
-            assert_eq!(ledger.drain(&mut published).unwrap(), 1);
+            assert_eq!(ledger.drain_buffer(&mut published).unwrap(), 1);
             assert!(published[0].0 > before);
 
             let recovered = published[0].0;
             ledger.boundary(clock(-10));
             assert!(
                 ledger
-                    .drain(&mut Vec::new())
+                    .drain_buffer(&mut Vec::new())
                     .unwrap_err()
                     .contains("partial")
             );
             ledger.boundary(clock(-9));
             let token = ledger.claim((1, 1)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
-            assert_eq!(ledger.drain(&mut published).unwrap(), 1);
+            assert_eq!(ledger.drain_buffer(&mut published).unwrap(), 1);
             assert!(published[0].0 > recovered);
         }
     }
@@ -882,7 +885,7 @@ mod tests {
         assert!(next > token);
         ledger.complete(next, Ok(None)).unwrap();
         let mut published = Vec::with_capacity(8);
-        assert_eq!(ledger.drain(&mut published).unwrap(), 1);
+        assert_eq!(ledger.drain_buffer(&mut published).unwrap(), 1);
     }
 
     #[test]
@@ -896,16 +899,16 @@ mod tests {
         ledger.lost_output(0);
         assert!(ledger.complete(token, Ok(Some(Row(0)))).is_err());
         ledger.boundary(clock(3));
-        assert_eq!(ledger.drain(&mut Vec::new()).unwrap_err(), reason);
+        assert_eq!(ledger.drain_buffer(&mut Vec::new()).unwrap_err(), reason);
         ledger.boundary(clock(4));
         assert!(
             ledger
-                .drain(&mut Vec::new())
+                .drain_buffer(&mut Vec::new())
                 .unwrap_err()
                 .contains("partial")
         );
         ledger.boundary(clock(5));
-        assert_eq!(ledger.drain(&mut Vec::new()).unwrap(), 0);
+        assert_eq!(ledger.drain_buffer(&mut Vec::new()).unwrap(), 0);
         ledger.enter();
         ledger.boundary(clock(6));
         assert!(ledger.stranded.load(Ordering::Relaxed));
@@ -937,7 +940,7 @@ mod tests {
             assert_eq!(reason, "event ledger observation invalidated");
             ledger.refuse(reason);
             ledger.boundary(clock(3));
-            assert_eq!(ledger.drain(&mut Vec::new()).unwrap_err(), reason);
+            assert_eq!(ledger.drain_buffer(&mut Vec::new()).unwrap_err(), reason);
             assert_eq!(
                 ledger.lost_events.load(Ordering::Relaxed),
                 if output_loss { 4 } else { 1 }
@@ -951,10 +954,10 @@ mod tests {
             ledger.boundary(clock(4));
             assert!(!ledger.interval_incomplete());
             let mut intact = Vec::with_capacity(8);
-            assert_eq!(ledger.drain(&mut intact).unwrap(), 1);
+            assert_eq!(ledger.drain_buffer(&mut intact).unwrap(), 1);
             assert_eq!(intact[0].0, 1);
             ledger.boundary(clock(5));
-            assert_eq!(ledger.drain(&mut Vec::new()).unwrap(), 0);
+            assert_eq!(ledger.drain_buffer(&mut Vec::new()).unwrap(), 0);
         }
         let ledger = prepared();
         ledger.boundary(clock(1));
@@ -994,16 +997,16 @@ mod tests {
             assert!(!ledger.native_recovery.load(Ordering::SeqCst));
             ledger.boundary(clock(102));
             assert!(ledger.interval_incomplete());
-            assert_eq!(ledger.drain(&mut rows), Err("event ledger lost interval"));
+            assert_eq!(ledger.drain_buffer(&mut rows), Err("event ledger lost interval"));
             let token = ledger.claim((2, 2)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             ledger.boundary(clock(103));
             assert!(!ledger.interval_incomplete());
-            assert_eq!(ledger.drain(&mut rows), Ok(1));
+            assert_eq!(ledger.drain_buffer(&mut rows), Ok(1));
             assert_eq!(rows[0].0, 1);
             ledger.boundary(clock(104));
             assert!(!ledger.interval_incomplete());
-            assert_eq!(ledger.drain(&mut rows), Ok(0));
+            assert_eq!(ledger.drain_buffer(&mut rows), Ok(0));
         }
     }
     #[test]
@@ -1028,11 +1031,11 @@ mod tests {
             }
             assert!(ledger.native_recovery.load(Ordering::SeqCst));
             ledger.boundary(clock(3));
-            assert!(ledger.drain(&mut rows).is_err());
+            assert!(ledger.drain_buffer(&mut rows).is_err());
             ledger.boundary(clock(4));
-            assert!(ledger.drain(&mut rows).unwrap_err().contains("partial"));
+            assert!(ledger.drain_buffer(&mut rows).unwrap_err().contains("partial"));
             ledger.boundary(clock(5));
-            assert_eq!(ledger.drain(&mut rows), Ok(0));
+            assert_eq!(ledger.drain_buffer(&mut rows), Ok(0));
         }
     }
     #[test]
@@ -1050,11 +1053,11 @@ mod tests {
         );
         assert!(ledger.native_recovery.load(Ordering::SeqCst));
         ledger.boundary(clock(3));
-        assert!(ledger.drain(&mut rows).is_err());
+        assert!(ledger.drain_buffer(&mut rows).is_err());
         ledger.boundary(clock(4));
-        assert!(ledger.drain(&mut rows).unwrap_err().contains("partial"));
+        assert!(ledger.drain_buffer(&mut rows).unwrap_err().contains("partial"));
         ledger.boundary(clock(5));
-        assert_eq!(ledger.drain(&mut rows), Ok(0));
+        assert_eq!(ledger.drain_buffer(&mut rows), Ok(0));
     }
     #[test]
     fn refusal_without_store_lock_cannot_publish_a_complete_empty_interval() {
@@ -1067,19 +1070,19 @@ mod tests {
         drop(store);
         ledger.boundary(clock(3));
         assert_eq!(
-            ledger.drain(&mut Vec::new()).unwrap_err(),
+            ledger.drain_buffer(&mut Vec::new()).unwrap_err(),
             "event ledger lost interval"
         );
         assert!(ledger.complete(token, Ok(None)).is_err());
         ledger.boundary(clock(4));
         assert!(
             ledger
-                .drain(&mut Vec::new())
+                .drain_buffer(&mut Vec::new())
                 .unwrap_err()
                 .contains("partial")
         );
         ledger.boundary(clock(5));
-        assert_eq!(ledger.drain(&mut Vec::new()).unwrap(), 0);
+        assert_eq!(ledger.drain_buffer(&mut Vec::new()).unwrap(), 0);
     }
 
     #[test]
@@ -1091,19 +1094,19 @@ mod tests {
         let token = first.claim((1, 1)).unwrap();
         first.complete(token, Ok(Some(Row(0)))).unwrap();
         let mut rows = Vec::with_capacity(8);
-        first.drain(&mut rows).unwrap();
+        first.drain_buffer(&mut rows).unwrap();
         assert_eq!(rows[0].0, 0);
 
         let resumed = prepared();
         resumed.restore_sequence(Some(rows[0].0)).unwrap();
         resumed.boundary(clock(3));
-        assert!(resumed.drain(&mut rows).unwrap_err().contains("partial"));
+        assert!(resumed.drain_buffer(&mut rows).unwrap_err().contains("partial"));
         resumed.boundary(clock(4));
         for expected in [1, 2] {
             resumed.restore_sequence(Some(0)).unwrap();
             let token = resumed.claim((1, 1)).unwrap();
             resumed.complete(token, Ok(Some(Row(0)))).unwrap();
-            resumed.drain(&mut rows).unwrap();
+            resumed.drain_buffer(&mut rows).unwrap();
             assert_eq!(rows[0].0, expected);
         }
         assert_eq!(

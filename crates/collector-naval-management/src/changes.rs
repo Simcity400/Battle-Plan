@@ -52,7 +52,10 @@ fn hook_failure(
     message
 }
 
-pub fn boundary(invalidate: bool) {
+/// # Safety
+/// Caller must run on the admitted hourly observer boundary while naval-management watch tables
+/// stay live and teardown is excluded.
+pub unsafe fn boundary(invalidate: bool) {
     renew(&FORCES, &FORCES_REFUSED, invalidate);
     renew(&BASES, &BASES_REFUSED, invalidate);
 }
@@ -69,10 +72,10 @@ pub fn collect() {
     FORCES.collect();
     BASES.collect();
 }
-pub fn force_demand(entries: usize) {
+pub(crate) fn force_demand(entries: usize) {
     FORCES.offer(entries.saturating_mul(2));
 }
-pub fn base_demand(entries: usize) {
+pub(crate) fn base_demand(entries: usize) {
     BASES.offer(entries.saturating_mul(2));
 }
 
@@ -135,7 +138,10 @@ fn offer_census(receivers: usize, buckets: usize) {
     CENSUS_PENDING.store(false, Ordering::Release);
 }
 
-pub fn presize(memory: &impl Memory, base: usize) {
+/// # Safety
+/// Caller must run on the active session's sizing pass with a valid game `base` while
+/// naval-management watch storage stays live and teardown is excluded.
+pub unsafe fn presize(memory: &impl Memory, base: usize) {
     if !CENSUS_PENDING.load(Ordering::Acquire) {
         return;
     }
@@ -511,7 +517,8 @@ mod tests {
             let refused = receivers.iter().filter(|&&pointer| !register(pointer)).count();
             assert!(refused > 0, "the smallest table refuses some of {} receivers", receivers.len());
             demand(receivers.len());
-            boundary(false);
+            // SAFETY: Unit test holds `fixture::SERIAL` as the sole naval-management owner.
+            unsafe { boundary(false) };
             let refused = receivers.iter().filter(|&&pointer| !register(pointer)).count();
             assert_eq!(refused, 0, "base {base}: the grown table takes every receiver");
         }
@@ -573,7 +580,8 @@ pub(crate) mod fixture {
         BASES.offer(10_000);
         FORCES.set_enabled(true);
         BASES.set_enabled(true);
-        boundary(true);
+        // SAFETY: Test fixture holds `fixture::SERIAL` as the sole naval-management owner.
+        unsafe { boundary(true) };
     }
     pub fn undersized() {
         unsafe {
@@ -584,7 +592,8 @@ pub(crate) mod fixture {
         BASES.offer(1);
         FORCES.set_enabled(true);
         BASES.set_enabled(true);
-        boundary(true);
+        // SAFETY: Test fixture holds `fixture::SERIAL` as the sole naval-management owner.
+        unsafe { boundary(true) };
     }
     pub fn mark(pointer: usize, base: bool, retire: bool) {
         drop(if base { &BASES } else { &FORCES }.notify(pointer | usize::from(retire)));

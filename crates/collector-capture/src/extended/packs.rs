@@ -2528,9 +2528,11 @@ impl FinalInputsRequest {
         self.finished[6] = true;
         let naval_sources = self.naval_sources.capture(memory, self.base, self.state);
         self.finished[7] = true;
-        let air_losses = self.air_losses.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains air-loss and building-bombing ledgers.
+        let air_losses = unsafe { self.air_losses.capture(memory, self.base, self.state) };
         self.finished[8] = true;
-        let bombing = self.bombing.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains air-loss and building-bombing ledgers.
+        let bombing = unsafe { self.bombing.capture(memory, self.base, self.state) };
         self.finished[9] = true;
         let intel_delegated = self
             .intel
@@ -2549,11 +2551,14 @@ impl FinalInputsRequest {
             self.air_records
                 .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[11] = true;
-        let nuclear = self.nuclear.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains nuclear-strike and market ledgers.
+        let nuclear = unsafe { self.nuclear.capture(memory, self.base, self.state) };
         self.finished[12] = true;
-        let market = self
-            .market
-            .capture(memory, self.base, self.state, self.hour, self.force_full);
+        // SAFETY: Admitted hour's sole capture pass drains nuclear-strike and market ledgers.
+        let market = unsafe {
+            self.market
+                .capture(memory, self.base, self.state, self.hour, self.force_full)
+        };
         self.finished[13] = true;
         FinalInputsReport {
             snapshots: [new_divisions, experience],

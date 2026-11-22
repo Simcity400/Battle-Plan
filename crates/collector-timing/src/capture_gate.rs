@@ -44,8 +44,8 @@ pub unsafe fn begin() -> bool {
 }
 
 /// # Safety
-/// Only the owner that opened the gate with `begin()` may release it, after its guarded capture
-/// window finishes.
+/// Only the owner that opened the gate with `begin()`, or the beside worker to which that callback
+/// transferred gate ownership for `serve`, may release it once the guarded capture window finishes.
 pub unsafe fn end() {
     STATE.store(IDLE, Ordering::SeqCst);
     if WAITING.load(Ordering::SeqCst) != 0 {

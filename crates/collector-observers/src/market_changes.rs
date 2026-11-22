@@ -324,7 +324,10 @@ pub fn country_reset(country: usize) -> CountryReset {
         owner: owner.filter(|_| ENABLED.load(Ordering::SeqCst)),
     }
 }
-pub fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining market events while observer
+/// storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
     if !ENABLED.load(Ordering::SeqCst)
         || !RESET_FORWARDED.load(Ordering::SeqCst)
         || !VARIABLES_FORWARDED.load(Ordering::SeqCst)
@@ -332,7 +335,8 @@ pub fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
     {
         return Err("market writer coverage incomplete (see market_changes status)");
     }
-    let count = LEDGER.drain(output)?;
+    // SAFETY: Caller holds hourly capture admission as the sole market-events consumer.
+    let count = unsafe { LEDGER.drain(output)? };
     let mut times = AMENDMENT_TIMES
         .lock()
         .map_err(|_| "market amendment timing storage poisoned")?;
@@ -1337,8 +1341,7 @@ mod tests {
             ..Default::default()
         }));
         assert!(
-            LEDGER
-                .drain(&mut Vec::new())
+            unsafe { LEDGER.drain(&mut Vec::new()) }
                 .unwrap_err()
                 .contains("partial")
         );
@@ -1479,7 +1482,7 @@ mod tests {
             }
         }
         let mut events = Vec::new();
-        assert_eq!(LEDGER.drain(&mut events), Ok(4));
+        assert_eq!(unsafe { LEDGER.drain(&mut events) }, Ok(4));
         assert_eq!(
             (events[0].kind, events[0].mode),
             (AMENDMENT_COST, FINAL_CONTRACT)
@@ -1615,7 +1618,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            LEDGER.drain(&mut Vec::new()),
+            unsafe { LEDGER.drain(&mut Vec::new()) },
             Err("event ledger first/branch/recovery interval is partial")
         );
         LEDGER.boundary(Some(engine_native::cgame_state::Clock {
@@ -1665,7 +1668,7 @@ mod tests {
             contract_created(&StackBirth, 0, CONTRACT, false).unwrap();
         });
         let mut events = Vec::new();
-        LEDGER.drain(&mut events).unwrap();
+        unsafe { LEDGER.drain(&mut events) }.unwrap();
         let births: Vec<_> = events
             .iter()
             .filter(|row| matches!(row.kind, REQUEST_CREATED | CONTRACT_CREATED))
@@ -1747,7 +1750,7 @@ mod tests {
             )
             .unwrap();
         });
-        LEDGER.drain(&mut events).unwrap();
+        unsafe { LEDGER.drain(&mut events) }.unwrap();
         assert_eq!(
             events.iter().filter(|row| row.kind == FINAL_ITEM).count(),
             10_000

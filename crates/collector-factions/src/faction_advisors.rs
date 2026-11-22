@@ -186,7 +186,7 @@ impl Store {
     /// # Safety
     /// Caller holds hourly capture admission for the active session (or isolated fixture control)
     /// so global `faction_companion_changes` demand updates belong to this pass.
-    pub unsafe fn finish(&mut self, complete: bool, changes: &impl Changes) {
+    pub(crate) unsafe fn finish(&mut self, complete: bool, changes: &impl Changes) {
         // SAFETY: Admitted faction-advisor capture records measured owner demand.
         unsafe {
             crate::faction_companion_changes::demand(
