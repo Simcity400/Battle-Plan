@@ -12,4 +12,4 @@ Mine and incident reports derive from the physical pass independently of the mis
 
 The guarded-reader benchmark holds the synthetic world's bytes owned, immutable and live until every read has finished.
 
-[Naval mission capture](../../crates/collector/src/extended/naval_mission_inputs.rs) · [Parity tests](../../crates/collector/src/extended/naval_mission_inputs_tests.rs)
+[Naval mission capture](../../crates/collector-naval-missions/src/extended/naval_mission_inputs.rs) · [Parity tests](../../crates/collector-naval-missions/src/extended/naval_mission_inputs_tests.rs)

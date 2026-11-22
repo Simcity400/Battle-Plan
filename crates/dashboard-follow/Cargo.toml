@@ -30,6 +30,9 @@ required-features = ["bench"]
 name = "follow-log-bench"
 required-features = ["bench"]
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 replay = { workspace = true, features = ["test-support"] }
 
@@ -55,6 +58,3 @@ unify-either = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-winapi-util = { workspace = true }
-
-[lints]
-workspace = true

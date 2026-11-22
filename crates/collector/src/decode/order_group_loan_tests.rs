@@ -1,5 +1,6 @@
 use super::*;
-use crate::{acquisition_jobs::OrdersRequest, map_capture::Orders, raw::RawLog};
+use crate::{acquisition_jobs::OrdersRequest, raw::RawLog};
+use collector_divisions::orders::Orders;
 use engine_native::memory::SliceMemory;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -41,7 +42,7 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
             base: 0,
             game_state: 0,
             orders: Orders::vacant(),
-            plans: crate::extended::plans::Captured::vacant(),
+            plans: collector_plans::extended::plans::Captured::vacant(),
             group_source: Some(payload),
         };
         let result = catch_unwind(AssertUnwindSafe(move || {

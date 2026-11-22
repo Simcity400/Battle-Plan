@@ -1,4 +1,3 @@
-
 use crate::allocation::{self, Code, Context, Phase};
 use crate::test_support::with_allocations_denied;
 use crate::test_support::{ATTEMPTS, DENIALS, NullGuard, REACHED, TARGET_PHASE};
@@ -58,7 +57,10 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
         .env("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST", mode)
         .env("BATTLEPLAN_COLLECTOR_ALLOCATION_RUN", &run)
         .env("BATTLEPLAN_COLLECTOR_ALLOCATION_PHASE", phase)
-        .env("BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL", ordinal.to_string())
+        .env(
+            "BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL",
+            ordinal.to_string(),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -293,7 +295,11 @@ fn payload_pools_refused() {
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
         drop(scope);
-        (prepared.map(drop).map_err(|error| error.kind()), attempts, denials)
+        (
+            prepared.map(drop).map_err(|error| error.kind()),
+            attempts,
+            denials,
+        )
     };
     let (prepared, total, _) = prepare(usize::MAX);
     assert_eq!(prepared, Ok(()));
@@ -398,13 +404,8 @@ fn attach_refused() {
     allocation::reset();
     allocation::install_hooks();
     let sizing = crate::country_scale::Sizing::for_slots(0);
-    let unbind = || {
-        unsafe {
-            collector_observers::doctrine_changes::bind(
-                0,
-                collector_slow_tables::doctrines::observe,
-            );
-        }
+    let unbind = || unsafe {
+        collector_observers::doctrine_changes::bind(0, collector_slow_tables::doctrines::observe);
     };
     drop(crate::sampling::Shared::with_sizing(0, 0, 1, &sizing).unwrap());
     let stores = {
@@ -424,7 +425,12 @@ fn attach_refused() {
         drop(guard);
         drop(scope);
         let bound = collector_observers::doctrine_changes::bound_context();
-        (attached.map(drop).map_err(|error| error.kind()), attempts, denials, bound)
+        (
+            attached.map(drop).map_err(|error| error.kind()),
+            attempts,
+            denials,
+            bound,
+        )
     };
     let (attached, total, _, bound) = attach(usize::MAX);
     assert_eq!(attached, Ok(()));
@@ -651,9 +657,17 @@ fn a_campaign_set_aside_with_a_pending_gap_commits_under_its_own_name() {
 #[ignore = "launched only by allocation-failure parent tests"]
 fn allocation_safety_child() {
     synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS).enter();
-    let mode = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap();
-    let phase = Phase::parse(&std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_PHASE").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE")).unwrap()).unwrap();
-    let ordinal = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_ORDINAL"))
+    let mode = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST")
+        .or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST"))
+        .unwrap();
+    let phase = Phase::parse(
+        &std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_PHASE")
+            .or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE"))
+            .unwrap(),
+    )
+    .unwrap();
+    let ordinal = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL")
+        .or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_ORDINAL"))
         .unwrap()
         .parse::<usize>()
         .unwrap();
@@ -1125,12 +1139,20 @@ struct Exercise {
 }
 
 fn case_root(phase: Phase, ordinal: usize, checked: bool) -> PathBuf {
-    PathBuf::from(std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_RUN").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_RUN")).unwrap())
-        .join(std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap())
-        .join(format!(
-            "{}-{phase:?}-{ordinal}-{checked}",
-            std::process::id()
-        ))
+    PathBuf::from(
+        std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_RUN")
+            .or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_RUN"))
+            .unwrap(),
+    )
+    .join(
+        std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST")
+            .or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_TEST"))
+            .unwrap(),
+    )
+    .join(format!(
+        "{}-{phase:?}-{ordinal}-{checked}",
+        std::process::id()
+    ))
 }
 
 fn context(hour: Option<i32>) {
@@ -1341,134 +1363,128 @@ fn exercise_pipeline(
             crate::sampling::synthetic_callback(
                 &shared,
                 entry,
-                || {
-                    match phase {
-                        Phase::Bootstrap => {}
-                        Phase::Callback | Phase::Acquisition => {
-                            let _scope = allocation::enter(phase);
-                            crate::sampling::copy_divisions_refresh(
-                                &crate::sampling::divisions_test_kit::memory(&bytes),
-                                crate::sampling::DivisionsCopyContext {
-                                    base: crate::sampling::divisions_test_kit::BASE,
-                                    game_state: crate::sampling::divisions_test_kit::GAME_STATE,
-                                    ..Default::default()
-                                },
+                || match phase {
+                    Phase::Bootstrap => {}
+                    Phase::Callback | Phase::Acquisition => {
+                        let _scope = allocation::enter(phase);
+                        crate::sampling::copy_divisions_refresh(
+                            &crate::sampling::divisions_test_kit::memory(&bytes),
+                            crate::sampling::DivisionsCopyContext {
+                                base: crate::sampling::divisions_test_kit::BASE,
+                                game_state: crate::sampling::divisions_test_kit::GAME_STATE,
+                                ..Default::default()
+                            },
+                            &mut divisions,
+                        );
+                    }
+                    Phase::Raw => {
+                        let _scope = allocation::enter(Phase::Raw);
+                        crate::raw::allocation_exercise();
+                        if !allocation::failed() {
+                            crate::snapshot_integration_tests::allocation_failure_exercise();
+                        }
+                    }
+                    Phase::Decode => {
+                        let _scope = allocation::enter(Phase::Decode);
+                        if let Some(decode) = lexical_zero.take() {
+                            conversion_matched &= decode();
+                        }
+                        if !allocation::failed()
+                            && let Some(decode) = lexical_short.take()
+                        {
+                            conversion_matched &= decode();
+                        }
+                        if allocation::failed() {
+                            return;
+                        }
+                        divisions.grow();
+                        if !allocation::failed() {
+                            crate::sampling::decode_divisions_payload(
+                                &mut frame,
+                                0,
                                 &mut divisions,
+                                &mut [0; 6],
                             );
+                            contained |= crate::decode::allocation_exercise(&shared, index, hour);
                         }
-                        Phase::Raw => {
-                            let _scope = allocation::enter(Phase::Raw);
-                            crate::raw::allocation_exercise();
-                            if !allocation::failed() {
-                                crate::snapshot_integration_tests::allocation_failure_exercise();
-                            }
+                    }
+                    Phase::Extended => {
+                        crate::extended::combat_details::allocation_failure_exercise(|| {}, || {});
+                        let _scope = allocation::enter(Phase::Extended);
+                        if !allocation::failed() {
+                            crate::extended::air_histories::allocation_failure_exercise();
                         }
-                        Phase::Decode => {
-                            let _scope = allocation::enter(Phase::Decode);
-                            if let Some(decode) = lexical_zero.take() {
-                                conversion_matched &= decode();
-                            }
-                            if !allocation::failed()
-                                && let Some(decode) = lexical_short.take()
-                            {
-                                conversion_matched &= decode();
-                            }
-                            if allocation::failed() {
-                                return;
-                            }
-                            divisions.grow();
-                            if !allocation::failed() {
-                                crate::sampling::decode_divisions_payload(
-                                    &mut frame,
-                                    0,
-                                    &mut divisions,
-                                    &mut [0; 6],
-                                );
-                                contained |=
-                                    crate::decode::allocation_exercise(&shared, index, hour);
-                            }
+                        if !allocation::failed() {
+                            crate::extended::air_relations::allocation_failure_exercise();
                         }
-                        Phase::Extended => {
-                            crate::extended::combat_details::allocation_failure_exercise(
-                                || {},
-                                || {},
-                            );
-                            let _scope = allocation::enter(Phase::Extended);
-                            if !allocation::failed() {
-                                crate::extended::air_histories::allocation_failure_exercise();
-                            }
-                            if !allocation::failed() {
-                                crate::extended::air_relations::allocation_failure_exercise();
-                            }
-                            if !allocation::failed() {
-                                crate::extended::character_inputs::allocation_failure_exercise();
-                            }
-                            let registry = crate::watch_registry::WatchRegistry::new();
-                            if !allocation::failed() {
-                                registry.offer(32);
-                            }
-                            if !allocation::failed() {
-                                let mut capacity = crate::extended::Capacities::default();
-                                frame.extended.grow(&mut capacity);
-                            }
-                            registry.release();
+                        if !allocation::failed() {
+                            collector_characters::extended::character_inputs::allocation_failure_exercise();
                         }
-                        Phase::Spool | Phase::Encode | Phase::Map => {
-                            crate::extended::output_allocation_failure_exercise(|| {}, || {});
-                            let _scope = allocation::enter(Phase::Spool);
-                            if !allocation::failed()
-                                && let Some(verify) = roster.take()
-                            {
-                                let _ = verify();
-                            }
-                            if !allocation::failed()
-                                && let Some(convert) = governance.take()
-                            {
-                                conversion_matched &= convert();
-                            }
-                            if !allocation::failed() {
-                                let _ = crate::fixed_layout::allocation_failure_exercise();
-                            }
-                            if !allocation::failed() {
-                                let _ = front.check_key_fields();
-                            }
-                            if !allocation::failed() {
-                                let _encode = allocation::enter(Phase::Encode);
-                                let mut encoded = Vec::new();
-                                if front.encode_change(None, 0, &mut encoded).is_ok() {
-                                    conversion_matched &= encoded == front_expected;
-                                }
-                            }
-                            if !allocation::failed() {
-                                let _ = processor
-                                    .prepare(&frame)
-                                    .and_then(|()| processor.frame(&frame));
+                        let registry = crate::watch_registry::WatchRegistry::new();
+                        if !allocation::failed() {
+                            registry.offer(32);
+                        }
+                        if !allocation::failed() {
+                            let mut capacity = crate::extended::Capacities::default();
+                            frame.extended.grow(&mut capacity);
+                        }
+                        registry.release();
+                    }
+                    Phase::Spool | Phase::Encode | Phase::Map => {
+                        crate::extended::output_allocation_failure_exercise(|| {}, || {});
+                        let _scope = allocation::enter(Phase::Spool);
+                        if !allocation::failed()
+                            && let Some(verify) = roster.take()
+                        {
+                            let _ = verify();
+                        }
+                        if !allocation::failed()
+                            && let Some(convert) = governance.take()
+                        {
+                            conversion_matched &= convert();
+                        }
+                        if !allocation::failed() {
+                            let _ = crate::fixed_layout::allocation_failure_exercise();
+                        }
+                        if !allocation::failed() {
+                            let _ = front.check_key_fields();
+                        }
+                        if !allocation::failed() {
+                            let _encode = allocation::enter(Phase::Encode);
+                            let mut encoded = Vec::new();
+                            if front.encode_change(None, 0, &mut encoded).is_ok() {
+                                conversion_matched &= encoded == front_expected;
                             }
                         }
-                        Phase::Status => {
-                            let _scope = allocation::enter(Phase::Status);
-                            allocation::attempted_hour(None);
-                            if let Ok(status) = processor.status() {
-                                let _ = crate::status::serialize(&status);
-                            }
-                            if !allocation::failed()
-                                && let Some(mut probe) = status_probe.take()
-                            {
-                                let _ = probe.run();
-                            }
+                        if !allocation::failed() {
+                            let _ = processor
+                                .prepare(&frame)
+                                .and_then(|()| processor.frame(&frame));
                         }
-                        Phase::Teardown => {
-                            let _scope = allocation::enter(Phase::Teardown);
-                            allocation::attempted_hour(None);
-                            let _ = processor.detach();
+                    }
+                    Phase::Status => {
+                        let _scope = allocation::enter(Phase::Status);
+                        allocation::attempted_hour(None);
+                        if let Ok(status) = processor.status() {
+                            let _ = crate::status::serialize(&status);
                         }
-                        Phase::Journal
-                        | Phase::SpoolHelper
-                        | Phase::History
-                        | Phase::Unphased
-                        | Phase::Hook => {
-                            panic!("{phase:?} has no deterministic sweep")
+                        if !allocation::failed()
+                            && let Some(mut probe) = status_probe.take()
+                        {
+                            let _ = probe.run();
                         }
+                    }
+                    Phase::Teardown => {
+                        let _scope = allocation::enter(Phase::Teardown);
+                        allocation::attempted_hour(None);
+                        let _ = processor.detach();
+                    }
+                    Phase::Journal
+                    | Phase::SpoolHelper
+                    | Phase::History
+                    | Phase::Unphased
+                    | Phase::Hook => {
+                        panic!("{phase:?} has no deterministic sweep")
                     }
                 },
                 || {
@@ -1573,7 +1589,6 @@ fn exercise_pipeline(
         contained,
     })
 }
-
 
 fn recovered_hours(
     root: &Path,

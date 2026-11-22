@@ -4,7 +4,11 @@ use std::io;
 use crate::{
     ResolvedLayers, crt,
     fields::{self, block, boolean, invalid},
-    parser::{self, Item, Value},
+    key_names::KeyNames,
+    parser::{
+        Item, Kind, Value,
+        native::{self, Shape},
+    },
     terrain::DefaultMap,
     triggers::{self, Triggers},
 };
@@ -220,98 +224,269 @@ fn disabled_reason(items: &[Item], what: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-fn variable(items: &[Item]) -> Option<&[u8]> {
-    items.iter().find_map(|item| {
-        if let Some(key) = item.key.as_deref()
-            && !item.key_quoted
-            && key.starts_with(b"@")
-        {
-            return Some(key);
-        }
-        match &item.value {
-            Value::Scalar(text) if !item.quoted() && text.starts_with(b"@") => {
-                Some(text.as_slice())
-            }
-            value => variable(value.items().unwrap_or_default()),
-        }
-    })
+fn shape_mismatch(key: &[u8]) -> String {
+    format!(
+        "field {} has another shape than its reader takes, so the game reads the rest of the file out of step with this reader",
+        key.escape_ascii()
+    )
 }
 
-fn out_of_step(items: &[Item]) -> Option<String> {
-    items.iter().find_map(|item| {
-        let Some(key) = item.key.as_deref() else {
-            return Some("an entry without a key".to_owned());
-        };
-        let entries = match &item.value {
-            Value::Block(entries) => Some(entries.as_slice()),
-            _ => None,
-        };
-        let fits = match item.keyword().map(|key| key.folded()).as_deref() {
-            Some(b"name" | b"icon") => item.value.scalar().is_some(),
-            Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
-                entries.is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .all(|entry| entry.key.is_some() && entry.value.scalar().is_some())
-                })
-            }
-            Some(b"required_provinces" | b"offset") => entries
-                .is_some_and(|entries| entries.iter().all(|entry| entry.value.scalar().is_some())),
-            Some(b"is_disabled" | b"is_enemy" | b"is_friend" | b"is_neutral") => {
-                entries.is_some()
-            }
-            _ => true,
-        };
-        (!fits).then(|| {
-            format!(
-                "field {} has another shape than its reader takes",
-                key.escape_ascii()
-            )
-        })
-    })
+#[derive(Clone, Copy)]
+enum Node {
+    File,
+    Rule,
+    Permissions,
+    DisabledTrigger,
+    TriggerBody,
+    BoundLocalization,
+    Trigger(crate::combat_tactics::Node),
 }
 
-fn read_loop(items: &[Item], rules: &mut Vec<AdjacencyRule>) -> io::Result<()> {
-    for item in items {
-        if item.key.is_none() || matches!(item.value, Value::Tagged { .. }) {
-            return Err(invalid(
-                "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader",
-            ));
-        }
-        if item.keyword_is("adjacency_rule") {
-            let Some(fields) = item.value.items() else {
-                return Err(invalid(
-                    "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow",
-                ));
-            };
-            if let Some(why) = out_of_step(fields) {
-                return Err(invalid(format!(
-                    "adjacency_rule {}: {why}, so the game reads the rest of the file out of step with this reader",
-                    last(fields, "name")
-                        .and_then(Value::scalar)
-                        .unwrap_or_default()
-                        .escape_ascii()
-                )));
-            }
-            rules.push(rule(fields));
-        } else if let Some(fields) = item.value.items() {
-            return read_loop(fields, rules);
-        }
+enum TriggerNames<'a> {
+    None,
+    Provided(&'a KeyNames),
+    Lazy(&'a ResolvedLayers),
+}
+
+fn trigger_registry_status() -> Option<Result<(), String>> {
+    let tables = engine_executable::executable_tables::current()?;
+    Some(
+        tables
+            .registries
+            .as_ref()
+            .map(|_| ())
+            .map_err(|withheld| withheld.to_string()),
+    )
+}
+
+fn key_names_tables_status() -> Result<(), String> {
+    let Some(tables) = engine_executable::executable_tables::current() else {
+        return Ok(());
+    };
+    if let Err(withheld) = &tables.keywords {
+        return Err(withheld.to_string());
+    }
+    if let Err(withheld) = &tables.registries {
+        return Err(withheld.to_string());
+    }
+    let auxiliary = tables.auxiliary.as_ref().map_err(ToString::to_string)?;
+    if let Some(withheld) = [
+        auxiliary.category_names.as_ref().err(),
+        auxiliary.stat_metadata.as_ref().err(),
+        auxiliary.equipment_missions.as_ref().err(),
+        auxiliary.equipment_categories.as_ref().err(),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    {
+        return Err(withheld.to_string());
     }
     Ok(())
 }
 
-pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
-    let document = parser::parse(input).map_err(|error| invalid(error.to_string()))?;
-    if let Some(variable) = variable(&document.items) {
-        return Err(invalid(format!(
-            "the adjacency rules use the script variable {}, which this reader does not replay",
-            variable.escape_ascii()
-        )));
+fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
+    let lazy_names: std::cell::OnceCell<Result<std::sync::Arc<KeyNames>, String>> =
+        std::cell::OnceCell::new();
+    let mut interrupted: Option<io::Error> = None;
+    let mut shaper: Option<crate::combat_tactics::Shaper<'_>> = None;
+    let provided = match names {
+        TriggerNames::Provided(names) => Some(names),
+        TriggerNames::None | TriggerNames::Lazy(_) => None,
+    };
+    let document = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::Persistent(Node::File),
+        provided,
+        &mut |node, field| {
+            let mut trigger_shape = |target: crate::combat_tactics::Node| {
+                let Some(registry) = trigger_registry_status() else {
+                    return native::untraced(field);
+                };
+                if let Err(withheld) = registry {
+                    return Shape::Unsettled(withheld);
+                }
+                match names {
+                    TriggerNames::Provided(names) => shaper
+                        .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
+                        .shape(target, field)
+                        .map(Node::Trigger),
+                    TriggerNames::Lazy(layers) => {
+                        let shaper = shaper
+                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None));
+                        if shaper.needs_names(target, field) {
+                            let loaded = lazy_names.get_or_init(|| {
+                                key_names_tables_status()?;
+                                match layers.key_names() {
+                                    Ok(names) => Ok(names),
+                                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                        let reason = error.to_string();
+                                        interrupted = Some(error);
+                                        Err(reason)
+                                    }
+                                    Err(error) => Err(error.to_string()),
+                                }
+                            });
+                            match loaded {
+                                Ok(names) => shaper.set_names(names),
+                                Err(why) if interrupted.is_some() => {
+                                    return Shape::Unsettled(why.clone());
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        match shaper.shape(target, field).map(Node::Trigger) {
+                            Shape::Unsettled(reason) => match lazy_names.get() {
+                                Some(Err(why)) => Shape::Unsettled(format!("{reason} ({why})")),
+                                _ => Shape::Unsettled(reason),
+                            },
+                            other => other,
+                        }
+                    }
+                    TriggerNames::None => shaper
+                        .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
+                        .shape(target, field)
+                        .map(Node::Trigger),
+                }
+            };
+            match node {
+                Node::File => {
+                    if !field.fresh {
+                        return Shape::Unsettled(
+                            "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader".into(),
+                        );
+                    }
+                    if field.keyword_is("adjacency_rule") {
+                        if field.opens() {
+                            Shape::Object(Node::Rule)
+                        } else {
+                            Shape::Unsettled(
+                                "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow".into(),
+                            )
+                        }
+                    } else {
+                        Shape::One
+                    }
+                }
+                Node::Rule => {
+                    if !field.fresh {
+                        return Shape::Unsettled(
+                            "an entry without a key, so the game reads the rest of the file out of step with this reader".into(),
+                        );
+                    }
+                    match field.keyword().as_deref() {
+                        Some(b"name" | b"icon") => {
+                            if field.opens() {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            } else {
+                                Shape::One
+                            }
+                        }
+                        Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
+                            if field.opens() {
+                                Shape::Object(Node::Permissions)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"required_provinces" | b"offset") => {
+                            if field.opens() {
+                                Shape::List
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"is_disabled") => {
+                            if field.opens() {
+                                Shape::Object(Node::DisabledTrigger)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"is_enemy" | b"is_friend" | b"is_neutral") => {
+                            if field.opens() {
+                                Shape::Object(Node::TriggerBody)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        _ => Shape::Skip,
+                    }
+                }
+                Node::Permissions => {
+                    if !field.fresh || field.opens() {
+                        Shape::Unsettled(shape_mismatch(&field.key.text))
+                    } else {
+                        Shape::One
+                    }
+                }
+                Node::DisabledTrigger => {
+                    if matches!(
+                        field.keyword().as_deref(),
+                        Some(b"tooltip" | b"not_tooltip")
+                    ) {
+                        Shape::ObjectIfOpen(Node::BoundLocalization)
+                    } else {
+                        trigger_shape(crate::combat_tactics::Node::Trigger)
+                    }
+                }
+                Node::TriggerBody => trigger_shape(crate::combat_tactics::Node::Trigger),
+                Node::BoundLocalization => {
+                    if field.keyword_is("localization_key") {
+                        Shape::One
+                    } else {
+                        Shape::ObjectIfOpen(Node::BoundLocalization)
+                    }
+                }
+                Node::Trigger(node) => trigger_shape(node),
+            }
+        },
+    );
+    if let Some(error) = interrupted {
+        return Err(error);
+    }
+    if let Some(cause) = document.unsettled {
+        return Err(invalid(cause.to_string()));
     }
     let mut rules = Vec::new();
-    read_loop(&document.items, &mut rules)?;
+    for item in &document.items {
+        if !item.keyword_is("adjacency_rule") {
+            continue;
+        }
+        let Some(fields) = item.value.items() else {
+            return Err(invalid(
+                "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow",
+            ));
+        };
+        for field in fields {
+            if (field.keyword_is("required_provinces") || field.keyword_is("offset"))
+                && field
+                    .value
+                    .items()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry.kind == Kind::Open))
+            {
+                return Err(invalid(format!(
+                    "adjacency_rule {}: {}",
+                    last(fields, "name")
+                        .and_then(Value::scalar)
+                        .unwrap_or_default()
+                        .escape_ascii(),
+                    shape_mismatch(field.key.as_deref().unwrap_or_default())
+                )));
+            }
+        }
+        rules.push(rule(fields));
+    }
     Ok(rules)
+}
+
+pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
+    parse_inner(input, TriggerNames::None)
+}
+
+pub fn parse_with_names(input: &[u8], names: &KeyNames) -> io::Result<Vec<AdjacencyRule>> {
+    parse_inner(input, TriggerNames::Provided(names))
 }
 
 pub fn map_file(map: &DefaultMap, key: &str) -> io::Result<String> {
@@ -328,11 +503,16 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AdjacencyRule>> {
 
 pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<AdjacencyRule>> {
     let path = map_file(map, "adjacency_rules")?;
-    parse(
-        &layers
-            .read(&path)
-            .map_err(|error| invalid(format!("{path}: {error}")))?,
-    )
+    let bytes = layers
+        .read(&path)
+        .map_err(|error| invalid(format!("{path}: {error}")))?;
+    parse_inner(&bytes, TriggerNames::Lazy(layers)).map_err(|error| {
+        if error.kind() == io::ErrorKind::Interrupted {
+            error
+        } else {
+            invalid(format!("{path}: {error}"))
+        }
+    })
 }
 
 pub fn find<'a>(rules: &'a [AdjacencyRule], name: &str) -> Option<&'a AdjacencyRule> {
@@ -467,10 +647,14 @@ mod tests {
 
     #[test]
     fn readings_the_tree_cannot_follow_refuse_the_file() {
+        let replayed =
+            parse(b"@army = no adjacency_rule = { name = A enemy = { army = @army } }").unwrap();
+        assert_eq!(replayed[0].unsupported, None);
+        assert_eq!(replayed[0].permissions[Verdict::Enemy as usize], 0x0e);
         for (text, why) in [
             (
-                &b"@army = no adjacency_rule = { name = A enemy = { army = @army } }"[..],
-                "script variable @army",
+                &b"@open = { adjacency_rule = { name = A icon = @open } }"[..],
+                "field icon has another shape",
             ),
             (
                 b"adjacency_rule = { name = A enemy = no } adjacency_rule = { name = B }",
@@ -483,6 +667,14 @@ mod tests {
             (
                 b"adjacency_rule = { name = { A } }",
                 "field name has another shape",
+            ),
+            (
+                b"adjacency_rule = { name = A required_provinces = { { 1 } } }",
+                "field required_provinces has another shape",
+            ),
+            (
+                b"adjacency_rule = { name = A is_enemy = { unknown_scope = { @x = 1 always = yes } } icon = @x }",
+                "unknown_scope",
             ),
             (b"adjacency_rule = A", "not a block"),
         ] {
@@ -503,5 +695,344 @@ mod tests {
         );
         let error = map_file(&map, "adjacency_rules").unwrap_err().to_string();
         assert!(error.contains("names no adjacency_rules"), "{error}");
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn variable_backed_modded_strait_reads_through_native_stream() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("adjacency_rules_variables");
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.addon(),
+            "map/adjacency_rules.txt",
+            r#"@strait_name = "MOD_STRAIT"
+@blocked = no
+@allowed = yes
+@prov_a = 101
+@prov_b = 102
+@icon_prov = 101
+@ox = -12.5
+@oy = 0.0
+@oz = 4.25
+@flag = MOD_STRAIT_CLOSED
+@tt = MOD_STRAIT_CLOSED_TT
+adjacency_rule = {
+    name = @strait_name
+    contested = { army = @blocked navy = @blocked }
+    enemy = { army = @blocked navy = @blocked submarine = @blocked trade = @blocked }
+    friend = { army = @allowed navy = @allowed submarine = @allowed trade = @allowed }
+    neutral = { army = @allowed navy = @blocked }
+    required_provinces = { @prov_a @prov_b }
+    is_disabled = { has_country_flag = @flag tooltip = @tt }
+    is_friend = { always = @allowed }
+    icon = @icon_prov
+    offset = { @ox @oy @oz }
+}
+adjacency_rule = {
+    name = "BAD_MOD_STRAIT"
+    enemy = { tanks = @blocked }
+    icon = @icon_prov
+    offset = { @ox @oy @oz }
+}
+adjacency_rule = {
+    name = "MISSING_VAR_STRAIT"
+    enemy = { army = @missing_perm }
+    icon = @icon_prov
+}"#,
+        );
+        let rules = read(&stack.layers(&[])).unwrap();
+        let strait = find(&rules, "MOD_STRAIT").unwrap();
+        assert_eq!(strait.unsupported, None);
+        assert_eq!(strait.permissions, [0x0c, 0x00, 0x0f, 0x0d]);
+        assert_eq!(strait.required_provinces, [101, 102]);
+        assert_eq!(strait.is_disabled.len(), 1);
+        assert_eq!(
+            strait.is_disabled[0].value.scalar(),
+            Some(&b"MOD_STRAIT_CLOSED"[..])
+        );
+        assert_eq!(
+            strait.disabled_reason.as_deref(),
+            Ok(&b"MOD_STRAIT_CLOSED_TT_NOT"[..])
+        );
+        assert_eq!(strait.is_friend.len(), 1);
+        assert_eq!(strait.is_friend[0].value.scalar(), Some(&b"yes"[..]));
+        assert_eq!(
+            strait.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [-12.5, 0.0, 4.25]
+            }))
+        );
+        let bad = find(&rules, "BAD_MOD_STRAIT").unwrap();
+        assert!(bad.unsupported.as_deref().unwrap().contains("tanks"));
+        assert_eq!(
+            bad.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [-12.5, 0.0, 4.25]
+            }))
+        );
+        let missing = find(&rules, "MISSING_VAR_STRAIT").unwrap();
+        assert!(
+            missing
+                .unsupported
+                .as_deref()
+                .unwrap()
+                .contains("@missing_perm")
+        );
+        assert_eq!(
+            missing.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [0.0; 3]
+            }))
+        );
+    }
+
+    #[test]
+    fn known_trigger_body_replays_definitions_in_plain_parse_while_unknown_children_refuse() {
+        let rules =
+            parse(b"adjacency_rule = { name = A is_enemy = { @x = 1 always = yes } icon = @x }")
+                .unwrap();
+        assert_eq!(rules[0].unsupported, None);
+        assert_eq!(
+            rules[0].icon,
+            Ok(Some(IconPlacement {
+                province: 1,
+                offset: [0.0; 3]
+            }))
+        );
+        let refused = parse(
+            b"adjacency_rule = { name = A is_enemy = { unknown_scope = { @x = 1 always = yes } } icon = @x }",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("unknown_scope") || refused.contains("@x"),
+            "{refused}"
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn read_map_succeeds_without_key_names_when_no_trigger_needs_them() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("adjacency_rules_lazy_key_names");
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A icon = 7 }",
+        );
+        stack.write(&stack.base(), "common/country_tags/broken.txt", "AAA = x\n");
+        let layers = stack.layers(&[]);
+        std::fs::remove_file(stack.base().join("common/country_tags/broken.txt")).unwrap();
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(
+            rules[0].icon,
+            Ok(Some(IconPlacement {
+                province: 7,
+                offset: [0.0; 3]
+            }))
+        );
+
+        let needs = crate::test_support::Stack::new("adjacency_rules_needs_key_names");
+        needs.write(
+            &needs.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        needs.write(
+            &needs.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = B is_enemy = { custom_scope = { always = yes } } }",
+        );
+        needs.write(&needs.base(), "common/country_tags/broken.txt", "AAA = x\n");
+        let layers = needs.layers(&[]);
+        std::fs::remove_file(needs.base().join("common/country_tags/broken.txt")).unwrap();
+        let error = read(&layers).unwrap_err().to_string();
+        assert!(error.contains("custom_scope"), "{error}");
+    }
+
+    #[test]
+    fn withheld_executable_registries_refuse_trigger_dispatch_without_panicking() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Registries,
+                "fixture withheld registries",
+            )
+        });
+        let error = parse(b"adjacency_rule = { name = A is_enemy = { always = yes } }")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fixture withheld registries"), "{error}");
+    }
+
+    #[test]
+    fn parse_with_names_without_executable_tables_does_not_panic() {
+        engine_executable::executable_tables::enter(None);
+        let rules = parse_with_names(
+            b"adjacency_rule = { name = A is_enemy = { always = yes } }",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn withheld_auxiliary_tables_read_registered_triggers_and_refuse_dynamic_without_panicking() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Auxiliary,
+                "fixture withheld auxiliary",
+            )
+        });
+        let stack = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_ok");
+        stack.write(
+            &stack.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { always = yes } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+
+        let dynamic = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_dynamic");
+        dynamic.write(
+            &dynamic.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        dynamic.write(
+            &dynamic.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        dynamic.write(
+            &dynamic.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = B is_enemy = { custom_scope = { always = yes } } }",
+        );
+        let layers = dynamic.layers(&[]);
+        let error = read(&layers).unwrap_err().to_string();
+        assert!(error.contains("fixture withheld auxiliary"), "{error}");
+
+        let error = parse_with_names(
+            b"adjacency_rule = { name = C is_enemy = { custom_scope = { always = yes } } }",
+            &KeyNames::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("fixture withheld auxiliary"), "{error}");
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn read_map_loads_key_names_for_own_keys_that_need_buildings() {
+        crate::combat_tactics::own::register_non_damaged_building_level();
+        let stack = crate::test_support::Stack::new("adjacency_rules_own_key_building");
+        stack.write(
+            &stack.base(),
+            "common/buildings/00_buildings.txt",
+            "buildings = { factory = { level_cap = { state_max = 10 } } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { non_damaged_building_level = { building = factory level > 2 } } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn withheld_auxiliary_tables_read_numeric_state_scope_without_catalogue() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Auxiliary,
+                "fixture withheld auxiliary",
+            )
+        });
+        let stack = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_state");
+        stack.write(
+            &stack.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { 12 = { always = yes } } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
+
+    #[test]
+    fn embedded_end_marker_in_keyed_unknown_block_refuses_before_accepting_icon() {
+        engine_executable::executable_tables::enter(None);
+        let error = parse(
+            b"adjacency_rule = { name = A is_enemy = { opaque = { k = 1\xff } } @x = 7 icon = @x }",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("opaque"), "{error}");
+    }
+
+    #[test]
+    fn embedded_end_marker_in_nested_unknown_object_refuses_before_accepting_icon() {
+        const INPUT: &[u8] = b"adjacency_rule = { name = A is_enemy = { owns_any_state_of = { nested = { \xff } } @x = 7 icon = @x } }";
+        crate::combat_tactics::own::register_owns_any_state_of();
+        let rules = parse(INPUT).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].icon, Ok(None));
+
+        engine_executable::executable_tables::enter(None);
+        let error = parse(INPUT).unwrap_err().to_string();
+        assert!(error.contains("nested"), "{error}");
     }
 }

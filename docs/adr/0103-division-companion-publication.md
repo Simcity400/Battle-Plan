@@ -14,4 +14,4 @@ Observe commander retreat bans for the full census, carrying only an admitted co
 
 Regression `da93900628` covers live storage sizing and preservation of native observation intervals.
 
-[Presentation capture and projection](../../crates/collector/src/extended/division_presentation.rs) · [Status-store contract](0103-division-owned-settlement.md) · [Move and name inputs](0103-division-name-ranges.md)
+[Presentation capture and projection](../../crates/collector-divisions/src/extended/division_presentation.rs) · [Status-store contract](0103-division-owned-settlement.md) · [Move and name inputs](0103-division-name-ranges.md)

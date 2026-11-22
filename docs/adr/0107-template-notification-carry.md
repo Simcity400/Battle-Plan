@@ -6,4 +6,4 @@ Select the owner or deployment holder for country configuration, and the occupat
 
 The callback preserves original arguments and the original result. Hold its notification until native return proves that the writer completed. A foreign unwind cannot give that proof. A custom-icon command does not name an individual template and revokes the applicable observations. A scripted addition with a known country revokes that country’s owner witness. An unresolved country or unreadable holder revokes the wider scope. For a unit-type or role rebuild, compare the affected operands to avoid revoking an actually unchanged result while keeping acquisition out during the call.
 
-[Template observer](../../crates/collector/src/template_changes.rs) · [Native template writer inventory](../../crates/engine-mutations/src/template_mutations.rs)
+[Template observer](../../crates/collector-division-templates/src/template_changes.rs) · [Native template writer inventory](../../crates/engine-mutations/src/template_mutations.rs)

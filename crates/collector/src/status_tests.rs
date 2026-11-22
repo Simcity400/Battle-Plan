@@ -1,4 +1,3 @@
-
 use crate::status::{DebugValue, DisplayValue, status};
 use serde::Serialize;
 
@@ -40,14 +39,14 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
         status!({
             "debug": DebugValue(replay_data::rows::TableId::Clock),
             "display": DisplayValue(Label),
-            "destruction": crate::equipment_destruction::status(),
+            "destruction": collector_equipment_destruction::equipment_destruction::status(),
         })
     });
     prove(&value)?;
     drop(value);
     #[cfg(feature = "advisor_profile")]
     prove(&with_allocations_denied(
-        crate::extended::characters::advisors::profile::status,
+        collector_characters::extended::characters::advisors::profile::status,
     ))?;
     #[cfg(feature = "callback_profile")]
     prove(&with_allocations_denied(crate::callback_profile::status))?;

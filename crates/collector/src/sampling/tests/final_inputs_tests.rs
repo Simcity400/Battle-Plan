@@ -14,9 +14,11 @@ impl Gate {
     fn wait(&self) {
         let (open, timeout) = self
             .changed
-            .wait_timeout_while(self.open.lock().unwrap(), crate::TEST_HANG_GUARD, |open| {
-                !*open
-            })
+            .wait_timeout_while(
+                self.open.lock().unwrap(),
+                collector_test_support::TEST_HANG_GUARD,
+                |open| !*open,
+            )
             .unwrap();
         assert!(*open && !timeout.timed_out(), "final-input fixture gate");
     }
@@ -25,14 +27,14 @@ impl Gate {
 fn character(part: usize, dispatch: &Arc<acquisition::FinalInputsDispatch>) -> acquisition::Job {
     acquisition::Job::Characters(acquisition::CharactersRequest {
         final_inputs: Some(Arc::clone(dispatch)),
-        context: extended::characters::CharactersCopyContext {
+        context: collector_characters::extended::characters::CharactersCopyContext {
             base: 0,
             game_state: 0,
             force_full: false,
-            active: extended::characters::PART_MASKS[part],
+            active: collector_characters::extended::characters::PART_MASKS[part],
         },
-        payload: extended::characters::CharactersJob::vacant(part),
-        roles: extended::characters::Roles::Independent,
+        payload: collector_characters::extended::characters::CharactersJob::vacant(part),
+        roles: collector_characters::extended::characters::Roles::Independent,
     })
 }
 
@@ -151,7 +153,7 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                         started.send(request.payload.part).unwrap();
                         gates[request.payload.part].wait();
                         acquisition::Report::Characters(
-                            extended::characters::CharactersCopyReport {
+                            collector_characters::extended::characters::CharactersCopyReport {
                                 raw_ok: true,
                                 ..Default::default()
                             },
@@ -176,7 +178,9 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 }
             }
             for _ in 0..required.count_ones() {
-                running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                running
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
             }
             let last = (1..CHARACTER_PARTS).rfind(|part| required & (1 << part) != 0);
             for part in (1..CHARACTER_PARTS)
@@ -214,7 +218,9 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 );
                 gates[last].release();
             }
-            finishing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            finishing
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .unwrap();
             assert_eq!(
                 pool.calibration().executor.uncollected,
                 required.count_ones() as usize + 1
@@ -241,7 +247,8 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
             let calibration = pool.calibration();
             assert_eq!(calibration.executor.uncollected, 0);
             assert_eq!(calibration.executor.caller_executed, 0);
-            let counters = calibration.roles[acquisition::Role::FinalInputs as usize].counters;
+            let counters =
+                calibration.roles[collector_workers::roles::Role::FinalInputs as usize].counters;
             assert_eq!(
                 (counters.accepted, counters.completed, counters.rejected),
                 (1, 1, 0)
@@ -269,11 +276,13 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
                     "final inputs retried"
                 );
                 assert_ne!(failure, 2, "synthetic character failure");
-                acquisition::Report::Characters(extended::characters::CharactersCopyReport {
-                    raw_ok: failure != 0,
-                    plan_failed: failure == 1,
-                    ..Default::default()
-                })
+                acquisition::Report::Characters(
+                    collector_characters::extended::characters::CharactersCopyReport {
+                        raw_ok: failure != 0,
+                        plan_failed: failure == 1,
+                        ..Default::default()
+                    },
+                )
             }
         });
         let mut batch = acquisition::Batch::new(&pool);
@@ -288,12 +297,14 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
                     payload: engine_native::cprovince::Capture::try_with_capacity(0, 0, 0).unwrap(),
                 });
                 unsafe { submit_acquisition(&shared, &mut batch, blocker_job) };
-                running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                running
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
             }
             let pending =
                 unsafe { submit_acquisition(&shared, &mut batch, character(2, &dispatch)) };
             if failure == 4 {
-                batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
+                batch.stop_for_contained_panic(collector_workers::roles::Role::OrdersStitch);
                 blocker.release();
             }
             batch.wait_ready(|batch| pending_complete(batch, &pending).then_some(()));
@@ -310,7 +321,7 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
         assert!(engine_allocation::SharedBox::ptr_eq(&request.countries, &countries));
         assert_eq!(request.allocated_bytes(), bytes);
         assert_eq!(
-            pool.calibration().roles[acquisition::Role::FinalInputs as usize]
+            pool.calibration().roles[collector_workers::roles::Role::FinalInputs as usize]
                 .counters
                 .accepted,
             0
@@ -327,7 +338,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     let pool = acquisition::Pool::with_test_runner(1, |_| panic!("rejected successor ran"));
     let mut batch = acquisition::Batch::new(&pool);
     let dispatch = batch.final_inputs();
-    batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
+    batch.stop_for_contained_panic(collector_workers::roles::Role::OrdersStitch);
     let request = final_request();
     let countries = engine_allocation::SharedBox::clone(&request.countries);
     dispatch.arm(request, 0);
@@ -392,17 +403,22 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
                 if failure == 2 {
                     let shared = Shared::new(0, 0, 1);
                     unsafe { submit_acquisition(&shared, &mut batch, source(0, 0)) };
-                    running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                    running
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                        .unwrap();
                 }
                 let dispatch = batch.final_inputs();
                 dispatch.arm(request, 0);
                 if failure == 2 {
-                    batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
+                    batch.stop_for_contained_panic(collector_workers::roles::Role::OrdersStitch);
                 } else {
-                    running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                    running
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                        .unwrap();
                 }
-                let counters =
-                    pool.calibration().roles[acquisition::Role::FinalInputs as usize].counters;
+                let counters = pool.calibration().roles
+                    [collector_workers::roles::Role::FinalInputs as usize]
+                    .counters;
                 assert_eq!((counters.accepted, counters.completed), (hour, hour - 1));
                 assert_eq!(read_accounting::snapshot(), read_accounting::ZERO);
                 panic!("synthetic parent unwind with unadopted successor");
@@ -420,7 +436,8 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
             );
             assert_eq!(stats.executor.caller_executed, 0);
             assert_eq!(stats.executor.accepted, stats.executor.completed);
-            let counters = stats.roles[acquisition::Role::FinalInputs as usize].counters;
+            let counters =
+                stats.roles[collector_workers::roles::Role::FinalInputs as usize].counters;
             assert_eq!(
                 (counters.accepted, counters.completed, counters.rejected),
                 (hour, hour, 0)
@@ -477,7 +494,9 @@ fn final_inputs_dispatches_while_the_unrelated_variant_job_is_still_running() {
     });
     let mut batch = acquisition::Batch::new(&pool);
     let variant = unsafe { submit_acquisition(&shared, &mut batch, source(4, 0)) };
-    start.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    start
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     let producers: [PendingAcquisition; 4] = std::array::from_fn(|index| unsafe {
         submit_acquisition(&shared, &mut batch, source(index, 0))
     });
@@ -486,7 +505,9 @@ fn final_inputs_dispatches_while_the_unrelated_variant_job_is_still_running() {
     });
     assert!(!pending_complete(&batch, &variant));
     batch.final_inputs().arm(final_request(), 0);
-    finish.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    finish
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     assert!(!pending_complete(&batch, &variant));
     gate.release();
 }

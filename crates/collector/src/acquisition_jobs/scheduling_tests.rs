@@ -95,7 +95,7 @@ fn old_gated(request: &mut GatedRequest, marks: &Marks) {
         request.packs.projects.fail_gated_capture(
             request.hour,
             request.force_full,
-            crate::extended::NOT_RECORDED,
+            collector_extended_support::outcomes::NOT_RECORDED,
         );
     }
 }
@@ -192,9 +192,11 @@ impl Gate {
     fn wait(&self) {
         let (open, _) = self
             .1
-            .wait_timeout_while(self.0.lock().unwrap(), crate::TEST_HANG_GUARD, |open| {
-                !*open
-            })
+            .wait_timeout_while(
+                self.0.lock().unwrap(),
+                collector_test_support::TEST_HANG_GUARD,
+                |open| !*open,
+            )
             .unwrap();
         assert!(*open, "gated fixture was not released");
     }
@@ -251,8 +253,11 @@ fn projects_run_while_division_inputs_fog_and_construction_are_held() {
     unsafe { batch.submit(&mut Some(Job::Gated(request))) }.unwrap();
     unsafe { batch.submit(&mut Some(Job::GatedProjects(projects))) }.unwrap();
     batch.release();
-    let mut roles =
-        std::array::from_fn::<_, 3, _>(|_| running.recv_timeout(crate::TEST_HANG_GUARD).unwrap());
+    let mut roles = std::array::from_fn::<_, 3, _>(|_| {
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap()
+    });
     assert!(
         !batch.is_complete(input),
         "Projects finished before the Inputs handler could run"

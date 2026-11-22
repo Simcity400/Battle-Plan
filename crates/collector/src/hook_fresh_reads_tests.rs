@@ -89,7 +89,7 @@ macro_rules! fresh_fallback {
 
 fresh_fallback!(
     portrait_install_failure_keeps_fresh_portraits,
-    crate::portrait_changes::Hooks,
+    collector_characters::portrait_changes::Hooks,
     |value| {
         TableRows::CharacterPortraits(vec![CharacterPortraitRow {
             character: 7,
@@ -113,7 +113,7 @@ fresh_fallback!(
 );
 fresh_fallback!(
     advisor_install_failure_keeps_fresh_roles,
-    crate::advisor_changes::Hooks,
+    collector_characters::advisor_changes::Hooks,
     |value| {
         TableRows::CharacterRoleTraits(vec![CharacterRoleTraitRow {
             character: 7,
@@ -377,7 +377,7 @@ fresh_fallback!(
 );
 fresh_fallback!(
     province_unit_install_failure_keeps_fresh_order,
-    crate::province_unit_changes::Hooks,
+    collector_divisions::province_unit_changes::Hooks,
     |value| {
         TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
             province: 7,
@@ -412,7 +412,7 @@ fresh_fallback!(
 );
 fresh_fallback!(
     mission_install_failure_keeps_fresh_regional_ordinals,
-    crate::mission_changes::Hooks,
+    collector_missions::mission_changes::Hooks,
     |value| {
         TableRows::AirRegionalMissions(vec![AirRegionalMissionRow {
             wing: 7,
@@ -434,7 +434,7 @@ fresh_fallback!(
 
 fresh_fallback!(
     equipment_observer_install_failure_keeps_fresh_rosters,
-    crate::equipment_destruction::Hooks,
+    collector_equipment_destruction::equipment_destruction::Hooks,
     |value| {
         TableRows::AvailableEquipmentVariants(vec![AvailableEquipmentVariantRow {
             country: 1,
@@ -543,7 +543,7 @@ fn missing_fuel_awards_keep_fresh_stock_and_the_real_window_refusal() {
 
 fresh_fallback!(
     land_install_failure_keeps_incomplete_coverage,
-    crate::land_events::Hooks,
+    collector_land_events::land_events::Hooks,
     |value| {
         TableRows::LandEventCoverage(vec![LandEventCoverageRow {
             complete: false,
@@ -583,15 +583,15 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
         return;
     }
     contract_tests::reset_session();
-    FamilyHooks::<crate::land_events::Hooks>::construct(0, || {
+    FamilyHooks::<collector_land_events::land_events::Hooks>::construct(0, || {
         Err("synthetic relay allocation failure")
     })
     .unwrap();
-    let mut capture = crate::extended::land_events::Captured::vacant();
+    let mut capture = collector_land_events::extended::land_events::Captured::vacant();
     for hour in [10, 11] {
         capture.drain(hour, false);
         let mut frame = source(hour);
-        for (table, value) in crate::extended::land_events::TABLES
+        for (table, value) in collector_land_events::extended::land_events::TABLES
             .into_iter()
             .zip(capture.tables())
         {
@@ -618,7 +618,7 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
 
 fresh_fallback!(
     mission_install_failure_keeps_current_owner_and_unknown_ground_crew_flag,
-    crate::mission_changes::Hooks,
+    collector_missions::mission_changes::Hooks,
     |value| {
         TableRows::AirGroundCrews(vec![AirGroundCrewRow {
             supply: Recorded::Value(None),

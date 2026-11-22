@@ -2113,13 +2113,13 @@ impl ModelPass {
         let rig = self.rigs.get(slot)?;
         let player = self.player(mesh, instance)?;
         let root = rig.nodes.first()?;
-        if root.native.as_ref().is_none_or(|source| source.skeleton.is_empty()) {
+        let Some(source) = root.native.as_ref() else {
+            return Some(Ok(Vec::new()));
+        };
+        if source.skeleton.is_empty() {
             return Some(Ok(Vec::new()));
         }
-        if !(root.mesh_scale > 0.0) {
-            return Some(Err(format!("unit model {mesh} has no pdxmesh scale to take its joints out of")));
-        }
-        let entity = root.scale / root.mesh_scale;
+        let entity = source.entity_scale;
         let actors = self.actors(slot, self.player_key(mesh, instance), rig, Some(player), false);
         let pose = match actors.first().map(|actor| &actor.pose) {
             Some(Ok(pose)) => pose,
@@ -4299,5 +4299,107 @@ mod parallel_animation_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn root_joints_supports_mirrored_models_with_negative_pdxmesh_scale() {
+        let mut positive_rig = entity_animation::pose_tests::rig(2.0, true, true);
+        let pos_root = &mut positive_rig.nodes[0];
+        pos_root.mesh_scale = 1.0;
+        pos_root.scale = 2.0;
+        let pos_source = Arc::make_mut(pos_root.native.as_mut().unwrap());
+        pos_source.mesh_scale = 1.0;
+        pos_source.entity_scale = 2.0;
+        let mut mirrored_rig = entity_animation::pose_tests::rig(2.0, true, true);
+        let root = &mut mirrored_rig.nodes[0];
+        root.mesh_scale = -1.0;
+        root.scale = -2.0;
+        let source = Arc::make_mut(root.native.as_mut().unwrap());
+        source.mesh_scale = -1.0;
+        source.entity_scale = 2.0;
+        for rig in [&mut positive_rig, &mut mirrored_rig] {
+            for node in &mut rig.nodes {
+                Arc::make_mut(node.native.as_mut().unwrap()).frozen =
+                    node.clips[0].animation.clone();
+            }
+        }
+        let library_of = |rig: entity_animation::Rig, scale: f32| ModelLibrary {
+            rigs: vec![Arc::new(rig)],
+            meshes: vec![ModelMesh {
+                asset: AssetKey::synthetic("unit"),
+                name: "unit".into(),
+                path: String::new(),
+                scale,
+                lod_distances: Vec::new(),
+                native: Vec::new(),
+                radius: 1.0,
+                height: 1.0,
+                visual: false,
+                own_radius: 1.0,
+                bound: 1.0,
+                convoy_radius: None,
+                attachments: 0,
+                cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            }],
+            ..Default::default()
+        };
+        let mut positive = ModelPass::new(&library_of(positive_rig, 2.0), "positive");
+        let mut mirrored = ModelPass::new(&library_of(mirrored_rig, -2.0), "mirrored");
+        let instance = ModelInstance {
+            position: [10.0, 0.0, 20.0],
+            scale: 1.0,
+            animation: entity_animation::IDLE,
+            animation_seed: 1,
+            animation_identity: 1,
+            ..Default::default()
+        };
+        positive.update_placed(vec![(0, instance)], 256.0);
+        mirrored.update_placed(vec![(0, instance)], 256.0);
+        positive.animate(0.5, None, &[0.0]);
+        mirrored.animate(0.5, None, &[0.0]);
+        let positive_joints = positive
+            .root_joints(0, &positive.field.instances[0])
+            .unwrap()
+            .unwrap();
+        let mirrored_joints = mirrored
+            .root_joints(0, &mirrored.field.instances[0])
+            .unwrap()
+            .unwrap();
+        assert!(!mirrored_joints.is_empty());
+        let expected: Vec<[f32; 3]> = positive_joints
+            .iter()
+            .map(|joint| joint.map(|v| -v))
+            .collect();
+        for (actual, want) in mirrored_joints.iter().zip(&expected) {
+            for axis in 0..3 {
+                assert!(
+                    (actual[axis] - want[axis]).abs() < 1e-5,
+                    "axis {axis}: actual {:?} vs want {:?}",
+                    actual,
+                    want
+                );
+            }
+        }
+        let shape = crate::map::model_pick::Shape::Bounds {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        let center = [0, 1, 2].map(|axis| {
+            let lo = mirrored_joints
+                .iter()
+                .map(|j| j[axis])
+                .fold(f32::INFINITY, f32::min);
+            let hi = mirrored_joints
+                .iter()
+                .map(|j| j[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            0.5 * (lo + hi) + instance.position[axis]
+        });
+        assert!(shape.hit(
+            mirrored.field.instances[0],
+            &mirrored_joints,
+            [center[0], center[1] + 10.0, center[2]],
+            [0.0, -1.0, 0.0],
+        ));
     }
 }

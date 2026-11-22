@@ -205,7 +205,11 @@ fn railway_adjacency_refuses_content_whose_game_identity_or_storage_differs() {
     assert!(RailwayAdjacency::parse(&definitions, &top_down, None).is_err());
     let mut sentinel = bitmap.clone();
     sentinel[54..57].fill(0);
-    assert!(RailwayAdjacency::parse(&definitions, &sentinel, None).is_err());
+    let allocated = RailwayAdjacency::parse(&definitions, &sentinel, None).unwrap();
+    assert_eq!(allocated.neighbors(0), None);
+    assert_eq!(allocated.neighbors(1).unwrap(), &[] as &[u32]);
+    assert_eq!(allocated.neighbors(6).unwrap(), [2, 3, 4]);
+    assert_eq!(allocated.neighbors(7), None);
     assert!(
         RailwayAdjacency::parse(
             &definitions,
