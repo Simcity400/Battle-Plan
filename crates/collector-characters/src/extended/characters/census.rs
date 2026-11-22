@@ -93,7 +93,7 @@ fn fresh_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
     static HISTORY: std::sync::Mutex<History> = std::sync::Mutex::new(History {
         scope: (0, 0),
@@ -111,12 +111,12 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::default();
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
     HISTORY.with_borrow_mut(|history| history.generation(scope, historical, pointers, rows))
 }
@@ -128,7 +128,6 @@ static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsiz
 pub(super) fn forget_live() {
     LIVE_LEN.store(0, std::sync::atomic::Ordering::Relaxed);
     LIVE_HINT.store(0, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(test)]
     HISTORY.with_borrow_mut(|history| *history = History::default());
 }
 

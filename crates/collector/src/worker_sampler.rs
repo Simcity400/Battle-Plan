@@ -4,7 +4,7 @@ mod tests;
 
 use crate::status::status;
 use collector_workers::worker_sampler::{
-    Control, EARLY_EXIT, EMERGENCY_EXIT, JOB_SLOT, JOBS, SAMPLER_CONTROL, creation,
+    self, Control, EARLY_EXIT, EMERGENCY_EXIT, JobGuard, SAMPLER_CONTROL, SampledJob, creation,
 };
 use serde::{Serialize, Serializer};
 use std::{
@@ -65,31 +65,10 @@ static GAME_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_CREATION: AtomicU64 = AtomicU64::new(0);
 static GAME_JOB: AtomicU16 = AtomicU16::new(0);
 static GAME_GATE: GameGate = GameGate::new();
-pub(crate) struct JobGuard {
-    slot: *const AtomicU16,
-    previous: u16,
-}
 pub(crate) fn job(role: collector_workers::roles::Role) -> JobGuard {
-    job_id(role as u16 + 1)
-}
-fn job_id(role: u16) -> JobGuard {
-    let mut slot = JOB_SLOT.get();
-    if slot.is_null() && unsafe { GetCurrentThreadId() } == GAME_ID.load(Ordering::Acquire) {
-        slot = &GAME_JOB;
-    }
-    let previous = if slot.is_null() {
-        0
-    } else {
-        unsafe { &*slot }.swap(role, Ordering::Release)
-    };
-    JobGuard { slot, previous }
-}
-impl Drop for JobGuard {
-    fn drop(&mut self) {
-        if !self.slot.is_null() {
-            unsafe { &*self.slot }.store(self.previous, Ordering::Release);
-        }
-    }
+    worker_sampler::job(role as u16 + 1, || {
+        (unsafe { GetCurrentThreadId() } == GAME_ID.load(Ordering::Acquire)).then_some(&GAME_JOB)
+    })
 }
 
 struct GameGate {
@@ -349,8 +328,7 @@ pub(crate) fn prepare() {
 }
 pub(crate) fn release() {
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
-    let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
-    drop(jobs);
+    worker_sampler::clear_jobs();
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
 }
 pub(crate) fn thread_id() -> u32 {
@@ -457,7 +435,7 @@ struct Target {
     info: format::ThreadInfo,
     role_id: u8,
     last_cycles: u64,
-    job: Option<Arc<AtomicU16>>,
+    job: Option<SampledJob>,
 }
 impl Target {
     fn open(id: u32, role: u8, worker: u8, slot: u16) -> Option<Self> {
@@ -481,12 +459,7 @@ impl Target {
         if unsafe { QueryThreadCycleTime(handle.0, &mut cycles) } == 0 {
             return None;
         }
-        let registered = JOBS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .find(|(registered, _, _)| *registered == id)
-            .and_then(|(_, created, job)| job.upgrade().map(|job| (*created, job)));
+        let registered = worker_sampler::registered_job(id);
         let expected = if role == GAME_ROLE {
             GAME_CREATION.load(Ordering::Acquire)
         } else if role == 7 {
@@ -540,11 +513,7 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
     scratch.suspended = false;
     let handle = target.handle.0;
     let retries = &COUNTERS.resume_retries;
-    let job = if target.role() == GAME_ROLE {
-        Some(&GAME_JOB)
-    } else {
-        target.job.as_deref()
-    };
+    let game = target.role() == GAME_ROLE;
     scratch.context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
     unsafe {
         QueryPerformanceCounter(&mut scratch.stamp);
@@ -555,7 +524,11 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
     scratch.suspended = true;
     let mut ok = unsafe { GetThreadContext(handle, &mut scratch.context.0) } != 0;
     if ok {
-        scratch.job = job.map_or(0, |job| job.load(Ordering::Acquire));
+        scratch.job = if game {
+            GAME_JOB.load(Ordering::Acquire)
+        } else {
+            target.job.as_ref().map_or(0, SampledJob::id)
+        };
         scratch.in_callback = GAME_GATE.in_callback.load(Ordering::SeqCst);
     }
     if !resume_held(handle, retries) {

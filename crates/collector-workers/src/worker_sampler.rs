@@ -1,6 +1,7 @@
 use std::{
-    cell::Cell,
-    ptr,
+    cell::RefCell,
+    marker::PhantomData,
+    rc::Rc,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -12,36 +13,113 @@ use windows_sys::Win32::{
     System::Threading::{GetCurrentThread, GetCurrentThreadId, GetThreadTimes},
 };
 
-pub static JOBS: Mutex<Vec<(u32, u64, Weak<AtomicU16>)>> = Mutex::new(Vec::new());
+static JOBS: Mutex<Vec<(u32, u64, Weak<AtomicU16>)>> = Mutex::new(Vec::new());
 pub static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
 pub static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
 pub static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
-thread_local! { pub static JOB_SLOT: Cell<*const AtomicU16> = const { Cell::new(ptr::null()) }; }
+thread_local! {
+    static JOB_SLOT: RefCell<Option<Arc<AtomicU16>>> = const { RefCell::new(None) };
+}
 
-pub struct WorkerRegistration {
+pub(crate) struct WorkerRegistration {
     id: u32,
     slot: Arc<AtomicU16>,
+    _thread: PhantomData<Rc<()>>,
 }
-pub fn register_worker() -> WorkerRegistration {
+pub(crate) fn register_worker() -> WorkerRegistration {
     let id = unsafe { GetCurrentThreadId() };
     let slot = Arc::new(AtomicU16::new(0));
-    JOB_SLOT.set(Arc::as_ptr(&slot));
+    JOB_SLOT.replace(Some(Arc::clone(&slot)));
     let created = creation(unsafe { GetCurrentThread() }).unwrap_or(0);
     JOBS.lock()
         .unwrap_or_else(|e| e.into_inner())
         .push((id, created, Arc::downgrade(&slot)));
-    WorkerRegistration { id, slot }
+    WorkerRegistration {
+        id,
+        slot,
+        _thread: PhantomData,
+    }
 }
 impl Drop for WorkerRegistration {
     fn drop(&mut self) {
         stop_before_thread_exit();
-        JOB_SLOT.set(ptr::null());
+        JOB_SLOT.replace(None);
         self.slot.store(0, Ordering::Release);
         JOBS.lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(id, _, _)| *id != self.id);
     }
 }
+
+enum JobSlot {
+    Worker(Arc<AtomicU16>),
+    Game(&'static AtomicU16),
+}
+
+impl JobSlot {
+    fn atomic(&self) -> &AtomicU16 {
+        match self {
+            Self::Worker(slot) => slot,
+            Self::Game(slot) => slot,
+        }
+    }
+}
+
+pub struct JobGuard {
+    slot: Option<JobSlot>,
+    previous: u16,
+    _thread: PhantomData<Rc<()>>,
+}
+
+pub fn job(id: u16, game_slot: impl FnOnce() -> Option<&'static AtomicU16>) -> JobGuard {
+    let slot = JOB_SLOT
+        .with_borrow(Clone::clone)
+        .map(JobSlot::Worker)
+        .or_else(|| game_slot().map(JobSlot::Game));
+    let previous = slot
+        .as_ref()
+        .map_or(0, |slot| slot.atomic().swap(id, Ordering::Release));
+    JobGuard {
+        slot,
+        previous,
+        _thread: PhantomData,
+    }
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if let Some(slot) = &self.slot {
+            slot.atomic().store(self.previous, Ordering::Release);
+        }
+    }
+}
+
+pub struct SampledJob(Arc<AtomicU16>);
+
+impl SampledJob {
+    pub fn id(&self) -> u16 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fixture(slot: Arc<AtomicU16>) -> Self {
+        Self(slot)
+    }
+}
+
+pub fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
+    JOBS.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(registered, _, _)| *registered == id)
+        .and_then(|(_, created, job)| job.upgrade().map(|job| (*created, SampledJob(job))))
+}
+
+pub fn clear_jobs() {
+    let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
+    drop(jobs);
+}
+
 pub struct Control {
     pub on_panic: fn(),
     pub stop: Arc<AtomicBool>,

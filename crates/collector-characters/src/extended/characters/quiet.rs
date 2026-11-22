@@ -26,10 +26,10 @@ impl std::fmt::Debug for QuietRoster {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct Unobserved;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Roster for Unobserved {
     fn token(&self) -> Option<(u64, u64)> {
         None
@@ -39,9 +39,9 @@ impl Roster for Unobserved {
 
 impl Default for QuietRoster {
     fn default() -> Self {
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let domain: &'static dyn Roster = &collector_observers::roster_changes::Observer;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let domain: &'static dyn Roster = &Unobserved;
         Self::with(domain)
     }

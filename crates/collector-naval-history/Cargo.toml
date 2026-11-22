@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 default = []
-test-support = ["dep:collector-test-support"]
+test-support = ["collector-air/test-support", "dep:collector-test-support"]
 
 [dependencies]
 engine-visibility.workspace = true

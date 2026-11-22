@@ -287,7 +287,7 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 pub fn lost_drain() {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return;
     }
@@ -308,7 +308,7 @@ pub fn prepare(memory: &impl Memory, base: usize) {
 }
 
 pub fn boundary(clock: Option<Clock>) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return;
     }
@@ -342,7 +342,7 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return Err("naval result sources hooks unavailable (see status unhooked)");
     }

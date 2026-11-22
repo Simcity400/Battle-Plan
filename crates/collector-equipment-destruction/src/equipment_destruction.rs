@@ -1885,7 +1885,7 @@ fn revoke_active_observation() {
     }
 }
 pub fn lost_drain() {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return;
     }
@@ -1923,7 +1923,7 @@ fn grow_queue(store: &mut Store) -> Result<(), &'static str> {
 }
 
 pub fn boundary(clock: Option<Clock>) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return;
     }
@@ -1965,7 +1965,7 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !tests::owns_observation() {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
     }

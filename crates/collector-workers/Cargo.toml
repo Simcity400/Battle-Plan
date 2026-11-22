@@ -14,7 +14,7 @@ default = []
 callback_profile = []
 executor_join_help = []
 phase_cpu = []
-test-support = ["dep:collector-test-support"]
+test-support = ["collector-memory/test-support", "dep:collector-test-support"]
 worker_sampler = []
 
 [dependencies]

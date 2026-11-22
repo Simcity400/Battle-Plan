@@ -9,10 +9,16 @@ static PROBE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-#[cfg(test)]
 pub(super) fn owns_observation() -> bool {
     OWNER.get()
 }
+
+pub fn with_active_observer(check: impl FnOnce()) {
+    let call = Call::enter(0);
+    check();
+    call.returned(0);
+}
+
 pub struct Observation {
     _serial: std::sync::MutexGuard<'static, ()>,
 }

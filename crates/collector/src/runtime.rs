@@ -3365,6 +3365,29 @@ mod detach_tests {
     use super::*;
 
     #[test]
+    fn observers_active_tracks_in_flight_domain_callbacks() {
+        if !crate::hook_failures::contract_tests::isolated(
+            "runtime::detach_tests::observers_active_tracks_in_flight_domain_callbacks",
+        ) {
+            return;
+        }
+
+        assert!(!observers_active());
+        collector_equipment_destruction::equipment_destruction::tests::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+        collector_land_events::land_events::test_support::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+        collector_naval_results::naval_result_sources::tests::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+    }
+
+    #[test]
     fn expired_detach_budget_does_not_restart_or_reset_acquisition_leases() {
         let started = Instant::now() - DETACH_BUDGET;
         let mut restored = [false; RestoreFamily::ALL.len()];

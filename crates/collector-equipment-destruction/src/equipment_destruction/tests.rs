@@ -10,10 +10,14 @@ static SERIAL: Mutex<()> = Mutex::new(());
 thread_local! {
     static OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-#[cfg(test)]
 pub(super) fn owns_observation() -> bool {
     OWNER.get()
 }
+
+pub fn with_active_observer(check: impl FnOnce()) {
+    Call::enter(SiteId::Land).run(check);
+}
+
 #[cfg(test)]
 struct Serial {
     _serial: std::sync::MutexGuard<'static, ()>,

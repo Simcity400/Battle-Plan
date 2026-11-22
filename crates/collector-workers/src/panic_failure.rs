@@ -179,7 +179,7 @@ pub fn stage(stage: &'static str, part: Option<usize>) {
         context.part = part;
         context
     }));
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if FAIL_AT.get() == Some(stage) {
         FAIL_AT.set(None);
         panic!("synthetic decode failure");

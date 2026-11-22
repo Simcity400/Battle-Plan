@@ -304,7 +304,7 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     let cleared_job = target
         .as_ref()
         .and_then(|target| target.job.as_ref())
-        .map(|slot| slot.load(Ordering::Acquire));
+        .map(SampledJob::id);
     let shutdown = pool.shutdown();
     drop(pool);
     let released = releaser.join();
@@ -512,7 +512,7 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
     let id = id_rx.recv_timeout(Duration::from_secs(5));
     let mut target = id.ok().and_then(|id| Target::open(id, 7, 0, 0));
     if let Some(target) = &mut target {
-        target.job = Some(Arc::clone(&region));
+        target.job = Some(SampledJob::fixture(Arc::clone(&region)));
     }
     let mut scratch = Scratch::default();
     let deadline = Instant::now() + Duration::from_secs(2);

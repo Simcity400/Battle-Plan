@@ -268,22 +268,22 @@ pub struct Captured {
     ledger_sequence: fn(usize) -> Option<(u64, u64)>,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     collector_observers::naval_tree_changes::sequence
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| Some((1, 0))
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
     collector_missions::naval_map_changes::ledger_token
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| None
 }

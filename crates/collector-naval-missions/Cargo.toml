@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 default = []
-test-support = []
+test-support = ["collector-extended-support/test-support"]
 
 [dependencies]
 collector-certificates.workspace = true

@@ -1328,6 +1328,13 @@ fn verify_leader_taps(base: usize) -> Result<[(usize, [u8; 16]); 2], String> {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
+
+    pub fn with_active_observer(check: impl FnOnce()) {
+        let call = Call::enter();
+        check();
+        call.finish();
+    }
+
     pub(super) static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
     static OWNER: AtomicU64 = AtomicU64::new(0);
