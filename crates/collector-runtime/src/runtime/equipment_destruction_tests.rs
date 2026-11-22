@@ -290,17 +290,18 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
         // hourly exit.
         unsafe { admission.enter() }.is_none()
     );
-    let passed = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let waiter = scope.spawn(|| {
-            wait_acquisitions(&admission, || Duration::ZERO).unwrap();
-            passed.store(true, Ordering::SeqCst);
-        });
-        assert!(!passed.load(Ordering::SeqCst));
-        drop(lease);
-        waiter.join().unwrap();
+    let (lease, polls) = (std::cell::RefCell::new(Some(lease)), Cell::new(0));
+    let waited = wait_acquisitions(&admission, || {
+        polls.set(polls.get() + 1);
+        if polls.get() == 1 {
+            drop(lease.borrow_mut().take());
+            Duration::ZERO
+        } else {
+            DETACH_BUDGET
+        }
     });
-    assert!(passed.load(Ordering::SeqCst));
+    assert_eq!(waited, Ok(()), "releasing the last lease quiets admission");
+    assert_eq!(polls.get(), 1);
     assert!(
         // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
         // hourly exit.

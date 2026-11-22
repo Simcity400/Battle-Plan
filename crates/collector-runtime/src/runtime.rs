@@ -3788,14 +3788,15 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine_native::Memory,
         base: usize,
+        now: Instant,
     ) -> io::Result<Option<usize>> {
         if self
             .last_logistics
-            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+            .is_some_and(|last| now.saturating_duration_since(last) < Self::INTEL_INTERVAL)
         {
             return Ok(None);
         }
-        self.last_logistics = Some(Instant::now());
+        self.last_logistics = Some(now);
         collector_logistics::logistics_balance::prepare(memory, base).map(Some)
     }
 
@@ -5502,7 +5503,7 @@ fn sizing_pass(
     // SAFETY: This worker records phases on the counters assigned to its spool role.
     unsafe { phases.span(Phase::Sizing) };
     if let Some(logistics_rows) = registry
-        .poll_logistics(&live, base)
+        .poll_logistics(&live, base, Instant::now())
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
     {
         sizing.raise(shared, |capacities| {
@@ -8088,13 +8089,15 @@ mod tests {
         }
         let memory = Reads(std::cell::Cell::new(0));
         let mut watch = RegistryWatch::default();
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), Some(0));
+        let start = Instant::now();
+        assert_eq!(watch.poll_logistics(&memory, 0, start).unwrap(), Some(0));
         let first = memory.0.get();
         assert!(first > 0);
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), None);
+        let before = start + RegistryWatch::INTEL_INTERVAL - Duration::from_nanos(1);
+        assert_eq!(watch.poll_logistics(&memory, 0, before).unwrap(), None);
         assert_eq!(memory.0.get(), first);
-        watch.last_logistics = None;
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), Some(0));
+        let due = start + RegistryWatch::INTEL_INTERVAL;
+        assert_eq!(watch.poll_logistics(&memory, 0, due).unwrap(), Some(0));
         assert!(memory.0.get() > first);
     }
     #[test]

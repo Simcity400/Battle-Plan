@@ -51,11 +51,13 @@ export interface LogListProps<T> {
   reveal?: RevealClock;
   states?: boolean;
   bindRow?: (row: LogRow<T>) => Node;
+  entryClock?: () => number;
 }
 
 export interface LogListSection<T> extends LogSection<T> { readonly note: ReactNode }
 
 const EMPTY_ROWS: readonly LogRow<never>[] = [];
+const performanceClock = () => performance.now();
 interface Viewport { height: number; width: number; outerHeight: number }
 const measureViewport = (element: HTMLElement): Viewport => ({ height: element.clientHeight, width: element.clientWidth, outerHeight: element.offsetHeight });
 const READER_SCROLL_MS = 1000;
@@ -291,7 +293,9 @@ function paintItems<T>(host: HTMLElement, glide: HTMLElement | null, laid: Laid<
   }
 }
 
-export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWantedPages, label, density, months, animate, playhead: givenPlayhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false, reveal: revealBy, states = false, bindRow }: LogListProps<T>) {
+export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWantedPages, label, density, months, animate, playhead: givenPlayhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false, reveal: revealBy, states = false, bindRow, entryClock = performanceClock }: LogListProps<T>) {
+  const clock = useRef(entryClock);
+  clock.current = entryClock;
   const revealHour = revealBy && typeof givenPlayhead === 'number' ? revealBy.hour() : null;
   const playhead = revealHour ?? givenPlayhead;
   const owner = useId();
@@ -428,7 +432,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWante
       if (pooled.short) { pooled.short = false; inFrame(() => setPoolExtra(extra => extra + POOL_OVERSCAN * 2)); }
     }
     if (body.current) paintItems(body.current, glide.current, now, scrollGeometry(now.offsets[now.items.length], view.height), scrollPosition.current.logical, view.height, entering.current,
-      layer ? (row, height) => { layer.layer.add(row, height, performance.now()); scheduler.wake(layer.task); } : undefined);
+      layer ? (row, height) => { layer.layer.add(row, height, clock.current()); scheduler.wake(layer.task); } : undefined);
     if (emptyNote.current && now.ahead) emptyNote.current.hidden = now.offsets[now.items.length] > 0;
   }, []);
   const paint = useCallback(() => {
@@ -480,7 +484,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWante
   useLayoutEffect(() => {
     if (!layered || !under.current || !over.current || !scroller) return;
     const layer = new EntryLayer(under.current, over.current);
-    const task: FrameTask = { frame: () => layer.paint(performance.now(), row => written.get(row), viewport.current.width) };
+    const task: FrameTask = { frame: () => layer.paint(clock.current(), row => written.get(row), viewport.current.width) };
     entries.current = { layer, task };
     const remove = scheduler.add(task, over.current);
     return () => { remove(); layer.clear(); entries.current = null; };

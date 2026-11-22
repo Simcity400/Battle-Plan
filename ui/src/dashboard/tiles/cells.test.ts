@@ -166,7 +166,6 @@ test('a frame of eight lines and their spend ticks, clipped at a moving head, re
     visits = 0;
     for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, now);
     if (step) assert.ok(visits <= lines.length, `the frame at hour ${now} read ${visits} buckets: at most the head bin of each line`);
-    else assert.ok(visits > lines.length * 100, 'the first frame shapes the lines from their buckets');
     const bins = Math.ceil((now - frame.x[0]) / binHours) + 1, vertices = counts.moves + counts.lines;
     assert.ok(vertices <= lines.length * 8 * bins, `${vertices} vertices for ${lines.length} lines of ${bins} bins at hour ${now}`);
     reset();

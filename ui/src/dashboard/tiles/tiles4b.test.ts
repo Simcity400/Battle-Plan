@@ -4,7 +4,7 @@ import type { SeriesTileReply } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
-import { FIRST_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
+import { FIRST_BREAK, HAS_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
 import type { TileReply } from './tile.ts';
 import { TileView, cellBins, viewRuns } from './view.ts';
 import type { TileLane, TileViewport } from './view.ts';
@@ -145,40 +145,64 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   assert.equal(other.current!.size, 3);
 });
 
-test('a landing tile past the off-thread size is decoded by the reply worker, handed over, and read on the page without base64, each key from its own bytes', async () => {
+test('a landing tile past the off-thread size is parsed and decoded by the reply worker, its one buffer handed over, and read on the page without base64, each key from its own bytes', async () => {
   const native = Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array };
   const { fromBase64 } = native, { atob } = globalThis;
-  const worker = globalThis as unknown as { self?: unknown };
-  const posted: { message: { id: number; value: { data: TileReply } }; transfer: ArrayBuffer[] }[] = [];
-  const scope = { onmessage: null as null | ((event: { data: { id: number; bytes: ArrayBuffer } }) => void),
-    postMessage: (message: never, options: { transfer: ArrayBuffer[] }) => { posted.push({ message, transfer: options.transfer }); } };
+  const global = globalThis as unknown as { self?: unknown; Worker?: unknown };
+  const scope = { onmessage: null as null | ((event: { data: unknown }) => void), postMessage: (_message: unknown, _options: { transfer: ArrayBuffer[] }) => {} };
+  const sent: ArrayBuffer[] = [], returned: { buffer: ArrayBuffer; bins: unknown }[] = [];
+  class InProcessWorker {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: unknown = null;
+    constructor() {
+      scope.postMessage = (message, { transfer }) => {
+        const value = (message as { value?: { data?: { bins?: unknown } } }).value;
+        returned.push({ buffer: transfer[0]!, bins: value?.data?.bins });
+        const landed = structuredClone(message, { transfer });
+        queueMicrotask(() => this.onmessage?.({ data: landed }));
+      };
+    }
+    postMessage(message: { bytes: ArrayBuffer }, transfer: ArrayBuffer[]) {
+      sent.push(message.bytes);
+      scope.onmessage!({ data: structuredClone(message, { transfer }) });
+    }
+    terminate() {}
+  }
   let decodes = 0;
   if (fromBase64) native.fromBase64 = text => { decodes++; return fromBase64(text); };
   globalThis.atob = text => { decodes++; return atob(text); };
-  worker.self = scope;
+  global.self = scope;
+  global.Worker = InProcessWorker;
   try {
     await import('../replyParser.worker.ts');
+    const { parseReplyBytes } = await import('../replyParse.ts');
     for (const keys of [TILE_GROUP, 100]) {
       const tags = Array.from({ length: keys }, (_, at) => `T${at}`), count = keys * TILE_BINS;
       const bytes = new Uint8Array(count * (1 + 16 + 5));
-      bytes.fill(PRESENT, 0, count);
       for (let at = 0; at < keys; at++) {
+        for (let bin = 0; bin < TILE_BINS; bin++) {
+          const pattern = (at * 7 + bin) % 16;
+          bytes[at * TILE_BINS + bin] = PRESENT | (pattern & 1 ? FIRST_BREAK : 0) | (pattern & 2 ? HAS_BREAK : 0) | (pattern & 4 ? RUN : 0) | (pattern & 8 ? SEAM : 0);
+        }
         bytes.fill(at + 1, count + at * TILE_BINS * 16, count + (at + 1) * TILE_BINS * 16);
         bytes.fill(100 + at, count * 17 + at * TILE_BINS * 5, count * 17 + (at + 1) * TILE_BINS * 5);
       }
       const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
-      const sent = new TextEncoder().encode(JSON.stringify({ product: 'series-tiles', data: reply }));
-      assert.ok(sent.byteLength > 64 * 1024, `${sent.byteLength} bytes go to the worker`);
+      const request = new TextEncoder().encode(JSON.stringify({ product: 'series-tiles', data: reply }));
+      assert.ok(request.byteLength > 64 * 1024, `${request.byteLength} bytes go to the worker`);
       decodes = 0;
-      posted.length = 0;
-      scope.onmessage!({ data: { id: keys, bytes: sent.buffer } });
+      sent.length = 0;
+      returned.length = 0;
+      const parsed = await parseReplyBytes(request) as { data: TileReply };
+      assert.equal(sent.length, 1, 'the reply went to the worker');
+      assert.equal(request.byteLength, 0, 'its bytes were handed to the worker, not copied');
       assert.equal(decodes, 1, 'the worker decodes the base64 once');
-      const [{ message, transfer }] = posted;
-      assert.equal(message.id, keys);
-      assert.ok(message.value.data.bins instanceof Uint8Array, 'decoded in the worker');
-      assert.deepEqual(transfer, [message.value.data.bins.buffer], 'its one buffer handed over');
-      const landed = structuredClone(message.value, { transfer });
-      const tiles = tilesOf(landed.data, tags, 6, 10, tag => tag);
+      const [{ buffer, bins }] = returned;
+      assert.ok(bins instanceof Uint8Array && bins.buffer === buffer, 'the worker hands over the buffer its decoded bins live in');
+      assert.equal(buffer.byteLength, 0, 'and keeps no copy of it');
+      assert.ok(parsed.data.bins instanceof Uint8Array && parsed.data.bins.byteLength === bytes.length && parsed.data.bins.buffer.byteLength === bytes.length,
+        'the page holds the one buffer of the bins');
+      const tiles = tilesOf(parsed.data, tags, 6, 10, tag => tag);
       assert.equal(decodes, 1, `the page decodes nothing for a tile of ${keys} keys`);
       const own = (array: ArrayBufferView) => [...new Uint8Array(array.buffer, array.byteOffset, array.byteLength)];
       tiles.forEach((tile, at) => {
@@ -190,7 +214,8 @@ test('a landing tile past the off-thread size is decoded by the reply worker, ha
   } finally {
     if (fromBase64) native.fromBase64 = fromBase64;
     globalThis.atob = atob;
-    delete worker.self;
+    delete global.self;
+    delete global.Worker;
   }
 });
 

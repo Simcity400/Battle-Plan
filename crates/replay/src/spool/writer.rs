@@ -375,7 +375,8 @@ pub struct SegmentedSpool<B: SegmentBackend = FileBackend> {
     sink: Option<B::Sink>,
     state: SegmentState,
     next_segment: u32,
-    last_sync: Option<Instant>,
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    last_sync: Instant,
     last_error: Option<io::ErrorKind>,
     committed_segment: Option<u32>,
     committed_bytes: u64,
@@ -397,12 +398,14 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     }
 
     pub fn with_next_segment_index(backend: B, next_segment: u32) -> Self {
+        let clock: Arc<dyn Fn() -> Instant + Send + Sync> = Arc::new(Instant::now);
         Self {
             backend,
             sink: None,
             state: SegmentState::default(),
             next_segment,
-            last_sync: Some(Instant::now()),
+            last_sync: clock(),
+            clock,
             last_error: None,
             committed_segment: None,
             committed_bytes: 0,
@@ -672,11 +675,11 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let result = (|| {
             if let Some(sink) = &mut self.sink
                 && sink.poll_sync()?
-                && self.last_sync.is_none_or(|last| last.elapsed() >= SYNC_INTERVAL)
+                && (self.clock)().saturating_duration_since(self.last_sync) >= SYNC_INTERVAL
             {
                 sink.flush()?;
                 sink.start_sync()?;
-                self.last_sync = Some(Instant::now());
+                self.last_sync = (self.clock)();
             }
             Ok(())
         })();
@@ -737,7 +740,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             .ok_or_else(|| invalid_static("no writable segment"))?;
         sink.flush()?;
         sink.sync_all()?;
-        self.last_sync = Some(Instant::now());
+        self.last_sync = (self.clock)();
         Ok(())
     }
 
