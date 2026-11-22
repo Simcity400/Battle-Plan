@@ -665,7 +665,7 @@ pub(super) fn decode_stored(
             let mut verified_keys = keys.clone();
             inflate_slice(
                 slice,
-                entry.compressed,
+                entry.compressed.min(slice.len() as u64),
                 entry.size,
                 verified_keys.as_mut(),
                 None,
@@ -763,6 +763,18 @@ impl Mounted {
         let index = (*self.nodes.get(name)?)?;
         Some((&self.entries[index], password))
     }
+}
+
+#[cfg(test)]
+pub(super) fn encrypt_zipcrypto(password: &[u8], plain: &[u8]) -> Vec<u8> {
+    let mut keys = Keys::new(password);
+    let mut out = Vec::with_capacity(plain.len());
+    for &byte in plain {
+        let key = (keys.0[2] & 0xFFFF) | 2;
+        out.push(byte ^ ((key * (key ^ 1)) >> 8) as u8);
+        keys.update(byte);
+    }
+    out
 }
 
 #[derive(Clone)]

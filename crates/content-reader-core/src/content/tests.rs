@@ -3977,6 +3977,47 @@ fn truncated_encrypted_stored_member_preserves_short_read_error_and_header_evide
 }
 
 #[test]
+fn multi_chunk_encrypted_deflate_matches_direct_reader_under_verification() {
+    let root = std::env::temp_dir().join(format!(
+        "verified-encrypted-multichunk-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("large.zip");
+    let plain = vec![b'A'; 65_536 + 10];
+    assert!(plain.len() > 0x10000);
+    let deflated = miniz_oxide::deflate::compress_to_vec(&plain, 6);
+    let mut stream = Vec::with_capacity(12 + deflated.len());
+    stream.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0]);
+    stream.extend_from_slice(&deflated);
+    let encrypted = physfs_zip::encrypt_zipcrypto(b"secret", &stream);
+    let mut bytes = raw_zip(&[(b"gfx/fonts/large.fnt", 0, &encrypted)]);
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    let size = plain.len() as u32;
+    bytes[6..8].copy_from_slice(&1u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&8u16.to_le_bytes());
+    bytes[14..18].copy_from_slice(&0u32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    bytes[central + 8..central + 10].copy_from_slice(&1u16.to_le_bytes());
+    bytes[central + 10..central + 12].copy_from_slice(&8u16.to_le_bytes());
+    bytes[central + 16..central + 20].copy_from_slice(&0u32.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let mut archive = physfs_zip::Archive::open(&path).unwrap();
+    let mounted = archive.mount().unwrap();
+    let (entry, password) = mounted.lookup(b"gfx/fonts/large.fnt$secret").unwrap();
+    let direct = archive.read(entry, password).unwrap().unwrap();
+    assert_eq!(direct, plain);
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("large", &path, &[])]).unwrap();
+    let verified = layers.read("gfx/fonts/large.fnt$secret").unwrap();
+    assert_eq!(verified.as_ref(), direct.as_slice());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_paths() {
     use std::sync::{Arc, Mutex};
     let root = std::env::temp_dir().join(format!(
