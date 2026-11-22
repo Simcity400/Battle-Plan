@@ -1567,8 +1567,8 @@ impl Hooks {
                 .map_err(|_| "command observer publication failed")
             }
         };
-        let deferred = (enabled
-            && crate::hook::shared::attach_collecting()
+        let deferred = (crate::hook::shared::attach_collecting()
+            && (enabled || !crate::hook::restoration::active())
             && matches!(result, Ok(true)))
             || (!enabled
                 && crate::hook::restoration::collecting()
@@ -3213,6 +3213,120 @@ pub(crate) mod tests {
         let healthy = drain.take_live(&live, false).unwrap();
         assert_eq!(healthy[0].lost, 0);
         assert!(healthy[0].batch.spans.iter().all(|span| span.complete));
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn batched_restore_other_family_rollback_preserves_command_byte_mismatch() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        unsafe extern "system" fn other_target() -> usize {
+            11
+        }
+        unsafe extern "system" fn other_callback() -> usize {
+            13
+        }
+        let code = crate::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, site) = make_test_hooks(&code, &live);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        let (other_site, other_bytes) = code.stub(64, other_target as *const () as usize);
+        let mut other =
+            unsafe { Hook::new(other_site, other_callback as *const () as usize, other_bytes) }
+                .unwrap();
+        assert_eq!(other.set_enabled(true), Ok(true));
+        let saved = unsafe { std::ptr::read(site as *const u8) };
+        unsafe { std::ptr::write(site as *mut u8, saved ^ 0xff) };
+        {
+            let _scratch = crate::hook::restoration::Scratch::prepare(8)
+                .unwrap()
+                .enter();
+            {
+                let mut batch = crate::hook::restoration::Batch::collect().unwrap();
+                assert_eq!(hooks.set_enabled(false), Ok(false));
+                assert_eq!(other.set_enabled(false), Ok(false));
+                crate::hook::fail_flushes(1);
+                assert_eq!(batch.publish(), 0);
+                assert_eq!(hooks.set_enabled(false), Ok(false));
+                assert_eq!(other.set_enabled(false), Ok(false));
+            }
+        }
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        assert!(hooks.set_enabled(true).is_err());
+        let t1 = live.failed_qpc.load(Ordering::Relaxed).max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        unsafe { std::ptr::write(site as *mut u8, saved) };
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert_eq!(other.set_enabled(false), Ok(true));
+    }
+
+    #[test]
+    fn shared_attach_disable_defers_drain_until_report_records_refusal() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                crate::hook::publication::select_family(None);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        {
+            let mut round = crate::hook::shared::Round::collect_attach().unwrap();
+            crate::hook::publication::select_family(Some("player_commands"));
+            assert_eq!(hooks.set_enabled(false), Ok(true));
+            crate::hook::fail_flushes(2);
+            round.publish();
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let between = drain.take_live(&live, false).unwrap();
+            assert!(between.is_empty());
+            crate::hook::publication::select_family(Some("player_commands"));
+            assert!(hooks.set_enabled(false).is_err());
+            crate::hook::publication::select_family(None);
+        }
+        let reported_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(reported_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
         assert_eq!(hooks.set_enabled(false), Ok(true));
         assert!(!ENABLED.load(Ordering::Acquire));
     }

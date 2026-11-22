@@ -320,7 +320,7 @@ impl Scratch {
                             .filter(|hook| hook.needs_flush)
                             .all(|hook| hook.bytes_match(hook.enabled))
                     {
-                        for hook in hooks.iter_mut() {
+                        for hook in hooks.iter_mut().filter(|hook| hook.needs_flush) {
                             hook.needs_flush = false;
                             hook.verification_failed = false;
                         }
@@ -550,7 +550,7 @@ impl Scratch {
                         .filter(|hook| hook.needs_flush)
                         .all(|hook| hook.bytes_match(hook.enabled))
                 {
-                    for hook in hooks.iter_mut() {
+                    for hook in hooks.iter_mut().filter(|hook| hook.needs_flush) {
                         hook.needs_flush = false;
                         hook.verification_failed = false;
                     }
