@@ -37,6 +37,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow }: { lane
   follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string } } = {}) {
   let ports: readonly MessagePort[] = [];
   const asked: { product: string; params: Record<string, unknown> }[] = [];
+  const followers = new Set<unknown>();
   const client = {
     available: true,
     openFollow: (opened: readonly MessagePort[]) => { ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return Promise.resolve(); },
@@ -44,8 +45,11 @@ export function inProcess({ lanes = 1, views = () => undefined, follow }: { lane
       asked.push(request);
       if (request.product === 'follow') {
         const told = follow?.(request.params.id as number, request.params.query as Record<string, unknown>) ?? { available: true };
+        if (told.available) followers.add(request.params.id);
         return { data: told.available ? { available: true, route: NATIVE } : told };
       }
+      if (request.product === 'unfollow') followers.delete(request.params.id);
+      if (request.product === 'follow-clock') return { data: { available: followers.size > 0 } };
       return { data: { available: true } };
     },
   } as unknown as DashboardClient;

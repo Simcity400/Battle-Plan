@@ -82,7 +82,7 @@ test('a panel installs its model and live values whole, dated from the actual ta
   await step(15, { playing: false });
   const view = page.view(1);
   assert.deepEqual([view.mode, view.h, view.through, (view.fields?.['model:3'] as { structure?: string }).structure], ['picture', 10, 15, 'A']);
-  lane.receive('panels', panels([{ id: 3, hour: 16, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }]));
+  lane.receive('panels', panels([{ id: 3, hour: 16, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }, { id: 0, hour: 20, kind: 'completed' }]));
   await step(17);
   assert.deepEqual([page.view(1).h, (page.view(1).fields?.['model:3'] as { structure?: string }).structure], [16, 'A'], 'an equal structure keeps the installed model; its date moves on');
 });
@@ -422,4 +422,19 @@ test('review 5 finding 5: a limit buffered before its route was bound gives its 
   assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 0, 'held until its route is known');
   lane.bindRoute(5, ROUTE, NATIVE);
   assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 16);
+});
+
+test('review 6 A: a changed row naming a key its base lacks gives its whole charge back when the merge refuses it', () => {
+  const { lane, mount, released, failures } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  const total = () => released.reduce((sum, bytes) => sum + bytes, 0);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n, 2n], [1n, 2n]) }], false, NATIVE));
+  const before = total();
+  const changed = message(20, [{ id: 5, answer: rows([9n], [3n], { changed: true }) }], false, NATIVE);
+  lane.receive('follow', changed);
+  const record = changed.subarray(24);
+  const charge = 16 + 2 * Math.max(new DataView(record.buffer, record.byteOffset).getUint32(8, true), new DataView(record.buffer, record.byteOffset).getUint32(12, true));
+  assert.equal(total() - before, charge, 'the refused record is released, never left charged');
+  assert.match(failures.at(-1) ?? '', /does not hold/);
 });

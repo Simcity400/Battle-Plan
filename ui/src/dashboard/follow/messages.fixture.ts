@@ -60,12 +60,12 @@ function body(spec: Spec): number[] {
   return out.bytes;
 }
 
-export function message(hour: number, answers: { id: number; hour?: number; answer: Spec }[], reset = false, route = 0, seek = 0): Uint8Array {
+export function message(hour: number, answers: { id: number; hour?: number; answer: Spec; held?: number }[], reset = false, route = 0, seek = 0): Uint8Array {
   const out = new Bytes();
   out.u32(0x334c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length); out.u32(seek); out.u32(0);
-  for (const { id, hour: at, answer } of answers) {
+  for (const { id, hour: at, answer, held: whole } of answers) {
     const held = body(answer);
-    out.u32(id); out.u32(at ?? hour); out.u32(held.length); out.u32(0);
+    out.u32(id); out.u32(at ?? hour); out.u32(held.length); out.u32(whole ?? 0);
     held.forEach(byte => out.u8(byte));
   }
   return new Uint8Array(out.bytes);

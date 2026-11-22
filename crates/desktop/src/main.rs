@@ -304,14 +304,14 @@ fn main() {
             }
             match request.uri().path() {
                 "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
-                "/credit" => match (pull::param(&request, "session"), pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<usize>().ok())) {
-                    (Some(session), Some(bytes)) => {
+                "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
+                    (Some(session), Some(released)) => {
                         if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
-                            dashboard_follow::registry::registry().credit(epoch, bytes);
+                            dashboard_follow::registry::registry().credit(epoch, released);
                         }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
                     }
-                    None => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its bytes"),
+                    _ => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its session and the bytes it has released"),
                 },
                 _ => pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream"),
             }

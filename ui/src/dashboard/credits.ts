@@ -1,18 +1,18 @@
 export interface Credits { owe(bytes: number): void; owed(): number }
 
-export function credits(send: (bytes: number) => Promise<boolean>, later: (run: () => void) => void): Credits {
-  let owed = 0, sending = false, due = false;
+export function credits(send: (released: number) => Promise<boolean>, later: (run: () => void) => void): Credits {
+  let released = 0, acknowledged = 0, sending = false, due = false;
   const schedule = () => { if (!due) { due = true; later(() => { void flush(); }); } };
   const flush = async () => {
     due = false;
-    if (sending || !owed) return;
-    const bytes = owed;
-    owed = 0; sending = true;
+    if (sending || released === acknowledged) return;
+    const total = released;
+    sending = true;
     let sent = false;
-    try { sent = await send(bytes); } catch { sent = false; }
+    try { sent = await send(total); } catch { sent = false; }
     sending = false;
-    if (!sent) owed += bytes;
-    if (owed) schedule();
+    if (sent) acknowledged = Math.max(acknowledged, total);
+    if (released !== acknowledged) schedule();
   };
-  return { owe(bytes) { if (bytes > 0) { owed += bytes; schedule(); } }, owed: () => owed };
+  return { owe(bytes) { if (bytes > 0) { released += bytes; schedule(); } }, owed: () => released - acknowledged };
 }

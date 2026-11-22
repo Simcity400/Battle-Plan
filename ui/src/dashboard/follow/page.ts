@@ -120,6 +120,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly refusals: Refusal[][];
   private readonly routes = new Map<number, RouteState>();
   private readonly kept = new Map<string, { value: unknown; holders: number }>();
+  private readonly holding = new WeakMap<Entry<B>, string[]>();
   private queue: Presentation<B>[] = [];
   private touched = new Set<Widget<B>>();
   private redated = new Set<Widget<B>>();
@@ -156,10 +157,7 @@ export class Page<B extends Bitmap = Bitmap> {
   }
 
   private drop(installed: Installed | null) {
-    for (const key of installed?.kept ?? []) {
-      const held = this.kept.get(key)!;
-      if (--held.holders === 0) this.kept.delete(key);
-    }
+    this.letGo(installed?.kept);
   }
 
   target(widget: Pick<Widget<B>, 'pin' | 'offset'>) { return widget.pin ?? this.T + widget.offset; }
@@ -175,7 +173,7 @@ export class Page<B extends Bitmap = Bitmap> {
       for (const route of this.routes.keys()) this.post('all', { type: 'stream', route, seek: this.seek, target: T });
     }
     this.commit();
-    if (moved || sought) for (const widget of this.widgets.values()) if (this.face(widget) !== widget.face) this.touched.add(widget);
+    if (moved || wake) for (const widget of this.widgets.values()) if (this.face(widget) !== widget.face) this.touched.add(widget);
     this.tell();
     this.request(wake || !playing, wake);
   }
@@ -220,7 +218,36 @@ export class Page<B extends Bitmap = Bitmap> {
   offer(presentation: Presentation<B>) {
     const at = this.sent.get(presentation.serial);
     if (at !== undefined) this.ahead[presentation.lane] = this.ahead[presentation.lane]! * 0.8 + (this.publishes + 1 - at) * 0.2;
-    this.queue.push(presentation);
+    this.queue.push({ ...presentation, entries: presentation.entries.map(entry => this.own(presentation.lane, entry)) });
+  }
+
+  private own(lane: number, entry: Entry<B>): Entry<B> {
+    const fields: Record<string, unknown> = {}, keys: string[] = [];
+    for (const [key, value] of Object.entries(entry.fields)) {
+      const content = entry.content[key];
+      if (value === SAME || content === undefined) { fields[key] = value; continue; }
+      const at = `${lane}|${key}|${content}`;
+      let held = this.kept.get(at);
+      if (!held) this.kept.set(at, held = { value, holders: 0 });
+      held.holders++;
+      keys.push(at);
+      fields[key] = held.value;
+    }
+    const owned = { ...entry, fields };
+    this.holding.set(owned, keys);
+    return owned;
+  }
+
+  private letGo(keys: readonly string[] | undefined) {
+    for (const key of keys ?? []) {
+      const held = this.kept.get(key)!;
+      if (--held.holders === 0) this.kept.delete(key);
+    }
+  }
+
+  private disown(entry: Entry<B>) {
+    this.letGo(this.holding.get(entry));
+    this.holding.delete(entry);
   }
 
   private commit() {
@@ -261,6 +288,7 @@ export class Page<B extends Bitmap = Bitmap> {
       if (part === SAME ? widget.content[k] !== entry.content[k] : !part || part.width === 0) return 'kept content';
     }
     for (const [key, value] of Object.entries(entry.fields)) if (value === SAME && (!shown || widget.content[key] !== entry.content[key])) return 'kept content';
+    if (!this.playing && shown && at > entry.c && entry.h !== shown.h) return 'uncovered';
     return null;
   }
 
@@ -268,12 +296,14 @@ export class Page<B extends Bitmap = Bitmap> {
     this.stats.rejected[reason] = (this.stats.rejected[reason] ?? 0) + 1;
     this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason });
     closeParts(entry);
+    this.disown(entry);
   }
 
   private install(entry: Entry<B>, lane: number) {
     const widget = this.widgets.get(entry.widget);
     if (!widget) {
       closeParts(entry);
+      this.disown(entry);
       if (lane >= 0) { this.stats.rejected.unmounted = (this.stats.rejected.unmounted ?? 0) + 1; this.refusals[lane]!.push({ widget: entry.widget, id: entry.id, reason: 'unmounted' }); }
       return;
     }
@@ -297,22 +327,21 @@ export class Page<B extends Bitmap = Bitmap> {
       }
     } catch {
       closeParts(entry);
+      this.disown(entry);
       this.stats.failed++;
       widget.failed = true;
       this.clear(widget, 'failed', 'drawing failed');
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
     }
-    const fields: Record<string, unknown> = {}, kept: string[] = [];
+    const fields: Record<string, unknown> = {}, kept = this.holding.get(entry) ?? [];
+    this.holding.delete(entry);
     for (const [key, value] of Object.entries(entry.fields)) {
       const content = entry.content[key];
-      if (content === undefined) { fields[key] = value === SAME ? widget.installed!.fields[key] : value; continue; }
-      const at = `${widget.lane}|${key}|${content}`;
-      let held = this.kept.get(at);
-      if (!held) this.kept.set(at, held = { value: value === SAME ? widget.installed!.fields[key] : value, holders: 0 });
-      held.holders++;
-      kept.push(at);
-      fields[key] = held.value;
+      if (value !== SAME) { fields[key] = value; continue; }
+      const at = `${widget.lane}|${key}|${content}`, held = content === undefined ? undefined : this.kept.get(at);
+      if (held) { held.holders++; kept.push(at); fields[key] = held.value; }
+      else fields[key] = widget.installed!.fields[key];
     }
     const drew = !widget.installed || widget.installed.mode !== entry.mode || entry.reason !== widget.installed.reason
       || entry.surfaces.some(part => part !== SAME) || Object.values(entry.fields).some(value => value !== SAME)

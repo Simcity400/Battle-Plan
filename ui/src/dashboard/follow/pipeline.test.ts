@@ -136,3 +136,24 @@ test('review 5 finding 16: each pointer is answered with the row under its own p
     assert.deepEqual(heard, ['race:B', 'race:B'], 'a click on B acts on B though A was inspected in between');
   } finally { close(); }
 });
+
+test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled back in installs on the same seek', async () => {
+  const { pipeline, clock, send, source, asked, settle, close } = inProcess();
+  try {
+    const query = { product: 'series-state' };
+    const first = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(first, {}, source, '1', 0, query, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    pipeline.drop('widget|0');
+    const before = asked.filter(ask => ask.product === 'follow-clock').length;
+    clock.step(1);
+    await settle(() => false, 10);
+    assert.equal(asked.filter(ask => ask.product === 'follow-clock').length, before, 'no clock command without a follower');
+    const again = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const back = pipeline.subscribe(again, {}, source, '1', 0, query, 'followed')!;
+    await settle(() => pipeline.status(back).status === 'followed');
+    send(message(11, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(again)?.mode === 'picture'), JSON.stringify(pipeline.view(again)));
+  } finally { close(); }
+});

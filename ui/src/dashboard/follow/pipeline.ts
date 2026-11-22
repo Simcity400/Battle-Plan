@@ -34,7 +34,7 @@ interface RouteState { page: number; native: number | null; key: string; source:
 interface WidgetState {
   id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  failure?: string; held: Map<string, unknown>;
+  held: Map<string, unknown>;
 }
 
 export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string }
@@ -227,8 +227,6 @@ export class Pipeline {
 
   view(id: number): WidgetView | null { return this.widgets.has(id) ? this.page.view(id) : null; }
 
-  failure(id: number) { return this.widgets.get(id)?.failure; }
-
   onInstall(id: number, listener: () => void) {
     const widget = this.widgets.get(id);
     widget?.installListeners.add(listener);
@@ -402,8 +400,9 @@ export class Pipeline {
 
   private anchor() {
     const s = this.clock.getSnapshot();
+    const held = new Set([...this.subs.values()].filter(sub => sub.status === 'followed' && sub.channel !== 'pinned').map(sub => sub.route));
     for (const route of this.routes.values()) {
-      if (route.native === null) continue;
+      if (route.native === null || !held.has(route)) { route.told = null; continue; }
       const told = JSON.stringify([s.playing, s.hoursPerSecond, s.seekSequence, s.playing ? null : s.hour, this.host.frameRate()]);
       if (route.told === told) continue;
       const sought = route.told === null || JSON.parse(route.told)[2] !== s.seekSequence || !s.playing && JSON.parse(route.told)[3] !== s.hour;

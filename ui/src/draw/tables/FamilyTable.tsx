@@ -12,6 +12,7 @@ import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { auditRows } from '../views/table.ts';
+import { sortRowsAtHour } from './surface.ts';
 import type { AuditRow } from '../notifications';
 
 export type ExactRows = (hour: number) => Promise<{ rows: readonly TableRowModel[]; values: TableValues | null; empty?: string } | null>;
@@ -191,7 +192,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       node.toggleAttribute('data-table-visible', visible); node.toggleAttribute('data-table-pending', !visible);
-      if (!visible || !shown.fields) return;
+      if (!visible || !shown.fields) { paintMirror(null); return; }
       const rows = shown.fields.rows as { count: number; empty?: string } | undefined;
       if (rows) {
         drawnCount.current = rows.count;
@@ -244,7 +245,8 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     perfLog.reader(pipe, 0, async hour => {
       const exact = await latest.current.exactRows?.(hour);
       if (!exact) return null;
-      const rows = auditRows(exact.rows, shownColumns.current, exact.values, hour, exact.empty);
+      const sorted = sortRowsAtHour(exact.rows, latest.current.model(pipe, 0, 1, 1).settings, exact.values, hour);
+      const rows = auditRows(sorted, shownColumns.current, exact.values, hour, exact.empty);
       return { values: new Map(rows.map(row => [row.key, row.value])), ordered: true };
     });
     return () => pipeline.audit(pipe, null);

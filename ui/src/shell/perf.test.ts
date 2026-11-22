@@ -34,3 +34,8 @@ test('review 5 finding 18: a picture matches its exact read in displayed order, 
   const owned = panelAuditRows('wargoals', { goals: [{ handle: 1, actor: 'GER', recipient: 'POL', name: 'Conquer', available: true, expires: null }], justifications: [] }, null);
   assert.equal(owned.length, 1, 'owned goals alone still give rows to compare');
 });
+
+test('review 6 D: a picture missing part of its exact read fails, as one goal of two does', () => {
+  const exact = new Map([['["goal",1]', '["goal",1]'], ['["goal",2]', '["goal",2]']]);
+  assert.match(pictureError('page', [{ row: '["goal",1]', key: '["goal",1]', value: '["goal",1]' }], { values: exact }) ?? '', /not shown/);
+});

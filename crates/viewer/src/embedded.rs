@@ -456,12 +456,12 @@ impl FollowPlayheads {
 }
 
 impl dashboard_follow::registry::Playheads for FollowPlayheads {
-    fn credit(&self, session: u64, bytes: usize) {
-        self.push.credit(session, bytes);
+    fn credit(&self, session: u64, released: u64) {
+        self.push.credit(session, released);
     }
 
     fn restart(&self) -> u64 {
-        self.push.restart_flight()
+        self.push.restart()
     }
 
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {

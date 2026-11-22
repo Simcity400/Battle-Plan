@@ -43,7 +43,6 @@ import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../da
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
-import { trackHourOf } from '../../dashboard/settledHour';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { unrecordedReason } from '../../dashboard/tiles/view.ts';
@@ -197,7 +196,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
   const shownEntry = useRef<FollowEntry | null>(null);
   useShownEachFrame(runtime.clock, widget.kind === 'nuclear-arsenal' && raceView === 'race' ? null : () => track ? following
-    ? shownEntry.current ? shownEntry.current.through : trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : moment : null);
+    ? shownEntry.current?.through ?? null : moment : null);
 
   const partsKey = parts ? JSON.stringify(parts.kind === 'keyed' ? [parts.family, parts.partBits] : parts.items.map(item => [item.id, item.measure])) : '';
   const raceHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);

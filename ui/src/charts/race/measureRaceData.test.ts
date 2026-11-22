@@ -32,7 +32,7 @@ test('rank and ranked chart replies that are malformed are refused', () => {
 
 test('a live race is made again only when its hour or its answer moves, and keeps its array while its rows hold', () => {
   let position = 10, version = 1, reads = 0;
-  const race = liveRace({ getSnapshot: () => ({ position }) }, 100, hour => { reads++; return [{ tag: 'GER', value: hour, label: 'same', stretch: null, hour }]; },
+  const race = liveRace({ getSnapshot: () => ({ position }) }, 100, hour => { reads++; return [{ tag: 'GER', value: 1, label: 'same', stretch: null, hour }]; },
     () => version, false);
   const first = race.entries();
   assert.equal(race.hour(), 110);
@@ -66,4 +66,12 @@ test('review 5 finding 13: a held race names the hour of the reading it shows, n
   const race = liveRace({ getSnapshot: () => ({ position: 90 }) }, 0, hour => followedRace(entry, null, null, hour, 5, 0, raw => raw).entries, () => 1, false,
     hour => followedRace(entry, null, null, hour, 0, 0, raw => raw).shown);
   assert.equal(race.hour(), 40, 'the overlay, label, tooltip and row action date the held reading');
+});
+
+test('review 6 B: a live race shows new split values even when the tags and totals read the same', () => {
+  let version = 1, parts = [{ id: 'a', value: 1 }, { id: 'b', value: 2 }];
+  const race = liveRace({ getSnapshot: () => ({ position: 10 }) }, 0, hour => [{ tag: 'GER', value: 3, label: '3', stretch: null, hour, parts }], () => version, false);
+  const first = race.entries();
+  version = 2; parts = [{ id: 'a', value: 2 }, { id: 'b', value: 1 }];
+  assert.notEqual(race.entries(), first, 'the changed split is a new picture');
 });

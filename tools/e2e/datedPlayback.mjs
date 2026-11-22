@@ -54,7 +54,6 @@ export function inputPictures(frames, visibility, records, pinWidget) {
     if (initial === null) continue;
     for (const id of states.keys()) if (!visible.has(id)) states.delete(id);
     for (const [id, pin, widget] of shown) {
-      if (!initial.has(id) && pin == null) { if (ahead(id, pin)) future++; continue; }
       judged.add(id);
       const r = hidden.has(id) ? undefined : pictures.get(id), target = Math.floor(pin ?? head);
       const fixed = pin != null || !anchor.playing;
@@ -107,7 +106,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const worker = sorted.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
     const laneCount = Math.max(0, ...worker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
     const byLane = Map.groupBy(worker, r => r.lane ?? 0);
-    const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) ? rate(byLane.get(lane).map(r => r.at)) : null);
+    const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) && seconds > 0 ? (byLane.get(lane).length - 1) / seconds : null);
     const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
     if (fps === null) reasons.push('nothing measured');
     const pace = playbackPace(first, last, 1440);

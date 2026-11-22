@@ -37,7 +37,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const { canvas, surface } = drawn;
     canvas.setAttribute('aria-describedby', owner + '-ranking');
     scroller.prepend(canvas);
-    let point: { x: number; y: number } | undefined, action: { kind: string; x: number; y: number; key: string } | undefined, selected = -1;
+    let point: { x: number; y: number } | undefined, action: { x: number; y: number; key: string } | undefined, selected = -1;
     const items = (): readonly RaceItem[] => (pipeline.view(pipe)?.fields?.items as readonly RaceItem[] | undefined) ?? [];
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
@@ -59,16 +59,19 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const inspected = shown?.tooltip as RaceInspection | null | undefined, item = inspected?.item;
       if (!item || shown?.dim) { if (!point) hideTooltip(owner); return; }
       selected = listed.findIndex(each => each.key === item.key);
-      const acting = action?.key === `race:${item.key}` ? action : undefined;
-      if (acting) action = undefined;
-      const at = acting ?? (point && { kind: 'tip', ...point });
+      const asked = action?.key === `race:${item.key}` ? action : undefined;
+      if (asked) action = undefined;
+      const at = asked ?? point;
       if (!at) return;
-      if (at.kind === 'pick') p.onPick?.(item.key, item);
-      else if (at.kind === 'menu') p.onContextMenu?.(item.key, at.x, at.y, item);
-      else {
-        const content = p.tooltip?.(item.key, item);
-        if (content) { showTooltip(owner, content, at.x, at.y, item.key); if (description.current) description.current.textContent = tooltipText(content); }
-      }
+      const content = p.tooltip?.(item.key, item);
+      if (content) { showTooltip(owner, content, at.x, at.y, item.key); if (description.current) description.current.textContent = tooltipText(content); }
+    };
+    const perform = (kind: string, item: RaceItem, x: number, y: number) => {
+      const shown = pipeline.view(pipe);
+      if (shown?.mode !== 'picture') return;
+      const at = { ...item, hour: shown.h ?? item.hour };
+      if (kind === 'pick') latest.current.onPick?.(at.key, at);
+      else latest.current.onContextMenu?.(at.key, x, y, at);
     };
     install();
     const stop = pipeline.onInstall(pipe, install);
@@ -78,8 +81,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (event.type === 'contextmenu') event.preventDefault();
       const act = event.type === 'pointermove' ? undefined : { kind: event.type === 'click' ? 'pick' : 'menu', x: event.clientX, y: event.clientY };
       pipeline.pointer(pipe, 0, [event.clientX - b.left, event.clientY - b.top], act && (key => {
-        action = key === null ? undefined : { ...act, key };
-        if (action) install();
+        const item = key === null ? undefined : items().find(each => `race:${each.key}` === key);
+        if (item) perform(act.kind, item, act.x, act.y);
       }));
     };
     const leave = () => { point = undefined; pipeline.pointer(pipe, 0, null); pipeline.inspect(pipe, null); hideTooltip(owner); };
@@ -87,7 +90,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const listed = items(), b = canvas.getBoundingClientRect();
       const item = listed[Math.min(listed.length - 1, Math.max(0, index))];
       if (!item) return;
-      action = { kind, x: b.right, y: b.top + b.height / 2, key: `race:${item.key}` };
+      selected = listed.indexOf(item);
+      if (kind !== 'tip') { perform(kind, item, b.right, b.top + b.height / 2); return; }
+      action = { x: b.right, y: b.top + b.height / 2, key: `race:${item.key}` };
       if (pipeline.inspecting(pipe) === `race:${item.key}`) install();
       else pipeline.inspect(pipe, `race:${item.key}`);
     };

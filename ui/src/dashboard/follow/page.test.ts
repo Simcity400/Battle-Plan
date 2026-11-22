@@ -432,3 +432,29 @@ test('review 5 finding 4: widgets showing one content hold one page copy of it, 
   p.offer({ lane: 0, serial: 4, entries: [answer(3, 4, 'answer:7', third)] }); p.frame();
   assert.equal(p.view(3).fields?.['answer:5'], third, 'once no widget showed it, the old copy was dropped');
 });
+
+test('review 6 A: entries held for a later hour share the page-owned copy from receipt, so ten widgets park one buffer', () => {
+  const p = new Page<Fake>({ lanes: 1 });
+  for (let id = 1; id <= 10; id++) p.mount(id, { route: 9, lane: 0, surfaces: [] });
+  for (let id = 1; id <= 10; id++)
+    p.offer({ lane: 0, serial: id, entries: [{ ...entry({ id, n: 0, widget: id, lo: 50, hi: 60 }), fields: { 'answer:5': new Uint8Array([1, 2]) }, content: { 'answer:5': 'answer:7' } }] });
+  p.publish(0);
+  const parked = new Set([...p.widgets.values()].map(widget => widget.early?.fields['answer:5']));
+  assert.deepEqual([parked.size, [...parked][0] instanceof Uint8Array], [1, true], 'one buffer for every parked copy');
+});
+
+test('review 6 B: pausing tells the widget it dims, and a paused step keeps the shown picture until a replacement covers the target', () => {
+  let told = 0;
+  const p = new Page<Fake>({ lanes: 1 });
+  p.mount(1, { route: 9, lane: 0, surfaces: [], changed: () => told++ });
+  p.publish(19, { playing: true, step: 1 });
+  p.offer({ lane: 0, serial: 1, entries: [entry({ id: 1, n: 0, h: 10, c: 10, lo: 10, hi: Infinity })] }); p.publish(20, { playing: true, step: 1 });
+  const installed = told;
+  p.publish(20, { playing: false });
+  assert.deepEqual([p.view(1).dim, told > installed], [true, true], 'the dim change is published when playback pauses');
+  p.publish(21, { playing: false });
+  p.offer({ lane: 0, serial: 2, entries: [entry({ id: 2, n: 0, h: 15, c: 15, lo: 15, hi: Infinity })] }); p.frame();
+  assert.equal(p.view(1).h, 10, 'a picture confirmed only through 15 does not replace the shown one at 21');
+  p.offer({ lane: 0, serial: 3, entries: [entry({ id: 3, n: 0, h: 21, c: 21, lo: 21, hi: Infinity })] }); p.frame();
+  assert.deepEqual([p.view(1).h, p.view(1).dim], [21, false], 'a picture that covers the target installs');
+});

@@ -67,7 +67,7 @@ interface Sent {
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
   installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; motion: boolean; inspect: string | null;
-  start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; halted: number | null;
+  start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; halted: number | null; parked: Sent | null;
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -75,6 +75,13 @@ interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: 
 const charged = (record: Uint8Array) => {
   const view = new DataView(record.buffer, record.byteOffset, record.byteLength), length = view.getUint32(8, true);
   return 16 + 2 * Math.max(length, view.getUint32(12, true));
+};
+
+const recordsCharge = (bytes: Uint8Array) => {
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let total = 0;
+  for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) { const length = data.getUint32(at + 8, true); total += charged(bytes.subarray(at, at + 16 + length)); at += 16 + length; }
+  return total;
 };
 
 const BUFFER = 8 << 20;
@@ -161,7 +168,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.widgets.set(widget, { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
       installed: null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
-      served: was?.served ?? 0, halted: null });
+      served: was?.served ?? 0, halted: null, parked: null });
     this.wake();
   }
 
@@ -330,30 +337,38 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
         }
         this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
-      } else this.facts.panels(route, item.seek, item.records.map(record => this.panel(record)), item.completed, only);
+      } else this.facts.panels(route, item.seek, item.records.flatMap(record => this.panel(record) ?? []), item.completed, only);
     }
     this.replay();
   }
 
   private answer(id: number, record: Uint8Array, bytes: number, reset: boolean, latest: Map<number, AnswerValue>): FollowAnswer<Value> | null {
-    const at = new DataView(record.buffer, record.byteOffset, record.byteLength).getInt32(4, true);
-    const parsed = parseAnswer(record.subarray(16, 16 + new DataView(record.buffer, record.byteOffset).getUint32(8, true)));
+    const view = new DataView(record.buffer, record.byteOffset, record.byteLength), at = view.getInt32(4, true);
     let value: AnswerValue;
-    if (parsed.kind === 'changed') {
-      const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
-      if (!base || base.kind !== 'answer') { this.freed += bytes; this.host.fail('Changed rows arrived without the table they change.'); return null; }
-      const merged = mergeChanged(base.answer, parsed, new DataView(record.buffer, record.byteOffset, record.byteLength).getUint32(12, true));
-      value = { kind: 'answer', body: merged, answer: parseAnswer(merged) };
-    } else {
-      const body = record.slice(16);
-      value = { kind: 'answer', body, answer: parseAnswer(body) };
+    try {
+      const parsed = parseAnswer(record.subarray(16, 16 + view.getUint32(8, true)));
+      if (parsed.kind === 'changed') {
+        const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
+        if (!base || base.kind !== 'answer') throw new Error('Changed rows arrived without the table they change.');
+        const merged = mergeChanged(base.answer, parsed, view.getUint32(12, true));
+        value = { kind: 'answer', body: merged, answer: parseAnswer(merged) };
+      } else {
+        const body = record.slice(16);
+        value = { kind: 'answer', body, answer: parseAnswer(body) };
+      }
+    } catch (error) {
+      this.freed += bytes;
+      this.host.fail(error instanceof Error ? error.message : String(error));
+      return null;
     }
     latest.set(id, value);
     return { id, hour: at, value, bytes };
   }
 
   private follows(bytes: Uint8Array, replayed = false) {
-    const message = parseFollowed(bytes);
+    let message: ReturnType<typeof parseFollowed>;
+    try { message = parseFollowed(bytes); }
+    catch (error) { this.freed += recordsCharge(bytes); throw error; }
     if (message.reset && !replayed) {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
       this.drop(message.route);
@@ -361,11 +376,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const order = this.current({ native: message.route, seek: message.seek });
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
-    if (order === -1) {
-      let at = 24;
-      for (let i = 0; i < count; i++) { const length = data.getUint32(at + 8, true); this.freed += charged(bytes.subarray(at, at + 16 + length)); at += 16 + length; }
-      return;
-    }
+    if (order === -1) { this.freed += recordsCharge(bytes); return; }
     if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
     const route = this.routes.get(message.route);
     const limited = new Map<number, number>(), unbound = new Map<number, { records: Uint8Array[]; size: number }>();
@@ -391,8 +402,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.facts.followed(route, message.seek, { hour: message.hour, reset: message.reset, answers, limited });
   }
 
-  private panel(record: Uint8Array): PanelRecord<Value> {
-    const panel = parseDatedPanelRecord(record), size = 2 * record.length;
+  private panel(record: Uint8Array): PanelRecord<Value> | null {
+    const size = 2 * record.length;
+    let panel: ReturnType<typeof parseDatedPanelRecord>;
+    try { panel = parseDatedPanelRecord(record); }
+    catch (error) { this.freed += size; this.host.fail(error instanceof Error ? error.message : String(error)); return null; }
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
     if (!panel.panel) { this.freed += size; return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
@@ -419,7 +433,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           if (!own) unbound.set(id, own = { records: [], size: 0 });
           own.records.push(bytes.slice(at, at + size)); own.size += 2 * size;
         } else this.freed += 2 * size;
-      } else mine.push(this.panel(bytes.subarray(at, at + size)));
+      } else { const made = this.panel(bytes.subarray(at, at + size)); if (made) mine.push(made); }
       at += size;
     }
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
@@ -471,6 +485,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (widget.inflight?.id === ack.id) widget.inflight = null;
     }
     for (const refusal of refused) {
+      const owner = this.presented.get(refusal.id);
       this.presented.delete(refusal.id);
       this.stats.refused[refusal.reason] = (this.stats.refused[refusal.reason] ?? 0) + 1;
       const widget = this.widgets.get(refusal.widget);
@@ -478,6 +493,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
       if (refusal.reason === 'failed') widget.halted = widget.binding.generation;
       if (refusal.reason === 'kept content') widget.installed = null;
+      widget.parked = refusal.reason === 'uncovered' && owner ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
     }
   }
@@ -532,6 +548,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const due: { widget: Widget; selected: Selected | 'lost'; motion: boolean; target: number }[] = [];
     for (const widget of this.widgets.values()) {
       if (widget.halted === widget.binding.generation) continue;
+      if (!request.exact) widget.parked = null;
       const key = inspect.get(widget.id) ?? null, target = this.targetOf(widget, request.target);
       const selected = this.select(widget, target);
       if (!selected) continue;
@@ -541,6 +558,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         continue;
       }
       const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key);
+      if (this.matches(widget.parked, selected, target, widget.binding.generation, key)) continue;
       const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key);
       if (pending || shown && !widget.motion) continue;
       due.push({ widget, selected, motion: shown, target });

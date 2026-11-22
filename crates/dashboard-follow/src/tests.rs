@@ -1451,10 +1451,12 @@ fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_fl
     assert!(push.try_take().is_some(), "two packets fit the credit of half the budget");
     assert!(push.try_take().is_none(), "the third waits until the lanes release bytes");
     assert_eq!((push.in_flight(), budget.used()), (cost * 2, cost * 3), "credit is reserved from send until release");
-    push.credit(0, cost);
+    push.credit(0, cost as u64);
     assert!(push.try_take().is_some());
-    push.credit(0, cost * 2);
+    push.credit(0, cost as u64 * 3);
     assert_eq!(budget.used(), 0);
+    push.credit(0, cost as u64);
+    assert_eq!(push.in_flight(), 0, "a retried release of a total already counted releases nothing again");
     let large: Vec<u8> = vec![0; cost * 3];
     push.offer(large);
     assert!(push.try_take().is_some(), "a message larger than the credit still goes alone");
@@ -1474,15 +1476,23 @@ fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_pictu
     assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
     push.head(0, 30);
     assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
-    let session = push.restart_flight();
+    let session = push.restart();
     assert_eq!((push.in_flight(), budget.used()), (0, 0), "a closed page's held bytes are forgotten once, by the one queue that charged them");
     push.offer(one(7, 40, 4));
     let (.., sent) = push.take_sent().unwrap();
     assert_eq!(sent, session, "a message names the session it was sent to");
-    push.credit(session - 1, cost);
+    push.credit(session - 1, cost as u64);
     assert_eq!(push.in_flight(), cost, "an old page's late refund releases nothing of the new page's");
-    push.credit(session, cost);
+    push.credit(session, cost as u64);
     assert_eq!(push.in_flight(), 0);
+    push.offer(one(7, 50, 5));
+    assert!(push.try_take().is_some());
+    push.credit(session, cost as u64);
+    assert_eq!(push.in_flight(), cost, "review 6 A: the release total is idempotent, so a retry whose acknowledgement was lost frees nothing twice");
+    push.offer(one(7, 60, 6));
+    let retired = push.restart();
+    assert!(push.try_take().is_none(), "review 6 A: a record queued for the old page is retired with its session, never sent as the new page's");
+    assert_eq!((push.in_flight(), budget.used(), push.session()), (0, 0, retired));
 }
 
 fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {

@@ -40,7 +40,7 @@ pub trait Hosted: Send + Sync {
 
 pub trait Playheads: Send + Sync {
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
-    fn credit(&self, _session: u64, _bytes: usize) {}
+    fn credit(&self, _session: u64, _released: u64) {}
     fn restart(&self) -> u64 { 0 }
 }
 
@@ -185,11 +185,15 @@ impl Registry {
         }
     }
 
-    pub fn credit(&self, session: u64, bytes: usize) {
-        if let Some(playheads) = &self.playheads { playheads.credit(session, bytes); }
+    pub fn credit(&self, session: u64, released: u64) {
+        if let Some(playheads) = &self.playheads { playheads.credit(session, released); }
     }
 
     pub fn restart(&self) -> u64 {
+        let gone: Vec<(u32, Followed)> = lock(&self.followed).drain().collect();
+        for (id, held) in gone {
+            let _ = held.release(id);
+        }
         self.playheads.as_ref().map_or(0, |playheads| playheads.restart())
     }
 

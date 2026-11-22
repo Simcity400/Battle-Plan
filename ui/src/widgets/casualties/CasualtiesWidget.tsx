@@ -20,7 +20,7 @@ import { looksRead, useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/store.ts';
-import { answered, useHandoff, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
+import { answered, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
@@ -118,7 +118,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return sticky.current.tags.join(',');
   }, [rankKey, top]);
   const ranked = useFollow(store, rankQuery, root, () => {}, rankShape);
-  const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : tags, [top, ranked.entry, ranked.structure, tags]);
+  const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : sticky.current?.reset === rankKey ? [...sticky.current.tags] : [] : tags,
+    [top, ranked.entry, ranked.structure, tags, rankKey]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
     ? { product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
@@ -131,8 +132,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     useLiveFollow(store, queries[3], root, read, answered),
   ];
   const rankFollowed = top == null || followsHead(ranked);
-  const refused = followRefusal(ranked);
-  const lives = useHandoff(measured, rankFollowed, store, track?.branch.id);
+  const refused = followRefusal(ranked, ...measured);
+  const lives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined ? item.live : undefined);
   const [dealt, taken, unknown, partial] = lives.map(live => ({ live }));
   const followed = [dealt, taken, unknown, partial];
   const followedHead = lives.every(live => live !== undefined);
@@ -212,7 +213,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   const error = followedHead ? null : rank.error ?? states.find(state => state.error)?.error ?? null;
   const retry = () => { rank.retry(); states.forEach(state => state.retry()); };
-  const loading = followedHead ? false : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
+  const loading = following ? !followedHead : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
     if (refused) return <WidgetState kind="unavailable" message={refused} />;

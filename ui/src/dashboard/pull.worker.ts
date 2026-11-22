@@ -7,7 +7,7 @@ const CREDIT_EVERY_MS = 16;
 
 self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[] }>) => {
   const { ports, session } = data;
-  const owed = credits(bytes => fetch(`${PUSH}credit?session=${encodeURIComponent(session)}&bytes=${bytes}`, { cache: 'no-store' }).then(reply => reply.ok),
+  const owed = credits(released => fetch(`${PUSH}credit?session=${encodeURIComponent(session)}&released=${released}`, { cache: 'no-store' }).then(reply => reply.ok),
     run => setTimeout(run, CREDIT_EVERY_MS));
   const credit = (bytes: number) => owed.owe(bytes);
   for (const port of ports) port.onmessage = ({ data }: MessageEvent<ToPull>) => credit(data.release);

@@ -86,6 +86,9 @@ export function raceLookTags(race: boolean, followed: readonly string[] | null, 
 
 export const rowsOf = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
 
+const sameEntry = (a: CountryRaceEntry, b: CountryRaceEntry) => a.tag === b.tag && a.label === b.label && a.value === b.value && a.hatched === b.hatched
+  && (a.parts?.length ?? 0) === (b.parts?.length ?? 0) && (a.parts ?? []).every((part, at) => part.id === b.parts![at]!.id && part.value === b.parts![at]!.value && part.hatched === b.parts![at]!.hatched);
+
 export function liveRace(clock: { getSnapshot(): { position: number } }, axisOffset: number, read: (hour: number) => readonly CountryRaceEntry[],
   version: () => number, byHour: boolean, dated: (hour: number) => number = hour => hour): LiveRaceEntries & { wake(): void } {
   const wakes = new Set<() => void>();
@@ -98,7 +101,7 @@ export function liveRace(clock: { getSnapshot(): { position: number } }, axisOff
       if (!made || (byHour && made.hour !== at) || made.version !== now) {
         const next = read(at);
         const same = made !== null && made.entries.length === next.length
-          && next.every((entry, index) => made!.entries[index].tag === entry.tag && made!.entries[index].label === entry.label);
+          && next.every((entry, index) => sameEntry(made!.entries[index]!, entry));
         made = { hour: at, version: now, entries: same ? made!.entries : next };
       }
       return made.entries;

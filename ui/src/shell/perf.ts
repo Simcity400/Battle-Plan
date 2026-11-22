@@ -99,7 +99,9 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
     if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) return 'Wrong row identity for ' + key;
     if (!exact.values.has(key) || exact.values.get(key) !== row.value) return key + ': displayed ' + row.value + ', expected ' + exact.values.get(key);
   }
-  if (surface === 'table' && new Set(rows.map(row => row.key)).size !== exact.values.size)
+  const shown = new Set(rows.map(row => exact.ranked ? row.row + ':' + row.key : row.key));
+  for (const key of exact.values.keys()) if (!shown.has(key)) return key + ': in the exact read, not shown';
+  if (surface === 'table' && shown.size !== exact.values.size)
     return 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
   return null;
 }

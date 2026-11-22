@@ -101,16 +101,34 @@ test('a detached pinned placement is removed before its replacement settles', ()
   assert.equal(result.lost, 0);
 });
 
-test('late remounts are deferred to the next input boundary', () => {
+test('review 6 D: a card scrolled in is judged like the rest, so one that never paints fails', () => {
   const shown = [
     { at: 0, shown: [[1, null, 'active']] },
     { at: 2, shown: [[1, null, 'active'], [2, null, 'active']] },
   ];
   const tick = { t: 'tick', at: 0, hour: 100, playing: false, seek: 3 };
   const picture = { t: 'picture', at: 0, hour: 100, since: 90, through: 100, seek: 3, placement: 1 };
-  const result = inputPictures([0, 1, 2], shown, [tick, picture]);
-  assert.equal(result.pass, true);
-  assert.deepEqual(result.missing, []);
+  const blank = inputPictures([0, 1, 2], shown, [tick, picture]);
+  assert.deepEqual([blank.pass, blank.missing], [false, [2]], 'the card that never painted is missing');
+  const painted = inputPictures([0, 1, 2, 3], shown, [tick, picture, { ...picture, at: 2, placement: 2 }]);
+  assert.deepEqual([painted.pass, painted.missing], [true, []]);
+});
+
+test('review 6 D: a lane that served twice and then stalled for the rest of the window fails', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    { t: 'workerFrame', at: 0, playing: true, changed: 1, workMs: 0.1 }, { t: 'workerFrame', at: 10, playing: true, changed: 1, workMs: 0.1 },
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
+  assert.equal(datedPlaybackVerdict([window], records).pass, false);
+  const served = [...records.filter(r => r.t !== 'workerFrame'), ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 }))];
+  assert.equal(datedPlaybackVerdict([window], served).pass, true, 'the same window passes when the lane serves every frame');
 });
 
 test('a scrub that presents an empty remount frame judges the held placement', () => {
