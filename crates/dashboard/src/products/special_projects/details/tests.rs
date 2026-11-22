@@ -49,7 +49,8 @@ fn frame(hour: i32) -> DecodedFrame {
     set(&mut frame, TableId::ScientistDaily, TableRows::ScientistDaily(vec![ScientistDailyRow { character: 7, country: 11, injury_days: Recorded::Value(Some(8)), template_visibility: Recorded::Value(Some(0)), ..Default::default() }]));
     set(&mut frame, TableId::ScientistSkills, TableRows::ScientistSkills(vec![ScientistSkillRow { character: 7, ordinal: 0, token: 41, level: -2, experience_raw: i64::MAX }]));
     set(&mut frame, TableId::CharacterRoleTraits, TableRows::CharacterRoleTraits(vec![CharacterRoleTraitRow { character: 7, kind: CharacterRoleTraitRow::SCIENTIST, tokens: vec![42, 42], ..Default::default() }]));
-    set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 41, literal: b"mod_skill".to_vec() }, LexicalTokenRow { token: 42, literal: b"mod_trait".to_vec() }]));
+    let spelled_42: &[u8] = if hour == FIRST { b"mod_option" } else { b"mod_trait" };
+    set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 41, literal: b"mod_skill".to_vec() }, LexicalTokenRow { token: 42, literal: spelled_42.to_vec() }]));
     set(&mut frame, TableId::ProjectPrograms, TableRows::ProjectPrograms(vec![ProjectProgramRow {
         id: 9,
         owner: 11,
@@ -147,6 +148,7 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
     assert_eq!(project["choices"].as_array().unwrap().len(), 4, "the completion marker is not a chosen option");
     assert_eq!(project["historyReadHour"], json!(FIRST), "the choices carry the history read they come from, apart from the project read: {project}");
+    assert_eq!(project["choices"][0]["option"]["token"], json!("mod_option"), "a choice is spelled by the history read it comes from, as its effects are: {project}");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
     let unstamped = details(&source, HISTORY_UNSTAMPED[1]);
     assert_eq!(unstamped["projects"][0]["choices"], Value::Null, "a complete history table with no proven read is not an empty one: {unstamped}");
@@ -445,7 +447,10 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         let replaced = hour >= REPLACED;
         let variables = ProjectVariableStore { seed: 1, entries: vec![ProjectVariable { name: b"mod_value".to_vec(), value_raw: if replaced { 200_000 } else { 100_000 } }] };
         let runtime = Recorded::Value(ProjectRuntime { variables: Some(variables.into()), ..Default::default() });
-        set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, ..Default::default() }]));
+        let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, program_reference: 1, started: 1, ..Default::default() };
+        project.state.current_offset = 0x18;
+        project.state.not_completed = 1;
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![project]));
         let choice = |ordinal, date| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() };
         let history = if replaced { [(0, BEFORE), (1, OWN)].into_iter().filter(|&(_, date)| date <= hour).map(|(ordinal, date)| choice(ordinal, date)).collect() } else { vec![choice(0, 24)] };
         set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(history));

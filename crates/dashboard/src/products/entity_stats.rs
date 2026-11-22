@@ -170,6 +170,25 @@ impl<'l> Sheet<'l> {
     }
 }
 
+fn equipment_totals(database: &content_reader_core::equipment::Database, token: &str) -> Result<[i64; content_reader_core::equipment::STAT_COUNT], String> {
+    let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
+    let equipment = &database.equipment[at];
+    let mut components = content_reader_core::equipment::StatComponents::base(&equipment.stats);
+    for (slot, module) in &equipment.default_modules {
+        if module.eq_ignore_ascii_case(b"empty") {
+            continue;
+        }
+        if database.module(module).is_none() {
+            let (module, slot) = (String::from_utf8_lossy(module), String::from_utf8_lossy(slot));
+            return Err(format!("Default module {module} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"));
+        }
+        if let Some(group) = database.module_stats(module) {
+            components.apply_module(group, equipment)?;
+        }
+    }
+    Ok(components.finish_for(equipment)?)
+}
+
 fn stat_metadata() -> Result<&'static Metadata, String> {
     engine_executable::executable_tables::auxiliary_part(|tables| &tables.stat_metadata)
         .map(Vec::as_slice)
@@ -231,10 +250,7 @@ impl AtHour for EntityStatsAt {
             let technologies = || view.doctrines.and_then(|doctrines| doctrines.technologies.as_ref()).ok_or_else(|| "The recorded technology content was not read".to_owned());
             match params.kind {
                 EntityKind::Equipment => {
-                    let database = &technologies()?.equipment;
-                    let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
-                    let equipment = &database.equipment[at];
-                    let stats = content_reader_core::equipment::StatComponents::base(&equipment.stats).finish_for(equipment)?;
+                    let stats = equipment_totals(&technologies()?.equipment, token)?;
                     sheet.equipment(stat_metadata()?, &stats);
                 }
                 EntityKind::Module => {

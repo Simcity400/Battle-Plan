@@ -226,7 +226,7 @@ impl Episodes {
     }
 
     fn follow(&mut self, query: &Query<'_>, country: &Country, hour: i32, cancelled: &AtomicBool, count: &mut u64) -> io::Result<(bool, Holding)> {
-        let (pieces, holding) = pieces(query, country, hour);
+        let (pieces, holding) = pieces(query, country, query.timeline.first, hour);
         let mut changed = false;
         for piece in pieces.into_iter().filter(|p| self.through.is_none_or(|h| p.last > h)).collect::<Vec<_>>() {
             if self.current.as_ref().is_some_and(|c| (c.piece.first, c.piece.run) == (piece.first, piece.run)) {

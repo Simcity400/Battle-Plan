@@ -507,9 +507,6 @@ fn tokens(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> BTreeSet<u32> {
             out.extend(runtime.pending_reward);
         }
     }
-    for row in frame.complete::<tables::ProjectHistory>().unwrap_or(&[]) {
-        out.extend([row.prototype_reward_handle, row.option_handle]);
-    }
     out.extend(frame.complete::<tables::ProjectBreakthroughs>().unwrap_or(&[]).iter().map(|row| row.specialization));
     out.extend(frame.complete::<tables::ScientistSkills>().unwrap_or(&[]).iter().map(|row| row.token));
     out.extend(frame.complete::<tables::CharacterRoleTraits>().unwrap_or(&[]).iter().flat_map(|row| row.tokens.iter().copied()));
@@ -955,11 +952,18 @@ impl OwnerRead {
     }
 }
 
-fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
+fn history_spellings(query: &Query<'_>, frame: &DecodedFrame, owner: u32, read: i32) -> Result<DecodedFrame, String> {
+    let mut ids: BTreeSet<u32> = prefixed(frame.complete::<tables::Projects>().unwrap_or(&[]), owner, |row| row.owner).iter().map(|row| row.definition_id).collect();
+    ids.extend(prefixed(frame.complete::<tables::ProjectHistory>().unwrap_or(&[]), owner, |row| row.owner).iter().flat_map(|row| [row.prototype_reward_handle, row.option_handle]));
+    dashboard_base::products::at_hour::frame(query, read, &[Read::these(TableId::LexicalTokens, ids.into_iter().map(u128::from))], SpecialProjectDetailsAt::TITLE)
+        .map_err(|why| format!("Choice spellings at the history read are unavailable: {why}"))
+}
+
+fn choices(frame: &DecodedFrame, lexical: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| unavailable.push(format!("Project choice history is unavailable: {why}"))).ok()?;
     let first = rows.partition_point(|row| (row.owner, row.project) < (project.owner, project.local_id));
     let last = first + rows[first..].partition_point(|row| (row.owner, row.project) == (project.owner, project.local_id));
-    let project_token = spelled(frame, project.definition_id);
+    let project_token = spelled(lexical, project.definition_id);
     if let Err(why) = &project_token {
         unavailable.push(why.clone());
     }
@@ -968,8 +972,8 @@ fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_,
             .iter()
             .filter(|row| !(row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER))
             .map(|row| {
-                let reward = spelled(frame, row.prototype_reward_handle).map_err(|why| unavailable.push(why)).ok();
-                let option = spelled(frame, row.option_handle).map_err(|why| unavailable.push(why)).ok();
+                let reward = spelled(lexical, row.prototype_reward_handle).map_err(|why| unavailable.push(why)).ok();
+                let option = spelled(lexical, row.option_handle).map_err(|why| unavailable.push(why)).ok();
                 let authored = match (namer.content(), &project_token, reward.as_deref()) {
                     (Some(content), Ok(project), Some(reward)) => content.definitions.reward_named(project, reward).map_err(|why| unavailable.push(why)).ok(),
                     _ => None,
@@ -1026,14 +1030,18 @@ fn projects(
     }
     let mut out = Vec::new();
     for (&owner, &read) in &read_of {
-        let history = history_read(slices, reads, owner, read);
+        let owned = prefixed(rows, owner, |row| row.owner);
+        let history = history_read(slices, reads, owner, read).and_then(|history| {
+            if owned.is_empty() { return Ok((history, None)); }
+            history_spellings(reads.query, frame, owner, history).map(|lexical| (history, Some(lexical)))
+        });
         if let Err(why) = &history
-            && !prefixed(rows, owner, |row| row.owner).is_empty()
+            && !owned.is_empty()
             && !unavailable.contains(why)
         {
             unavailable.push(why.clone());
         }
-        for project in prefixed(rows, owner, |row| row.owner) {
+        for project in owned {
             let token = spelled(frame, project.definition_id);
             if let Err(why) = &token {
                 unavailable.push(why.clone());
@@ -1053,7 +1061,10 @@ fn projects(
                     .map_err(|_| unavailable.push(format!("A variable name of project {owner}:{} is not UTF-8", project.local_id)))
                     .ok()
             });
-            let choices = history.is_ok().then(|| choices(frame, project, namer, unavailable)).flatten();
+            let choices = match &history {
+                Ok((_, Some(lexical))) => choices(frame, lexical, project, namer, unavailable),
+                _ => None,
+            };
             out.push(ProjectRuntimeDetails {
                 owner,
                 id: project.local_id,
@@ -1063,7 +1074,7 @@ fn projects(
                 pending: runtime.and_then(|runtime| runtime.pending_reward.map(|id| pending(frame, runtime, token.as_deref().map_err(String::as_str), id, namer))),
                 seed: runtime.and_then(|runtime| runtime.variables.as_ref()).map(|store| store.seed),
                 variables,
-                history_read_hour: history.as_ref().ok().copied().filter(|_| choices.is_some()),
+                history_read_hour: history.as_ref().ok().map(|(read, _)| *read).filter(|_| choices.is_some()),
                 choices,
             });
         }

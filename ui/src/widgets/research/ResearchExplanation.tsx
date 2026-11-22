@@ -64,7 +64,8 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
 }) {
   const parts = breakdownParts(slots, slot, entry, hour);
   const country = countryFromKey(tag);
-  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country, parts } };
+  const bounded = entry.outcome === 'completed' && completedBy(entry);
+  const request = bounded ? null : { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country, parts } };
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
   const active = entry.outcome === 'active';
   const estimate = useProduct<ResearchSlotsReply>(client, active ? { sourceId: track.source.id, revision: track.source.revision, product: 'research-slots',
@@ -87,7 +88,8 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
           <small>{journey.startKnown ? 'Started' : 'Started by'}</small>{date(journey.firstHour)}</span>}
       {active && <span data-tooltip={formatDateTime(hour)}><small>As of</small>{date(hour)}</span>}
     </div>
-    {(error || active && estimate.error) && !(data && (!active || estimate.data))
+    {bounded ? <p className="research-unavailable">Research time breakdown unavailable: the research is known only to have completed by {date(entry.endedByHour!)}.</p>
+      : (error || active && estimate.error) && !(data && (!active || estimate.data))
       ? <WidgetState kind="error" failure={(error ?? estimate.error)!} onRetry={error ? retry : estimate.retry} />
       : !data || active && !estimate.data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
         : split && researchDaysLeftMissing(split, active, daysLeft)

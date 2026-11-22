@@ -198,9 +198,9 @@ impl Fold {
 
 pub fn merge(held: &mut SpecialProjectRun, next: &SpecialProjectRun) {
     held.last_hour = next.last_hour;
-    held.iterations_read = next.iterations_read;
 }
 
 pub fn same(a: &SpecialProjectRun, b: &SpecialProjectRun) -> bool {
-    (a.presentation, a.progress, a.state, &a.completion, &a.cancellation, a.iterations) == (b.presentation, b.progress, b.state, &b.completion, &b.cancellation, b.iterations)
+    (a.presentation, a.progress, a.state, &a.completion, &a.cancellation, a.iterations, a.iterations_read.is_some())
+        == (b.presentation, b.progress, b.state, &b.completion, &b.cancellation, b.iterations, b.iterations_read.is_some())
 }

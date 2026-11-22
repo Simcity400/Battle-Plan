@@ -121,14 +121,21 @@ fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterat
     Ok((|| Ok(Listing { project, row, history, definition: definition?, reward: reward?, option: option? }))())
 }
 
-fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing) -> Result<(), String> {
-    let (owner, id) = (listing.project.owner, listing.project.local_id);
-    let (row, read) = supplied_project(frame, reads, owner, id)?;
-    if row.definition_id != listing.project.definition_id || owner_read(frame, TableId::ProjectHistory, owner)? != read {
-        return Err(UNPROVEN_PROJECT.into());
+fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing, listed: i32) -> io::Result<Result<(), String>> {
+    let (owner, id, definition) = (listing.project.owner, listing.project.local_id, listing.project.definition_id);
+    let found = (|| {
+        let (row, read) = supplied_project(frame, reads, owner, id)?;
+        if row.definition_id != definition || owner_read(frame, TableId::ProjectHistory, owner)? != read {
+            return Err(UNPROVEN_PROJECT.to_owned());
+        }
+        let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
+        if listing.history.starts_with(project_history(rows, owner, id)) { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
+    })();
+    if found.is_err() {
+        return Ok(found);
     }
-    let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
-    if listing.history.starts_with(project_history(rows, owner, id)) { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
+    let episode = super::super::one_episode(reads.query, reads.tag, (owner, id, definition), reads.hour, listed)?;
+    Ok(if episode { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) })
 }
 
 fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -216,11 +223,11 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     };
     let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project iteration hour is not recorded"))?.run;
     let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: at.hour };
-    let operands = same_project(frame, &reads, &listing);
     let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
     if definition(content, &listing.definition).is_none() {
         return Ok(Err(format!("Definition {} is absent from content", listing.definition)));
     }
+    let operands = same_project(frame, &reads, &listing, params.read)?;
     Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, operands, out)))
 }
 

@@ -212,7 +212,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     : { key: 'completed', label: 'Completed', pages, note: <SectionNote text="No espionage operations match these countries and settings by this moment." /> };
   const endedSection: LogListSection<OperationItem> = ended.error ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote failure={ended.error} retry={ended.retry} /> }
     : !ended.data ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote text="Loading ended operations…" loading /> }
-    : { key: 'ended', label: 'Ended operations', rows: endedList, note: <SectionNote text="No operations ended by this moment." /> };
+    : { key: 'ended', label: 'Ended operations', rows: endedList, note: <SectionNote text="No other endings recorded." /> };
   const sections = [underWaySection, completedSection, endedSection];
 
   return <div ref={element => { root.current = element; head.root(element); }} className="espionage-log">

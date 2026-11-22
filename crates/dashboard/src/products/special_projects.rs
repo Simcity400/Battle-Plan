@@ -674,12 +674,12 @@ struct Holding {
     unresolved: Vec<(i32, i32)>,
 }
 
-fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Holding) {
+fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec<Piece>, Holding) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
     let mut unknown: Vec<(i32, i32)> =
-        query.holders.unknown.iter().map(|&(first, last, _)| (first.max(query.timeline.first), last.min(through))).filter(|(first, last)| first <= last).collect();
-    for run in query.holders.within(country, query.timeline.first, through) {
+        query.holders.unknown.iter().map(|&(first, last, _)| (first.max(from), last.min(through))).filter(|(first, last)| first <= last).collect();
+    for run in query.holders.within(country, from, through) {
         let Holder::Found { slot, id } = run.holder else {
             unknown.push((run.first, run.last));
             continue;
@@ -782,7 +782,7 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
 }
 
 fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
-    let (pieces, holding) = pieces(&query, &params.country, through);
+    let (pieces, holding) = pieces(&query, &params.country, query.timeline.first, through);
     let mut fold = Fold::new(query.timeline.first);
     let mut observed: Vec<(i32, i32)> = Vec::new();
     let mut partial: Vec<(i32, i32)> = Vec::new();
@@ -795,6 +795,23 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
     }
     let tag = query.holders.name(&params.country, through);
     present(&query, params, content, &fold, Observation { observed, partial }, holding, &tag, cancelled, &mut None)
+}
+
+fn one_episode(query: &Query<'_>, country: &Country, project: (u32, u32, u32), first: i32, last: i32) -> io::Result<bool> {
+    let (owner, local, definition) = project;
+    let mut fold = Fold::new(query.timeline.first);
+    let (mut observed, mut partial, mut links) = (Vec::new(), Vec::new(), HashMap::new());
+    for piece in pieces(query, country, first, last).0 {
+        let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
+        fold_piece(&mut fold, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false))?;
+    }
+    let at = |hour: i32| {
+        fold.episodes.iter().position(|episode| {
+            (episode.owner, episode.local) == (owner, local)
+                && episode.runs.iter().any(|run| run.first_hour <= hour && hour <= run.last_hour && fold.looks[run.presentation as usize].definition == definition)
+        })
+    };
+    Ok(at(first).is_some_and(|episode| at(last) == Some(episode)))
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
@@ -898,7 +915,9 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         warnings.push("Project icons and portraits are visual assets outside content hash coverage.".into());
     }
     let Holding { identities, unresolved } = holding;
-    let unavailable = if identities.is_empty() {
+    let unavailable = if identities.is_empty() && !unresolved.is_empty() {
+        Some("Who held this tag was not recorded.".into())
+    } else if identities.is_empty() {
         Some("No country held this tag in the recording.".into())
     } else if content.definitions.projects.is_empty() {
         Some("The recorded content has no readable special-project definitions.".into())

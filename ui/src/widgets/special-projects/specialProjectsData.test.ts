@@ -396,7 +396,8 @@ test('History names an interval read only in part or not at all, never as no pro
     'a complete read outside the membership proves nothing for the member hours');
   const unknownHolder = { ...later, identities: [{ firstHour: 100, lastHour: 100, slot: 5, countryId: 10 }, { firstHour: 102, lastHour: 102, slot: 5, countryId: 10 }],
     available: [{ firstHour: 100, lastHour: 100 }, { firstHour: 102, lastHour: 102 }], partial: [], unresolved: [{ firstHour: 101, lastHour: 101 }] };
-  assert.equal(historyUnrecorded([validateSpecialProjectsReply(unknownHolder)], 100, 102), mixed, 'an hour whose holder is unknown is not an hour without projects');
+  const held = () => [{ firstHour: 100, lastHour: 100 }, { firstHour: 102, lastHour: 102 }];
+  assert.equal(historyUnrecorded([validateSpecialProjectsReply(unknownHolder)], 100, 102, held), mixed, 'an hour whose holder is unknown is not an hour without projects, though its membership is unknown too');
   const empty = { ...later, available: [{ firstHour: 100, lastHour: 150 }], partial: [] };
   assert.notEqual(historyKey(empty, 150, undefined, 100), historyKey(empty, 160, undefined, 100), 'with no projects, a change in coverage renders');
   assert.equal(historyKey(empty, 160, undefined, 100), historyKey(empty, 170, undefined, 100));

@@ -72,12 +72,13 @@ export function historyUnrecorded(data: readonly SpecialProjectsReply[], first: 
   let seen = false, gap = false, inPart = false;
   for (const reply of data) {
     const held = membership?.(reply);
-    const within = (spans: readonly HourSpan[]) => (held ? clipToSpans(spans, held) : spans).flatMap(run => {
+    const asked = (spans: readonly HourSpan[]) => spans.flatMap(run => {
       const firstHour = Math.max(run.firstHour, first), lastHour = Math.min(run.lastHour, last);
       return firstHour <= lastHour ? [{ firstHour, lastHour }] : [];
     });
+    const within = (spans: readonly HourSpan[]) => asked(held ? clipToSpans(spans, held) : spans);
     seen ||= within(reply.available).length > 0;
-    for (const hole of [...withoutHours(within(reply.identities), reply.available), ...within(reply.unresolved)]) {
+    for (const hole of [...withoutHours(within(reply.identities), reply.available), ...asked(reply.unresolved)]) {
       gap = true;
       inPart ||= meets(reply.partial, hole.firstHour, hole.lastHour);
     }

@@ -94,6 +94,29 @@ fn tactics_show_all_six_effects_favoured_by_side() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
+#[test]
+fn equipment_totals_apply_the_default_modules_before_reliability_scaling() {
+    let (database, _) = content_reader_core::equipment::fixture::load(&[(
+        "common/units/equipment/convoys.txt",
+        "equipment_modules = { gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } } }
+         equipments = {
+            hull = { is_archetype = yes type = convoy reliability = 0.8
+                scaled_by_reliability = { hg_attack = 0.5 }
+                module_add_stats_multiplier = { lg_attack = 0.5 }
+                module_multiply_stats_multiplier = { lg_attack = 1.0 } }
+            hull_1 = { archetype = hull default_modules = { main = gun } }
+            hull_2 = { archetype = hull default_modules = { main = empty } }
+            hull_3 = { archetype = hull default_modules = { main = lost_gun } }
+         }",
+    )]);
+    let stat = |name: &str| content_reader_core::equipment::stat_index(name.as_bytes()).unwrap();
+    let totals = equipment_totals(&database, "hull_1").unwrap();
+    assert_eq!((totals[stat("lg_attack")], totals[stat("hg_attack")]), (450_000, 40_000), "the default gun adds 2 light attack, scaled to 3 and multiplied to 4.5");
+    assert_eq!(equipment_totals(&database, "hull_2").unwrap()[stat("lg_attack")], 0, "an empty slot adds nothing");
+    let refused = equipment_totals(&database, "hull_3").unwrap_err();
+    assert!(refused.contains("lost_gun") && refused.contains("hull_3"), "{refused}");
+}
+
 fn recording() -> Source {
     let frames = (20..=30).map(|hour| source(1, hour, None)).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();

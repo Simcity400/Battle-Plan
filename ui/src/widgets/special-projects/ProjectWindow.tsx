@@ -150,7 +150,7 @@ function Iterations({ runtime, widget, tag, active, project, choices, run, onOpe
   return <section className="dossier-section">
     <h4>Iterations{Array.isArray(choices) && choices.length > 0 && <span className="project-window-count">{choices.length}{asOf}</span>}</h4>
     {choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : typeof choices === 'string' ? <p className="dossier-missing">{choices}</p>
-      : choices.length === 0 ? <p className="dossier-note">No iterations yet.</p>
+      : choices.length === 0 ? <p className="dossier-note">{asOf ? `0 iterations${asOf}` : 'No iterations yet.'}</p>
       : <ol className="project-window-timeline">{choices.map(choice => <li key={choice.ordinal}>
         <time>{dayLabel(choice.date)}</time>
         <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
