@@ -5,7 +5,7 @@ use eframe::egui;
 use std::sync::{Arc, Weak};
 use viewer_foundation::map::native_gui::pointer::Input;
 use viewer_combat::picker::{self, Control, ModeButton, Open, Toggles};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub const DEFAULT_SLOTS: [Stock; 11] = [
     Stock::Default,

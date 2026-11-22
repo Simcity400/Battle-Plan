@@ -6,4 +6,4 @@ Prepare highlighted runs from the ordinary traced meshes on the hour worker. Pre
 
 Resolve the palette from content. Ground selection uses its province or state entry, and demilitarization uses its selection reason with full alpha and presentation-clock pulses. When the zone display is hidden and ordinary borders show, draw its edges with the ordinary alpha and palette choices. Faction hover is interaction feedback and remains available despite border switches. Keep the material binding sequence even for empty runs so later drawing inherits the same state.
 
-[Boundary preparation, palette and tests](../../crates/viewer-world/src/map/demilitarized.rs)
+[Boundary preparation, palette and tests](../../crates/viewer-borders/src/demilitarized.rs)

@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use viewer_world::map::{
+use viewer_rail::{
     railways::{RailNetwork, TrainRoute},
     trains::{Curve, PlanCache, TrainAssets, TrainPlan, TrainRows},
 };

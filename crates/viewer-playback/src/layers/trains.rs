@@ -28,10 +28,7 @@ use std::{
 };
 use store::{Batch, Forget, Meta, ROWS, class};
 use viewer_foundation::{map::presentation::Continuity, map::province_map::HeightField};
-use viewer_world::map::{
-    railways::RailNetwork,
-    trains::{Curve, PlanCache, TrainPlan, route_curve},
-};
+use viewer_rail::{railways::RailNetwork, trains::{Curve, PlanCache, TrainPlan, route_curve}};
 
 #[derive(Clone, Copy)]
 struct Columns {

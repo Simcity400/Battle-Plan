@@ -26,7 +26,7 @@ use std::{
 };
 use viewer_counters::map::counters::{AirPasses, Ground, counts_withheld};
 use viewer_foundation::map::perspective::{Choice, Country, Vision};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Default)]
 struct Memory {

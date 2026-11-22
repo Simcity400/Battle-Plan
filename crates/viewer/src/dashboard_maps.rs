@@ -26,7 +26,7 @@ use crate::{
     app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
 };
-use viewer_world::map::scene::Scene;
+use viewer_world::scene::Scene;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MapSourceKey {

@@ -2,11 +2,11 @@
 use super::{Content, Installer, LEFT_OUT, Ordering, Political, Row, Set, Whole};
 use content_reader_core::map::{MapData, ProvinceDefinition, ProvinceKind};
 use std::{collections::HashSet, sync::Arc};
-use viewer_world::map::{
+use viewer_borders::{
     borders::{BorderClass, BorderDraw, BorderMesh, BorderMeshes, Vertex},
     demilitarized::{Zone, ZonePlan},
-    political::Regions,
 };
+use map_display_data::landscape::Regions;
 
 const PROVINCES: u32 = 40;
 
@@ -401,7 +401,7 @@ fn naval_dated_with_its_hour(name: &str, whole: bool) -> Vec<replay_data::Hour> 
     let layers: Vec<Box<dyn Layer>> = vec![
         Box::new(Political::new(Arc::new(Content::new(Arc::new(map), Arc::new(meshes))))),
         Box::new(vision::Vision::new(Arc::new(vision::Content::new(Ok(fog))))),
-        Box::new(Naval::new(Arc::new(viewer_world::map::naval_dominance::Content::for_tests(&[(10, true, 100_000)], 60_000)))),
+        Box::new(Naval::new(Arc::new(viewer_map_modes::naval_dominance::Content::for_tests(&[(10, true, 100_000)], 60_000)))),
     ];
     let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..playhead::Settings::default() };
     let entry = open(naval_turn(name), settings).unwrap();
@@ -478,7 +478,7 @@ impl super::Sink for Refusing {
         Ok(false)
     }
 
-    fn set_border_plans(&mut self, _classes: &viewer_world::map::border_pass::ClassPlan, _zone: &ZonePlan) -> std::io::Result<()> {
+    fn set_border_plans(&mut self, _classes: &viewer_borders::border_pass::ClassPlan, _zone: &ZonePlan) -> std::io::Result<()> {
         self.plans += 1;
         Ok(())
     }
@@ -618,7 +618,7 @@ fn frame_to(side: &mut crate::playhead_host::MapSide, sets: &mut Vec<Set>, targe
 struct Screen {
     refuse: bool,
     blank: bool,
-    plans: Option<(viewer_world::map::border_pass::ClassPlan, ZonePlan)>,
+    plans: Option<(viewer_borders::border_pass::ClassPlan, ZonePlan)>,
     plans_written: usize,
 }
 
@@ -636,7 +636,7 @@ impl super::Sink for Screen {
         Ok(!self.refuse)
     }
 
-    fn set_border_plans(&mut self, classes: &viewer_world::map::border_pass::ClassPlan, zone: &ZonePlan) -> std::io::Result<()> {
+    fn set_border_plans(&mut self, classes: &viewer_borders::border_pass::ClassPlan, zone: &ZonePlan) -> std::io::Result<()> {
         self.plans = Some((classes.clone(), zone.clone()));
         self.plans_written += 1;
         Ok(())

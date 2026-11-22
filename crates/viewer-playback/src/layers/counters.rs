@@ -1707,7 +1707,7 @@ impl Layer for Counters {
             self.camera = camera;
             self.camera_dirty = true;
         }
-        let shown = viewer_world::map::map_mode::visibility::of(&view.map_mode);
+        let shown = viewer_map_modes::map_mode::visibility::of(&view.map_mode);
         let high = view.camera.is_some_and(|camera| matches!(camera.pose, Pose::Map) && camera.height >= self.content.icons_cutoff());
         if !shown.unit_counters || shown.unit_kinds != UnitKinds::All || !view.overlay.counters.land || high {
             self.hidden = true;

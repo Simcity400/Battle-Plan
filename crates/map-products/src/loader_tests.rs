@@ -165,7 +165,7 @@ fn previous_inputs(
         content_reader_core::script_constants::read(layers).map_err(|error| error.to_string());
     let localisation = layers.artwork("map names", |stack| {
         let rows = content_reader_core::adjacencies::read(stack)?;
-        viewer_world::map::name_pass::ProvinceGraph::build(
+        viewer_map_text::name_pass::ProvinceGraph::build(
             map.width,
             map.height,
             &map.province_ids,

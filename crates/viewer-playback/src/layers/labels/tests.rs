@@ -129,7 +129,7 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
             other => panic!("province {province} at hour {hour}: {other:?}"),
         };
         assert_eq!(display.perspective.as_deref(), Some("AAA"));
-        let tied = format!("Field Capital stars: capital state 200 carries no star: {}", viewer_world::map::labels::TIED_VICTORY_POINTS);
+        let tied = format!("Field Capital stars: capital state 200 carries no star: {}", viewer_map_icons::labels::TIED_VICTORY_POINTS);
         assert_eq!(layer.notes(), [tied], "today's line for the withheld star alone at hour {hour}");
         if hour < 8 {
             assert!(candidate(1).unwrap().capital && candidate(2).is_none(), "the capital star on the most points at hour {hour}");

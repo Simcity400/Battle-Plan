@@ -22,7 +22,7 @@ use std::{
     },
 };
 use viewer_foundation::map::visibility::FogContent;
-use viewer_world::map::animated_map_text::events;
+use viewer_map_text::animated_map_text::events;
 
 const BRANCH: u64 = 0;
 

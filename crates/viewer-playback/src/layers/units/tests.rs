@@ -21,10 +21,8 @@ use viewer_foundation::map::{
     counter_move::RouteWorld,
     perspective::{Choice, VISION_TABLES, Vision},
 };
-use viewer_world::map::{
-    entity_animation::DEFEND,
-    unit_models::Unplaced,
-};
+use viewer_models::entity_animation::DEFEND;
+use viewer_unit_models::unit_models::Unplaced;
 
 struct Flat {
     bounds: BTreeMap<u32, [f32; 4]>,
@@ -64,7 +62,7 @@ impl Ground for Flat {
         (MapSize::TEST, MapDefines::test())
     }
 
-    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets> {
+    fn unit_models(&self) -> Option<&viewer_unit_models::unit_models::UnitModelAssets> {
         None
     }
 }
@@ -577,11 +575,11 @@ impl HeldModels {
 }
 
 impl super::models::Select for HeldModels {
-    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
-        Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_world::map::unit_models::Made::default() })
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+        Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_unit_models::unit_models::Made::default() })
     }
 
-    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
         let until = std::time::Instant::now() + Duration::from_secs(60);
         let mut open = self.open.lock().unwrap();
         while !*open {
@@ -677,15 +675,15 @@ struct CountedChoices {
 }
 
 impl super::models::Select for CountedChoices {
-    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), stacks: &std::collections::HashMap<u64, super::meshes::Asked>, asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), stacks: &std::collections::HashMap<u64, super::meshes::Asked>, asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
         let mut meshes: Vec<(u64, super::meshes::Mesh)> = stacks.keys().filter(|oldest| asked.contains(oldest)).map(|&oldest| (oldest, Ok(Some(oldest as usize)))).collect();
         meshes.sort_unstable_by_key(|&(oldest, _)| oldest);
         self.asked.lock().unwrap().extend(meshes.iter().map(|&(oldest, _)| oldest));
-        let made = viewer_world::map::unit_models::Made { selections: meshes.len(), ..Default::default() };
+        let made = viewer_unit_models::unit_models::Made { selections: meshes.len(), ..Default::default() };
         Ok(super::meshes::Chosen { meshes, made })
     }
 
-    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
         Err(std::io::Error::other("no unit models in this test"))
     }
 }
@@ -855,12 +853,12 @@ fn a_step_applied_every_frame_starts_a_mesh_build_once_the_one_before_answers_an
 struct NoModels;
 
 impl super::models::Select for NoModels {
-    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
-        Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_world::map::unit_models::Made::default() })
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+        Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_unit_models::unit_models::Made::default() })
     }
 
-    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
-        Ok(viewer_world::map::unit_models::PreparedModels::drawn_by_layers())
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
+        Ok(viewer_unit_models::unit_models::PreparedModels::drawn_by_layers())
     }
 }
 
@@ -910,7 +908,7 @@ impl HeldMeshes {
 }
 
 impl super::models::Select for HeldMeshes {
-    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), stacks: &std::collections::HashMap<u64, super::meshes::Asked>, asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), stacks: &std::collections::HashMap<u64, super::meshes::Asked>, asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
         if self.armed.load(std::sync::atomic::Ordering::Acquire) {
             self.entered.fetch_add(1, std::sync::atomic::Ordering::Release);
             let until = std::time::Instant::now() + Duration::from_secs(60);
@@ -922,12 +920,12 @@ impl super::models::Select for HeldMeshes {
         }
         let mut meshes: Vec<(u64, super::meshes::Mesh)> = stacks.keys().filter(|oldest| asked.contains(oldest)).map(|&oldest| (oldest, Ok(Some(oldest as usize)))).collect();
         meshes.sort_unstable_by_key(|&(oldest, _)| oldest);
-        let made = viewer_world::map::unit_models::Made { selections: meshes.len(), ..Default::default() };
+        let made = viewer_unit_models::unit_models::Made { selections: meshes.len(), ..Default::default() };
         Ok(super::meshes::Chosen { meshes, made })
     }
 
-    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
-        Ok(viewer_world::map::unit_models::PreparedModels::drawn_by_layers())
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
+        Ok(viewer_unit_models::unit_models::PreparedModels::drawn_by_layers())
     }
 }
 

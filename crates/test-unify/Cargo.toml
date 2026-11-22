@@ -20,9 +20,11 @@ alloc-no-stdlib = { version = "2.0.4", default-features = false, features = [] }
 alloc-stdlib = { version = "0.2.4", default-features = false, features = [] }
 anyhow = { version = "1.0.104", default-features = false, features = ["default", "std"] }
 base64 = { version = "0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
+bitflags = { version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 block-buffer = { version = "0.10.4", default-features = false, features = [] }
 brotli = { version = "8.0.4", default-features = false, features = ["alloc-stdlib", "std"] }
 brotli-decompressor = { version = "5.0.3", default-features = false, features = ["alloc-stdlib", "std"] }
+bytemuck = { version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
 byteorder = { version = "1.5.0", default-features = false, features = ["default", "std"] }
 bytes = { version = "1.12.1", default-features = false, features = ["default", "std"] }
 cfb = { version = "0.7.3", default-features = false, features = [] }
@@ -63,6 +65,7 @@ libc = { version = "0.2.189", default-features = false, features = ["default", "
 litemap = { version = "0.8.3", default-features = false, features = [] }
 memchr = { version = "2.8.3", default-features = false, features = ["alloc", "default", "std"] }
 num-conv = { version = "0.2.2", default-features = false, features = [] }
+num-traits = { version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 option-ext = { version = "0.2.0", default-features = false, features = [] }
 parking_lot_core = { version = "0.9.12", default-features = false, features = [] }
 percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc", "default", "std"] }

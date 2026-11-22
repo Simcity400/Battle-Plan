@@ -291,7 +291,7 @@ impl SideThread {
         self.products.applied
     }
 
-    pub fn mode_on_screen(&self) -> Option<&viewer_world::map::map_mode::MapMode> {
+    pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.products.mode.as_ref()
     }
 
@@ -536,8 +536,8 @@ pub struct LayIns {
     pub labels: Option<(Arc<map_display_data::landscape::Labels>, u32)>,
     pub intel: Option<Arc<viewer_raids::map::intel_icons::IntelIcons>>,
     pub raids: Option<Arc<viewer_raids::map::raids::RaidIcons>>,
-    resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
-    occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+    resources: Option<(viewer_map_icons::resource_icons::HourIcons, u64)>,
+    occupation: Option<(viewer_map_icons::occupation_icons::Marks, u64)>,
 }
 
 impl LayIns {
@@ -600,19 +600,19 @@ pub struct Products {
     pub view: View,
     pub composing: bool,
     pub applied: Option<Hour>,
-    pub mode: Option<viewer_world::map::map_mode::MapMode>,
+    pub mode: Option<viewer_map_modes::map_mode::MapMode>,
     pub frame: Frame,
     pub branch: Option<replay_data::BranchId>,
     pub battles: Option<Option<Arc<viewer_audio::battle::Battles>>>,
-    pub radar: Option<Arc<viewer_world::map::radar_symbols::Field>>,
+    pub radar: Option<Arc<viewer_aircraft::radar_symbols::Field>>,
     pub plan: Option<(Hour, Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
-    pub routes: Option<(u64, Arc<viewer_world::map::trade_routes::TradeRoutes>)>,
+    pub routes: Option<(u64, Arc<viewer_unit_models::trade_routes::TradeRoutes>)>,
     pub labels: Option<crate::layers::labels::Stamped>,
     pub left: crate::document::LeftToLayers,
     pub placements: Option<Arc<viewer_foundation::map::name_draw::Placements>>,
     pub counters: viewer_counters::map::counters::Layered,
     pub counter_kinds: viewer_counters::map::counters::Kinds,
-    pub units: Option<Arc<viewer_world::map::unit_models::PreparedModels>>,
+    pub units: Option<Arc<viewer_unit_models::unit_models::PreparedModels>>,
     pub movement: Vec<(viewer_foundation::unit_handle::Unit, viewer_foundation::map::counter_move::Position, f32, f32)>,
     movement_of: Option<u64>,
     pub pick_divisions: std::collections::HashMap<u32, Vec<crate::layers::units::PickDivision>>,
