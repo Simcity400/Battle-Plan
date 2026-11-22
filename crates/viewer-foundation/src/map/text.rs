@@ -681,6 +681,7 @@ pub fn layout_truncated(
         }
         None => (chars, 0.0),
     };
+    let bounded = max_width.is_some();
     let start = origin[0] + offset;
     let mut out = Vec::with_capacity(shown.len());
     let mut pen = 0i32;
@@ -711,7 +712,12 @@ pub fn layout_truncated(
             previous = None;
             continue;
         }
-        if let Some(glyph) = glyphs.glyph(ch) {
+        let resolved = if bounded {
+            glyphs.glyph(ch)
+        } else {
+            glyphs.own(ch)
+        };
+        if let Some(glyph) = resolved {
             if let Some(p) = previous {
                 pen += glyphs.kerning(p, ch);
             }
@@ -1506,6 +1512,13 @@ path=\"{art}\"
             fallback_dots.iter().map(|g| g.uv).collect::<Vec<_>>(),
             vec![a_uv, a_uv, q_uv, q_uv, q_uv]
         );
+        assert_eq!(measure(&fallback_font, "AZB"), 18.0);
+        let unbounded_missing = layout(&fallback_font, "AZB", [0.0, 0.0], Align::Left, None);
+        assert_eq!(
+            unbounded_missing.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv]
+        );
+        assert_eq!(unbounded_missing[1].rect[0], 8.0);
     }
 
     #[test]

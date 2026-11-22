@@ -396,12 +396,15 @@ fn update_item(
         visible(instance, root, Icon, name, value == Some(true))?;
     }
     let plate = match countries.zip(data.country) {
-        Some((countries, country)) => match countries.sides.get(&country).copied() {
-            Some(side) => match counter_plate_color(
-                inputs.settings.color_mode,
+        Some((countries, country)) => match (
+            inputs.settings.color_mode,
+            countries.sides.get(&country).copied(),
+        ) {
+            (CounterColorMode::Country, _) => match counter_plate_color(
+                CounterColorMode::Country,
                 &inputs.content.defines.tints,
                 countries,
-                side,
+                Allegiance::Other,
                 Some(country),
             ) {
                 Ok(color) => Some(color),
@@ -412,7 +415,10 @@ fn update_item(
                     None
                 }
             },
-            None => None,
+            (CounterColorMode::Allegiance, Some(side)) => {
+                Some(inputs.content.defines.tints.of(side))
+            }
+            (CounterColorMode::Allegiance, None) => None,
         },
         None => None,
     };
@@ -793,9 +799,14 @@ mod tests {
                 let mut countries = Countries::default();
                 countries.sides.insert(1, Allegiance::Ours);
                 countries.ui_colors.colors.insert(1, None);
-                let data = PreparedItem {
+                countries
+                    .ui_colors
+                    .colors
+                    .insert(2, Some([0.2, 0.4, 0.8, 1.0]));
+                countries.ui_colors.colors.insert(3, None);
+                let item = |member: u64, country: u32| PreparedItem {
                     item: super::super::Item {
-                        members: vec![7],
+                        members: vec![member],
                         selected: false,
                         archetype: Some(1),
                         group: 0,
@@ -803,7 +814,7 @@ mod tests {
                     },
                     icon_frame: 1,
                     action: None,
-                    country: Some(1),
+                    country: Some(country),
                     group_color: None,
                     markers: [Some(false); 4],
                     capacity: Some(100),
@@ -820,7 +831,7 @@ mod tests {
                     &mut instance,
                     root,
                     "wings_box",
-                    Some(&Ok(vec![data])),
+                    Some(&Ok(vec![item(7, 1), item(8, 2), item(9, 3)])),
                     &inputs,
                     Some(&countries),
                     &resources,
@@ -850,12 +861,33 @@ mod tests {
                     )
                     .unwrap();
                 let composed = drawn.layout.composed_parts(&grid.parts).cloned().collect::<Vec<_>>();
-                assert!(!composed.iter().any(|part| part.path.ends_with(".count_bg")));
+                let plates: Vec<_> = composed
+                    .iter()
+                    .filter(|part| part.path.ends_with(".count_bg"))
+                    .collect();
+                assert_eq!(plates.len(), 1, "{plates:?}");
+                assert_eq!(plates[0].color, [0.2, 0.4, 0.8, 1.0]);
                 assert!(
                     report
                         .icon_gui_notes
                         .keys()
                         .any(|note| note.contains("slot 1") && note.contains("non-finite")),
+                    "{:?}",
+                    report.icon_gui_notes
+                );
+                assert!(
+                    report
+                        .icon_gui_notes
+                        .keys()
+                        .any(|note| note.contains("slot 3") && note.contains("non-finite")),
+                    "{:?}",
+                    report.icon_gui_notes
+                );
+                assert!(
+                    !report
+                        .icon_gui_notes
+                        .keys()
+                        .any(|note| note.contains("slot 2")),
                     "{:?}",
                     report.icon_gui_notes
                 );

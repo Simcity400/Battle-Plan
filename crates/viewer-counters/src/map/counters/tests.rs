@@ -4968,8 +4968,8 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
     batch.bar(
         &bar,
-        [24.0, 28.0],
-        [17.0, 3.0],
+        [32.5, 29.5],
+        [3.0, 17.0],
         8.5,
         std::f32::consts::FRAC_PI_2,
         [1.0; 4],
@@ -4978,8 +4978,8 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
     batch.bar(
         &bar,
-        [24.0, 28.0],
-        [17.0, 3.0],
+        [32.5, 29.5],
+        [3.0, 17.0],
         0.0,
         std::f32::consts::FRAC_PI_2,
         [1.0; 4],
@@ -4987,8 +4987,8 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     assert_eq!(batch.quads.len(), 2);
     batch.bar(
         &bar,
-        [24.0, 28.0],
-        [17.0, 3.0],
+        [32.5, 29.5],
+        [3.0, 17.0],
         30.0,
         std::f32::consts::FRAC_PI_2,
         [1.0; 4],
@@ -5734,6 +5734,23 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     assert_eq!(batch.quads[2].rotation, 0.0);
     assert_eq!(batch.quads[2].rect, [957.0, 854.0, 10.0, 3.0]);
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 10.0 / 17.0, 1.0]);
+    let upright_tall = Child {
+        sprite: "GFX_mapicon_unit_bar_org".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: 0.0,
+        centered: false,
+        order: 0,
+    };
+    assert_eq!(
+        turned_rect(&upright_tall, [3.0, 17.0], [0.0, 0.0]),
+        [14.0, 8.0, 3.0, 17.0]
+    );
+    draw_bar(&mut batch, &patterned, &upright_tall, [0.0, 0.0], 0.5);
+    assert_eq!(batch.quads[3].rotation, 0.0);
+    assert_eq!(batch.quads[3].rect, [14.0, 8.0, 3.0, 10.0]);
+    assert_eq!(batch.quads[3].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
 }
 
 #[test]
@@ -5832,5 +5849,36 @@ fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
     assert!(
         (p_full[0] - p_partial[0]).abs() < 1e-4 && (p_full[1] - p_partial[1]).abs() < 1e-4,
         "source texel moved under partial fill: {p_full:?} vs {p_partial:?}"
+    );
+
+    let vertical = sheet("GFX_vertical_bar", 1, [3, 17]);
+    let tall = |degrees: f32| Child {
+        sprite: "GFX_vertical_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: degrees.to_radians(),
+        centered: false,
+        order: 0,
+    };
+    let mut tall_below = Batch::default();
+    draw_bar(&mut tall_below, &vertical, &tall(44.9), origin, 1.0);
+    let mut tall_above = Batch::default();
+    draw_bar(&mut tall_above, &vertical, &tall(45.1), origin, 1.0);
+    assert_eq!(tall_below.quads[0].rect[3], 18.0);
+    assert_eq!(tall_above.quads[0].rect[3], 18.0);
+    let (tc_below, tc_above) = (centre(&tall_below.quads[0]), centre(&tall_above.quads[0]));
+    assert!(
+        (tc_below[0] - tc_above[0]).abs() < 0.05 && (tc_below[1] - tc_above[1]).abs() < 0.05,
+        "tall 45-degree jump: {tc_below:?} vs {tc_above:?}"
+    );
+    let mut tall_full = Batch::default();
+    draw_bar(&mut tall_full, &vertical, &tall(30.0), origin, 1.0);
+    let mut tall_partial = Batch::default();
+    draw_bar(&mut tall_partial, &vertical, &tall(30.0), origin, 0.5);
+    let (tp_full, tp_partial) = (corner0(&tall_full.quads[0]), corner0(&tall_partial.quads[0]));
+    assert!(
+        (tp_full[0] - tp_partial[0]).abs() < 1e-4 && (tp_full[1] - tp_partial[1]).abs() < 1e-4,
+        "tall source texel moved under partial fill: {tp_full:?} vs {tp_partial:?}"
     );
 }

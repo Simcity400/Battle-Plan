@@ -4074,11 +4074,14 @@ fn draw_child(
 pub(super) fn turned_rect(child: &Child, size: [f32; 2], origin: [f32; 2]) -> [f32; 4] {
     let (width, height) = (size[0] * child.scale, size[1] * child.scale);
     if height > width {
+        let turn = child.rotation.sin().powi(2);
+        let box_w = width + (height - width) * turn;
+        let box_h = height - (height - width) * turn;
         [
             origin[0] + child.at[0],
-            origin[1] + child.at[1] + (height - width) * 0.5,
-            height,
-            width,
+            origin[1] + child.at[1] + (height - box_h) * 0.5,
+            box_w,
+            box_h,
         ]
     } else {
         [origin[0] + child.at[0], origin[1] + child.at[1], width, height]
@@ -4086,12 +4089,15 @@ pub(super) fn turned_rect(child: &Child, size: [f32; 2], origin: [f32; 2]) -> [f
 }
 
 fn draw_bar(batch: &mut Batch, sheet: &SpriteSheet, child: &Child, origin: [f32; 2], fill: f32) {
-    let rect = turned_rect(child, sheet.frame_size(), origin);
+    let frame = sheet.frame_size();
+    let rect = turned_rect(child, frame, origin);
+    let size = [frame[0] * child.scale, frame[1] * child.scale];
+    let length = if frame[1] > frame[0] { size[1] } else { size[0] };
     batch.bar(
         sheet,
-        [rect[0], rect[1]],
-        [rect[2], rect[3]],
-        counter_inputs::bar_pixels(fill, rect[2]),
+        [rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5],
+        size,
+        counter_inputs::bar_pixels(fill, length),
         child.rotation,
         [1.0; 4],
     );

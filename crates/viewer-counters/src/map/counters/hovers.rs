@@ -135,11 +135,9 @@ pub(super) fn presented(
                 if element.is_named("bar_org") || element.is_named("bar_str") {
                     match container_frame(root, None) {
                         Ok(container) => {
-                            let anchor = viewer_foundation::map::native_gui::compute_anchor(
+                            let anchor = viewer_foundation::map::native_gui::control_anchor(
                                 icon.orientation,
-                                native::Orientation::UpperLeft,
                                 container.content_size,
-                                [0; 2],
                             );
                             rect[0] = origin[0]
                                 + container.content_at[0] as f32
@@ -530,7 +528,8 @@ mod tests {
             containerWindowType = {
                 name = "unit_counter"
                 size = { width = 76 height = 24 }
-                iconType = { name = "bar_org" spriteType = "GFX_synthetic_overlay" position = { x = 14 y = 8 } rotation = 3.1415927 }
+                iconType = { name = "bar_org" spriteType = "GFX_synthetic_overlay" position = { x = 14 y = 8 } rotation = 3.1415927 Orientation = "CENTER_LEFT" }
+                iconType = { name = "bar_str" spriteType = "GFX_synthetic_overlay" position = { x = 14 y = 12 } Orientation = "CENTER_RIGHT" }
             }
         }"#;
         let guis = native::Guis::new(vec![(
@@ -561,6 +560,14 @@ mod tests {
                 let mut batch = sprites::Batch::default();
                 batch.at_layer(0);
                 draw_bar(&mut batch, sheet, &child, [100.0, 200.0], 0.5);
+                let second = Child {
+                    at: [14.0, 12.0],
+                    rotation: 0.0,
+                    order: 1,
+                    ..child
+                };
+                batch.at_layer(1);
+                draw_bar(&mut batch, sheet, &second, [100.0, 200.0], 0.5);
                 let stack = land::Stack {
                     selected: false,
                     owner: 0,
@@ -592,8 +599,9 @@ mod tests {
                 };
                 let out = presented(&inputs, &stack, false, [100.0, 200.0], &batch.quads);
                 assert!(out.refused.is_empty(), "{:?}", out.refused);
-                assert_eq!(out.controls.len(), 1);
+                assert_eq!(out.controls.len(), 2);
                 assert_eq!(out.controls[0].1, [114.0, 208.0, 17.0, 3.0]);
+                assert_eq!(out.controls[1].1, [114.0, 212.0, 17.0, 3.0]);
             },
         );
     }
