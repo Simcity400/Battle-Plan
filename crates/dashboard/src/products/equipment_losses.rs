@@ -478,7 +478,12 @@ fn reply(
     let land_unknown = combat_log.then(|| content.retention_refusal()).flatten();
     let last_hour = to;
     let destruction_spans = covered.destruction_unknown(last_hour);
-    let destruction_lower = covered.incomplete_from().into_iter().chain(destruction_spans.iter().map(|span| span.first_hour)).min();
+    let active_start = covered.active_run_start();
+    let destruction_lower = covered
+        .incomplete_from()
+        .into_iter()
+        .chain(destruction_spans.iter().filter(|span| active_start.is_none_or(|start| span.last_hour >= start)).map(|span| span.first_hour))
+        .min();
     let mut by_source: BTreeMap<LossSource, Vec<(Option<u32>, u128, &Leaf)>> = BTreeMap::new();
     for (&key, leaf) in &leaves {
         if let Some((source, variant)) = leaf_of(key) {

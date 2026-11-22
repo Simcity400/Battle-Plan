@@ -44,7 +44,7 @@ import { sinceLabel } from '../../dashboard/stretch';
 import { entryAt } from '../../dashboard/reads';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { DETAIL, OPTIONS } from './definition';
-import { LEVELS, coverageLegend, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
+import { LEVELS, coverageLegend, destructionCountingNote, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
   lossWindow, lossKey, unknownCauses, withHead, withShips } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill';
@@ -261,7 +261,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const airCoverage = shownReply.landSource === 'combatLog' ? destructionLegend(shownReply, view, tokens) : [];
   const incomplete = total.incomplete || [...coverage, ...airCoverage].some(item => item.label === 'Incomplete')
     || shownReply.causes.some(cause => cause.loss && cause.source.kind === 'destruction')
-      && (shownReply.destructionCountedFrom === null || view.hour < shownReply.destructionCountedFrom);
+      && destructionCountingNote(shownReply, view.hour) !== '';
   const status = total.exact === null ? 'Unavailable' : incomplete ? 'Incomplete' : 'Complete';
   const limitations = incomplete ? unknownCauses(shownReply, view.hour) : [];
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>

@@ -370,6 +370,7 @@ impl EquipmentLossCoverageRow {
         | Self::DRAIN_STATE_OWNER_UNKNOWN
         | Self::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE
         | Self::DRAIN_STATE_WITHHELD;
+    pub const DRAIN_WITHHELD: &'static str = "Equipment destruction drain is withheld for the run";
     pub const DRAIN_TRUNCATED: &'static str = "Equipment destruction drain is truncated; withheld for the run";
     pub const DRAIN_SUPPLEMENTAL_NOT_RECORDED: &'static str = "EquipmentDestruction supplemental coverage not recorded";
     pub const DRAIN_OWNER_UNKNOWN: &'static str = "Equipment destruction ownership is unknown: raw country references have no CountryLink";

@@ -217,13 +217,42 @@ export interface LossItem extends SunburstItem {
 export interface LossTotal extends SunburstTotal { exact: bigint | null; incomplete: boolean }
 
 const NO_DESTRUCTION_READ = 'No destruction drain was recorded at this hour.';
+function destructionStartFor(reply: LossesReply, hour: number): number | null {
+  const lastRestart = reply.restarts.length ? reply.restarts[reply.restarts.length - 1] : null;
+  if (lastRestart === null || hour >= lastRestart) {
+    return reply.destructionCountedFrom
+      ?? reply.destructionCoverage.find(span => lastRestart === null || span.firstHour >= lastRestart)?.firstHour
+      ?? null;
+  }
+  let start = -Infinity;
+  let next = Infinity;
+  for (const restart of reply.restarts) {
+    if (restart <= hour) start = restart;
+    else { next = restart; break; }
+  }
+  return reply.destructionCoverage.find(span => span.firstHour >= start && span.firstHour < next)?.firstHour ?? null;
+}
+
+function destructionCountedFor(reply: LossesReply, hour: number): number | null {
+  const lastRestart = reply.restarts.length ? reply.restarts[reply.restarts.length - 1] : null;
+  if (lastRestart === null || hour >= lastRestart) return reply.destructionCountedFrom;
+  let start = -Infinity;
+  let next = Infinity;
+  for (const restart of reply.restarts) {
+    if (restart <= hour) start = restart;
+    else { next = restart; break; }
+  }
+  return reply.destructionCoverage.find(span => span.firstHour >= start && span.firstHour < next && span.reason === null)?.firstHour ?? null;
+}
+
 export function destructionCoverageAt(reply: LossesReply, hour: number): string | null {
   const span = entryAt(reply.destructionCoverage, hour);
   return span && span.lastHour >= hour ? span.reason : NO_DESTRUCTION_READ;
 }
 
 export function destructionCoverageHours(reply: LossesReply, first: number, last: number) {
-  first = Math.max(first, reply.destructionCountedFrom ?? reply.destructionCoverage[0]?.firstHour ?? last + 1);
+  const start = destructionStartFor(reply, last);
+  first = Math.max(first, start ?? last + 1);
   let recorded = 0;
   let unknown = 0;
   const reasons = new Set<string>();
@@ -239,8 +268,8 @@ export function destructionCoverageHours(reply: LossesReply, first: number, last
 }
 
 export function destructionLegend(reply: LossesReply, window: LossWindow, tokens: Pick<ChartTokens, 'positive' | 'surface' | 'text'>): LegendItem[] {
-  const first = reply.destructionCountedFrom;
-  if ((first === null && !reply.destructionCoverage.length) || (first !== null && window.hour < first)) return [];
+  const first = destructionStartFor(reply, window.hour);
+  if (first === null || window.hour < first) return [];
   const missing = window.campaign ? destructionCoverageHours(reply, window.first, window.hour).unknown > 0
     : destructionCoverageAt(reply, window.hour) !== null;
   return [{ id: missing ? 'unknown' : 'recorded', color: missing ? mix(tokens.surface, tokens.text, 0.1) : tokens.positive,
@@ -275,7 +304,8 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
     const destructionMissing = spans.some(destructionReason);
     const unread = spans.some(span => span.reason === 'unread');
     const ended = spans.some(span => span.reason === 'endedAfterLastRead');
-    const started = cause.source.kind !== 'destruction' || reply.destructionCountedFrom !== null && window.hour >= reply.destructionCountedFrom;
+    const countedFrom = destructionCountedFor(reply, window.hour);
+    const started = cause.source.kind !== 'destruction' || countedFrom !== null && window.hour >= countedFrom;
     const incomplete = unread || ended || destructionMissing || !!(cause.domain === 'land' && started && land);
     const finalUnknown = finalSpans.length > 0 || !!(cause.domain === 'land' && landNote(reply, window.first, window.end));
     const noAmount = !cause.leaves.some(leaf => pointAt(leaf, window.hour));
@@ -336,7 +366,8 @@ export function lossesTotal(items: readonly LossItem[]): LossTotal {
 }
 
 export function destructionCountingNote(reply: LossesReply, hour: number): string {
-  return reply.destructionCountedFrom === null || hour < reply.destructionCountedFrom ? 'Unavailable' : '';
+  const countedFrom = destructionCountedFor(reply, hour);
+  return countedFrom === null || hour < countedFrom ? 'Unavailable' : '';
 }
 
 export function stepHours(hours: readonly number[], key: NavigationKey, origin: number | null, first: number, last: number): number | null {

@@ -1,9 +1,21 @@
 use super::coverage::{CountryCells, Coverage, Held, RunCells, UnknownReason, classify, classify_historical};
 use super::*;
 use replay::lanes::Bin;
-use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row};
+use replay_data::rows::EquipmentLossCoverageRow as Row;
+
+const LEGACY_PARTIAL_TEXT: &str = "equipment destruction first/branch interval is partial";
 
 fn run(drain: &str, unread: u8) -> Option<RunCells> {
+    Some(RunCells {
+        drain: Some(drain.to_owned()),
+        drain_state: drain.is_empty().then_some(Row::DRAIN_STATE_COMPLETE),
+        unread: Some(unread),
+        counted_from: Some(10),
+        ..RunCells::default()
+    })
+}
+
+fn legacy_run(drain: &str, unread: u8) -> Option<RunCells> {
     Some(RunCells { drain: Some(drain.to_owned()), unread: Some(unread), counted_from: Some(10), ..RunCells::default() })
 }
 
@@ -50,8 +62,7 @@ fn drain_reasons_become_one_span_each_from_their_first_hour_after_counting_start
             (30, 39, run(&format!("{}; {}", Row::DRAIN_OWNER_UNKNOWN, Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED), 0)),
             (40, 49, run("", 0)),
         ],
-        country: Vec::new(),
-        legacy_partial_text: false,
+        ..Held::default()
     };
     assert_eq!(held.counted_from(), Some(10));
     let spans = held.destruction_unknown(99);
@@ -70,8 +81,7 @@ fn drain_reasons_become_one_span_each_from_their_first_hour_after_counting_start
 fn a_records_unread_hours_and_unavailable_hours_are_unknown_never_zero() {
     let held = Held {
         run: vec![(0, 4, run("", 0)), (5, 7, run("", Row::UNREAD_SHIPS)), (8, 9, run("", Row::UNREAD_SHIPS | Row::UNREAD_CONVOYS)), (10, 12, None), (13, 20, run("", 0))],
-        country: Vec::new(),
-        legacy_partial_text: false,
+        ..Held::default()
     };
     let ships: Vec<(i32, i32, bool)> = held.unread(Row::UNREAD_SHIPS, 20).iter().map(|span| (span.first_hour, span.last_hour, span.detail.is_none())).collect();
     assert_eq!(ships, vec![(5, 9, true), (10, 12, false)]);
@@ -82,7 +92,7 @@ fn a_records_unread_hours_and_unavailable_hours_are_unknown_never_zero() {
 #[test]
 fn each_ended_exchange_is_a_span_from_the_hour_its_batch_is_lost() {
     let country = |ended: u32, from: Option<i32>| Some(CountryCells { exchanges_ended: Some(ended), ended_from: from, ..CountryCells::default() });
-    let held = Held { run: Vec::new(), country: vec![(0, 9, country(0, None)), (10, 19, country(2, Some(8))), (20, 29, country(3, Some(15)))], legacy_partial_text: false };
+    let held = Held { country: vec![(0, 9, country(0, None)), (10, 19, country(2, Some(8))), (20, 29, country(3, Some(15)))], ..Held::default() };
     let spans: Vec<(i32, i32)> = held.ended(40).iter().map(|span| (span.first_hour, span.last_hour)).collect();
     assert_eq!(spans, vec![(8, 40), (8, 40), (15, 40)]);
 }
@@ -90,13 +100,13 @@ fn each_ended_exchange_is_a_span_from_the_hour_its_batch_is_lost() {
 #[test]
 fn land_coverage_follows_the_identitys_row_and_its_absence_is_unknown() {
     let country = |land: u8, ungrouped: u32| Some(CountryCells { land: Some(land), ungrouped: Some(ungrouped), ..CountryCells::default() });
-    let held = Held { run: Vec::new(), country: vec![(0, 4, country(Row::LOGGED, 0)), (5, 9, country(Row::LOGGED, 0)), (10, 14, country(Row::PARTIAL, 3)), (15, 19, None)], legacy_partial_text: false };
+    let held = Held { country: vec![(0, 4, country(Row::LOGGED, 0)), (5, 9, country(Row::LOGGED, 0)), (10, 14, country(Row::PARTIAL, 3)), (15, 19, None)], ..Held::default() };
     let land: Vec<(i32, i32, Coverage)> = held.land().iter().map(|span| (span.first_hour, span.last_hour, span.coverage)).collect();
     assert_eq!(land, vec![(0, 9, Coverage::Logged), (10, 14, Coverage::Partial { ungrouped: 3 }), (15, 19, Coverage::Unknown)]);
     assert_eq!(classify(Row::DRAIN_LOST), UnknownReason::DestructionGap);
     assert_eq!(classify("The recording's own reason"), UnknownReason::DestructionWithheld);
-    assert_eq!(classify(EQUIPMENT_DESTRUCTION_PARTIAL_REASON), UnknownReason::DestructionWithheld);
-    assert_eq!(classify_historical(EQUIPMENT_DESTRUCTION_PARTIAL_REASON), UnknownReason::DestructionGap);
+    assert_eq!(classify(LEGACY_PARTIAL_TEXT), UnknownReason::DestructionWithheld);
+    assert_eq!(classify_historical(LEGACY_PARTIAL_TEXT), UnknownReason::DestructionGap);
 }
 
 #[test]
@@ -146,7 +156,7 @@ fn startup_and_branch_partial_intervals_stay_distinct_from_withheld_reads() {
                 25,
                 29,
                 Some(RunCells {
-                    drain: Some(EQUIPMENT_DESTRUCTION_PARTIAL_REASON.to_owned()),
+                    drain: Some(LEGACY_PARTIAL_TEXT.to_owned()),
                     drain_state: Some(Row::DRAIN_STATE_WITHHELD),
                     unread: Some(0),
                     counted_from: Some(10),
@@ -156,24 +166,23 @@ fn startup_and_branch_partial_intervals_stay_distinct_from_withheld_reads() {
                 }),
             ),
         ],
-        country: Vec::new(),
-        legacy_partial_text: false,
+        ..Held::default()
     };
     let spans = held.destruction_unknown(40);
     assert!(spans.iter().any(|span| span.first_hour == 20 && span.reason == UnknownReason::DestructionGap && span.detail.as_deref() == Some("Reworded branch interval")), "{spans:?}");
     assert!(!spans.iter().any(|span| span.first_hour == 20 && span.reason == UnknownReason::DestructionWithheld), "{spans:?}");
-    assert!(spans.iter().any(|span| span.first_hour == 25 && span.reason == UnknownReason::DestructionWithheld && span.detail.as_deref() == Some(EQUIPMENT_DESTRUCTION_PARTIAL_REASON)), "{spans:?}");
+    assert!(spans.iter().any(|span| span.first_hour == 25 && span.reason == UnknownReason::DestructionWithheld && span.detail.as_deref() == Some(LEGACY_PARTIAL_TEXT)), "{spans:?}");
     assert!(!spans.iter().any(|span| span.first_hour == 25 && span.reason == UnknownReason::DestructionGap), "{spans:?}");
 
     let historical = Held {
         run: vec![
-            (0, 9, Some(RunCells { drain: Some(EQUIPMENT_DESTRUCTION_PARTIAL_REASON.to_owned()), ..RunCells::default() })),
-            (10, 19, run("", 0)),
-            (20, 24, run(EQUIPMENT_DESTRUCTION_PARTIAL_REASON, 0)),
+            (0, 9, Some(RunCells { drain: Some(LEGACY_PARTIAL_TEXT.to_owned()), ..RunCells::default() })),
+            (10, 19, legacy_run("", 0)),
+            (20, 24, legacy_run(LEGACY_PARTIAL_TEXT, 0)),
             (25, 29, Some(RunCells { drain: Some("drain overflowed".to_owned()), unread: Some(0), counted_from: Some(10), withheld_from: Some(25), ..RunCells::default() })),
         ],
-        country: Vec::new(),
         legacy_partial_text: true,
+        ..Held::default()
     };
     let old_spans = historical.destruction_unknown(40);
     assert!(old_spans.iter().any(|span| span.first_hour == 20 && span.reason == UnknownReason::DestructionGap), "{old_spans:?}");
@@ -278,9 +287,9 @@ fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_ho
     for ordinal in 0..6_i32 {
         let hour = 100 + ordinal;
         let (drain, counted, withheld, incomplete) = match ordinal {
-            0 => (EQUIPMENT_DESTRUCTION_PARTIAL_REASON, None, None, None),
+            0 => (LEGACY_PARTIAL_TEXT, None, None, None),
             1 => ("", Some(101), None, None),
-            2 => (EQUIPMENT_DESTRUCTION_PARTIAL_REASON, Some(101), None, Some(102)),
+            2 => (LEGACY_PARTIAL_TEXT, Some(101), None, Some(102)),
             3 => ("", Some(101), None, Some(102)),
             _ => ("drain overflowed", Some(101), Some(104), Some(102)),
         };
@@ -355,7 +364,189 @@ fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_ho
     assert!(old_held.run.iter().all(|(_, _, cells)| cells.as_ref().is_none_or(|cells| cells.drain_state.is_none())));
     assert_eq!(old_held.counted_from(), Some(101));
     let old_spans = old_held.destruction_unknown(105);
-    assert!(old_spans.iter().any(|span| span.first_hour == 102 && span.reason == UnknownReason::DestructionGap && span.detail.as_deref() == Some(EQUIPMENT_DESTRUCTION_PARTIAL_REASON)), "{old_spans:?}");
+    assert!(old_spans.iter().any(|span| span.first_hour == 102 && span.reason == UnknownReason::DestructionGap && span.detail.as_deref() == Some(LEGACY_PARTIAL_TEXT)), "{old_spans:?}");
     assert!(!old_spans.iter().any(|span| span.first_hour == 102 && span.reason == UnknownReason::DestructionWithheld), "{old_spans:?}");
     assert!(old_spans.iter().any(|span| span.first_hour == 104 && span.reason == UnknownReason::DestructionWithheld && span.detail.as_deref() == Some("drain overflowed")), "{old_spans:?}");
+}
+
+#[test]
+fn current_format_unrecorded_drain_state_with_empty_text_is_never_complete() {
+    let held = Held {
+        run: vec![(
+            10,
+            15,
+            Some(RunCells {
+                drain: Some(String::new()),
+                drain_state: None,
+                unread: Some(0),
+                counted_from: Some(10),
+                ..RunCells::default()
+            }),
+        )],
+        ..Held::default()
+    };
+    let coverage = held.destruction_coverage();
+    assert_eq!(coverage.len(), 1);
+    assert!(coverage[0].reason.is_some(), "unrecorded drain_state on current format must never appear complete: {coverage:?}");
+    let spans = held.destruction_unknown(15);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].reason, UnknownReason::DestructionGap);
+    assert_eq!(spans[0].first_hour, 10);
+}
+
+#[test]
+fn recording_break_keeps_each_runs_counting_boundary_and_partial_startup_separate() {
+    use replay::columnar_frames::{
+        Recording, fixtures,
+        synthetic::{Input, Sample},
+    };
+    use replay_data::rows::{CountryLinkRow, CountryRow, EquipmentDestructionCoverage, EquipmentDestructionRow, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT};
+
+    let countries = [CountryRow { id: 1, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() }];
+    let links = [CountryLinkRow { id: 1, canonical_slot: 1 }];
+    let variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let loss = [EquipmentDestructionRow {
+        country: 1,
+        cause: EquipmentDestructionCause::LandCombat,
+        variant,
+        amount_raw: 5,
+        coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+        unavailable_reason: Recorded::Value(String::new()),
+    }];
+    let partial = [EquipmentDestructionRow {
+        coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+        unavailable_reason: Recorded::Value("startup partial".to_owned()),
+        ..Default::default()
+    }];
+    let (bytes, _) = fixtures::written_at(
+        EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+        b"break-coverage",
+        &[(1, 100, 1), (1, 200, 1)],
+        &[TableId::EquipmentLossCoverage],
+        |synthetic, run, ordinal| {
+            synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            let input = match (run, ordinal) {
+                (_, 0) => Input::Snapshot { rows: &partial, partial: None, read: true, sample: Sample::FromReadBit },
+                (0, 3) => Input::Snapshot { rows: &partial, partial: None, read: true, sample: Sample::FromReadBit },
+                _ => Input::Snapshot { rows: &loss, partial: None, read: true, sample: Sample::FromReadBit },
+            };
+            synthetic.table(TableId::EquipmentDestruction, input).unwrap();
+        },
+    );
+    let recording = Recording::open(bytes).unwrap();
+    let mut held = Held::default();
+    held.read(&recording, 0, coverage_key(1, 1), RUN_KEY, 100, 105).unwrap();
+    held.read(&recording, 1, coverage_key(1, 1), RUN_KEY, 200, 205).unwrap();
+    assert_eq!(held.active_run_start(), Some(200));
+    assert_eq!(held.counted_from(), Some(201));
+    assert_eq!(held.incomplete_from(), None);
+
+    let coverage = held.destruction_coverage();
+    assert!(!coverage.iter().any(|span| span.first_hour <= 200 && 200 <= span.last_hour), "run 1 startup partial must not be reported as an incomplete span: {coverage:?}");
+    assert!(coverage.iter().any(|span| span.first_hour == 201 && span.last_hour == 205 && span.reason.is_none()), "{coverage:?}");
+
+    let spans = held.destruction_unknown(205);
+    assert_eq!(spans.len(), 1, "only run 0's gap should appear: {spans:?}");
+    assert_eq!(spans[0].first_hour, 103);
+    assert_eq!(spans[0].last_hour, 105, "run 0's unknown span must not leak into run 1");
+    assert_eq!(spans[0].reason, UnknownReason::DestructionGap);
+}
+
+#[test]
+fn withheld_before_counting_publishes_recorded_refusal_without_fabricating_truncation() {
+    let held = Held {
+        run: vec![(
+            100,
+            105,
+            Some(RunCells {
+                drain: Some("equipment destruction hooks unavailable".to_owned()),
+                drain_state: Some(Row::DRAIN_STATE_WITHHELD),
+                unread: Some(0),
+                counted_from: None,
+                withheld_from: Some(100),
+                ..RunCells::default()
+            }),
+        )],
+        ..Held::default()
+    };
+    assert_eq!(held.counted_from(), None);
+    let coverage = held.destruction_coverage();
+    assert_eq!(coverage, vec![DestructionCoverageSpan { first_hour: 100, last_hour: 105, reason: Some("equipment destruction hooks unavailable".to_owned()) }]);
+    let spans = held.destruction_unknown(105);
+    assert_eq!(
+        spans,
+        vec![UnknownSpan {
+            first_hour: 100,
+            last_hour: 105,
+            reason: UnknownReason::DestructionWithheld,
+            detail: Some("equipment destruction hooks unavailable".to_owned()),
+        }]
+    );
+
+    let silent = Held {
+        run: vec![(
+            100,
+            105,
+            Some(RunCells {
+                drain: Some(String::new()),
+                drain_state: Some(Row::DRAIN_STATE_WITHHELD),
+                unread: Some(0),
+                counted_from: None,
+                withheld_from: Some(100),
+                ..RunCells::default()
+            }),
+        )],
+        ..Held::default()
+    };
+    let fallback = silent.destruction_unknown(105);
+    assert_eq!(
+        fallback,
+        vec![UnknownSpan {
+            first_hour: 100,
+            last_hour: 105,
+            reason: UnknownReason::DestructionWithheld,
+            detail: Some(Row::DRAIN_WITHHELD.to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn combined_lost_and_unresolved_drain_states_emit_both_unknown_spans() {
+    let held = Held {
+        run: vec![
+            (10, 10, run("", 0)),
+            (
+                11,
+                11,
+                Some(RunCells {
+                    drain: Some(format!("{}; {}", Row::DRAIN_LOST, Row::DRAIN_OWNER_UNKNOWN)),
+                    drain_state: Some(Row::DRAIN_STATE_LOST | Row::DRAIN_STATE_OWNER_UNKNOWN),
+                    unread: Some(0),
+                    counted_from: Some(10),
+                    incomplete_from: Some(11),
+                    ..RunCells::default()
+                }),
+            ),
+        ],
+        ..Held::default()
+    };
+    let spans = held.destruction_unknown(15);
+    assert_eq!(
+        spans,
+        vec![
+            UnknownSpan {
+                first_hour: 11,
+                last_hour: 15,
+                reason: UnknownReason::DestructionGap,
+                detail: Some(Row::DRAIN_LOST.to_owned()),
+            },
+            UnknownSpan {
+                first_hour: 11,
+                last_hour: 15,
+                reason: UnknownReason::DestructionUnresolved,
+                detail: Some(Row::DRAIN_OWNER_UNKNOWN.to_owned()),
+            },
+        ]
+    );
 }

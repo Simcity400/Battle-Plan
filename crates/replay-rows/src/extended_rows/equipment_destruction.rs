@@ -127,6 +127,8 @@ impl EquipmentDestructionCause {
 
 pub const EQUIPMENT_DESTRUCTION_PARTIAL_REASON: &str =
     "equipment destruction first/branch interval is partial";
+pub const EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON: &str =
+    "equipment destruction first/branch interval is partial";
 
 impl TryFrom<u8> for EquipmentDestructionCause {
     type Error = io::Error;

@@ -441,9 +441,33 @@ test('destruction without a counting start stays unavailable even with later ref
   data.destructionCoverage = [{ firstHour: 102, lastHour: 109, reason: 'Destruction table withheld after overflow.' }];
   for (const hour of [100, 105, 109]) assert.equal(destructionCountingNote(data, hour),
     'Unavailable');
+  assert.deepEqual(destructionLegend(data, live(100), TOKENS), []);
+  assert.equal(destructionLegend(data, live(105), TOKENS)[0].label, 'Incomplete');
+  assert.equal(destructionLegend(data, whole, TOKENS)[0].label, 'Incomplete');
   assert.match(lossesFootnote(data, whole), /Unavailable/);
   data.destructionCoverage = [];
   assert.equal(destructionCountingNote(data, 100), 'Unavailable');
+  assert.deepEqual(destructionLegend(data, live(105), TOKENS), []);
+});
+
+test('multi-stretch restarts keep each runs counting boundary and startup partial separate', () => {
+  const data = destruction();
+  data.from = 100;
+  data.to = 250;
+  data.restarts = [200];
+  data.destructionCountedFrom = 201;
+  data.destructionCoverage = [
+    { firstHour: 101, lastHour: 150, reason: null },
+    { firstHour: 201, lastHour: 250, reason: null },
+  ];
+  assert.equal(destructionCountingNote(data, 150), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 150, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(destructionCountingNote(data, 200), 'Unavailable');
+  assert.deepEqual(destructionLegend(data, { first: 100, hour: 200, end: 250, campaign: false }, TOKENS), []);
+  assert.equal(destructionCountingNote(data, 205), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 205, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(destructionLegend(data, { first: 100, hour: 250, end: 250, campaign: true }, TOKENS)[0].label, 'Complete');
+  assert.deepEqual(destructionCoverageHours(data, 100, 250), { recorded: 50, unknown: 0, reasons: [] });
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {

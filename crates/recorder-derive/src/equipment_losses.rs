@@ -6,7 +6,10 @@ use replay_columnar::{
     manifest::Status,
     store::{Dropped, Kept, TableView, Value as Held},
 };
-use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCoverage, EquipmentLossCoverageRow as Coverage, EquipmentLossTotalRow as Total, Recorded, RowCodec, ShipLossRow, SunkShipEntry, TableId};
+use replay_data::rows::{
+    EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCoverage, EquipmentLossCoverageRow as Coverage, EquipmentLossTotalRow as Total, Recorded, RowCodec, ShipLossRow, SunkShipEntry,
+    TableId, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -542,7 +545,7 @@ impl EquipmentLosses {
             }
             Status::Unavailable { reason } => {
                 let text = view.string(reason).map(|text| String::from_utf8_lossy(text).into_owned()).unwrap_or_default();
-                if text == EQUIPMENT_DESTRUCTION_PARTIAL_REASON {
+                if hour.format < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT && text == EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON {
                     if self.run.counted_from.is_some() {
                         earliest(&mut self.run.incomplete_from, at);
                     }
@@ -1092,9 +1095,13 @@ impl Writer for EquipmentLosses {
         let turned = month_bucket(hour.hour) != month_bucket(hour.hour.saturating_sub(1));
         self.combat(hour, &recount, (whole, turned), &mut pending, out)?;
         let (mut drain_state, mut drain) = self.destruction(hour, out, &mut pending)?;
-        if lost && drain.is_empty() && drain_state == Coverage::DRAIN_STATE_COMPLETE {
-            drain_state = Coverage::DRAIN_STATE_LOST;
-            drain = LOST.to_owned();
+        if lost {
+            drain_state |= Coverage::DRAIN_STATE_LOST;
+            if drain.is_empty() {
+                drain = LOST.to_owned();
+            } else {
+                drain = format!("{LOST}; {drain}");
+            }
         }
         self.ships(hour, &recount, out)?;
         self.convoys(hour, whole, &mut pending)?;

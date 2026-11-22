@@ -303,9 +303,10 @@ const LAND: u8 = Total::DESTRUCTION + EquipmentDestructionCause::LandCombat as u
 #[test]
 fn equal_consecutive_drains_are_two_events_and_the_partial_startup_claims_nothing() {
     let mut run = Run::new();
+    run.writers.set_format(EQUIPMENT_DESTRUCTION_STARTUP_FORMAT - 1);
     let mut first = countries();
     first.push(drained(GER, 7, 400));
-    first.push(unavailable(TableId::EquipmentDestruction, EQUIPMENT_DESTRUCTION_PARTIAL_REASON));
+    first.push(unavailable(TableId::EquipmentDestruction, "equipment destruction first/branch interval is partial"));
     run.step(first);
     assert_eq!(run.total(GER, GER, LAND, Some(7)), None, "the partial startup interval claims nothing");
     assert_eq!(run.run_cell(6), Some(Cell::Missing), "nothing counted yet");
@@ -321,6 +322,25 @@ fn equal_consecutive_drains_are_two_events_and_the_partial_startup_claims_nothin
     assert_eq!(run.total(ENG, ENG, LAND, Some(7)), number(3));
     assert_eq!(run.run_cell(6), number(1), "counted from the first complete drain");
     assert_eq!(run.drain(), "");
+}
+
+#[test]
+fn unavailable_legacy_partial_text_withholds_the_run_at_current_format() {
+    let mut run = Run::new();
+    let mut first = countries();
+    first.push(unavailable(TableId::EquipmentDestruction, "equipment destruction first/branch interval is partial"));
+    run.step(first);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), None);
+    assert_eq!(run.run_cell(6), Some(Cell::Missing));
+    assert_eq!(run.run_cell(7), number(0), "at format 143+, Status::Unavailable always withholds");
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
+    assert_eq!(run.drain(), "equipment destruction first/branch interval is partial");
+
+    run.step(vec![drained(GER, 7, 5)]);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), None, "a withheld run never resumes counting");
+    assert_eq!(run.run_cell(6), Some(Cell::Missing));
+    assert_eq!(run.run_cell(7), number(0));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
 }
 
 #[test]
@@ -537,6 +557,20 @@ fn hours_without_countries_are_not_run_and_lose_their_drains_by_name() {
     assert_eq!(run.total(GER, GER, LAND, Some(7)), number(10));
     assert_eq!(run.run_cell(8), number(1), "the lost hour's drain makes the drain a lower bound from it");
     assert_eq!(run.drain(), LOST);
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_LOST)));
+}
+
+#[test]
+fn a_lost_drain_keeps_its_bit_and_reason_when_the_next_hour_also_flags_an_unresolved_owner() {
+    let mut run = Run::new();
+    let mut first = countries();
+    first.push(drained(GER, 7, 5));
+    run.step(first);
+    run.step(vec![unavailable(TableId::Countries, "countries failed")]);
+    run.step(vec![drained(STRAY, 7, 2)]);
+    assert_eq!(run.run_cell(8), number(1));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_LOST | Coverage::DRAIN_STATE_OWNER_UNKNOWN)));
+    assert_eq!(run.drain(), format!("{LOST}; {OWNER_UNKNOWN}"));
 }
 
 #[test]
