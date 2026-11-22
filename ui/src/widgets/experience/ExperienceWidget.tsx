@@ -28,7 +28,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { definition, OPTIONS } from './definition';

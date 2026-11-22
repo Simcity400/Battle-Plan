@@ -2,7 +2,7 @@ import { encode } from '@msgpack/msgpack';
 
 export type Spec =
   | { notRecorded: string }
-  | { keys: bigint[]; columns: number; values: bigint[]; states?: number[]; reasons?: (string | null)[]; names?: (string | null)[]; hours?: number[]; changed?: boolean; window?: number };
+  | { keys: bigint[]; columns: number; values: bigint[]; states?: number[]; reasons?: (string | null)[]; names?: (string | null)[]; hours?: number[]; changed?: boolean };
 
 class Bytes {
   bytes: number[] = [];
@@ -45,7 +45,7 @@ function body(spec: Spec): number[] {
     names.push(index(spec.names?.[row]));
   }
   const ascending = !spec.hours && spec.keys.every((key, at) => at === 0 || spec.keys[at - 1]! < key);
-  out.u8(spec.hours ? 2 : spec.changed ? 3 : 1); out.u8(ascending ? 1 : 0); out.u16(spec.window ?? 0); out.u32(rows); out.u32(spec.columns); out.u32(texts.length);
+  out.u8(spec.hours ? 2 : spec.changed ? 3 : 1); out.u8(ascending ? 1 : 0); out.u16(0); out.u32(rows); out.u32(spec.columns); out.u32(texts.length);
   spec.keys.forEach(key => out.u64(key));
   spec.keys.forEach(key => out.u64(key >> 64n));
   spec.values.forEach(value => out.u64(value));
@@ -77,9 +77,4 @@ export function datedPanel(id: number, hour: number, data?: unknown, seek = 1) {
   words.set([0x324c4e50, 6, 1, 0, 9, seek, id, hour, data === undefined ? 3 : 1, body.length]);
   out.set(body, 40);
   return out;
-}
-
-export function manualFrames() {
-  const queued: (() => void)[] = [];
-  return { schedule: (run: () => void) => { queued.push(run); }, run: () => { const due = queued.splice(0); due.forEach(run => run()); return due.length; }, get pending() { return queued.length; } };
 }

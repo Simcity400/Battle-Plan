@@ -12,7 +12,7 @@ import { useHeldFailure } from './heldFailures.ts';
 import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
-import { followStore } from './follow/connection.ts';
+import { followStore } from './follow/store.ts';
 import { rowAmount } from './follow/painters.ts';
 import { followRefusal, followsHead, useFollow } from './follow/useFollow.ts';
 import type { FollowEntry, FollowStore } from './follow/store';

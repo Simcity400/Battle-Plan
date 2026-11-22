@@ -24,7 +24,7 @@ import { countryDrillSpans, countryDrillTagAt } from '../../dashboard/countryIde
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
 import { STATES, STATE_LABELS, supplyParts, supplyTooltip, totalDivisions } from './supplyHealthData.ts';
 import { useSupplySeries } from './supplySeries';

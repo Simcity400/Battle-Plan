@@ -37,7 +37,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const { canvas, surface } = drawn;
     canvas.setAttribute('aria-describedby', owner + '-ranking');
     scroller.prepend(canvas);
-    let point: { x: number; y: number } | undefined, action: { kind: string; x: number; y: number } | undefined, selected = -1;
+    let point: { x: number; y: number } | undefined, action: { kind: string; x: number; y: number; key: string } | undefined, selected = -1;
     const items = (): readonly RaceItem[] => (pipeline.view(pipe)?.fields?.items as readonly RaceItem[] | undefined) ?? [];
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
@@ -59,8 +59,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const inspected = shown?.tooltip as RaceInspection | null | undefined, item = inspected?.item;
       if (!item || shown?.dim) { if (!point) hideTooltip(owner); return; }
       selected = listed.findIndex(each => each.key === item.key);
-      const at = action ?? (point && { kind: 'tip', ...point });
-      action = undefined;
+      const acting = action?.key === `race:${item.key}` ? action : undefined;
+      if (acting) action = undefined;
+      const at = acting ?? (point && { kind: 'tip', ...point });
       if (!at) return;
       if (at.kind === 'pick') p.onPick?.(item.key, item);
       else if (at.kind === 'menu') p.onContextMenu?.(item.key, at.x, at.y, item);
@@ -75,16 +76,18 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const b = canvas.getBoundingClientRect();
       point = { x: event.clientX, y: event.clientY };
       if (event.type === 'contextmenu') event.preventDefault();
-      if (event.type !== 'pointermove') action = { kind: event.type === 'click' ? 'pick' : 'menu', x: event.clientX, y: event.clientY };
-      pipeline.pointer(pipe, 0, [event.clientX - b.left, event.clientY - b.top]);
-      if (event.type !== 'pointermove' && pipeline.view(pipe)?.tooltip) install();
+      const act = event.type === 'pointermove' ? undefined : { kind: event.type === 'click' ? 'pick' : 'menu', x: event.clientX, y: event.clientY };
+      pipeline.pointer(pipe, 0, [event.clientX - b.left, event.clientY - b.top], act && (key => {
+        action = key === null ? undefined : { ...act, key };
+        if (action) install();
+      }));
     };
     const leave = () => { point = undefined; pipeline.pointer(pipe, 0, null); pipeline.inspect(pipe, null); hideTooltip(owner); };
     const choose = (index: number, kind: string) => {
       const listed = items(), b = canvas.getBoundingClientRect();
       const item = listed[Math.min(listed.length - 1, Math.max(0, index))];
       if (!item) return;
-      action = { kind, x: b.right, y: b.top + b.height / 2 };
+      action = { kind, x: b.right, y: b.top + b.height / 2, key: `race:${item.key}` };
       if (pipeline.inspecting(pipe) === `race:${item.key}`) install();
       else pipeline.inspect(pipe, `race:${item.key}`);
     };

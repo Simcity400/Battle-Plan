@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { followedRowTags, formatRaw, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
+import { followedRace, followedRowTags, formatRaw, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { SeriesState } from '../../generated/dashboard';
@@ -59,4 +59,11 @@ test('a race following the head names and flags its followed rows, which its ask
   assert.deepEqual(raceLookTags(true, top, []), ['SOV', 'ENG', 'CHI'], 'followed, the names are read for the rows painted');
   assert.equal(raceLookTags(true, null, ['GER']), undefined, 'asked, the names are read for the asked entries');
   assert.deepEqual(raceLookTags(false, top, ['GER']), ['GER'], 'the lines name their own countries');
+});
+
+test('review 5 finding 13: a held race names the hour of the reading it shows, never the clock\'s', () => {
+  const entry = { answer: undefined, through: 40 };
+  const race = liveRace({ getSnapshot: () => ({ position: 90 }) }, 0, hour => followedRace(entry, null, null, hour, 5, 0, raw => raw).entries, () => 1, false,
+    hour => followedRace(entry, null, null, hour, 0, 0, raw => raw).shown);
+  assert.equal(race.hour(), 40, 'the overlay, label, tooltip and row action date the held reading');
 });

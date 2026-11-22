@@ -22,7 +22,7 @@ import { useHolderLooks } from '../../dashboard/holderLooks';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';

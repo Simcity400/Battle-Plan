@@ -289,8 +289,7 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
 }
 
 export function useFollowedProduct<T>(client: DashboardClient, request: ProductRequest | null, moving: readonly string[], active: boolean,
-  validate?: (data: unknown) => T, source?: DashboardSource, holds?: Holds<ProductRequest, T>,
-  shows?: (moment: string | undefined) => boolean): ProductState<T> & { moment?: string; asking?: string } {
+  validate?: (data: unknown) => T, source?: DashboardSource, holds?: Holds<ProductRequest, T>): ProductState<T> & { moment?: string; asking?: string } {
   const content = useContentRevision(client);
   const params = (request?.params ?? {}) as Record<string, unknown>;
   const lane = request ? JSON.stringify([request.sourceId, request.revision, request.product, !!source, content,
@@ -299,7 +298,7 @@ export function useFollowedProduct<T>(client: DashboardClient, request: ProductR
   const read = useViewRead<ProductRequest, T>(lane, request, viewKey, active,
     (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client, holds,
     at => peekProduct(client, at, productKey(at, content), validate));
-  const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined && (shows?.(read.viewKey) ?? true), read.retry);
+  const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
   return { data: read.data, error, retry: read.retry, moment: read.viewKey, asking: read.asking };
 }
 

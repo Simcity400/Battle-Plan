@@ -8,6 +8,19 @@ export type Split =
   | { kind: 'follow' | 'panels'; lanes: (Uint8Array | null)[]; owned: number[]; header: number };
 
 const aligned = (at: number) => (at + 7) & ~7;
+
+export function charge(bytes: Uint8Array): number {
+  const kind = wireKind(bytes), data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (kind === DATED_PANEL && bytes.byteLength >= 24 && data.getUint16(4, true) === DATED_PANEL_VERSION) return 2 * bytes.byteLength - 24;
+  if (kind !== DATED_FOLLOW) return bytes.byteLength;
+  let at = 24, total = 24;
+  while (at + 16 <= bytes.byteLength) {
+    const length = data.getUint32(at + 8, true);
+    total += 16 + 2 * Math.max(length, data.getUint32(at + 12, true));
+    at += 16 + length;
+  }
+  return total;
+}
 const COMPLETED = 4;
 
 export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
@@ -34,11 +47,11 @@ export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
   if (at !== bytes.byteLength) throw new Error('A followed message holds bytes past its records.');
   const owned = Array.from({ length: lanes }, () => 0);
   const sizes = Array.from({ length: lanes }, () => 24), counts = Array.from({ length: lanes }, () => 0);
-  let shared = 24;
+  let shared = 0;
   for (const record of records) {
     const size = record.end - record.start;
     if (record.lane === 'all') { shared += size; for (let lane = 0; lane < lanes; lane++) { sizes[lane]! += size; counts[lane]!++; } }
-    else { sizes[record.lane]! += size; counts[record.lane]!++; owned[record.lane]! += size; }
+    else { sizes[record.lane]! += size; counts[record.lane]!++; owned[record.lane]! += follow ? 16 + 2 * Math.max(size - 16, data.getUint32(record.start + 12, true)) : 2 * size; }
   }
   const out = sizes.map(size => new Uint8Array(size)), put = sizes.map(() => 24);
   out.forEach((lane, index) => {
@@ -49,5 +62,5 @@ export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
     const piece = bytes.subarray(record.start, record.end);
     for (let lane = 0; lane < lanes; lane++) if (record.lane === 'all' || record.lane === lane) { out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length; }
   }
-  return { kind: follow ? 'follow' : 'panels', lanes: out.map((lane, index) => follow || counts[index] ? lane : null), owned, header: shared };
+  return { kind: follow ? 'follow' : 'panels', lanes: out.map((lane, index) => follow || counts[index] ? lane : null), owned, header: 24 + 2 * shared };
 }

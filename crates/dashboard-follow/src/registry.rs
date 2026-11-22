@@ -40,8 +40,8 @@ pub trait Hosted: Send + Sync {
 
 pub trait Playheads: Send + Sync {
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
-    fn credit(&self, _bytes: usize) {}
-    fn restart(&self) {}
+    fn credit(&self, _session: u64, _bytes: usize) {}
+    fn restart(&self) -> u64 { 0 }
 }
 
 struct Followed {
@@ -84,18 +84,7 @@ pub fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| Registry::new(None))
 }
 
-pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-window", "follow-close"];
-
-fn rank_window(params: &Value) -> io::Result<crate::query::RankWindow> {
-    let count = |name: &str| params.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| crate::invalid(format!("A follow window names no {name}")));
-    let countries = match params.get("countries") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(value) => serde_json::from_value(value.clone()).map_err(|_| crate::invalid("A follow window's countries are slots or tags"))?,
-    };
-    let version = params.get("version").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()).ok_or_else(|| crate::invalid("A follow window names no version"))?;
-    let every = params.get("every").and_then(Value::as_bool).unwrap_or(false);
-    Ok(crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version, every })
-}
+pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-close"];
 
 fn unavailable(reason: impl Into<String>) -> Value {
     json!({ "available": false, "reason": reason.into() })
@@ -151,11 +140,6 @@ impl Registry {
                     if let Err(error) = host.follow().follow(id, query) {
                         return Ok(unavailable(error.to_string()));
                     }
-                    if let Some(window) = params.get("window").filter(|window| !window.is_null()) {
-                        if let Err(error) = host.follow().window(id, rank_window(window)?) {
-                            return Ok(unavailable(error.to_string()));
-                        }
-                    }
                 }
                 {
                     let mut followed = lock(&self.followed);
@@ -193,16 +177,6 @@ impl Registry {
                 host.anchor(anchor);
                 Ok(json!({"available":true}))
             }
-            "follow-window" => {
-                let id = id(params)?;
-                let window = rank_window(params)?;
-                let host = lock(&self.followed).get(&id).filter(|held| !held.panel).map(|held| Arc::clone(&held.host));
-                let Some(host) = host else { return Ok(unavailable(format!("Follow {id} is no followed ranking"))); };
-                if let Err(error) = host.follow().window(id, window) {
-                    return Ok(unavailable(error.to_string()));
-                }
-                Ok(json!({"available":true}))
-            }
             "follow-close" => {
                 self.close(path);
                 Ok(json!({ "available": true }))
@@ -211,12 +185,12 @@ impl Registry {
         }
     }
 
-    pub fn credit(&self, bytes: usize) {
-        if let Some(playheads) = &self.playheads { playheads.credit(bytes); }
+    pub fn credit(&self, session: u64, bytes: usize) {
+        if let Some(playheads) = &self.playheads { playheads.credit(session, bytes); }
     }
 
-    pub fn restart(&self) {
-        if let Some(playheads) = &self.playheads { playheads.restart(); }
+    pub fn restart(&self) -> u64 {
+        self.playheads.as_ref().map_or(0, |playheads| playheads.restart())
     }
 
     pub fn close(&self, path: &Path) {

@@ -47,7 +47,6 @@ let versions = 0;
 export const samePicture = <V>(a: Picture<V> | null | undefined, b: Picture<V> | null | undefined) => a === b
   || (!!a && !!b && a.parts.length === b.parts.length && a.parts.every((part, at) => part === b.parts[at]));
 
-export const sameCoverage = <V>(a: Picture<V> | null | undefined, b: Picture<V> | null | undefined) => samePicture(a, b) && a?.h === b?.h && a?.c === b?.c;
 
 export const followsChannel = <V>(picture: Picture<V>) => picture.parts.some(part => part.channel === 'followed');
 

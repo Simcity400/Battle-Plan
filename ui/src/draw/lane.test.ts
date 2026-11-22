@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encode } from '@msgpack/msgpack';
-import { Lane, type LaneView, type Painted, type Presented } from './lane.ts';
+import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
 import { message } from '../dashboard/follow/messages.fixture.ts';
@@ -31,15 +31,16 @@ function panels(records: PanelRow[], seek = 0): Uint8Array {
 
 interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c: number } }
 
-function rig(views: Record<string, LaneView> = {}, extra: { budget?: number } = {}) {
+function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop'] } = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
   const presented: Presented<Fake>[] = [];
   const shown = new Map<number, (string | null)[]>();
   const lane: Lane<Fake> = new Lane<Fake>({
-    lane: 0, lanes: 1, ...extra,
+    lane: 0, lanes: 1,
     views: kind => views[kind] ?? fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape)),
     crop: async sources => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })),
+    ...extra,
     present: presentation => { presented.push(presentation); page.offer(presentation); },
     release: bytes => released.push(bytes),
     fail: reason => failures.push(reason),
@@ -155,21 +156,6 @@ test('addendum 3: a widget of two subscriptions installs their join, or waits wh
   lane.receive('follow', message(30, [{ id: 7, hour: 20, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE));
   await step(25);
   assert.deepEqual([page.view(1).h, page.view(1).through], [20, 25]);
-});
-
-test('addendum 4: answers of another ranked window never install', async () => {
-  const { page, lane, mount, step } = rig();
-  mount(1, [{ id: 5, channel: 'followed' }]);
-  lane.bindRoute(5, ROUTE, NATIVE);
-  lane.rank(5, 2);
-  page.rebind(1, { rank: 2 });
-  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null });
-  lane.receive('follow', message(10, [{ id: 5, answer: { keys: [1n], columns: 2, values: [5n, 0n], window: 1 } }], false, NATIVE));
-  await step(10, { playing: false });
-  assert.equal(page.view(1).mode, 'reading');
-  lane.receive('follow', message(11, [{ id: 5, answer: { keys: [1n], columns: 2, values: [6n, 0n], window: 2 } }], false, NATIVE));
-  await step(11);
-  assert.equal(page.view(1).h, 11);
 });
 
 const at: LaneView = {
@@ -396,4 +382,44 @@ test('should-fix: an acknowledgement for an entry sent before the one in flight 
   assert.equal(page.view(1).h, 20, 'the page shows 20 while 30 is in flight');
   lane.pointer(1, 0, [1, 1]);
   assert.deepEqual(hits, ['row:20']);
+});
+
+test('review 5 finding 3: the facts of an entry sent but not yet acknowledged stay charged until the page answers for it', async () => {
+  const { lane, mount, released, presented } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  const frame = (serial: number, target: number, refused: FrameRequest['refused'] = []): FrameRequest =>
+    ({ type: 'frame', serial, now: target, target, exact: true, seek: 0, speed: 0, installed: [], refused, inspect: [] });
+  const big = rows(Array.from({ length: 200 }, (_, at) => BigInt(at + 1)), Array.from({ length: 200 }, () => 1n));
+  lane.receive('follow', message(10, [{ id: 5, answer: big }], false, NATIVE));
+  lane.frame(frame(1, 10)); await flush(); await flush();
+  lane.receive('follow', message(20, [{ id: 5, answer: rows([1n], [2n]) }], false, NATIVE));
+  lane.receive('follow', message(25, [{ id: 5, answer: rows([1n], [3n]) }], false, NATIVE));
+  lane.frame(frame(2, 30)); await flush(); await flush();
+  const total = () => released.reduce((sum, bytes) => sum + bytes, 0);
+  assert.equal(presented.flatMap(p => p.entries).length, 2);
+  assert.ok(total() < 200 * 16, `released ${total()} while the page may still install the first entry`);
+  lane.frame(frame(3, 30, [{ widget: 1, id: presented[0]!.entries[0]!.id, reason: 'superseded' }])); await flush(); await flush();
+  assert.ok(total() >= 200 * 16, 'once the page refuses it, its facts come back');
+});
+
+test('review 5 finding 3: an entry whose crop failed is retired and shown as a named failure, never left in flight', async () => {
+  const view: LaneView = { paint: (): Painted => ({ surfaces: [{ source: { width: 1, height: 1, content: 'p' } as never, content: 'p' }], fields: {}, motion: false }) };
+  const { page, lane, mount, step, failures, presented } = rig({ view }, { crop: async () => { throw new Error('canvas lost'); } });
+  mount(1, [{ id: 3, channel: 'panel' }], 'view', 1);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }, { id: 0, hour: 20, kind: 'completed' }]));
+  await step(12, { playing: false });
+  assert.deepEqual(failures, [], 'the lane keeps serving');
+  assert.deepEqual([page.view(1).mode, page.view(1).reason], ['failed', 'drawing failed: canvas lost']);
+  assert.deepEqual(presented.flatMap(p => p.entries.map(e => e.mode)), ['failed']);
+});
+
+test('review 5 finding 5: a limit buffered before its route was bound gives its header back when it lands', () => {
+  const { lane, mount, released } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.receive('follow', withLimits(message(40, [], false, NATIVE), [[5, 30]]));
+  assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 0, 'held until its route is known');
+  lane.bindRoute(5, ROUTE, NATIVE);
+  assert.equal(released.reduce((sum, bytes) => sum + bytes, 0), 16);
 });

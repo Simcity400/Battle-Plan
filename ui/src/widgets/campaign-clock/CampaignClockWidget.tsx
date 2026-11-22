@@ -4,7 +4,7 @@ import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { SortValue } from '../../charts/table/logic';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';

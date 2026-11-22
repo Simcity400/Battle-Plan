@@ -50,7 +50,6 @@ import type { RaceItem } from './race';
 import './countryRace.css';
 
 export interface CountryRaceViewProps {
-  present?: () => void;
   arsenal?: ArsenalFeed & { exactRead?: (hour: number) => Promise<unknown> };
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean;
   options: Readonly<Record<string, OptionValue>>; view: RaceView;
@@ -115,7 +114,7 @@ const COUNTRY_NAME_SAMPLES = ['Country name unavailable'];
 type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
   lines: readonly Pick<CountryRaceLine, 'tag' | 'id' | 'runs'>[] | undefined; bands: readonly (readonly Run[])[] | undefined };
 
-export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows, present, arsenal,
+export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows, arsenal,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, lineData, onSummaryView, liveHead, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, selectedHead = false, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, notRecorded, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue, gaps }: CountryRaceViewProps) {
@@ -343,7 +342,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const legend = (shown: readonly CountryRacePart[], map: ReadonlyMap<string, string>) => <Legend label={partsLabel} windowed={presentation.windowedLegend}
     items={shown.map(part => ({ id: part.id, label: part.label, color: part.color ?? map.get(part.id) ?? tokens.muted, value: part.value }))} />;
   const raceProps: import('./RaceChart').RaceChartProps = {
-    present, label: raceLabelAt(chartLabels?.race, moment) ?? `${label}, ${dayLabel(moment)}`, items, live, slots, remoteRows,
+    label: raceLabelAt(chartLabels?.race, moment) ?? `${label}, ${dayLabel(moment)}`, items, live, slots, remoteRows,
     name: (key, item) => nameOf(raceTag(key, item), raceHour(item)), nameSamples: !entityLooks && presentation.countryLooks !== false ? COUNTRY_NAME_SAMPLES : undefined,
     flag: entity.flag ? (key, item) => entity.flag?.(raceTag(key, item)) : undefined,
     countryFlag: entity.countryFlag ? raceCountryFlag : undefined, formatTick, pickOwner: timePickOwner,

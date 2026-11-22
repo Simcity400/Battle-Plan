@@ -73,10 +73,6 @@ export function followedRace(entry: { answer: FollowedAnswer | undefined; throug
   return { entries: followedEntries(entry.answer, asked, member, shown, slots, decimals, format), shown };
 }
 
-export const RANK_MARGIN = 10;
-export const rankRange = (first: number, count: number) => first + count + RANK_MARGIN;
-export const rankedTotal = (rows: number, asked: number, top: number) => rows < asked ? rows : top;
-
 export function followedRowTags(answer: FollowedAnswer | undefined, asked: readonly string[] | null): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];
@@ -91,12 +87,12 @@ export function raceLookTags(race: boolean, followed: readonly string[] | null, 
 export const rowsOf = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
 
 export function liveRace(clock: { getSnapshot(): { position: number } }, axisOffset: number, read: (hour: number) => readonly CountryRaceEntry[],
-  version: () => number, byHour: boolean): LiveRaceEntries & { wake(): void } {
+  version: () => number, byHour: boolean, dated: (hour: number) => number = hour => hour): LiveRaceEntries & { wake(): void } {
   const wakes = new Set<() => void>();
   let made: { hour: number; version: number; entries: readonly CountryRaceEntry[] } | null = null;
   const hour = () => Math.floor(clock.getSnapshot().position) + axisOffset;
   return {
-    hour,
+    hour: () => dated(hour()),
     entries: () => {
       const at = hour(), now = version();
       if (!made || (byHour && made.hour !== at) || made.version !== now) {

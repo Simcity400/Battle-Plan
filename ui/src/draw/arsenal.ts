@@ -12,7 +12,7 @@ import { arsenalNotice, arsenalRows } from '../widgets/nuclear-arsenal/nuclearAr
 import type { ArsenalSelection } from '../widgets/nuclear-arsenal/nuclearArsenalData';
 
 export interface ArsenalFeed extends ArsenalSelection {
-  follow?: number; offset: number; fixed?: number; asked?: boolean; reply?: NuclearArsenalReply;
+  follow?: number; offset: number; fixed?: number; reply?: NuclearArsenalReply;
 }
 export interface ArsenalModel extends ArsenalFeed {
   widget?: string;
@@ -105,8 +105,7 @@ export class ArsenalPicture {
     const geometry = `${width}|${height}|${dpr}|${model.scroll}|${model.slots}`;
     if (geometry !== this.geometry) { this.geometry = geometry; this.invalid = true; }
     const previous = this.state, oldLayout = this.layout;
-    const items = !this.invalid && previous && this.reply === reply && !model.membership ? previous.items :
-      arsenalRows(reply, position, model).map(row => countryRaceItem(row, model.colours, tag => model.looks.get(tag)?.color ?? tokens.accent, tokens.muted));
+    const items = arsenalRows(reply, position, model).map(row => countryRaceItem(row, model.colours, tag => model.looks.get(tag)?.color ?? tokens.accent, tokens.muted));
     this.hour = position; this.position = position - model.offset;
     const day = model.overlay || !items.length ? dayLabel(position) : '';
     const notice = items.length ? undefined : arsenalNotice(reply, position);

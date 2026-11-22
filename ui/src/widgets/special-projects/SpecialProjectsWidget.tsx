@@ -24,7 +24,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useProducts } from '../../dashboard/products';
@@ -149,8 +149,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = withHeld(useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateSpecialProjectsReply, structure: projectStructure }));
+  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateSpecialProjectsReply, structure: projectStructure });
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
   const { error, retry } = view === 'history' ? history : live;

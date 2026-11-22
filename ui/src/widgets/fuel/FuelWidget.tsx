@@ -32,7 +32,7 @@ import { countryLineColours } from '../../dashboard/countryLineColours';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';

@@ -103,3 +103,16 @@ test('review 4 finding 15: the race audits ranked rows as the auditor reads them
   const [first] = picture.rows()!;
   assert.deepEqual([first!.row, first!.key, `${first!.row}:${first!.key}`], ['USA', 'total', 'USA:total']);
 });
+
+test('review 5 finding 15: a paused race draws a new selection or weapon-type split of the same reply', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const read = { ...REPLY, countries: [...REPLY.countries, { tag: 'MOD', countryId: 2, total: 3, counts: [{ ordinal: 0, value: 3, ready: 0 }] }] };
+  const model = { colours: new Map(), looks: new Map(), top: null, tags: ['USA'], offset: 0, scroll: 0, overlay: false, split: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, read, 100);
+  picture.draw({ ...model, tags: ['MOD'] }, read, 100);
+  assert.deepEqual(picture.inspect()!.items.map(item => item.key), ['MOD'], 'the new selection is drawn');
+  picture.draw({ ...model, tags: ['MOD'], split: true }, read, 100);
+  assert.deepEqual(picture.rows()!.map(row => row.key), ['total', '0'], 'the split by weapon type is drawn');
+});

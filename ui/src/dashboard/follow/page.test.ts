@@ -47,7 +47,7 @@ test('whole widget: an omitted part names the content it keeps; omitting content
   assert.equal(p.stats.rejected['kept content'], 1);
   assert.deepEqual(frames().at(-1)!.refused.map(r => [r.id, r.reason]), [[3, 'kept content']], 'the refusal goes back to the lane at once');
   const red = entry({ id: 4, content: 'red', h: 2, c: 2 });
-  red.surfaces = [red.surfaces[0]!, SAME]; red.fields = { legend: 'Lred2', a11y: SAME };
+  red.surfaces = [red.surfaces[0]!, SAME]; red.fields = { legend: 'Lred2', a11y: SAME }; red.content = { ...red.content, legend: 'Lred2' };
   offer(red); p.publish(2);
   assert.deepEqual([shown(), view().id, view().fields], [['red/0', 'red/1'], 4, { legend: 'Lred2', a11y: 'Ared' }], 'kept parts are exactly the installed ones');
 });
@@ -176,15 +176,6 @@ test('review 3: an install in the final paused frame is acknowledged at once, no
   assert.equal(frames().length, before + 1, 'nothing more to tell: no request');
 });
 
-test('addendum 4: only entries for the current ranked window install', () => {
-  const { p, offer, view } = page();
-  p.rebind(1, { rank: 3 });
-  offer(entry({ id: 1, binding: 2, rank: 2 })); p.frame();
-  assert.deepEqual([view().mode, p.stats.rejected['rank window']], ['reading', 1]);
-  offer(entry({ id: 2, binding: 2, rank: 3 })); p.frame();
-  assert.equal(view().id, 2);
-});
-
 test('outside the recording: a target outside the branch shows the named state', () => {
   const { p, offer, view } = page({ bounds: [10, 100] });
   offer(entry({ id: 1, h: 10, c: 200 })); p.publish(50);
@@ -281,7 +272,7 @@ test("commands: a rejection fails the stream only while it is the route's latest
   assert.deepEqual([view().id, view().through], [3, 30]);
 });
 
-test('store.test.ts:818 the page shows its own day though the lane selected ahead', () => {
+test('the page shows its own day though the lane selected ahead', () => {
   const { p, offer, view } = page();
   p.publish(0, { playing: true, step: 24 });
   for (const hour of [23, 47, 71]) {
@@ -293,7 +284,7 @@ test('store.test.ts:818 the page shows its own day though the lane selected ahea
   }
 });
 
-test('store.test.ts:829 a reading becomes current at the hour the clock published, whatever the lane reached', () => {
+test('a reading becomes current at the hour the clock published, whatever the lane reached', () => {
   const { p, offer, view } = page();
   p.publish(0, { playing: true, step: 12 });
   offer(entry({ id: 1, h: 0, c: 11, lo: 0, hi: 11 }), entry({ id: 2, h: 12, c: 40, lo: 12, hi: Infinity }));
@@ -303,7 +294,7 @@ test('store.test.ts:829 a reading becomes current at the hour the clock publishe
   assert.equal(view().h, 12);
 });
 
-test('store.test.ts:838 a seek removes what it invalidates before any frame listener runs', () => {
+test('a seek removes what it invalidates before any frame listener runs', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, h: 100, c: 120 })); p.publish(100);
   const seen: string[] = [];
@@ -312,14 +303,14 @@ test('store.test.ts:838 a seek removes what it invalidates before any frame list
   assert.deepEqual(seen, ['reading']);
 });
 
-test('store.test.ts:850 and :864 an unchanged structure or coverage crosses as a delta on the installed base, never a resend', () => {
+test('an unchanged structure or coverage crosses as a delta on the installed base, never a resend', () => {
   const { p, offer, view, shown } = page();
   offer(entry({ id: 1, h: 10, c: 10, content: 'S', fields: { legend: 'L', a11y: 'A', model: 'K' } })); p.publish(10, { playing: false });
   offer({ ...entry({ id: 2, h: 10, c: 14, content: 'S' }), surfaces: [SAME, SAME], fields: { legend: SAME, a11y: SAME, model: SAME } }); p.publish(14);
   assert.deepEqual([view().id, view().through, view().dim, view().fields?.model, shown()], [2, 14, false, 'K', ['S/0', 'S/1']]);
 });
 
-test('store.test.ts:876 a follow failure is terminal for its stream and named, until a later stream brings data', () => {
+test('a follow failure is terminal for its stream and named, until a later stream brings data', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, c: 10 })); p.publish(5);
   p.fail(9, p.command(9), 'stream closed');
@@ -330,7 +321,7 @@ test('store.test.ts:876 a follow failure is terminal for its stream and named, u
   assert.deepEqual([view().id, view().dim], [3, false]);
 });
 
-test('store.test.ts:891 pausing keeps the picture dimmed while nothing covers the hour; resuming shows it undimmed at once', () => {
+test('pausing keeps the picture dimmed while nothing covers the hour; resuming shows it undimmed at once', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, h: 23, c: 23 })); p.publish(23, { playing: true, step: 24 });
   p.publish(24, { playing: false });
@@ -425,3 +416,19 @@ test('should-fix: an entry that only moves the confirmation dates the widget wit
   assert.deepEqual([told, dated, p.view(1).id], [installed, 1, 2]);
 });
 
+test('review 5 finding 4: widgets showing one content hold one page copy of it, dropped once none shows it', () => {
+  const p = new Page<Fake>({ lanes: 1 });
+  for (const id of [1, 2, 3]) p.mount(id, { route: 9, lane: 0, surfaces: [] });
+  const answer = (widget: number, id: number, content: string, body: Uint8Array) =>
+    ({ ...entry({ id, n: 0, widget }), fields: { 'answer:5': body }, content: { 'answer:5': content } });
+  const first = new Uint8Array([1, 2]), second = new Uint8Array([1, 2]);
+  p.offer({ lane: 0, serial: 1, entries: [answer(1, 1, 'answer:7', first)] }); p.publish(0);
+  p.offer({ lane: 0, serial: 2, entries: [answer(2, 2, 'answer:7', second)] }); p.frame();
+  assert.equal(p.view(2).fields?.['answer:5'], first, 'a second message of the same content is not kept again');
+  p.offer({ lane: 0, serial: 3, entries: [answer(1, 3, 'answer:8', new Uint8Array([3]))] }); p.frame();
+  assert.equal(p.view(2).fields?.['answer:5'], first, 'the copy stays while a widget still shows it');
+  p.unmount(2);
+  const third = new Uint8Array([1, 2]);
+  p.offer({ lane: 0, serial: 4, entries: [answer(3, 4, 'answer:7', third)] }); p.frame();
+  assert.equal(p.view(3).fields?.['answer:5'], third, 'once no widget showed it, the old copy was dropped');
+});

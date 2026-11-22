@@ -18,9 +18,6 @@ const shown = new Map<string, (number | null)[]>();
 const recordHour = (widget: string, hour: number | null) => { shown.set(widget, [...shown.get(widget) ?? [], hour]); };
 measureWith(new Proxy({
   shown: recordHour,
-  present(widget: string, view: string, date: { through: number } | null) {
-    if (view === 'special-projects') recordHour(widget, date?.through ?? null);
-  },
 }, {
   get: (target, name) => (target as Record<string | symbol, unknown>)[name] ?? (() => {}),
 }) as unknown as PerfRecorder);

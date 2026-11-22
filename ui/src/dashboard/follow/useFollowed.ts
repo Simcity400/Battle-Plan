@@ -6,7 +6,7 @@ import { baseClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { playbackRate } from '../pulled.ts';
 import { canonical } from './canonical.ts';
-import { pipelineFor, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost, type RankWindow } from './pipeline.ts';
+import { pipelineFor, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
 import type { Channel } from './facts';
 import type { FollowedPanel } from './message';
 import type { WidgetView } from './page';
@@ -14,11 +14,7 @@ import type { ModelField, LiveMap } from '../../draw/views/fields';
 import type { Live, LiveValues } from '../../charts/live';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
 
-export const laneCount = () => {
-  const asked = Number((globalThis as { __drawLanes?: number }).__drawLanes);
-  if (asked >= 1) return Math.min(4, Math.floor(asked));
-  return Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 2));
-};
+export const laneCount = () => Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 2));
 
 const weakCpu = () => Number((globalThis as { __weakCpu?: number }).__weakCpu) || 1;
 
@@ -83,23 +79,18 @@ export function useOnScreen(target: Element | null, onScreen: OnScreen = observe
 }
 
 export function useFollowedSub(pipeline: Pipeline | null, widget: number | null, follow: { source: DashboardSource; branch: string; offset: number } | null,
-  query: FollowQuery | null, channel: Channel, product?: string, window?: RankWindow | null): number | undefined {
+  query: FollowQuery | null, channel: Channel, product?: string): number | undefined {
   const [sub, setSub] = useState<number | undefined>(undefined);
   const key = query && follow ? canonical(query) : null;
-  const held = useRef({ query, follow, window });
-  held.current = { query, follow, window };
-  const windowed = window !== undefined;
+  const held = useRef({ query, follow });
+  held.current = { query, follow };
   useLayoutEffect(() => {
-    const { query, follow, window } = held.current;
+    const { query, follow } = held.current;
     if (!pipeline || widget === null || key === null || !query || !follow) { setSub(undefined); return; }
     const token = {};
-    setSub(pipeline.subscribe(widget, token, follow.source, follow.branch, follow.offset, query, channel, product, window ?? (windowed ? { from: 0, count: Number.MAX_SAFE_INTEGER, countries: [] } : undefined)));
+    setSub(pipeline.subscribe(widget, token, follow.source, follow.branch, follow.offset, query, channel, product));
     return () => pipeline.unsubscribe(widget, token);
-  }, [pipeline, widget, key, channel, product, windowed, follow?.source.id, follow?.source.revision, follow?.branch, follow?.offset]);
-  const windowText = JSON.stringify(window ?? null);
-  useLayoutEffect(() => {
-    if (pipeline && widget !== null && sub !== undefined && windowed) pipeline.window(widget, sub, JSON.parse(windowText) as RankWindow | null);
-  }, [pipeline, widget, sub, windowed, windowText]);
+  }, [pipeline, widget, key, channel, product, follow?.source.id, follow?.source.revision, follow?.branch, follow?.offset]);
   return sub;
 }
 

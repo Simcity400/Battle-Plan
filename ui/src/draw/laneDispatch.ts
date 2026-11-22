@@ -22,7 +22,6 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       present: (presentation, transfer) => post({ type: 'presentation', ...presentation }, transfer),
       release: bytes => port.postMessage({ release: bytes } satisfies ToPull),
       hit: (widget, key) => post({ type: 'hit', widget, key }),
-      needs: (widget, needs) => post({ type: 'needs', widget, needs }),
       served: frame => post({ type: 'served', ...frame }),
       fail: reason => post({ type: 'failure', lane: index, reason }),
       ...side.stretch ? { stretch: (ms: number) => side.stretch!(ms, rate) } : {},
@@ -42,7 +41,6 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'follow': lane.follow(m.sub, m.channel, m.product); break;
       case 'route': lane.bindRoute(m.sub, m.route, m.native, m.seek, m.offset); break;
       case 'unfollow': lane.unfollow(m.sub); break;
-      case 'rank': lane.rank(m.sub, m.version, m.countries); break;
       case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;
       case 'unmount': lane.unmount(m.widget); break;
       case 'bind': lane.bind(m.widget, m.binding, m.model); break;

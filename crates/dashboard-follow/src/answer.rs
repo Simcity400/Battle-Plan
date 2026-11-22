@@ -56,7 +56,6 @@ pub struct Table {
     pub(crate) names: Vec<u32>,
     pub(crate) hours: Vec<Hour>,
     pub(crate) texts: Vec<String>,
-    pub(crate) window: u16,
     held: HashMap<String, u32>,
 }
 
@@ -71,7 +70,6 @@ impl Table {
         self.names.clear();
         self.hours.clear();
         self.texts.clear();
-        self.window = 0;
         self.held.clear();
     }
 
@@ -177,7 +175,7 @@ impl Table {
         let log = kind == LOG;
         let rows = self.keys.len();
         let flags = if kind != LOG && self.canonical() { CANONICAL } else { 0 };
-        head(out, kind, flags, self.window, rows, self.columns, self.texts.len());
+        head(out, kind, flags, rows, self.columns, self.texts.len());
         out.reserve(rows * (16 + 8) + self.values.len() * 9 + 40);
         self.keys.iter().for_each(|&key| out.extend_from_slice(&(key as u64).to_le_bytes()));
         self.keys.iter().for_each(|&key| out.extend_from_slice(&((key >> 64) as u64).to_le_bytes()));
@@ -196,9 +194,8 @@ impl Table {
     }
 }
 
-fn head(out: &mut Vec<u8>, kind: u8, flags: u8, window: u16, rows: usize, columns: usize, texts: usize) {
-    out.extend_from_slice(&[kind, flags]);
-    out.extend_from_slice(&window.to_le_bytes());
+fn head(out: &mut Vec<u8>, kind: u8, flags: u8, rows: usize, columns: usize, texts: usize) {
+    out.extend_from_slice(&[kind, flags, 0, 0]);
     out.extend_from_slice(&(rows as u32).to_le_bytes());
     out.extend_from_slice(&(columns as u32).to_le_bytes());
     out.extend_from_slice(&(texts as u32).to_le_bytes());
@@ -223,11 +220,7 @@ fn texts<'a>(out: &mut Vec<u8>, texts: impl Iterator<Item = &'a str> + Clone) {
 }
 
 pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
-    not_recorded_in(reason, 0, out);
-}
-
-pub fn not_recorded_in(reason: &str, window: u16, out: &mut Vec<u8>) {
-    head(out, NOT_RECORDED, 0, window, 0, 0, 1);
+    head(out, NOT_RECORDED, 0, 0, 0, 1);
     texts(out, std::iter::once(reason));
 }
 
@@ -268,12 +261,13 @@ pub struct Decoded<'a> {
 }
 
 pub fn charge(bytes: &[u8]) -> usize {
+    if crate::panel::dated::stamp(bytes).is_some() { return 2 * bytes.len() - 24; }
     if !bytes.starts_with(&MAGIC.to_le_bytes()) { return bytes.len(); }
     let word = |at: usize| bytes.get(at..at + 4).map_or(0, |word| u32::from_le_bytes(word.try_into().expect("four bytes")) as usize);
     let (mut at, mut total) = (24, 24);
     while at + 16 <= bytes.len() {
         let (length, held) = (word(at + 8), word(at + 12));
-        total += 16 + length.max(held);
+        total += 16 + 2 * length.max(held);
         at += 16 + length;
     }
     total
@@ -339,7 +333,6 @@ pub struct Answer {
     pub hours: Option<Vec<Hour>>,
     pub changed: bool,
     pub canonical: bool,
-    pub window: u16,
     pub texts: Vec<String>,
     pub not_recorded: Option<String>,
 }
@@ -348,14 +341,14 @@ impl Answer {
     pub fn parse(body: &[u8]) -> io::Result<Self> {
         let mut reader = Reader { bytes: body, at: 0 };
         let head = reader.take(4)?;
-        let (kind, flags, window) = (head[0], head[1], u16::from_le_bytes([head[2], head[3]]));
+        let (kind, flags) = (head[0], head[1]);
         let rows = reader.u32()? as usize;
         let columns = reader.u32()? as usize;
         let count = reader.u32()? as usize;
         let numbers = |reader: &mut Reader<'_>, count: usize| -> io::Result<Vec<u64>> {
             Ok(reader.take(count * 8)?.chunks_exact(8).map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes"))).collect())
         };
-        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, canonical: flags & CANONICAL != 0, window, texts: Vec::new(), not_recorded: None };
+        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, canonical: flags & CANONICAL != 0, texts: Vec::new(), not_recorded: None };
         if kind > CHANGED {
             return Err(invalid(format!("No followed answer kind {kind}")));
         }
@@ -478,7 +471,6 @@ fn changed(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
     }
     let mut table = Table::default();
     table.clear(a.columns, false);
-    table.window = b.window;
     for (_, answer, row) in rows {
         copy_row(&mut table, answer, row);
     }

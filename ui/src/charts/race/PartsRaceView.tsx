@@ -19,7 +19,7 @@ import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';

@@ -137,6 +137,7 @@ struct State {
     bytes: usize,
     in_flight: usize,
     credit: usize,
+    session: u64,
     heads: std::collections::HashMap<u32, i32>,
     next: u32,
     stopped: bool,
@@ -160,7 +161,7 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, in_flight: 0, credit: budget.limit() / 2, heads: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, in_flight: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn passed(&self, stream: Stream) -> bool {
@@ -194,9 +195,17 @@ impl State {
         None
     }
 
+    fn settle(&mut self) {
+        if let Err(error) = self.charged() {
+            let sequence = self.next;
+            self.next = self.next.wrapping_add(1);
+            self.overflow(&error.to_string(), sequence);
+        }
+    }
+
     fn overflow(&mut self, reason: &str, sequence: u32) {
         self.in_flight = 0;
-        self.charge.resize(0).expect("releasing the failed queue");
+        let _ = self.charge.resize(0);
         let bytes = failure(reason);
         self.counters.unwritten += self.queue.len() as u64;
         self.queue.clear();
@@ -229,8 +238,8 @@ impl State {
             Ok((bytes, superseded)) => {
                 let older = self.queue.remove(at).expect("queued");
                 let newer = &mut self.queue[later - 1];
-                self.bytes -= older.bytes.len() + newer.bytes.len();
-                self.bytes += bytes.len();
+                self.bytes -= answer::charge(&older.bytes) + answer::charge(&newer.bytes);
+                self.bytes += answer::charge(&bytes);
                 newer.bytes = bytes;
                 newer.offered = older.offered;
                 self.counters.superseded += u64::from(superseded);
@@ -294,12 +303,12 @@ impl Push {
             let mut removed = 0;
             state.queue.retain(|q| {
                 let keep = q.kind != kind || q.stream.version().is_none_or(|(r, old)| r != route || stamp.wrapping_sub(old) as i32 <= 0);
-                if !keep { removed += q.bytes.len(); }
+                if !keep { removed += answer::charge(&q.bytes); }
                 keep
             });
             state.bytes -= removed;
         }
-        state.bytes += bytes.len();
+        state.bytes += answer::charge(&bytes);
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false });
         state.compact(stream);
         if let Err(error) = state.charged() {
@@ -314,21 +323,38 @@ impl Push {
         self.take_kind().map(|(_, bytes, sequence, offered)| (bytes, sequence, offered))
     }
 
-    pub fn credit(&self, bytes: usize) {
+    pub fn credit(&self, session: u64, bytes: usize) {
         let mut state = lock(&self.state);
+        if session != state.session { return; }
         state.in_flight = state.in_flight.saturating_sub(bytes);
-        state.charged().expect("returning credit releases bytes");
+        state.settle();
         state.counters.credited += bytes as u64;
         drop(state);
         self.ready.notify_all();
     }
 
-    pub fn restart_flight(&self) {
+    pub fn restart_flight(&self) -> u64 {
         let mut state = lock(&self.state);
         state.in_flight = 0;
-        state.charged().expect("forgetting what a closed page held releases bytes");
+        state.session += 1;
+        let session = state.session;
+        state.settle();
         drop(state);
         self.ready.notify_all();
+        session
+    }
+
+    pub fn take_sent(&self) -> Option<(u8, Vec<u8>, u64)> {
+        let mut state = lock(&self.state);
+        loop {
+            if let Some((kind, bytes, ..)) = Self::send(&mut state) {
+                return Some((kind, bytes, state.session));
+            }
+            if state.stopped {
+                return None;
+            }
+            state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     pub fn head(&self, route: u32, hour: i32) {
@@ -350,9 +376,10 @@ impl Push {
     fn send(state: &mut State) -> Option<(u8, Vec<u8>, u32, Instant)> {
         let at = state.sendable()?;
         let held = state.queue.remove(at)?;
-        state.bytes -= held.bytes.len();
-        if held.stream != Stream::Notice { state.in_flight += answer::charge(&held.bytes); }
-        state.charged().expect("a sent packet's credit was reserved while it was queued");
+        let charge = answer::charge(&held.bytes);
+        state.bytes -= charge;
+        if held.stream != Stream::Notice { state.in_flight += charge; }
+        state.settle();
         state.counters.written += 1;
         state.counters.bytes += held.bytes.len() as u64;
         Some((held.kind, held.bytes, held.sequence, held.offered))
@@ -374,7 +401,7 @@ impl Push {
     pub fn take_waiting(&self) -> Vec<Vec<u8>> {
         let mut state = lock(&self.state);
         state.bytes = 0;
-        state.charged().expect("releasing queued packets");
+        state.settle();
         state.queue.drain(..).map(|held| held.bytes).collect()
     }
 
@@ -403,7 +430,7 @@ impl Push {
                 state.queue.clear();
                 state.bytes = 0;
                 state.in_flight = 0;
-                state.charge.resize(0).expect("releasing queued packets");
+                let _ = state.charge.resize(0);
                 return Err(error);
             }
         }

@@ -56,7 +56,7 @@ import { nameReadFailure, nameReadMetadata, nameReadText } from '../../dashboard
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import type { NameAt } from '../../dashboard/countryNamesAt';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';

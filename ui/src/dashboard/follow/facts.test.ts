@@ -158,7 +158,7 @@ test('a picture carries the window of targets it is the selection for', () => {
   assert.deepEqual([hc(g.select(1, 26)), g.window(1, 26)], [[25, 25], [25, Infinity]]);
 });
 
-test('store.test.ts:275 one completed step covers every joined product; an unchanged answer is covered by later messages; a seek clears', () => {
+test('one completed step covers every joined product; an unchanged answer is covered by later messages; a seek clears', () => {
   const f = facts([1, 'panel'], [2, 'panel'], [3, 'panel'], [4, 'followed']);
   f.panels(R, 0, [data(1, 10, { stepped: true }), data(2, 10, { stepped: true }), data(3, 10)]);
   f.panels(R, 0, [], 34);
@@ -171,14 +171,14 @@ test('store.test.ts:275 one completed step covers every joined product; an uncha
   assert.ok([1, 2, 3, 4].every(id => f.select(id, 0) === null));
 });
 
-test('store.test.ts:314 a pending listed log limits only its own reading', () => {
+test('a pending listed log limits only its own reading', () => {
   const f = facts([1, 'followed'], [2, 'followed']);
   f.followed(R, 0, msg(10, [{ id: 1, hour: 10, value: 7 }, { id: 2, hour: 10, value: 7 }]));
   f.followed(R, 0, msg(40, [], { limited: new Map([[1, 10]]) }));
   assert.deepEqual([1, 2].map(id => f.select(id, 40)!.c), [10, 40]);
 });
 
-test('store.test.ts:335 a stepped panel covers each completed step until its next reading', () => {
+test('a stepped panel covers each completed step until its next reading', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true, value: 'held' })]);
   f.panels(R, 0, [], 22);
@@ -191,7 +191,7 @@ test('store.test.ts:335 a stepped panel covers each completed step until its nex
   assert.equal(Math.min(112, g.select(1, 112)!.c), 112, 'and is displayed through the target, never past it');
 });
 
-test('store.test.ts:360 a product waiting for its table is covered only through the hour before it waited', () => {
+test('a product waiting for its table is covered only through the hour before it waited', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true, value: 'held' })]);
   f.panels(R, 0, [], 22);
@@ -202,7 +202,7 @@ test('store.test.ts:360 a product waiting for its table is covered only through 
   assert.deepEqual(hc(f.select(1, 82)), [82, 82]);
 });
 
-test('store.test.ts:381 a native reset keeps an old panel to the hours it was confirmed through until its replacement shows', () => {
+test('a native reset keeps an old panel to the hours it was confirmed through until its replacement shows', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true, value: 'held' })]);
   f.panels(R, 0, [waiting(1, 34)], 34);
@@ -214,7 +214,7 @@ test('store.test.ts:381 a native reset keeps an old panel to the hours it was co
   assert.ok(p === null || p.c <= 33, JSON.stringify(hc(p)));
 });
 
-test('store.test.ts:407 a reading answered again after a native reset advances with its lane', () => {
+test('a reading answered again after a native reset advances with its lane', () => {
   const f = facts([1, 'followed']);
   f.followed(R, 0, msg(10, [{ id: 1, hour: 10, value: 7 }]));
   f.followed(R, 0, msg(20, [{ id: 1, hour: 20, value: 7 }], { reset: true }));
@@ -222,7 +222,7 @@ test('store.test.ts:407 a reading answered again after a native reset advances w
   assert.deepEqual(hc(f.select(1, 34)), [20, 34]);
 });
 
-test('store.test.ts:420 seeks admit their own records; a native reset supersedes its queued future; a forward seek beyond coverage waits', () => {
+test('seeks admit their own records; a native reset supersedes its queued future; a forward seek beyond coverage waits', () => {
   const f = facts([1, 'followed'], [2, 'panel']);
   f.seek(R, 17, 10);
   f.followed(R, 17, msg(30, [{ id: 1, hour: 30, value: 30 }]));
@@ -242,7 +242,7 @@ test('store.test.ts:420 seeks admit their own records; a native reset supersedes
   assert.equal(f.select(2, 50)!.value, 'replacement');
 });
 
-test('store.test.ts:450 a scrub keeps the confirmed interval containing the target', () => {
+test('a scrub keeps the confirmed interval containing the target', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { stepped: true, value: 'still current' })], 22);
   f.seek(R, 1, 17);
@@ -250,7 +250,7 @@ test('store.test.ts:450 a scrub keeps the confirmed interval containing the targ
   assert.deepEqual([hc(p), p.value], [[10, 22], 'still current']);
 });
 
-test('store.test.ts:464 an early panel leaves the eligible picture up until its hour; a seek drops the abandoned generation', () => {
+test('an early panel leaves the eligible picture up until its hour; a seek drops the abandoned generation', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 10, { value: 'early' }), data(1, 13, { value: 'later' })]);
   assert.equal(f.select(1, 10)!.value, 'early');
@@ -262,7 +262,7 @@ test('store.test.ts:464 an early panel leaves the eligible picture up until its 
   assert.equal(f.select(1, 5)!.value, 'after seek');
 });
 
-test('store.test.ts:482 exact slot snapshots stay paintable when their live stream has passed the read', () => {
+test('exact slot snapshots stay paintable when their live stream has passed the read', () => {
   const f = facts([1, 'panel']);
   const painted: number[] = [];
   for (const hour of [10, 20, 30]) {
@@ -275,7 +275,7 @@ test('store.test.ts:482 exact slot snapshots stay paintable when their live stre
   assert.deepEqual(painted, [10, 20, 30]);
 });
 
-test('store.test.ts:499 a panel and two independently confirmed cells meet at their shared coverage', () => {
+test('a panel and two independently confirmed cells meet at their shared coverage', () => {
   const f = facts([1, 'panel']);
   f.panels(R, 0, [data(1, 12, { cells: [{ id: A, seedHour: 10, values: [12] }, { id: B, seedHour: 12, values: [12] }] }), stands(1, 30)]);
   f.followed(R, 0, msg(22, [{ id: A, hour: 10, value: 12 }]));
@@ -304,7 +304,7 @@ function pausedCells(offset: number, change: number, later?: number) {
 }
 const covers = (p: Picture<V> | null, target: number) => !!p && p.h <= target && target <= p.c;
 
-test('store.test.ts:531 a pause keeps a stepped panel whose cells cover the paused hour; a reset and a resend at that hour keep it', () => {
+test('a pause keeps a stepped panel whose cells cover the paused hour; a reset and a resend at that hour keep it', () => {
   const f = pausedCells(0, 15);
   const p = f.select(1, 20)!;
   assert.ok(covers(p, 20)); assert.equal(p.parts[1]!.value, 7);
@@ -314,14 +314,14 @@ test('store.test.ts:531 a pause keeps a stepped panel whose cells cover the paus
   assert.ok(covers(f.select(1, 20), 20), 'the panel sent again keeps it');
 });
 
-test('store.test.ts:567 and :588 a pause just ahead of the drawn hour keeps what arrived for it, on the axis or an offset track', () => {
+test('and :588 a pause just ahead of the drawn hour keeps what arrived for it, on the axis or an offset track', () => {
   for (const offset of [0, 100]) {
     const p = pausedCells(offset, 19, 30).select(1, offset + 20);
     assert.ok(covers(p, offset + 20)); assert.equal(p!.parts[1]!.value, 7, 'the value for hour 19, never the one for 30');
   }
 });
 
-test('store.test.ts:608 a pause keeps a stepped panel when native sends the panel again before its cells', () => {
+test('a pause keeps a stepped panel when native sends the panel again before its cells', () => {
   const f = pausedCells(0, 15);
   f.panels(R, 0, [data(1, 20, { stepped: true, cells: [{ id: A, seedHour: 20, values: [7] }] })]);
   assert.ok(covers(f.select(1, 20), 20));
@@ -329,7 +329,7 @@ test('store.test.ts:608 a pause keeps a stepped panel when native sends the pane
   assert.ok(covers(f.select(1, 20), 20));
 });
 
-test('store.test.ts:644 a stepped panel whose cells are followed stands through each completed step', () => {
+test('a stepped panel whose cells are followed stands through each completed step', () => {
   const f = facts([3, 'panel']);
   f.panels(R, 0, [data(3, 10, { stepped: true, cells: [{ id: A, seedHour: 10, values: [7] }] })], 10);
   assert.equal(f.select(3, 10)!.c, 10);
@@ -339,7 +339,7 @@ test('store.test.ts:644 a stepped panel whose cells are followed stands through 
   assert.deepEqual([p.c, p.parts[1]!.value], [11, 8]);
 });
 
-test('store.test.ts:664 a shown panel stands only until a new panel waiting on its first cell starts', () => {
+test('a shown panel stands only until a new panel waiting on its first cell starts', () => {
   const f = facts([3, 'panel']);
   f.panels(R, 0, [data(3, 10, { stepped: true, cells: [{ id: A, seedHour: 10, values: [7] }] })], 10);
   f.followed(R, 0, msg(11, [{ id: A, hour: 11, value: 8 }])); f.panels(R, 0, [], 11);

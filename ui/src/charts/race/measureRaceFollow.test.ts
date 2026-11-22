@@ -15,9 +15,3 @@ test('review 4 finding 10: a followed race names a recorded refusal, and applies
   assert.deepEqual([shown.shown, shown.entries.map(entry => [entry.tag, entry.hour])], [10, [['GER', 10]]], 'confirmed through 10 at clock 20: ITA, a member from 15, is not shown');
 });
 
-test('review 4 finding 11: a ranked view asks only for the ranks down to its visible end plus a margin, and learns its true length from a short answer', async () => {
-  const { RANK_MARGIN, rankRange, rankedTotal } = await import('./measureRaceData.ts');
-  assert.equal(Math.min(1500, rankRange(0, 10)), 10 + RANK_MARGIN, 'ten visible rows of a top 1,500 ask for twenty ranks, not 1,500');
-  assert.equal(Math.min(1500, rankRange(400, 10)), 410 + RANK_MARGIN, 'scrolled down, the prefix keeps the leader that scales the bars');
-  assert.deepEqual([rankedTotal(7, 20, 1500), rankedTotal(20, 20, 1500)], [7, 1500], 'fewer rows than asked is the whole ranking; a full answer leaves room to scroll');
-});

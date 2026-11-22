@@ -8,7 +8,6 @@ export type ToLane =
   | { type: 'follow'; sub: number; channel: Channel; product?: string }
   | { type: 'route'; sub: number; route: number; native: number; seek: number; offset: number }
   | { type: 'unfollow'; sub: number }
-  | { type: 'rank'; sub: number; version: number; countries?: readonly string[] }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
   | { type: 'bind'; widget: number; binding: Binding; model?: unknown }
@@ -22,7 +21,6 @@ export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'hit'; widget: number; key: string | null }
-  | { type: 'needs'; widget: number; needs: readonly { sub: number; countries: readonly string[] }[] }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number };
 
 export type FromPull = { kind: 'follow' | 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };

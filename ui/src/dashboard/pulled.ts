@@ -1,4 +1,3 @@
-import { APPEARANCE_EVENT } from '../shell/appearance/events.ts';
 import { DisplayRate } from '../draw/frameRate.ts';
 import type { DrawSample } from '../draw/notifications';
 
@@ -6,17 +5,11 @@ let displayRate = 60;
 const display = new DisplayRate();
 const cap = () => document.documentElement.dataset.playbackRate === 'uncapped' ? 0 : Number(document.documentElement.dataset.playbackRate) || 60;
 export const playbackRate = () => cap() || displayRate;
-export function onPlaybackRate(changed: () => void) {
-  window.addEventListener(APPEARANCE_EVENT, changed);
-  window.addEventListener('playback-display-rate', changed);
-  return () => { window.removeEventListener(APPEARANCE_EVENT, changed); window.removeEventListener('playback-display-rate', changed); };
-}
 
 export function noteFrame(at: number) {
   const hz = display.sample(at);
   if (hz === undefined) return;
   displayRate = hz;
-  window.dispatchEvent(new Event('playback-display-rate'));
 }
 
 let audit: DrawSample[] | null = null;

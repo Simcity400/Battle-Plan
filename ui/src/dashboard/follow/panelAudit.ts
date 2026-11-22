@@ -15,7 +15,7 @@ export function exactLive(raw: unknown): Map<string, number | string> {
 
 export function panelAuditRows(product: string, raw: unknown, live: ReadonlyMap<string, unknown> | null | undefined) {
   return [...recordedPanelRows(product, raw).map(row => ({ row, key: row, value: row })),
-    ...[...live ?? []].map(([key, value]) => ({ row: key, key: `live:${key}`, value: String(value) }))];
+    ...[...live ?? []].map(([key, value]) => ({ row: `live:${key}`, key: `live:${key}`, value: String(value) }))];
 }
 
 export function panelTexts(product: string, raw: unknown, live: ReadonlyMap<string, number | string>, hour: number): ReadonlyMap<string, string> | null {

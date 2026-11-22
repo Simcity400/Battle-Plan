@@ -596,7 +596,7 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
         let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
         assert_eq!(names, wanted, "a holder with no row ranks at zero");
         let nnn = names.iter().position(|name| *name == "NNN").unwrap();
-        assert_eq!((answer.keys[nnn], answer.values[nnn * 2], answer.states[nnn * 2]), (999, 0, State::Value));
+        assert_eq!((answer.keys[nnn], answer.values[nnn], answer.states[nnn]), (999, 0, State::Value));
     }
 }
 
@@ -906,7 +906,7 @@ fn a_failed_write_stops_the_pushed_answers_by_name() {
 fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
     use crate::push::Push;
     let packet = one(7, 24, 1);
-    let budget = playhead::ByteBudget::new(packet.len() * 2);
+    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
     let first = Push::with_budget(budget.clone());
     let second = Push::with_budget(budget.clone());
     first.offer(packet.clone());
@@ -1021,33 +1021,6 @@ fn the_message_bytes_are_the_ones_the_ui_reads() {
     let hex: String = golden().iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(hex, GOLDEN);
 }
-
-fn golden_ranked() -> Vec<u8> {
-    use crate::answer::{Table, begin, push};
-    let mut message = Vec::new();
-    begin(&mut message, 0, 0, 40, 0, false);
-    let mut table = Table::default();
-    table.clear(2, false);
-    table.window = 5;
-    for (key, value, rank, name) in [(101, 900, 1, "ZZZ"), (103, 700, 2, "AAA")] {
-        table.row(key);
-        table.cell(value, State::Value);
-        table.cell(rank, State::Value);
-        table.name(name);
-    }
-    let mut body = Vec::new();
-    table.encode(&mut body);
-    push(&mut message, 9, 40, &body);
-    message
-}
-
-#[test]
-fn a_ranked_window_answer_is_the_bytes_the_ui_reads() {
-    let hex: String = golden_ranked().iter().map(|byte| format!("{byte:02x}")).collect();
-    assert_eq!(hex, GOLDEN_RANKED);
-}
-
-const GOLDEN_RANKED: &str = "464f4c3300000000280000000100000000000000000000000900000028000000800000000000000001010500020000000200000002000000650000000000000067000000000000000000000000000000000000000000000084030000000000000100000000000000bc0200000000000002000000000000000000000000000000ffffffffffffffff0000000001000000000000000300000006000000000000005a5a5a4141410000";
 
 const GOLDEN: &str = "464f4c3301000000d204000003000000000000000000000007000000b0040000d000000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff02000000040000000000000000000000010000000300000000000000000000000300000006000000160000001900000032000000474552534f56534f5620686173206e6f2076616c75654954414954412069732068656c64206279206e6f20636f756e74727900000000000008000000d20400004000000000000000000000000000000000000000010000000000000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f75720009000000d204000058000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff000000000000000000000000";
 
@@ -1468,7 +1441,8 @@ fn rows_changed_twice_merge_in_key_order() {
 fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_flight() {
     use crate::push::Push;
     let packet = one(7, 24, 1);
-    let budget = playhead::ByteBudget::new(packet.len() * 4);
+    let cost = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(cost * 4);
     let push = Push::with_budget(budget.clone());
     push.offer(packet.clone());
     push.offer(one(7, 48, 2));
@@ -1476,12 +1450,12 @@ fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_fl
     assert!(push.try_take().is_some());
     assert!(push.try_take().is_some(), "two packets fit the credit of half the budget");
     assert!(push.try_take().is_none(), "the third waits until the lanes release bytes");
-    assert_eq!((push.in_flight(), budget.used()), (packet.len() * 2, packet.len() * 3), "credit is reserved from send until release");
-    push.credit(packet.len());
+    assert_eq!((push.in_flight(), budget.used()), (cost * 2, cost * 3), "credit is reserved from send until release");
+    push.credit(0, cost);
     assert!(push.try_take().is_some());
-    push.credit(packet.len() * 2);
+    push.credit(0, cost * 2);
     assert_eq!(budget.used(), 0);
-    let large: Vec<u8> = vec![0; packet.len() * 3];
+    let large: Vec<u8> = vec![0; cost * 3];
     push.offer(large);
     assert!(push.try_take().is_some(), "a message larger than the credit still goes alone");
 }
@@ -1490,7 +1464,8 @@ fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_fl
 fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_picture_it_replaces() {
     use crate::push::Push;
     let packet = one(7, 10, 1);
-    let budget = playhead::ByteBudget::new(packet.len() * 5);
+    let cost = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(cost * 5);
     let push = Push::with_budget(budget.clone());
     push.offer(packet.clone());
     push.offer(one(7, 20, 2));
@@ -1499,8 +1474,15 @@ fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_pictu
     assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
     push.head(0, 30);
     assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
-    push.restart_flight();
+    let session = push.restart_flight();
     assert_eq!((push.in_flight(), budget.used()), (0, 0), "a closed page's held bytes are forgotten once, by the one queue that charged them");
+    push.offer(one(7, 40, 4));
+    let (.., sent) = push.take_sent().unwrap();
+    assert_eq!(sent, session, "a message names the session it was sent to");
+    push.credit(session - 1, cost);
+    assert_eq!(push.in_flight(), cost, "an old page's late refund releases nothing of the new page's");
+    push.credit(session, cost);
+    assert_eq!(push.in_flight(), 0);
 }
 
 fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {
@@ -1511,13 +1493,32 @@ fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {
 }
 
 #[test]
+fn a_changed_answer_reserves_the_table_it_lands_on_when_queued_so_sending_it_never_exceeds_the_budget() {
+    use crate::push::Push;
+    let small = routed(0, 5, 1, 0);
+    let budget = playhead::ByteBudget::new(small.len() * 10);
+    let push = Push::with_budget(budget.clone());
+    push.offer(small.clone());
+    assert!(push.try_take().is_some());
+    push.head(0, 100);
+    push.offer(routed(0, 10, 2, (small.len() * 12) as u32));
+    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "a table past the budget is refused by name when it is queued");
+    assert!(push.try_take().is_some(), "the drain thread takes the failure notice and never panics");
+    let push = Push::with_budget(budget);
+    push.offer(routed(0, 10, 2, (small.len() * 4) as u32));
+    assert_eq!(push.in_flight(), 0);
+    assert!(push.try_take().is_some());
+    assert_eq!(push.in_flight(), 24 + 16 + 2 * small.len() * 4, "what was reserved while queued is what is held in flight");
+}
+
+#[test]
 fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_own() {
     use crate::push::Push;
     let small = routed(1, 5, 1, 0);
-    let push = Push::with_budget(playhead::ByteBudget::new(small.len() * 20));
+    let push = Push::with_budget(playhead::ByteBudget::new(small.len() * 30));
     push.offer(small.clone());
     assert!(push.try_take().is_some());
-    push.offer(routed(1, 50, 2, (small.len() * 20) as u32));
+    push.offer(routed(1, 50, 2, (small.len() * 8) as u32));
     assert!(push.try_take().is_none(), "the future update of route 1 waits for credit");
     push.offer(routed(2, 10, 3, 0));
     push.head(2, 10);
@@ -1535,8 +1536,8 @@ fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
     let changed = routed(0, 10, 1, 4096);
     push.offer(changed.clone());
     push.try_take().unwrap();
-    assert_eq!(push.in_flight(), 24 + 16 + 4096, "a changed answer is charged at the whole table it lands on");
-    assert_eq!(crate::answer::charge(&changed), 24 + 16 + 4096);
+    assert_eq!(push.in_flight(), 24 + 16 + 2 * 4096, "a changed answer is charged at the whole table it lands on");
+    assert_eq!(crate::answer::charge(&changed), 24 + 16 + 2 * 4096, "the lane's copy and the page's one copy");
     let mut table = crate::answer::Table::default();
     table.clear(1, false);
     for key in [1u128, 5, 9] { table.row(key); table.cell(key as i64, State::Value); table.name("TAG"); }
@@ -1566,7 +1567,7 @@ fn only_hours_the_clock_has_passed_merge_into_one_answer() {
 fn pressure_never_merges_ahead_of_the_clock() {
     use crate::push::Push;
     let packet = rows_message(20, false, &[(1, 1)]);
-    let budget = playhead::ByteBudget::new(packet.len() * 2);
+    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
     let push = Push::with_budget(budget);
     push.head(0, 0);
     push.offer(rows_message(20, false, &[(1, 1)]));
@@ -1596,65 +1597,3 @@ fn a_follow_names_lanes_its_id_belongs_to() {
     assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
 }
 
-#[test]
-fn a_window_on_a_series_of_every_country_sends_only_its_countries_under_its_version() {
-    let pages = record(quiet);
-    let mut harness = harness(&pages);
-    let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
-    let mut holders = Holders::default();
-    holders.tags.insert("MMM".into(), held(1, 101));
-    holders.tags.insert("ZZZ".into(), held(2, 102));
-    holders.tags.insert("AAA".into(), held(3, 103));
-    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
-    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let Query::Series { countries, .. } = Query::series_top(&POWER, &POWER.measures[0], 3, identity.clone()) else { unreachable!() };
-    let every = Query::Series { series: &POWER, measure: &POWER.measures[0], countries, top: None, least: false, parts: false, identity };
-    harness.follow.follow(7, every).unwrap();
-    harness.follow.window(7, crate::RankWindow { from: 0, count: 0, countries: vec!["ZZZ".into()], version: 3, every: false }).unwrap();
-    harness.seek(0);
-    let answered = harness.play(20).iter().flat_map(Played::answers).filter(|(at, ..)| *at == 7).last().expect("an answer").2;
-    let names: Vec<&str> = (0..answered.keys.len()).filter_map(|row| answered.name(row)).collect();
-    assert_eq!((names, answered.window), (vec!["ZZZ"], 3), "the window's countries alone, under its version");
-    harness.follow.window(7, crate::RankWindow { from: 0, count: usize::MAX, countries: Vec::new(), version: 4, every: true }).unwrap();
-    let every = harness.play(200).iter().flat_map(Played::answers).filter(|(at, ..)| *at == 7).last().expect("an answer").2;
-    assert_eq!((every.keys.len(), every.window), (3, 4), "clearing the window answers every country under a new version");
-}
-
-#[test]
-fn a_window_change_wakes_a_settled_paused_query_as_a_new_follow_does() {
-    let pages = record(quiet);
-    let harness = harness(&pages);
-    let joined = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let seen = Arc::clone(&joined);
-    harness.follow.bind(move |_, joining| { seen.fetch_add(usize::from(joining), std::sync::atomic::Ordering::Relaxed); Ok(()) }, harness.playhead().log_reads()).unwrap();
-    harness.follow.follow(7, keys(&[105], &[3])).unwrap();
-    harness.follow.window(7, crate::RankWindow { from: 0, count: 1, countries: Vec::new(), version: 2, every: false }).unwrap();
-    assert_eq!(joined.load(std::sync::atomic::Ordering::Relaxed), 2, "the paused query is seeded again, so the new window is answered without a playhead step");
-}
-
-#[test]
-fn a_ranked_window_sends_its_ranks_its_version_and_the_selected_holders_outside_it() {
-    let pages = record(quiet);
-    let mut harness = harness(&pages);
-    let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
-    let mut holders = Holders::default();
-    holders.tags.insert("MMM".into(), held(1, 101));
-    holders.tags.insert("ZZZ".into(), held(2, 102));
-    holders.tags.insert("AAA".into(), held(3, 103));
-    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
-    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top = Query::series_top(&POWER, &POWER.measures[0], 3, identity);
-    harness.follow.follow(7, top).unwrap();
-    harness.seek(0);
-    let whole = harness.play(20);
-    let last = |played: &[Played]| played.iter().flat_map(Played::answers).filter(|(at, _, answer)| *at == 7 && answer.not_recorded.is_none()).last().expect("an answer").2;
-    let ranked = last(&whole);
-    let names: Vec<&str> = (0..ranked.keys.len()).filter_map(|row| ranked.name(row)).collect();
-    assert_eq!((names, ranked.columns, ranked.window), (vec!["MMM", "AAA", "ZZZ"], 2, 0));
-    assert_eq!((0..3).map(|row| ranked.values[row * 2 + 1]).collect::<Vec<_>>(), [0, 1, 2], "explicit ranks, so key order loses nothing");
-    harness.follow.window(7, crate::RankWindow { from: 1, count: 1, countries: vec!["MMM".into()], version: 4, every: false }).unwrap();
-    let windowed = last(&harness.play(200));
-    let names: Vec<&str> = (0..windowed.keys.len()).filter_map(|row| windowed.name(row)).collect();
-    assert_eq!((names, windowed.window), (vec!["AAA", "MMM"], 4), "rank 1 alone, then the selected holder outside the window");
-    assert_eq!((windowed.values[1], windowed.values[3]), (1, 0), "each with its own rank");
-}

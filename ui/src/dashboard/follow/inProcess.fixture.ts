@@ -63,5 +63,6 @@ export function inProcess({ lanes = 1, views = () => undefined, follow }: { lane
     for (let at = 0; at < rounds && !done(); at++) await new Promise(resolve => setTimeout(resolve, 2));
     return done();
   };
-  return { pipeline, clock, client, send, source, asked, settle, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
+  const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
+  return { pipeline, clock, client, send, fail, source, asked, settle, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
 }

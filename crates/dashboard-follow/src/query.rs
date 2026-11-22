@@ -19,15 +19,6 @@ pub enum Rows {
     Listed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RankWindow {
-    pub from: usize,
-    pub count: usize,
-    pub countries: Vec<Country>,
-    pub version: u16,
-    pub every: bool,
-}
-
 #[derive(Clone)]
 pub struct Identity {
     pub holders: Arc<Holders>,

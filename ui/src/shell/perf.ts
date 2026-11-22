@@ -1,4 +1,3 @@
-type PictureInterval = { since: number; through: number };
 import type { PictureSample } from '../draw/notifications';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -86,7 +85,24 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
   return { key: JSON.stringify([named.branchId, named.family, named.countries]), bins: named.binHours, index: named.index };
 }
 
-export type ExactPicture = (hour: number) => Promise<{ values: ReadonlyMap<string, string>; ranked?: boolean } | null>;
+export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
+export type ExactPicture = (hour: number) => Promise<ExactRead | null>;
+type ShownRow = NonNullable<PictureSample['rows']>[number];
+
+export function pictureError(surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
+  if (!exact || (!rows.length && exact.values.size)) return 'Displayed rows or exact read missing';
+  if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Ranked row identities differ';
+  if (exact.ordered && JSON.stringify(rows.map(r => r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Displayed rows are not in the exact read\'s order';
+  for (const row of rows) {
+    const key = exact.ranked ? row.row + ':' + row.key : row.key;
+    if (row.overflow) return key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px';
+    if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) return 'Wrong row identity for ' + key;
+    if (!exact.values.has(key) || exact.values.get(key) !== row.value) return key + ': displayed ' + row.value + ', expected ' + exact.values.get(key);
+  }
+  if (surface === 'table' && new Set(rows.map(row => row.key)).size !== exact.values.size)
+    return 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
+  return null;
+}
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead }
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
@@ -182,22 +198,9 @@ export class PerfRecorder {
     const results = await auditInBatches(batch, AUDIT_CONCURRENCY, async record => {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
-      let error: string | null = null;
-      try {
-        const exact = await work.readers?.get(placement + '/' + owner)?.(hour);
-        if (!exact || (!rows.length && exact.values.size)) error = 'Displayed rows or exact read missing';
-        else if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) error = 'Ranked row identities differ';
-        else for (const row of rows) {
-          const key = exact.ranked ? row.row + ':' + row.key : row.key;
-          if (row.overflow) { error = key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px'; break; }
-          if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) { error = 'Wrong row identity for ' + key; break; }
-          if (!exact.values.has(key) || exact.values.get(key) !== row.value) {
-            error = key + ': displayed ' + row.value + ', expected ' + exact.values.get(key); break;
-          }
-        }
-        if (!error && exact && surface === 'table' && new Set(rows.map(row => row.key)).size !== exact.values.size)
-          error = 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
-      } catch (cause) { error = String(cause); }
+      let error: string | null;
+      try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour)); }
+      catch (cause) { error = String(cause); }
       return { widget, surface, placement, hour, error };
     });
     const done = work.done && work.pictures.length === 0;
@@ -358,13 +361,6 @@ export class PerfRecorder {
     let widgets = this.paints.get(frame);
     if (!widgets) this.paints.set(frame, widgets = new Map());
     widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
-  }
-
-  present(widget: string, surface: string, date: PictureInterval | null, head: number, renderer: 'worker' | 'dom' | 'race',
-    evidence?: { id?: number; seek?: number; rows?: readonly { row: string; key: string; value?: string }[]; follow?: number; readHour?: number; cellHour?: number; at?: number; offset?: number; fixedHour?: number }) {
-    const hour = date === null ? null : Math.max(date.since, Math.min(date.through, Math.floor(head)));
-    this.push({ t: 'picture', at: epoch(performance.now()), widget, surface, renderer, hour, head,
-      placement: evidence?.id, seek: evidence?.seek, rows: evidence?.rows, drawnAt: evidence?.at, fixedHour: evidence?.fixedHour, offset: evidence?.offset, follow: evidence?.follow, readHour: evidence?.readHour, cellHour: evidence?.cellHour });
   }
 
   shown(widget: string, hour: number | null): void {

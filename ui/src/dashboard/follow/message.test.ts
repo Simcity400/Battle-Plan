@@ -18,7 +18,7 @@ test('the bytes the service writes read back as it wrote them', () => {
   assert.equal(cellValue(series, 0), 12_345_678n);
   assert.deepEqual([0, 1, 2].map(at => cellState(series, at)), [CELL.value, CELL.missing, CELL.noRow]);
   assert.deepEqual([0, 1, 2].map(row => rowReason(series, row)), [null, 'SOV has no value', 'ITA is held by no country']);
-  assert.deepEqual(unrecorded, { kind: 'notRecorded', reason: 'Countries was not recorded at this hour', window: 0 });
+  assert.deepEqual(unrecorded, { kind: 'notRecorded', reason: 'Countries was not recorded at this hour' });
   assert.ok(log!.kind === 'log');
   assert.equal(rowHour(log, 0), 1100);
   assert.equal(rowKeys(log), String((1n << 70n) + 5n));
@@ -29,9 +29,9 @@ test('seventy thousand texts are each read back by their own row, in any order',
   const rows = 70_000;
   const keys = Array.from({ length: rows }, (_, row) => BigInt(row));
   const reasons = keys.map((_, row) => row % 2 === 0 ? `reason ${row}` : null), names = keys.map((_, row) => row % 2 === 0 ? null : `name ${row}`);
-  const [{ answer }] = parseFollowed(message(1, [{ id: 1, answer: { keys, columns: 1, values: keys.map(() => 0n), states: keys.map(() => CELL.missing), reasons, names, window: 3 } }])).answers;
+  const [{ answer }] = parseFollowed(message(1, [{ id: 1, answer: { keys, columns: 1, values: keys.map(() => 0n), states: keys.map(() => CELL.missing), reasons, names } }])).answers;
   assert.ok(answer!.kind === 'rows');
-  assert.deepEqual([answer.canonical, answer.window], [true, 3]);
+  assert.equal(answer.canonical, true);
   for (let row = rows - 1; row >= 0; row -= 7) {
     if (rowReason(answer, row) !== reasons[row] || rowName(answer, row) !== names[row]) assert.fail(`row ${row}: ${rowReason(answer, row)}, ${rowName(answer, row)}`);
   }
@@ -43,12 +43,3 @@ test('a dated panel reads the native MessagePack bytes', () => {
   assert.deepEqual(parseDatedPanels(bytes).panels[0]!.panel?.data, { rows: [7] });
 });
 
-const GOLDEN_RANKED = '464f4c3300000000280000000100000000000000000000000900000028000000800000000000000001010500020000000200000002000000650000000000000067000000000000000000000000000000000000000000000084030000000000000100000000000000bc0200000000000002000000000000000000000000000000ffffffffffffffff0000000001000000000000000300000006000000000000005a5a5a4141410000';
-
-test('should-fix d: a ranked window the service writes reads back with its version, values and ranks', () => {
-  const bytes = new Uint8Array(GOLDEN_RANKED.match(/../g)!.map(pair => parseInt(pair, 16)));
-  const [ranked] = parseFollowed(bytes).answers.map(({ answer }) => answer);
-  assert.ok(ranked!.kind === 'rows');
-  assert.deepEqual([ranked.window, ranked.columns, ranked.canonical], [5, 2, true]);
-  assert.deepEqual([0, 1].map(row => [rowName(ranked, row), cellValue(ranked, row * 2), cellValue(ranked, row * 2 + 1)]), [['ZZZ', 900n, 1n], ['AAA', 700n, 2n]]);
-});

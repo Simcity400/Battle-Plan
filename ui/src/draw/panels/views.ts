@@ -1,8 +1,7 @@
 import type { LiveValues } from '../../charts/live';
-import { ArsenalPicture } from '../arsenal.ts';
 import type { PanelGeometry, PanelView } from './view';
 import type { Structure } from '../views/fields';
-import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails } from '../../generated/dashboard';
+import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
@@ -63,6 +62,11 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {
   if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
+  if (product === 'wargoals') {
+    const r = raw as WargoalsReply;
+    return [...r.goals.map(g => JSON.stringify(['goal', g.handle, g.actor, g.recipient, g.name, g.available, g.expires])),
+      ...r.justifications.map(j => JSON.stringify(['justification', j.id, j.recipient, j.name, j.paused]))];
+  }
   if (product === 'research-slots') {
     const r = raw as ResearchSlotsReply;
     return r.slots.map(s => JSON.stringify([s.index, s.state.token, s.state.entryFirstObservedHour]));
@@ -85,7 +89,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
   return [];
 }
 
-export const raceViews = { 'nuclear-arsenal': ArsenalPicture };
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
 const effectsLayer = '[data-effects-ink]';
 const extendInline = '.project-details [data-paint]:last-child';

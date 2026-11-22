@@ -6,7 +6,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { OPTIONS } from './definition';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { arsenalStructure, nukeParts, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -21,15 +21,14 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const race = view === 'race' && options.show !== 'breakdown';
   const names = useProduct(runtime.client, !race && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
     params: { branchId: track.branch.id, hour: track.branch.lastHour } } : null, active, validateNuclearArsenal, track?.source);
-  const strict = useHeadProduct(runtime, widget, 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
-  const head = withHeld(strict);
-  const metadata = race ? head.data : names.data, shown = race ? strict.data : names.data;
+  const head = useHeadProduct(runtime, widget, 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const metadata = race ? head.data : names.data, shown = metadata;
   const parts = useMemo(() => nukeParts(metadata), [metadata]);
   const onWarnings = useCallback((warnings: readonly string[]) => {
     const all = [...warnings, ...(shown?.warnings ?? []), ...(!race && names.error ? [`Weapon type names could not be loaded: ${names.error.message}`] : [])];
     onDiagnostics(all.length ? all : NO_WARNINGS);
   }, [onDiagnostics, shown, names.error, race]);
-  return <MeasureRace arsenal={race ? head : undefined} held={race && strict.data === undefined && head.data !== undefined} widget={widget} runtime={runtime} active={active} countrySlot={countrySlot} measure={TOTAL} decimals={0} view={view} options={options}
+  return <MeasureRace arsenal={race ? head : undefined} widget={widget} runtime={runtime} active={active} countrySlot={countrySlot} measure={TOTAL} decimals={0} view={view} options={options}
     label="Nuclear stockpile" icon="target" format={format} formatValue={formatValue} onWarnings={onWarnings} parts={parts}
     split={options.split !== false} positiveOnly />;
 }

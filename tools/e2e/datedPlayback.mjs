@@ -105,14 +105,16 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const seconds = (frames.at(-1) - frames[0]) / 1000;
     const page = sorted.filter(r => r.t === 'frame' && r.playing && timed(r));
     const worker = sorted.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
-    const lanes = [...Map.groupBy(worker, r => r.lane ?? 0).values()].map(frames => rate(frames.map(r => r.at)));
+    const laneCount = Math.max(0, ...worker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
+    const byLane = Map.groupBy(worker, r => r.lane ?? 0);
+    const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) ? rate(byLane.get(lane).map(r => r.at)) : null);
     const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
     if (fps === null) reasons.push('nothing measured');
     const pace = playbackPace(first, last, 1440);
     if (!pace.pass) reasons.push('clock did not advance at 1,440 h/s');
     if (fps === null || fps < 60) reasons.push('presented FPS ' + fps);
     if (pageFps === null) reasons.push('missing page frame measurements');
-    if (presents === null || Math.round(presents) !== 60) reasons.push('worker presents/s ' + presents);
+    if (presents === null || Math.round(presents) < 60 || Math.round(presents) > Math.max(60, Math.round(fps ?? 0))) reasons.push('worker presents/s ' + presents);
     if (w.pressureMerges !== 0) reasons.push('pressure merges ' + w.pressureMerges);
     const pageCount = page.reduce((sum, r) => sum + r.commits, 0);
     const firstCommit = page[0]?.commitSequence - page[0]?.commits + 1;
@@ -246,7 +248,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         const seen = new Set(), seenSurfaces = new Set(), lag = [], drawn = [], available = [];
         let crossed = false, uncrossedLate = false;
         for (const r of held.values()) {
-          if ((placementMode ? !visiblePlacements.has(r.placement) : !visible.has(r.surface)) || r.renderer !== 'worker' && r.renderer !== 'page') continue;
+          if ((placementMode ? !visiblePlacements.has(r.placement) : !visible.has(r.surface)) || r.renderer !== 'page') continue;
           seen.add(r.placement); seenSurfaces.add(r.surface); observedSurfaces.add(r.surface); observedPairs.add(`${r.surface}\u0000${r.placement}`);
           const target = r.fixedHour ?? head, hour = r.hour, eligibleAge = Number.isFinite(r.eligibleHour) ? target - r.eligibleHour : Infinity;
           available.push(eligibleAge);

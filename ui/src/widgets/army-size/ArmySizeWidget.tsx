@@ -29,7 +29,7 @@ import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/gr
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows as FollowedRowsAnswer } from '../../dashboard/follow/message';
 import { shownThrough } from '../../dashboard/follow/store.ts';

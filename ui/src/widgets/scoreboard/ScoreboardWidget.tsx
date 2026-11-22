@@ -7,7 +7,6 @@ import type { Live, LiveValues } from '../../charts/live';
 import { tableSortOf, tableSortToken } from '../../charts/table/options';
 import FamilyTable, { type FamilyColumn } from '../../draw/tables/FamilyTable.tsx';
 import type { ExactRows } from '../../draw/tables/FamilyTable.tsx';
-import { RANK_MARGIN, rankRange } from '../../charts/race/measureRaceData.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../draw/tables/settings.ts';
 import type { TableSettings } from '../../draw/tables/logic.ts';
@@ -24,7 +23,7 @@ import { looksRead } from '../../dashboard/countryLooks';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { stickyLimit, stickyMembers, useStickyMembers, type StickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
@@ -89,9 +88,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && rankFamily
     ? { product: 'series-state', params: { branchId, family: rankFamily, top, least: descending ? undefined : true } } : null,
   [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending]);
-  const [rankEnd, setRankEnd] = useState(RANK_MARGIN * 3);
-  const rankWindows = useMemo(() => [top != null ? { from: 0, count: Math.min(top, rankEnd), countries: [] } : null], [top, rankEnd]);
-  const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root, rankWindows);
+  const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
   const rankEntry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => {
@@ -119,8 +116,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && columnReads
     ? { product: 'series-state', params: { branchId, family, reads: columnReads } } : null),
   [familiesText, following, branchId, columnReadsText]);
-  const columnWindows = useMemo(() => families.map(() => top != null ? { from: 0, count: 0, countries: [], most: stickyLimit(top) } : null), [familiesText, top]);
-  const columnsFollowed = useFollowedAll(store, columnQueries, root, columnWindows);
+  const columnsFollowed = useFollowedAll(store, columnQueries, root);
   const columnsNow = useRef(columnsFollowed);
   columnsNow.current = columnsFollowed;
   const followedHead = following && !!store && (top == null || rankQuery !== null);
@@ -311,7 +307,6 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     settings={tableSettings} onSettings={setOption ? onTableSettings : undefined} live={tableLive} sources={tableSources} shownAt={reply?.hour ?? hour}
     fixed={widget.time.mode === 'follow' || !reply ? undefined : reply.hour - track!.axisOffset}
     rank={ranked} members={tableMembers} headerSlot={headerSlot ?? null} tooltipKeys={tooltipKeys} exactRows={exactRows}
-    onRange={followedHead && top != null ? (first, count) => setRankEnd(rankRange(first, count)) : undefined} total={followedHead && top != null ? top : undefined}
     onHover={(key, at, drawn) => {
       const row = key === null ? undefined : byKey.get(key);
       if (row && at && drawn) showTooltip(tooltipOwner, tooltip(row, drawn), at.x, at.y, row.key); else hideTooltip(tooltipOwner);

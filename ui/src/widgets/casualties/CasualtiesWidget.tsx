@@ -19,7 +19,7 @@ import { useIdentityHour } from '../../dashboard/atHead';
 import { looksRead, useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { answered, useHandoff, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FollowEntry } from '../../dashboard/follow/store';

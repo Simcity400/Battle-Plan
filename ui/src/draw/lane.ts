@@ -9,7 +9,7 @@ export interface AnswerValue { kind: 'answer'; body: Uint8Array; answer: Followe
 export interface SeedValue { kind: 'seed'; values: readonly (number | string)[] }
 export type Value = PanelValue | AnswerValue | SeedValue;
 
-export interface Sub { id: number; channel: Channel; product?: string; route: number | null; rank: number; countries: ReadonlySet<string> | null }
+export interface Sub { id: number; channel: Channel; product?: string; route: number | null }
 
 export interface Surface { width: number; height: number; dpr: number }
 export interface Binding {
@@ -34,8 +34,6 @@ export interface Painted {
   mode?: 'picture' | 'refused';
   reason?: string;
   hit?: (point: readonly [number, number]) => string | null;
-  pending?: boolean;
-  needs?: readonly { sub: number; countries: readonly string[] }[];
 }
 
 export interface LaneView {
@@ -55,7 +53,6 @@ export interface LaneHost<B extends Bitmap> {
   fail(reason: string): void;
   later(run: () => void): void;
   hit?(widget: number, key: string | null): void;
-  needs?(widget: number, needs: readonly { sub: number; countries: readonly string[] }[]): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number }): void;
   budget?: number;
   clock?: () => number;
@@ -77,7 +74,7 @@ interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: 
 
 const charged = (record: Uint8Array) => {
   const view = new DataView(record.buffer, record.byteOffset, record.byteLength), length = view.getUint32(8, true);
-  return 16 + Math.max(length, view.getUint32(12, true));
+  return 16 + 2 * Math.max(length, view.getUint32(12, true));
 };
 
 const BUFFER = 8 << 20;
@@ -90,7 +87,6 @@ type Selected = { pictures: Picture<Value>[]; window: Window; h: number; c: numb
 
 const now = () => performance.now();
 
-const answerWindow = (answer: FollowedAnswer) => answer.kind === 'notRecorded' ? answer.window ?? 0 : answer.window;
 
 function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value }[] {
   const section = sectionOf(data);
@@ -134,7 +130,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private content = () => `${this.host.lane}:${this.nextContent++}`;
 
   follow(sub: number, channel: Channel, product?: string) {
-    this.subs.set(sub, { id: sub, channel, product, route: null, rank: 0, countries: null });
+    this.subs.set(sub, { id: sub, channel, product, route: null });
     if (channel === 'pinned') this.facts.follow(sub, -1, 'pinned');
   }
 
@@ -158,14 +154,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.forget(sub);
     this.facts.unfollow(sub);
     this.after();
-  }
-
-  rank(sub: number, version: number, countries?: readonly string[]) {
-    const held = this.subs.get(sub);
-    if (!held || held.rank === version) return;
-    held.rank = version;
-    held.countries = countries ? new Set(countries) : null;
-    this.wake();
   }
 
   mount(widget: number, subs: readonly number[], view: string, model?: unknown) {
@@ -245,8 +233,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private releasedFacts() {
     const shown = new Set<unknown>();
-    for (const widget of this.widgets.values()) for (const sent of [widget.installed, widget.inflight])
-      for (const picture of sent?.pictures ?? []) for (const part of picture.parts) shown.add(part);
+    const sents = [...[...this.widgets.values()].flatMap(widget => [widget.installed, widget.inflight]), ...[...this.presented.values()].map(owner => owner.sent)];
+    for (const sent of sents) for (const picture of sent?.pictures ?? []) for (const part of picture.parts) shown.add(part);
     return this.facts.release(fact => shown.has(fact));
   }
 
@@ -338,7 +326,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const limited = new Map<number, number>(), answers: FollowAnswer<Value>[] = [], latest = new Map<number, AnswerValue>();
         for (const record of item.records) {
           const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
-          if (!view.getUint32(8, true)) limited.set(item.id, view.getInt32(4, true));
+          if (!view.getUint32(8, true)) { limited.set(item.id, view.getInt32(4, true)); this.freed += charged(record); }
           else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
         }
         this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
@@ -354,7 +342,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (parsed.kind === 'changed') {
       const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
       if (!base || base.kind !== 'answer') { this.freed += bytes; this.host.fail('Changed rows arrived without the table they change.'); return null; }
-      const merged = mergeChanged(base.answer, parsed);
+      const merged = mergeChanged(base.answer, parsed, new DataView(record.buffer, record.byteOffset, record.byteLength).getUint32(12, true));
       value = { kind: 'answer', body: merged, answer: parseAnswer(merged) };
     } else {
       const body = record.slice(16);
@@ -404,7 +392,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private panel(record: Uint8Array): PanelRecord<Value> {
-    const panel = parseDatedPanelRecord(record), size = record.length;
+    const panel = parseDatedPanelRecord(record), size = 2 * record.length;
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
     if (!panel.panel) { this.freed += size; return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
@@ -429,8 +417,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (this.subs.has(id)) {
           let own = unbound.get(id);
           if (!own) unbound.set(id, own = { records: [], size: 0 });
-          own.records.push(bytes.slice(at, at + size)); own.size += size;
-        } else this.freed += size;
+          own.records.push(bytes.slice(at, at + size)); own.size += 2 * size;
+        } else this.freed += 2 * size;
       } else mine.push(this.panel(bytes.subarray(at, at + size)));
       at += size;
     }
@@ -511,8 +499,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (!sub || sub.route !== null && this.failed.has(sub.route)) return null;
         const picture = this.facts.select(id, target);
         if (!picture) return null;
-        const value = picture.parts[0]!.value;
-        if (value.kind === 'answer' && answerWindow(value.answer) !== sub.rank) return null;
         const window = this.facts.window(id, target, picture);
         if (!window) return null;
         pictures.push(picture);
@@ -563,6 +549,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     due.sort((a, b) => Number(a.motion) - Number(b.motion) || a.widget.served - b.widget.served || a.widget.order - b.widget.order);
     const budget = this.host.budget ?? 10;
     const entries: Entry<B>[] = [], surfaces: (B | typeof SAME | null)[][] = [], sources: Bitmapped[] = [], slots: [number, number, number][] = [];
+    const made: { widget: Widget; selected: Selected }[] = [];
     const shared = new Map<string, number>();
     let tried = 0;
     for (const { widget, selected, motion, target } of due) {
@@ -570,7 +557,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const start = this.time();
       widget.served = this.requests;
       if (selected === 'lost') {
-        entries.push(this.entry(widget, { pictures: [], window: [-Infinity, Infinity], h: target, c: target }, { surfaces: [], fields: {}, motion: false }, 'failed', LOST, [], request.seek));
+        const lost = { pictures: [], window: [-Infinity, Infinity] as Window, h: target, c: target };
+        entries.push(this.entry(widget, lost, { surfaces: [], fields: {}, motion: false }, 'failed', LOST, [], request.seek));
+        made.push({ widget, selected: lost });
         surfaces.push([]);
         continue;
       }
@@ -586,11 +575,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       widget.motion = painted.motion;
       widget.cost = widget.cost * 0.8 + (this.time() - start) * 0.2;
-      if (painted.pending) {
-        const needs = JSON.stringify(painted.needs ?? []);
-        if (painted.needs?.length && widget.state.get('needs') !== needs) { widget.state.set('needs', needs); this.host.needs?.(widget.id, painted.needs); }
-        continue;
-      }
       if (motion) this.stats.motion++;
       const parts: (B | typeof SAME | null)[] = [];
       const entry = this.entry(widget, selected, painted, mode, reason, parts, request.seek, this.time() - start);
@@ -601,9 +585,22 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         slots.push([entries.length, k, source]);
       });
       entries.push(entry);
+      made.push({ widget, selected });
       surfaces.push(parts);
     }
-    const crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : [];
+    let crops: B[] = [];
+    try { crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : []; }
+    catch (error) {
+      const reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+      for (const e of new Set(slots.map(([e]) => e))) {
+        const { widget, selected } = made[e]!;
+        this.presented.delete(entries[e]!.id);
+        widget.sent = { ...widget.installed?.contents ?? {} };
+        entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek);
+        surfaces[e] = [];
+      }
+      slots.length = 0;
+    }
     this.stats.crops += crops.length;
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
     const resets: [number, number][] = [];
@@ -638,14 +635,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.resets.get(this.natives.get(route)!) ?? 0 };
-    const rank = widget.subs.reduce((at, sub) => Math.max(at, this.subs.get(sub)?.rank ?? 0), 0);
     const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, inspect: widget.inspect, hit: painted.hit };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), ...rank ? { rank } : {}, mode, ...reason !== undefined ? { reason } : {},
+      gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
   }
 

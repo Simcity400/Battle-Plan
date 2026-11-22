@@ -18,7 +18,6 @@ export interface MessageViews {
 export interface FollowedRows {
   kind: 'rows' | 'log' | 'changed';
   canonical: boolean;
-  window: number;
   rows: number;
   columns: number;
   views: MessageViews;
@@ -33,7 +32,7 @@ export interface FollowedRows {
   decoded: (string | undefined)[];
 }
 
-export type FollowedAnswer = { kind: 'notRecorded'; reason: string; window?: number } | FollowedRows;
+export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
 
 export interface FollowedPanel {
   data?: unknown;
@@ -79,13 +78,13 @@ export function textAt(answer: FollowedRows, at: number): string | null {
 }
 
 function body(views: MessageViews, data: DataView, start: number, end: number): FollowedAnswer {
-  const kind = data.getUint8(start), flags = data.getUint8(start + 1), window = data.getUint16(start + 2, true);
+  const kind = data.getUint8(start), flags = data.getUint8(start + 1);
   const rows = data.getUint32(start + 4, true), columns = data.getUint32(start + 8, true), count = data.getUint32(start + 12, true);
   let at = start + 16;
   if (kind === 0) {
     const table = textTable(views, at, count, end);
     if (count < 1) throw new Error('A followed answer that is not recorded gives no reason.');
-    return { kind: 'notRecorded', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)), window };
+    return { kind: 'notRecorded', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)) };
   }
   if (kind !== 1 && kind !== 2 && kind !== 3) throw new Error(`No followed answer kind ${kind}.`);
   const cells = rows * columns;
@@ -99,7 +98,7 @@ function body(views: MessageViews, data: DataView, start: number, end: number): 
   const names = at / 4; at = aligned(at + rows * 4);
   const { ends, text, next } = textTable(views, at, count, end);
   if (next !== end) throw new Error('A followed answer holds bytes past its texts.');
-  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', canonical: (flags & 1) !== 0, window, rows, columns, views, keys, values, hours, states, reasons, names,
+  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', canonical: (flags & 1) !== 0, rows, columns, views, keys, values, hours, states, reasons, names,
     ends, text, decoded: [] };
 }
 
@@ -215,8 +214,3 @@ export function parseDatedPanels(bytes: Uint8Array) {
   if (at !== bytes.length) throw new Error('Unexpected bytes after dated panels.');
   return { route, clock, seek, panels, completed };
 }
-
-export type FollowItem =
-  | { kind: 'panels'; batch: ReturnType<typeof parseDatedPanels> }
-  | { kind: 'followed'; message: FollowedMessage }
-  | { kind: 'failure'; reason: string };

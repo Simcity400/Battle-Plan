@@ -24,7 +24,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';

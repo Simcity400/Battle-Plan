@@ -304,9 +304,11 @@ fn main() {
             }
             match request.uri().path() {
                 "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
-                "/credit" => match pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<usize>().ok()) {
-                    Some(bytes) => {
-                        dashboard_follow::registry::registry().credit(bytes);
+                "/credit" => match (pull::param(&request, "session"), pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<usize>().ok())) {
+                    (Some(session), Some(bytes)) => {
+                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
+                            dashboard_follow::registry::registry().credit(epoch, bytes);
+                        }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
                     }
                     None => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its bytes"),
@@ -335,9 +337,9 @@ fn main() {
             recorder::start_recorder();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
-            viewer::host::install_follow(move |kind, payload| {
+            viewer::host::install_follow(move |kind, payload, session| {
                 if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
-                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer(payload));
+                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer(payload, session));
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {

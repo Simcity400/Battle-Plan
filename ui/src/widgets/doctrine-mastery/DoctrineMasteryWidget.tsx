@@ -17,7 +17,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { headState } from '../../dashboard/HeadState';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -43,7 +43,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   const painted = useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const offset = track?.axisOffset ?? 0;
-  const drawn = withHeld(head), holding = drawn !== head;
+  const drawn = head;
   const { data, error, retry } = drawn;
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
   const live = drawn.live;
@@ -94,7 +94,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     return trackTooltip(folder, item, numbers, date);
   }, [tracks, described.data, head.hour, live, painted, offset]);
   const spoken = (key: string) => { const shown = content(key); return shown ? tooltipText(shown) : ''; };
-  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, held: holding, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
+  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];
@@ -120,12 +120,11 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     setOption?.('folders', next.length === chips.length ? '' : next.map(setToken).join(' '));
   };
   const values = live.read();
-  return <div ref={attach} className="doctrine-mastery" data-held={holding ? 'stale' : 'current'} aria-busy={holding || undefined}>
+  return <div ref={attach} className="doctrine-mastery">
     {pill}
     {chips.length > 1 && setOption && <div className="log-chips doctrine-mastery-chips"><ChipSet label="Doctrine folders" chips={chips}
       selected={chosen.length ? chosen : chips.map(chip => chip.value)} max={chips.length} onToggle={toggle} /></div>}
-    {!data.folders.length ? holding ? <WidgetState kind="loading" label="Loading doctrines…" />
-      : <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
+    {!data.folders.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
       : <div className="doctrine-mastery-folders themed-scrollbar">{shown.map(folder => <section key={folder.id} className="doctrine-mastery-folder" aria-label={folderName(folder)}>
         <h3 className="doctrine-mastery-heading">{artNode(folder.grand?.icon)}
           <span>{folderName(folder)}</span>

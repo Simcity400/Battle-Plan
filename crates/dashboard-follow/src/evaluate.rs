@@ -2,7 +2,7 @@
 use crate::{
     answer::{self, State, Table},
     invalid,
-    query::{Query, RankWindow, Rows, TagRow, Tags, tags_at},
+    query::{Query, Rows, TagRow, Tags, tags_at},
     table_name, table_words,
 };
 use playhead::lane::Lane;
@@ -153,15 +153,14 @@ impl Ranking {
         self.sorted.len() * (32 + 16) + self.slots.capacity() * 48 + (self.order.capacity() + self.dirty.capacity()) * 4
     }
 
-    #[expect(clippy::too_many_arguments, reason = "a ranked write reads its query, lane, changes, holders, window and reasons and writes one table")]
-    pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, window: Option<&RankWindow>, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
+    pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
         let Query::Series { series, countries: names, top: Some(n), least, parts: false, .. } = query else { return None };
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
         if let Some(reason) = reasons.unrecorded(lane) {
             self.clear();
-            answer::not_recorded_in(&reason, window.map_or(0, |window| window.version), out);
+            answer::not_recorded(&reason, out);
             return Some(0);
         }
         self.dirty.clear();
@@ -195,63 +194,24 @@ impl Ranking {
             self.sorted.insert(ranked);
             self.slots.insert(slot, ranked);
         }
-        let need = window.map_or(*n, |window| window.from.saturating_add(window.count).min(*n));
-        let from = window.map_or(0, |window| window.from.min(need));
-        let absent = |limit: usize| -> Vec<(i64, u32, u128)> {
-            if !series.absent_none { return Vec::new(); }
+        table.clear(1, false);
+        let mut top: Vec<(i64, u32, u128)> = self.sorted.iter().take(*n).copied().collect();
+        if series.absent_none {
             let held: HashSet<u128> = cells.rows().filter_map(|slot| cells.key(slot)).collect();
             let zero = if *least { 0 } else { !0 };
             let mut absent: Vec<(i64, u32, u128)> = tags.by_key.iter().filter(|(key, _)| !held.contains(key)).map(|(&key, &at)| (zero, self.order[at as usize], key)).collect();
-            if absent.len() > limit && limit > 0 {
-                absent.select_nth_unstable(limit - 1);
-                absent.truncate(limit);
+            if absent.len() > *n && *n > 0 {
+                absent.select_nth_unstable(*n - 1);
+                absent.truncate(*n);
             }
-            absent
-        };
-        let mut top: Vec<(i64, u32, u128)> = self.sorted.iter().take(need).copied().collect();
-        if series.absent_none {
-            top.extend(absent(need));
+            top.extend(absent);
             top.sort_unstable();
-            top.truncate(need);
+            top.truncate(*n);
         }
-        table.clear(2, false);
-        table.window = window.map_or(0, |window| window.version);
-        let shown = |value: i64| if *least { value } else { !value };
-        for (rank, &(value, _, key)) in top.iter().enumerate().skip(from) {
+        for (value, _, key) in top {
             table.row(key);
-            table.cell(shown(value), State::Value);
-            table.cell(rank as i64, State::Value);
+            table.cell(if *least { value } else { !value }, State::Value);
             table.name(&names[tags.by_key[&key] as usize].key());
-        }
-        let extras: Vec<usize> = window.map(|window| window.countries.iter().filter_map(|country| names.iter().position(|name| name == country)).collect()).unwrap_or_default();
-        if !extras.is_empty() {
-            let mut every: Vec<(i64, u32, u128)> = self.sorted.iter().copied().collect();
-            if series.absent_none {
-                every.extend(absent(usize::MAX));
-                every.sort_unstable();
-            }
-            let windowed: HashSet<u128> = top.iter().skip(from).map(|&(.., key)| key).collect();
-            for at in extras {
-                match &tags.rows[at] {
-                    TagRow::Key(key) if windowed.contains(key) => {}
-                    TagRow::Key(key) => {
-                        table.row(*key);
-                        match every.iter().position(|&(.., held)| held == *key) {
-                            Some(rank) => {
-                                table.cell(shown(every[rank].0), State::Value);
-                                table.cell(rank as i64, State::Value);
-                            }
-                            None => table.absent(&format!("{} has no {} to rank at this hour", names[at], series.kind)),
-                        }
-                        table.name(&names[at].key());
-                    }
-                    TagRow::Absent(reason) => {
-                        table.row(0);
-                        table.absent(reason);
-                        table.name(&names[at].key());
-                    }
-                }
-            }
         }
         table.encode(out);
         Some(read)
@@ -268,12 +228,10 @@ fn by_rank(a: &(i64, u128, u32), b: &(i64, u128, u32)) -> Ordering {
     b.0.cmp(&a.0).then(a.1.cmp(&b.1))
 }
 
-#[expect(clippy::too_many_arguments, reason = "a write reads its query, lane, finder, holders, window and reasons and writes one table")]
-pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, window: Option<&RankWindow>, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
+pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
     out.clear();
-    let version = window.map_or(0, |window| window.version);
     if let Some(reason) = reasons.unrecorded(lane) {
-        answer::not_recorded_in(&reason, version, out);
+        answer::not_recorded(&reason, out);
         return;
     }
     let cells = lane.cells();
@@ -398,11 +356,9 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, wi
                 ranked.truncate(*n);
             }
             ranked.sort_unstable_by(by_tag);
-            table.clear(2, false);
-            for (rank, &(value, key, at)) in ranked.iter().enumerate() {
+            for &(value, key, at) in ranked.iter() {
                 table.row(key);
                 table.cell(value, State::Value);
-                table.cell(rank as i64, State::Value);
                 table.name(&names[at as usize].key());
             }
         }
@@ -411,7 +367,6 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, wi
             table.clear(1, false);
             let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
             for (at, tag) in tags.rows.iter().enumerate() {
-                if window.is_some_and(|window| !window.every && !window.countries.contains(&names[at])) { continue; }
                 let key = match tag {
                     TagRow::Absent(reason) => {
                         table.row(0);
@@ -437,7 +392,6 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, wi
             }
         }
     }
-    table.window = version;
     table.encode(out);
 }
 
@@ -458,7 +412,7 @@ pub fn answer_at(query: &Query, lane: &Lane) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut reasons = Reasons::default();
     reasons.learn(lane);
-    write(query, lane, &Scan::new(lane.cells()), &tags_at(query, head(lane)), None, &reasons, &mut Scratch::default(), &mut out);
+    write(query, lane, &Scan::new(lane.cells()), &tags_at(query, head(lane)), &reasons, &mut Scratch::default(), &mut out);
     Ok(out)
 }
 

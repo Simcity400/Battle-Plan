@@ -3,7 +3,6 @@ import { countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { HeadProduct } from '../../dashboard/headProduct';
 import type { NuclearArsenalReply } from '../../generated/dashboard';
-import { perfLog } from '../../shell/perf.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { createPortal } from 'react-dom';
@@ -36,8 +35,8 @@ import type { OptionValue } from '../../dashboard/options';
 import { loadProduct, useFollowedProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { followStore } from '../../dashboard/follow/connection.ts';
-import { CELL, cellNumber, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
+import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
@@ -53,13 +52,12 @@ import { SECONDARY_DASH } from '../palette.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import type { SeriesStateReply } from '../../generated/dashboard';
 import { useMeasureSeries } from '../../widgets/country-measure/measureSeries';
-import { RANK_MARGIN, followedRace, followedRowTags, rankRange, rankedTotal, rawNumber, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
+import { followedRace, followedRowTags, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
 import type { RankedLine, RankedMeasure } from './measureRaceData';
 import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
 import { PartFollows, PartsHead, usePartStates } from './PartFollows';
 import PartsBreakdown from './PartsBreakdown';
-import '../../draw/held.css';
 
 const holds = (summary: ChartSummary) => summary.buckets.some(bucket => bucket !== null && bucket.maxValue > 0);
 
@@ -113,7 +111,6 @@ export interface MeasureRaceProps extends Pick<WidgetProps, 'widget' | 'runtime'
   options: Readonly<Record<string, OptionValue>>;
   label: string; icon: IconName;
   arsenal?: HeadProduct<NuclearArsenalReply>;
-  held?: boolean;
   format: (raw: string, decimals: number) => string;
   formatValue: (value: number) => string;
   onPick?: (hour: number, tag?: string) => void;
@@ -149,7 +146,7 @@ function joinedSummaries(first: Live<ReadonlyMap<string, TiledLine> | null> | nu
   };
 }
 
-export default function MeasureRace({ arsenal, held = false, widget, runtime, active, countrySlot = null, measure, decimals, view, options, label, icon, format, formatValue, onPick, children, onWarnings, note,
+export default function MeasureRace({ arsenal, widget, runtime, active, countrySlot = null, measure, decimals, view, options, label, icon, format, formatValue, onPick, children, onWarnings, note,
   parts, split = false, details, positiveOnly = false, breakdown = true, second: secondMeasure, mix, tooltip: ownTooltip, lineTooltip, onHover, beforeChart }: MeasureRaceProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
@@ -185,9 +182,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     sticky.current = stickyMembers(sticky.current, followKey, valuedRows(answer), stickyLimit(top!));
     return TOP_ROWS + sticky.current.tags.join(',');
   }, [ranks, followKey, top]);
-  const [rankEnd, setRankEnd] = useState(RANK_MARGIN * 3);
-  const rankWindow = ranks ? { from: 0, count: Math.min(top!, rankEnd), countries: [] } : undefined;
-  const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape, undefined, rankWindow);
+  const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape);
   const followedHead = followsHead(followed) && followed.entry !== null;
   const refused = followRefusal(followed);
   const playbackHour = usePlaybackHour(runtime.clock, false);
@@ -229,7 +224,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     if (!entry || !track) return null;
     return live.current = liveRace(runtime.clock, axisOffset, hour => decorate(followedRace(entry, top != null ? null : tags, member, hour, slots, decimals, format).entries,
       partsRead && raceHead ? raceHead.values(followedTags) : undefined),
-    () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null);
+    () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null, hour => followedRace(entry, null, null, hour, 0, decimals, format).shown);
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
   useEffect(() => raceHead?.subscribe(() => live.current?.wake()), [raceHead]);
   const rankRequest = !arsenal && racing && track && !following && (top != null || asked) ? {
@@ -381,29 +376,17 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
 
   const attachRoot = useCallback((element: HTMLDivElement | null) => { setRoot(element); anchor.current = element; arsenal?.root(element); }, [arsenal?.root]);
   if (pinnedParts || view === 'mix') {
-    return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}
+    return <div className="parts-race" ref={attachRoot}>{follows}
       {pinnedParts && countrySlot && track ? createPortal(<DatedCountryChip label={breakdownTag ? headerLabels.labelAt(breakdownHour)(breakdownTag) : null}
         hour={breakdownHour} live={breakdownFollows ? headDate : undefined} reason={breakdownTag ? null : 'Choose a country in the widget settings.'} />, countrySlot) : null}
       {!track ? state : !breakdownTag ? <WidgetState kind="empty" icon={icon} message="Choose a country in the widget settings." /> : breakdownOf(breakdownTag, false)}
       {children}
     </div>;
   }
-  const present = !arsenal && perfLog && widget.kind === 'nuclear-arsenal' ? () => {
-    const [rankHour, reads] = ranked.data && ranked.moment ? JSON.parse(ranked.moment) : [];
-    const at = entry ? entry.answer ? entry.through : null : rankHour ?? reads?.[0]?.hour ?? null;
-    const head = following ? runtime.clock.positionAt() : moment - axisOffset;
-    perfLog?.present(widget.id, 'nuclear-arsenal', at === null ? null : { since: at - axisOffset, through: at - axisOffset }, head, 'race');
-  } : undefined;
-  const remoteRows = useMemo(() => {
-    if (!ranks || !entry || entry.answer?.kind !== 'rows') return undefined;
-    const answer = entry.answer, values = Array.from({ length: answer.rows }, (_, row) => rawNumber(cellNumber(answer, row * answer.columns) ?? cellValue(answer, row * answer.columns), decimals));
-    return { total: rankedTotal(answer.rows, Math.min(top!, rankEnd), top!), offset: 0, min: Math.min(0, ...values), max: Math.max(0, ...values), owner: entry.id,
-      onRange: (first: number, count: number) => setRankEnd(end => { const wanted = rankRange(first, count); return wanted === end ? end : wanted; }) };
-  }, [ranks, entry, entry?.answer, top, rankEnd, decimals]);
   const race = (visible: boolean) => <CountryRaceView arsenal={arsenal && { ...selection, exactRead: arsenal.exactRead, offset: axisOffset, follow: arsenal.workerFollow, reply: arsenal.workerFollow === undefined ? arsenal.data : undefined,
-      asked: following && arsenal.workerFollow === undefined, fixed: following ? undefined : moment - axisOffset }} runtime={runtime} track={track} active={active && visible} state={state} present={present} options={options}
+      fixed: following ? undefined : moment - axisOffset }} runtime={runtime} track={track} active={active && visible} state={state} options={options}
     view={lineMix ? 'mix' : raceView ?? 'race'} extent={extent} playhead={playhead}
-    moment={moment} slots={slots} ranked={entries} liveRanked={liveRanked ?? undefined} lines={lines} remoteRows={remoteRows}
+    moment={moment} slots={slots} ranked={entries} liveRanked={liveRanked ?? undefined} lines={lines}
     countryTags={arsenal ? entries.map(row => row.tag) : raceLookTags(raceView === 'race', liveRanked ? followedTags : null, lineTags)}
     mix={mixing ? { tag: mixing.tag, lines } : null} lineTooltip={lineTooltip} beforeChart={beforeChart}
     label={label} empty={`No ${label.toLowerCase()} recorded on ${dayLabel(moment)}.`} formatValue={formatValue}
@@ -416,9 +399,9 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     presentation={{ exact: true, held: false, lineColourHours: 'labels', windowedLegend: true, linePadding: CHART_LAYOUT.countryEndLabels,
       raceEmptyState: false, resetTimeView: true }}
     tooltip={tooltip} />;
-  if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}{race(true)}{children}</div>;
+  if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
-  return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}
+  return <div className="parts-race" ref={attachRoot}>{follows}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={drillTitle}
       day={dayLabel(breakdownHour)} following={drill.follow} canFollow={following}
       returnFocus=".country-race-chart canvas" onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}

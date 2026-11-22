@@ -1,4 +1,4 @@
-import { textAt } from './message.ts';
+import { parseAnswer, textAt } from './message.ts';
 import type { FollowedAnswer, FollowedRows } from './message';
 
 const NO_TEXT = 0xffff_ffff;
@@ -41,12 +41,17 @@ function add(texts: Texts, text: string): number {
   return at;
 }
 
-export function mergeChanged(base: FollowedAnswer, changed: FollowedRows): Uint8Array {
+export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, held = Infinity): Uint8Array {
   if (base.kind !== 'rows') throw new Error('Changed rows arrived for an answer that is not a whole table.');
   if (changed.columns !== base.columns) throw new Error(`Changed rows of ${changed.columns} columns for an answer of ${base.columns}`);
   if (!changed.canonical || !base.canonical) throw new Error('Changed rows arrived out of key order: they are merged only by walking keys.');
+  const merged = merge(base, changed, base.ends.length - 1 > base.rows * 2 + 16);
+  return merged.length > held ? merge(parseAnswer(merged) as FollowedRows, { ...changed, rows: 0 }, true) : merged;
+}
+
+function merge(base: FollowedRows, changed: FollowedRows, compact: boolean): Uint8Array {
   const { rows, columns } = base, cells = rows * columns;
-  const { texts, reasons, names } = textsOf(base, base.ends.length - 1 > rows * 2 + 16);
+  const { texts, reasons, names } = textsOf(base, compact);
   const values = new BigInt64Array(base.views.i64.buffer, base.views.i64.byteOffset + base.values * 8, cells).slice();
   const states = base.views.u8.slice(base.states, base.states + cells);
   let at = 0;
@@ -65,7 +70,7 @@ export function mergeChanged(base: FollowedAnswer, changed: FollowedRows): Uint8
   const statesAt = 16 + rows * 16 + cells * 8, reasonsAt = aligned(statesAt + cells), namesAt = aligned(reasonsAt + rows * 4), endsAt = aligned(namesAt + rows * 4);
   const textsAt = aligned(endsAt + (count + 1) * 4), size = aligned(textsAt + baseBytes + added);
   const out = new Uint8Array(size), data = new DataView(out.buffer);
-  data.setUint8(0, 1); data.setUint8(1, 1); data.setUint16(2, changed.window, true);
+  data.setUint8(0, 1); data.setUint8(1, 1);
   data.setUint32(4, rows, true); data.setUint32(8, columns, true); data.setUint32(12, count, true);
   out.set(base.views.u8.subarray(base.keys * 8, base.keys * 8 + rows * 16), 16);
   new BigInt64Array(out.buffer, 16 + rows * 16, cells).set(values);

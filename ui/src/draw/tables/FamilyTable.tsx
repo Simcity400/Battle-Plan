@@ -54,8 +54,6 @@ export interface FamilyTableProps {
   onHover: (row: string | null, at?: { x: number; y: number }, drawn?: TableReading) => void;
   exactRows?: ExactRows;
   headerSlot: HTMLElement | null;
-  onRange?: (first: number, count: number) => void;
-  total?: number;
 }
 
 const OVERSCAN = 4;
@@ -72,7 +70,7 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
 }
 
 export default function FamilyTable({ label, className, clock, offset, columns: specs, rows, settings, onSettings, live, reply, follow, sources,
-  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot, onRange, total }: FamilyTableProps) {
+  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot }: FamilyTableProps) {
   const body = useRef<HTMLDivElement>(null), widget = measuredWidget() ?? undefined;
   const [width, setWidth] = useState(0), [scrollLeft, setScrollLeft] = useState(0);
   const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
@@ -99,8 +97,6 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     }));
   }, []);
   const rebind = useRef<() => void>(() => {});
-  const ranged = useRef(onRange), totalRows = useRef(total);
-  ranged.current = onRange; totalRows.current = total;
   const readMirror = useCallback(() => { ++mirrorAsked.current; rebind.current(); }, []);
   const rowHeight = ROW_HEIGHT[settings.density];
   useLayoutEffect(() => {
@@ -109,7 +105,6 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       const first = Math.max(0, Math.floor(node.scrollTop / rowHeight) - OVERSCAN), count = Math.ceil(node.clientHeight / rowHeight) + OVERSCAN * 2;
       if (view.current.first === first && view.current.count === count) return;
       view.current = { first, count };
-      ranged.current?.(first, count);
       readMirror();
     };
     const observer = new ResizeObserver(update);
@@ -202,7 +197,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
         drawnCount.current = rows.count;
         accessible.current?.setAttribute('aria-rowcount', String(rows.count + 1));
         if (rows.empty) accessible.current?.setAttribute('aria-description', rows.empty); else accessible.current?.removeAttribute('aria-description');
-        extent.style.height = `${Math.max(node.clientHeight, rowSize() * Math.max(rows.count, totalRows.current ?? 0))}px`;
+        extent.style.height = `${Math.max(node.clientHeight, rowSize() * rows.count)}px`;
       }
       const widths = shown.fields.widths as Record<string, number> | undefined;
       if (widths) {
@@ -250,7 +245,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       const exact = await latest.current.exactRows?.(hour);
       if (!exact) return null;
       const rows = auditRows(exact.rows, shownColumns.current, exact.values, hour, exact.empty);
-      return { values: new Map(rows.map(row => [row.key, row.value])) };
+      return { values: new Map(rows.map(row => [row.key, row.value])), ordered: true };
     });
     return () => pipeline.audit(pipe, null);
   }, [pipeline, pipe, auditable]);

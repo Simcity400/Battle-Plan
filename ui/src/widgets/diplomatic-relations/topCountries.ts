@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import type { RefObject } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import type { FollowQuery } from '../../dashboard/follow/store';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { resolveWindow } from '../../dashboard/model';

@@ -9,6 +9,7 @@ import type { LiveMap } from '../../draw/views/fields';
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
 export const FollowedWidgetKey = createContext<string | null>(null);
+export const FollowedCard = createContext<Element | null>(null);
 
 export interface FollowStore { readonly client: DashboardClient; readonly source: DashboardSource; readonly clock: PlaybackController; readonly offset: number }
 
@@ -63,9 +64,3 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
 
 export const shownThrough = (entry: FollowEntry): number | null => entry.answer === undefined && entry.panel === undefined ? null : entry.through;
 
-export function queryBranch(query: FollowQuery): string | null {
-  const branch = query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId;
-  return typeof branch === 'string' ? branch : null;
-}
-
-export const watchEntry = (entry: FollowEntry, changed: () => void) => entry.subscribe(changed);

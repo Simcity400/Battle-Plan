@@ -29,7 +29,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { powerDecimals } from '../../dashboard/powerDecimals';
 import { useIdentityHour } from '../../dashboard/atHead.ts';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
