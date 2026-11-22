@@ -13,8 +13,12 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
         assert!(status.success());
         return;
     }
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     for ordinal in [1, 2] {
         let completed = &shared.frames.slot(index).completed;
         completed.store(99, Ordering::Release);
@@ -73,11 +77,22 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    failure::reset();
-    let _hook = PanicHook::install();
-    let shared = Shared::new(0, 0, 1);
-    let interrupted = shared.frames.pop().unwrap();
-    let queued = shared.frames.pop().unwrap();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
+    let _hook =
+    // SAFETY: The runtime owns the process hook until all workers exit, or the fixture owns it in
+    // isolation.
+    unsafe { PanicHook::install() };
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let interrupted =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
+    let queued =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     let frame = unsafe { &mut *shared.frames[interrupted].load(Ordering::Acquire) };
     frame.world_generation = 12;
     frame.clock = Some(engine_native::cgame_state::Clock {
@@ -94,12 +109,17 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
     job.force_full = true;
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         failure::worker(|| {
-            failure::fail_at("air copies");
+            // SAFETY: The test fixture exclusively owns this panic injection.
+            unsafe { failure::fail_at("air copies") };
             process_owned_job(&shared, job, &mut AirBasesMemo::default());
         });
     }))
     .unwrap_err();
-    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        None
+    );
     assert_eq!(
         shared
             .frames
@@ -133,7 +153,11 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
             bare_job(queued, 75, 100, 19),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.frames.pop_ready(), Some(queued));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(queued)
+        );
         failure::stage("drain progress", None);
         panic!("later drain failure");
     }))
@@ -148,7 +172,9 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
             .load(Ordering::Acquire),
         0
     );
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
 }
 
 #[test]
@@ -156,10 +182,19 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    failure::reset();
-    let _hook = PanicHook::install();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().unwrap();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
+    let _hook =
+    // SAFETY: The runtime owns the process hook until all workers exit, or the fixture owns it in
+    // isolation.
+    unsafe { PanicHook::install() };
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         failure::worker(|| {
             let _ = std::panic::catch_unwind(|| panic!("contained inner panic"));
@@ -169,7 +204,12 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
                 bare_job(index, 3, 4, 5),
                 &mut AirBasesMemo::default(),
             );
-            assert_eq!(shared.frames.pop_ready(), Some(index));
+            assert_eq!(
+                // SAFETY: The sole spool consumer takes responsibility for the decoded slot until
+                // recycle.
+                unsafe { shared.frames.pop_ready() },
+                Some(index)
+            );
             panic!("after handoff");
         });
     }))
@@ -182,7 +222,9 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
     );
     assert!(!first.contains("contained inner panic"), "{first}");
     assert!(!first.contains("seq=3"), "{first}");
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
 }
 
 #[test]
@@ -196,7 +238,9 @@ fn decode_join_preserves_string_and_opaque_payloads_without_running_their_drop()
             panic!("panic payload destructor must not run");
         }
     }
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
     assert!(
         failure::joined(
             Box::new(String::from("owned panic reason")),
@@ -204,11 +248,15 @@ fn decode_join_preserves_string_and_opaque_payloads_without_running_their_drop()
         )
         .contains("owned panic reason")
     );
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
     assert!(
         failure::joined(Box::new(Payload), "worker failed").contains("non-string panic payload")
     );
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
 }
 
 #[test]
@@ -216,29 +264,50 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    failure::reset();
-    let _hook = PanicHook::install();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().unwrap();
-    push(&shared, bare_job(index, 10, 20, 30));
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
+    let _hook =
+    // SAFETY: The runtime owns the process hook until all workers exit, or the fixture owns it in
+    // isolation.
+    unsafe { PanicHook::install() };
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
+    // SAFETY: The decode consumer is returning a job for its original slot before releasing the
+    // slot.
+    unsafe { push(&shared, bare_job(index, 10, 20, 30)) };
     assert!(sampling::SHARED.load(Ordering::Acquire).is_null());
     assert!(WORKER.lock().unwrap().is_none());
     *WORKER.lock().unwrap() = Some(std::thread::spawn(|| {
         failure::worker(|| panic!("original worker failure"));
     }));
     sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
-    let first = detach_drain(|_| panic!("later detach progress failure")).unwrap_err();
-    let later = detach_drain(|_| unreachable!());
+    let first =
+    // SAFETY: Hourly admission is closed and capture is quiet before this decode drain.
+    unsafe { detach_drain(|_| panic!("later detach progress failure")) }.unwrap_err();
+    let later =
+    // SAFETY: Hourly admission is closed and capture is quiet before this decode drain.
+    unsafe { detach_drain(|_| unreachable!()) };
     sampling::SHARED.store(std::ptr::null_mut(), Ordering::Release);
     assert!(first.contains("original worker failure"), "{first}");
     assert!(!first.contains("later detach progress failure"), "{first}");
     assert_eq!(later, Err(first));
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         30
     );
-    failure::reset();
+    // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the panic
+    // witness.
+    unsafe { failure::reset() };
 }
 
 #[test]
@@ -391,8 +460,12 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled frame");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled frame");
     RELATIONS_JOB_POOL.lock().unwrap().clear();
     CHARACTERS_JOB_POOL
         .lock()
@@ -462,10 +535,18 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     recycle_lexical_job(LexicalJob::default());
     let retirement = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert_eq!(retirement.len(), 1);
-    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        None
+    );
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
     assert!(retirement.is_empty());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         17
@@ -547,8 +628,12 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
         ]
     };
     let idle_pools = daily_pool_lengths();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame
         .extended
@@ -558,16 +643,34 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert!(retired.is_empty());
     for hour in [4, 5, 19] {
-        let mut job = bare_job(index, next_seq(), hour, 29);
+        let mut job = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            hour,
+            29,
+        );
         job.force_full = true;
-        assert!(enqueue(&shared, job).is_none());
+        assert!(
+            // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+            unsafe { enqueue(&shared, job) }.is_none()
+        );
         process_owned_job(
             &shared,
-            pop(&shared).expect("queued skipped frame"),
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { pop(&shared) }.expect("queued skipped frame"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.frames.pop_ready(), Some(index));
-        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            None
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             29
@@ -600,8 +703,12 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         engine_native::country_memory::Cache::try_with_capacity(16).unwrap(),
     )
     .unwrap();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     for (hour, force_full, parts, economy) in [
         (0, false, [false, false], [true, false]),
         (3, false, [false, true], [true, false]),
@@ -659,14 +766,26 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
             retired.len(),
             owned.into_iter().filter(|&active| active).count()
         );
-        assert!(enqueue(&shared, bare_job(index, next_seq(), hour, 31)).is_none());
+        assert!(
+            // SAFETY: This fixture owns the frame and its decode sequence.
+            unsafe { enqueue(&shared, bare_job(index, next_seq(), hour, 31),) }.is_none()
+        );
         process_owned_job(
             &shared,
-            pop(&shared).expect("queued retirement boundary"),
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { pop(&shared) }.expect("queued retirement boundary"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.frames.pop_ready(), Some(index));
-        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            None
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             31
@@ -829,8 +948,12 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let characters = [true, false, false, true, false, true];
     let relations = [false, true];
@@ -845,7 +968,13 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     frame.extended.air_bases_pilot().prepare_hour(0, false);
     frame.extended.naval_pilot().prepare_hour(0, false);
     frame.extended.radar_pilot().prepare_hour(0, false);
-    let mut job = bare_job(index, next_seq(), 21, 37);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        21,
+        37,
+    );
     job.force_full = true;
     job.characters_refresh = [true, false, false, false];
     job.relations_refresh = true;
@@ -853,8 +982,16 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     job.air_bases_refresh = true;
     job.naval_refresh = true;
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
-    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        None
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         37
@@ -904,7 +1041,9 @@ fn missing_division_payload_publishes_hourly_census_reason_even_without_details(
             panic!("missing division payload must not retry native reads");
         }
     }
-    let mut frame = sampling::Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { sampling::Captured::new() };
     for details_active in [false, true] {
         frame.extended.reset();
         let hour = (0..24)
@@ -1001,10 +1140,15 @@ fn projects_gate_matches_their_daily_slot_and_force_full() {
 
 #[test]
 fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let mut indices = Vec::new();
     for _ in 0..4 {
-        indices.push(shared.frames.pop().expect("pooled buffer"));
+        indices.push(
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { shared.frames.pop() }.expect("pooled buffer"),
+        );
     }
     for (order, index) in indices.iter().enumerate() {
         shared
@@ -1060,23 +1204,35 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
             weather_payload: None,
             capitulation_payload: None,
         };
-        push(&shared, job);
+        // SAFETY: The decode consumer is returning a job for its original slot before releasing
+        // the slot.
+        unsafe { push(&shared, job) };
     }
     let mut handed = Vec::new();
-    while let Some(job) = pop(&shared) {
+    while let Some(job) =
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }
+    {
         let index = job.index;
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
         handed.push(index);
     }
     assert_eq!(handed, indices);
     for index in indices {
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             7
         );
     }
-    assert!(shared.frames.pop_ready().is_none());
+    assert!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() }.is_none()
+    );
 }
 
 #[test]
@@ -1088,8 +1244,12 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = relations_test_kit::opinionated_fixture();
     let memory = relations_test_kit::memory(&bytes);
-    let shared = Shared::new(relations_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(relations_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let direct = relations_test_kit::direct(&memory, 2, 2);
     let (report, first) = relations_test_kit::split(&memory, frame.extended.relations_pilot());
@@ -1102,7 +1262,9 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 1,
         relations_refresh: true,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -1148,7 +1310,11 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         17
@@ -1169,8 +1335,12 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
     reset_for_test();
     let bytes = kit::opinionated_fixture();
     let memory = kit::memory(&bytes);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     for opinions_active in [false, true, false] {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.relations_pilot();
@@ -1198,12 +1368,22 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
             assert_eq!(report.raw_bytes[0], 0);
         }
         captured.relations_raw_mode = true;
-        let mut job = bare_job(index, next_seq(), 23, 35);
+        let mut job = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            23,
+            35,
+        );
         job.force_full = true;
         job.relations_refresh = true;
         job.relations_payload = Some(payload);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             35
@@ -1225,8 +1405,12 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = characters_test_kit::mapped_fixture();
     let memory = characters_test_kit::memory(&bytes);
-    let shared = Shared::new(characters_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(characters_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = collector_characters::extended::characters::Capacities {
         rows: [4096; collector_characters::extended::characters::N],
@@ -1265,7 +1449,9 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 0,
         relations_refresh: false,
         characters_refresh: [true, false, false, false],
@@ -1311,7 +1497,11 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         19
@@ -1342,8 +1532,12 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let capacities = characters::Capacities {
         rows: [4096; collector_characters::extended::characters::N],
         bytes: [131_072; collector_characters::extended::characters::N],
@@ -1360,7 +1554,13 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         captured.set_character_activity([true; collector_characters::extended::characters::N]);
         captured.raw_active = [true; collector_characters::extended::characters::N];
         captured.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
-        let mut job = bare_job(index, next_seq(), 0, 37);
+        let mut job = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            0,
+            37,
+        );
         job.characters_refresh = [true; CHARACTER_PARTS];
         for (part, payload) in job.characters_payload.iter_mut().enumerate() {
             if part == missing {
@@ -1385,8 +1585,16 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         expected.fail_character_tables(missing_mask, MISSING_PAYLOAD_REASON);
         drop(bytes);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.frames.pop_ready(), Some(index));
-        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            None
+        );
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_matches_direct(frame.extended.characters_pilot(), &expected);
         assert_eq!(
@@ -1409,8 +1617,12 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     reset_for_test();
     let bytes = kit::mapped_fixture();
     let memory = kit::memory(&bytes);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let capacities = characters::Capacities {
         rows: [4096; collector_characters::extended::characters::N],
         bytes: [131_072; collector_characters::extended::characters::N],
@@ -1442,12 +1654,22 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
         }
         frame.extended.characters_pilot().raw_active =
             [true; collector_characters::extended::characters::N];
-        let mut job = bare_job(index, next_seq(), 23, 39);
+        let mut job = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            23,
+            39,
+        );
         job.force_full = !force_full;
         job.characters_refresh = [true, false, false, false];
         job.characters_payload = [Some(payload), None, None, None];
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             39
@@ -1479,8 +1701,12 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = projects_test_kit::fixture();
     let memory = projects_test_kit::memory(&bytes);
-    let shared = Shared::new(projects_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(projects_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = collector_projects::projects::Capacities {
         rows: [256; collector_projects::projects::N],
@@ -1511,7 +1737,9 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 3,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -1557,7 +1785,11 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         23
@@ -1576,8 +1808,12 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let memory = lexical_test_kit::KitMemory::fixture();
-    let shared = Shared::new(lexical_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(lexical_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = collector_lexical::lexical::Capacities {
         rows: 256,
@@ -1599,7 +1835,9 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 3,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -1645,7 +1883,11 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         29
@@ -1664,8 +1906,12 @@ fn worker_preserves_already_typed_wars_rows() {
     reset_for_test();
     let bytes = wars_test_kit::fixture();
     let memory = wars_test_kit::memory(&bytes);
-    let shared = Shared::new(wars_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(wars_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let direct = wars_test_kit::direct(&memory, 2);
     {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1681,7 +1927,9 @@ fn worker_preserves_already_typed_wars_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 41,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -1727,7 +1975,11 @@ fn worker_preserves_already_typed_wars_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         43
@@ -1747,8 +1999,12 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = divisions_test_kit::fixture();
     let memory = divisions_test_kit::memory(&bytes);
-    let shared = Shared::new(divisions_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(divisions_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let direct = divisions_test_kit::direct(&memory, [64; 6]);
     let ctx = DivisionsCopyContext {
         base: divisions_test_kit::BASE,
@@ -1773,7 +2029,9 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 42,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -1819,7 +2077,11 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         47
@@ -1886,8 +2148,12 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     reset_for_test();
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let skipped = Outcome::Unavailable {
         reason: replay_data::cadence::SKIPPED_REASON,
@@ -1914,18 +2180,36 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     let report = copy_divisions_worker_refresh(&memory, context, &mut payload);
     assert!(report.raw_ok);
     assert_eq!(report.copy_ticks[1..], [0; 5]);
-    let mut job = bare_job(index, next_seq(), 2, 43);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        2,
+        43,
+    );
     job.force_full = true;
     job.divisions_refresh = true;
     job.divisions_payload = Some(payload);
-    assert!(enqueue(&shared, job).is_none());
+    assert!(
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { enqueue(&shared, job) }.is_none()
+    );
     process_owned_job(
         &shared,
-        pop(&shared).expect("queued core payload"),
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }.expect("queued core payload"),
         &mut AirBasesMemo::default(),
     );
-    assert_eq!(shared.frames.pop_ready(), Some(index));
-    assert_eq!(shared.frames.pop_ready(), None);
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        None
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         43
@@ -1988,8 +2272,12 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len().max(1);
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     for (active_hour, reject_context) in [(2, false), (26, true)] {
@@ -2018,16 +2306,30 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             ),
             [0; collector_production::production::N]
         );
-        let mut active = bare_job(index, next_seq(), active_hour, 41);
+        let mut active = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            active_hour,
+            41,
+        );
         active.divisions_refresh = true;
         active.divisions_payload = Some(payload);
-        assert!(enqueue(&shared, active).is_none());
+        assert!(
+            // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+            unsafe { enqueue(&shared, active) }.is_none()
+        );
         process_owned_job(
             &shared,
-            pop(&shared).expect("queued active details"),
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { pop(&shared) }.expect("queued active details"),
             &mut AirBasesMemo::default(),
         );
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert!(shared.frames.ready_is_empty());
         assert_eq!(DIVISIONS_JOB_POOL.lock().unwrap().len(), pool_len);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2150,7 +2452,13 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         );
         assert!(retired.is_empty());
 
-        let mut failed = bare_job(index, next_seq(), hour, 43);
+        let mut failed = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            hour,
+            43,
+        );
         if reject_context {
             frame.divisions_result = Outcome::Unavailable { reason: failure };
             recycle_divisions_job(payload);
@@ -2160,16 +2468,28 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         }
         assert_eq!(retired.len(), usize::from(reject_context));
         assert_eq!(DIVISIONS_JOB_POOL.lock().unwrap().len(), pool_len - 1);
-        assert!(enqueue(&shared, failed).is_none());
+        assert!(
+            // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+            unsafe { enqueue(&shared, failed) }.is_none()
+        );
         let decoding = read_accounting::Capture::new();
         process_owned_job(
             &shared,
-            pop(&shared).expect("queued failed core"),
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { pop(&shared) }.expect("queued failed core"),
             &mut AirBasesMemo::default(),
         );
         assert_eq!(decoding.finish(), read_accounting::ZERO);
-        assert_eq!(shared.frames.pop_ready(), Some(index));
-        assert_eq!(shared.frames.pop_ready(), None);
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            None
+        );
         assert!((shared.frames.decode_len() == 0));
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
@@ -2223,8 +2543,12 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let saved = std::mem::take(&mut *AIR_STATS_JOB_POOL.lock().unwrap());
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled frame");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled frame");
     let context = AirStatsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
@@ -2262,13 +2586,27 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
             payload.log.bytes.capacity(),
         ));
         drop(bytes);
-        assert_eq!(shared.frames.pop_ready(), None);
-        let mut job = bare_job(index, next_seq(), 0, step as i64 + 1);
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            None
+        );
+        let mut job = bare_job(
+            index,
+            // SAFETY: Only the admitted hour advances this session's decode sequence.
+            unsafe { next_seq() },
+            0,
+            step as i64 + 1,
+        );
         job.force_full = true;
         job.air_stats_refresh = true;
         job.air_stats_payload = Some(payload);
         process_owned_job(&shared, job, &mut AirBasesMemo::default());
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_captured_matches_direct(frame.extended.air_stats_pilot(), &direct);
         assert_eq!(AIR_STATS_JOB_POOL.lock().unwrap().len(), 1);
@@ -2285,8 +2623,12 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = wing_test_kit::fixture();
     let memory = wing_test_kit::memory(&bytes);
-    let shared = Shared::new(wing_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(wing_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let direct = wing_test_kit::direct(&memory);
     let ctx = AirWingCopyContext {
         base: wing_test_kit::BASE,
@@ -2307,7 +2649,9 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 9,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2353,7 +2697,11 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         air_stats_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         31
@@ -2372,8 +2720,12 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = stats_test_kit::fixture();
     let memory = stats_test_kit::memory(&bytes);
-    let shared = Shared::new(stats_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(stats_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let mut capacities = collector_air::extended::air::Capacities::default();
     capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
@@ -2394,7 +2746,9 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 9,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2440,7 +2794,11 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         59
@@ -2461,8 +2819,12 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     reset_for_test();
     let bytes = naval_test_kit::fixture();
     let memory = naval_test_kit::memory(&bytes);
-    let shared = Shared::new(naval_test_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(naval_test_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let direct = naval_test_kit::direct(&memory);
     let ctx = NavalCopyContext {
         base: naval_test_kit::BASE,
@@ -2484,7 +2846,9 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 9,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2530,7 +2894,11 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         37
@@ -2606,8 +2974,12 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         base: kit::BASE,
         bytes: &bytes,
     };
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let direct = kit::direct(&memory, &kit::capacities());
     let ctx = ProductionRestCopyContext {
@@ -2627,7 +2999,9 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 11,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2673,7 +3047,11 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         31
@@ -2697,8 +3075,12 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         base: kit::BASE,
         bytes: &bytes,
     };
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     *frame.extended.construction_rest_pilot() =
         collector_construction::construction::Captured::with_capacities(&kit::capacities());
@@ -2721,7 +3103,9 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 12,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2767,7 +3151,11 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         37
@@ -2820,8 +3208,12 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     );
     assert!(naval_report.raw_ok);
     assert_eq!(air_kit::BASE, naval_kit::BASE);
-    let shared = Shared::new(air_kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(air_kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -2830,7 +3222,9 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
-        seq: next_seq(),
+        seq:
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
         hour: 9,
         relations_refresh: false,
         characters_refresh: [false; CHARACTER_PARTS],
@@ -2876,7 +3270,11 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         capitulation_payload: None,
     };
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         53
@@ -2957,8 +3355,12 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
     let mut bytes = kit::fixture();
     let mut capacities = Capacities::default();
     capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let mut bases_memo = AirBasesMemo::default();
     for (step, hour) in [5, 29, 30, 53, 77, 101, 125, 149].into_iter().enumerate() {
         let mut job = bare_job(index, step as u64 + 1, hour, 41);
@@ -2996,7 +3398,11 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             captured.fail_air_stats_capture(replay_data::cadence::SKIPPED_REASON);
         }
         process_test_job(&shared, &mut job, &mut bases_memo);
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             41
@@ -3033,8 +3439,12 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     let reference = kit::direct(&kit::memory(&bytes));
     let mut capacities = Capacities::default();
     capacities.rows[1] = reference.bases_outcome.len();
@@ -3069,7 +3479,11 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
             job.air_bases_payload = Some(payload);
         }
         process_test_job(&shared, &mut job, &mut memo);
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert_eq!(
             shared.frames.slot(index).completed.load(Ordering::Acquire),
             41
@@ -3105,8 +3519,12 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -3124,11 +3542,21 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     frame.extended.air_bases_pilot().bases_raw_mode = true;
     frame.extended.radar_pilot().registrations_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 41);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        7,
+        41,
+    );
     job.air_bases_refresh = true;
     job.air_bases_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         41
@@ -3165,8 +3593,12 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -3185,11 +3617,21 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     );
     assert!(report.raw_ok);
     frame.extended.supremacy_pilot().supremacy_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 53);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        7,
+        53,
+    );
     job.supremacy_refresh = true;
     job.supremacy_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         53
@@ -3216,8 +3658,12 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -3236,11 +3682,21 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     );
     assert!(report.raw_ok);
     frame.extended.sunk_pilot().sunk_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 59);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        7,
+        59,
+    );
     job.sunk_refresh = true;
     job.sunk_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         59
@@ -3274,8 +3730,12 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -3290,11 +3750,21 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
     let report = collector_air::extended::fog::copy_radar_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.radar_pilot().radar_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 61);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        7,
+        61,
+    );
     job.radar_refresh = true;
     job.radar_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         61
@@ -3318,8 +3788,12 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
-    let shared = Shared::new(kit::BASE, 0, 1);
-    let index = shared.frames.pop().expect("pooled buffer");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(kit::BASE, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled buffer");
     shared
         .frames
         .slot(index)
@@ -3336,11 +3810,21 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     );
     assert!(report.raw_ok);
     frame.extended.intel_pilot().intel_raw_mode = true;
-    let mut job = bare_job(index, next_seq(), 7, 67);
+    let mut job = bare_job(
+        index,
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { next_seq() },
+        7,
+        67,
+    );
     job.intel_refresh = true;
     job.intel_payload = Some(first);
     process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         67
@@ -3401,26 +3885,51 @@ fn a_reserved_job_publishes_in_place_and_an_unpublished_one_returns_vacant() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled frame");
-    let mut reserved = reserve(&shared, index);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled frame");
+    let mut reserved =
+    // SAFETY: The capture path holds this installed slot exclusively before publishing its decode
+    // job.
+    unsafe { reserve(&shared, index) };
     reserved.job().players_payload = Some(PlayersJob::new());
     reserved.job().seq = 5;
     drop(reserved);
-    assert!(reserve(&shared, index).job().players_payload.is_none());
-    let mut reserved = reserve(&shared, index);
+    assert!(
+        // SAFETY: The capture path holds this installed slot exclusively before publishing its decode
+        // job.
+        unsafe { reserve(&shared, index) }
+            .job()
+            .players_payload
+            .is_none()
+    );
+    let mut reserved =
+    // SAFETY: The capture path holds this installed slot exclusively before publishing its decode
+    // job.
+    unsafe { reserve(&shared, index) };
     let job = reserved.job();
     job.index = index;
     job.seq = 9;
     job.hour = 4;
     job.players_payload = Some(PlayersJob::new());
-    assert!(enqueue_reserved(&shared, reserved));
+    assert!(
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { enqueue_reserved(&shared, reserved) }
+    );
     assert_eq!(shared.frames.decode_len(), 1);
-    let job = pop(&shared).expect("published job");
+    let job =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { pop(&shared) }.expect("published job");
     assert_eq!((job.index, job.seq, job.hour), (index, 9, 4));
     assert!(job.players_payload.is_some());
     assert_eq!(shared.frames.decode_len(), 0);
-    assert!(pop(&shared).is_none());
+    assert!(
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }.is_none()
+    );
 }
 
 fn air_slot(table: replay_data::rows::TableId) -> usize {
@@ -3446,10 +3955,14 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     changes::enabled(true);
     changes::project_hooks_enabled(true);
     collector_memory::terminal::reset();
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let memory = kit::Fixture::new(0x1000, 7);
     let leases = (0..shared.frames.len())
-        .map(|_| shared.frames.pop().unwrap())
+        .map(|_|
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { shared.frames.pop() }.unwrap())
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for (&index, seed) in leases[..2].iter().zip([7, 9]) {
@@ -3459,10 +3972,13 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         kit::acquire(frame.extended.projects_pilot(), &memory, false);
         assert!(kit::variables(frame.extended.projects_pilot()).is_none());
         assert!(
-            enqueue(
-                &shared,
-                bare_job(index, u64::from(seed), seed as i32, i64::from(seed))
-            )
+            // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+            unsafe {
+                enqueue(
+                    &shared,
+                    bare_job(index, u64::from(seed), seed as i32, i64::from(seed)),
+                )
+            }
             .is_none()
         );
     }
@@ -3471,10 +3987,16 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     let reads = memory.reads.get();
     let mut memo = AirBasesMemo::default();
     for (&index, bytes) in leases[..2].iter().zip(&expected) {
-        let job = pop(&shared).expect("production FIFO");
+        let job =
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }.expect("production FIFO");
         assert_eq!(job.index, index);
         process_owned_job(&shared, job, &mut memo);
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         assert!(shared.frames.slot(index).completed.load(Ordering::Acquire) > 0);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(kit::encoded(frame.extended.projects_pilot()), *bytes);
@@ -3485,11 +4007,14 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
                 .len(),
             3
         );
-        shared.recycle_frame_prepared(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     assert!((shared.frames.decode_len() == 0) && shared.frames.ready_is_empty());
     assert_eq!(memory.reads.get(), reads);
-    let index = shared.frames.pop().unwrap();
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     assert_eq!(index, leases[1]);
     shared
         .frames
@@ -3503,19 +4028,34 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::acquire(frame.extended.projects_pilot(), &memory, false);
     }
-    assert!(enqueue(&shared, bare_job(index, 13, 13, 13)).is_none());
+    assert!(
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { enqueue(&shared, bare_job(index, 13, 13, 13)) }.is_none()
+    );
     memory.replace(15);
     memory.refuse.set(true);
     let reads = memory.reads.get();
-    process_owned_job(&shared, pop(&shared).unwrap(), &mut memo);
-    assert_eq!(shared.frames.pop_ready(), Some(index));
+    process_owned_job(
+        &shared,
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }.unwrap(),
+        &mut memo,
+    );
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(index)
+    );
     {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(kit::encoded(frame.extended.projects_pilot()), bytes);
     }
     assert_eq!(memory.reads.get(), reads);
-    shared.recycle_frame_prepared(index);
-    let recycled = shared.frames.pop().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame_prepared(index) };
+    let recycled =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     assert_eq!(recycled, index);
     shared
         .frames
@@ -3524,13 +4064,28 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         .store(0, Ordering::Relaxed);
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     kit::acquire(frame.extended.projects_pilot(), &memory, true);
-    assert!(enqueue(&shared, bare_job(recycled, 16, 16, 16)).is_none());
-    process_owned_job(&shared, pop(&shared).unwrap(), &mut memo);
-    assert_eq!(shared.frames.pop_ready(), Some(recycled));
+    assert!(
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { enqueue(&shared, bare_job(recycled, 16, 16, 16)) }.is_none()
+    );
+    process_owned_job(
+        &shared,
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(&shared) }.unwrap(),
+        &mut memo,
+    );
+    assert_eq!(
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() },
+        Some(recycled)
+    );
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     assert!(kit::variables(frame.extended.projects_pilot()).is_none());
-    shared.recycle_frame_prepared(recycled);
-    let index = shared.frames.pop().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame_prepared(recycled) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.unwrap();
     assert_eq!(index, recycled);
     shared
         .frames
@@ -3541,10 +4096,15 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     memory.written(17);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     kit::acquire(frame.extended.projects_pilot(), &memory, false);
-    assert!(enqueue(&shared, bare_job(index, 17, 17, 17)).is_none());
+    assert!(
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { enqueue(&shared, bare_job(index, 17, 17, 17)) }.is_none()
+    );
     memory.replace(19);
     memory.refuse.set(true);
-    let job = pop(&shared).unwrap();
+    let job =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { pop(&shared) }.unwrap();
     collector_memory::terminal::install_hooks();
     let denied = collector_test_support::NullGuard::new(1);
     process_owned_job(&shared, job, &mut memo);
@@ -3572,7 +4132,11 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         0,
         "production decode reached freezing"
     );
-    assert_ne!(shared.frames.pop(), Some(index));
+    assert_ne!(
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { shared.frames.pop() },
+        Some(index)
+    );
     engine_allocation::set_hooks(None, None);
     engine_allocation::set_stop_hook(None);
 }
@@ -3584,10 +4148,14 @@ fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() 
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     CAPITULATION_JOB_POOL.lock().unwrap().clear();
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let deeper = 3;
     let frames: Vec<_> = (0..crate::frame_pool::STEADY + deeper)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
     sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
     let sized = || {
@@ -3600,7 +4168,8 @@ fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() 
     }
     let held = CAPITULATION_JOB_POOL.lock().unwrap().len();
     for index in frames {
-        shared.recycle_frame(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(index) };
     }
     assert_eq!(shared.frames.live(), crate::frame_pool::STEADY);
     release_capitulation_job(sized());
@@ -3624,7 +4193,9 @@ fn a_refused_raw_log_index_refuses_its_tables_by_name() {
     let mut job = CapitulationJob::new();
     job.log = collector_raw::raw::RawLog::new(4, 64);
     assert!(job.log.take(&memory, 0x1000, 8, 1).is_some());
-    let mut frame = sampling::Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { sampling::Captured::new() };
     let capitulation = frame.extended.capitulation_pilot();
     collector_test_support::with_allocations_denied(|| {
         capitulation.decode_capitulation_payload(0, &job, &mut [0; 1]);

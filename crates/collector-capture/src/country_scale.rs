@@ -11,7 +11,7 @@ pub mod table_demand;
 
 pub(crate) use collector_extended_support::demand::{demand_air_game_state, demand_game_state};
 
-pub const ENGINE_SLOT_CEILING: usize = 1 << 16;
+pub(crate) const ENGINE_SLOT_CEILING: usize = 1 << 16;
 
 pub fn observe(memory: &impl Memory, base: usize) -> Option<usize> {
     let slots = cgame_state::read_country_registry_size(memory, base)?.slots();
@@ -54,7 +54,7 @@ pub fn observe_railway_gun_names(
 pub struct MapDemand {
     pub states: Result<usize, &'static str>,
     pub provinces: Result<usize, &'static str>,
-    pub rail_levels: Result<usize, &'static str>,
+    pub(crate) rail_levels: Result<usize, &'static str>,
     pub carrier: Result<engine_native::cair_base::CarrierDemand, &'static str>,
     pub navies: navies::Demand,
 }
@@ -312,43 +312,43 @@ pub fn observe_fuel_unit_demand(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub war_overview: engine_native::cwar_relation::overview::Demand,
-    pub active_characters: usize,
-    pub retired_characters: usize,
-    pub party_leaders: usize,
-    pub civil_wars: usize,
-    pub advisor_tokens: usize,
-    pub advisor_token_bytes: usize,
-    pub faction_advisors: usize,
-    pub faction_advisor_bytes: usize,
-    pub agency_name_bytes: usize,
-    pub agency_upgrade_rows: usize,
-    pub agency_upgrade_definitions: usize,
-    pub operation_rows: usize,
-    pub operation_assignments: usize,
-    pub operation_description_bytes: usize,
-    pub operation_parts: usize,
-    pub operative_memberships: usize,
-    pub operative_name_bytes: usize,
-    pub operative_missions: usize,
-    pub operative_mission_bytes: usize,
-    pub strategic_operatives: usize,
-    pub strategic_operative_entries: usize,
-    pub available_advisors: usize,
-    pub available_advisor_bytes: usize,
-    pub advisor_modifiers: engine_native::cadvisor::ModifierDemand,
-    pub country_rosters: engine_native::ccountry::RosterDemand,
+    pub(crate) active_characters: usize,
+    pub(crate) retired_characters: usize,
+    pub(crate) party_leaders: usize,
+    pub(crate) civil_wars: usize,
+    pub(crate) advisor_tokens: usize,
+    pub(crate) advisor_token_bytes: usize,
+    pub(crate) faction_advisors: usize,
+    pub(crate) faction_advisor_bytes: usize,
+    pub(crate) agency_name_bytes: usize,
+    pub(crate) agency_upgrade_rows: usize,
+    pub(crate) agency_upgrade_definitions: usize,
+    pub(crate) operation_rows: usize,
+    pub(crate) operation_assignments: usize,
+    pub(crate) operation_description_bytes: usize,
+    pub(crate) operation_parts: usize,
+    pub(crate) operative_memberships: usize,
+    pub(crate) operative_name_bytes: usize,
+    pub(crate) operative_missions: usize,
+    pub(crate) operative_mission_bytes: usize,
+    pub(crate) strategic_operatives: usize,
+    pub(crate) strategic_operative_entries: usize,
+    pub(crate) available_advisors: usize,
+    pub(crate) available_advisor_bytes: usize,
+    pub(crate) advisor_modifiers: engine_native::cadvisor::ModifierDemand,
+    pub(crate) country_rosters: engine_native::ccountry::RosterDemand,
     pub pride_name_bytes: usize,
-    pub pride_name_failure: Option<&'static str>,
+    pub(crate) pride_name_failure: Option<&'static str>,
     optional_failures: [Option<&'static str>; 4],
-    pub timed_ideas: engine_native::cpolitical_status::IdeaDemand,
-    pub decision_random_items: engine_decisions::cdecision_status::RandomItemDemand,
-    pub effect_rosters: engine_native::ccountry::EffectRosterDemand,
-    pub captured_operatives: usize,
-    pub occupied_countries: usize,
-    pub reserved_naming_bytes: usize,
-    pub original_tag_lists: engine_stability::original_tag_lists::Demand,
-    pub country_array: usize,
-    pub co_belligerents: usize,
+    pub(crate) timed_ideas: engine_native::cpolitical_status::IdeaDemand,
+    pub(crate) decision_random_items: engine_decisions::cdecision_status::RandomItemDemand,
+    pub(crate) effect_rosters: engine_native::ccountry::EffectRosterDemand,
+    pub(crate) captured_operatives: usize,
+    pub(crate) occupied_countries: usize,
+    pub(crate) reserved_naming_bytes: usize,
+    pub(crate) original_tag_lists: engine_stability::original_tag_lists::Demand,
+    pub(crate) country_array: usize,
+    pub(crate) co_belligerents: usize,
     pub character_inputs: collector_characters::extended::character_inputs::Demand,
 }
 
@@ -2412,15 +2412,21 @@ mod tests {
         let mut loaded = menu;
         loaded.raise_for_slots(COUNTRIES + 1);
         let mut frame =
-            sampling::Captured::with_capacities(&menu.core, &menu.map, &menu.extended).unwrap();
+            // SAFETY: The session or isolated fixture owns this frame's observer allocations and
+            // excludes teardown.
+            unsafe { sampling::Captured::with_capacities(&menu.core, &menu.map, &menu.extended) }.unwrap();
         let (mut core, mut map, mut extended) = (loaded.core, loaded.map, loaded.extended);
         frame.grow(&mut core);
-        frame.map.grow(&mut map);
-        frame.extended.grow(&mut extended);
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { frame.map.grow(&mut map) };
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { frame.extended.grow(&mut extended) };
         assert_eq!(core, loaded.core);
         assert!(map == loaded.map);
         let built =
-            sampling::Captured::with_capacities(&loaded.core, &loaded.map, &loaded.extended)
+            // SAFETY: The session or isolated fixture owns this frame's observer allocations and
+            // excludes teardown.
+            unsafe { sampling::Captured::with_capacities(&loaded.core, &loaded.map, &loaded.extended) }
                 .unwrap();
         assert!(frame.countries.len() >= built.countries.len());
         assert!(frame.links.len() >= built.links.len());
@@ -2441,18 +2447,24 @@ mod tests {
     #[test]
     fn a_larger_country_cache_is_handed_to_the_hook_without_game_thread_allocation() {
         use std::sync::atomic::Ordering;
-        let shared = sampling::Shared::new(BASE, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { sampling::Shared::new(BASE, 0, 1) };
         let installed = shared.country_cache_cells.load(Ordering::Acquire);
         let cells = Cache::cells_for_countries(COUNTRIES + 1, MIN_COUNTRY_CELLS);
         assert!(cells > installed);
-        shared.offer_country_cache(cells);
+        // SAFETY: This is the sizing pass for the active session's cache.
+        unsafe { shared.offer_country_cache(cells) };
         let pool = shared.pool_bytes.load(Ordering::Relaxed);
-        shared.offer_country_cache(cells);
+        // SAFETY: This is the sizing pass for the active session's cache.
+        unsafe { shared.offer_country_cache(cells) };
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool);
         shared.install_offered_country_cache();
         assert_eq!(shared.country_cache_cells.load(Ordering::Acquire), cells);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_some());
-        shared.offer_country_cache(0);
+        // SAFETY: This is the sizing pass for the active session's cache.
+        unsafe { shared.offer_country_cache(0) };
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_none());
     }
 

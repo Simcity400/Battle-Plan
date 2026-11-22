@@ -439,12 +439,15 @@ pub(crate) fn compare_frame(
                 let _span = HELPER.span(Phase::Compare);
                 work();
             };
-            helpers
-                .join_each(&job, || {
+            // SAFETY: The spool owns this conversion round and uses no helper in a competing
+            // round.
+            unsafe {
+                helpers.join_each(&job, || {
                     work();
                     span.switch(Phase::HelperWait)
                 })
-                .finish();
+            }
+            .finish();
         }
         None => {
             work();
@@ -623,8 +626,10 @@ mod tests {
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
         let pool = [
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
         ];
         for helpers in [0, 1, 2] {
             let counters = Counters::default();

@@ -138,7 +138,7 @@ struct Producer {
 struct Live {
     base: usize,
     capture: u64,
-    sample_roster: fn(&LiveMemory, usize),
+    sample_roster: unsafe fn(&LiveMemory, usize),
     kinds: Vec<Descriptor>,
     catalog: Vec<Kind>,
     inputs: native::Inputs,
@@ -169,7 +169,7 @@ impl Live {
     fn new(
         memory: &impl Memory,
         base: usize,
-        sample_roster: fn(&LiveMemory, usize),
+        sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> io::Result<Self> {
         let tables = engine_executable::executable_tables::commands()?;
         let mut kinds = engine_allocation::vec(tables.kinds.len())?;
@@ -706,7 +706,8 @@ impl Live {
         let time = u64::try_from(qpc()).map_err(|_| "command clock negative")?;
         let world = collector_lifetime::world_lifetime::observed_generation().unwrap_or(0);
         self.observe_at(&memory, registers, site, world, time, |state| {
-            (self.sample_roster)(&memory, state)
+            // SAFETY: The installed command callback uses this session's live shared roster.
+            unsafe { (self.sample_roster)(&memory, state) }
         })
     }
 
@@ -978,7 +979,10 @@ pub struct Drain {
 }
 
 impl Drain {
-    pub fn take(&mut self, final_drain: bool) -> io::Result<Vec<Drained>> {
+    /// # Safety
+    /// Only the originating installation's spool consumer may drain these lanes. Keep that
+    /// installation live, and use a final drain only after command callbacks are quiet.
+    pub unsafe fn take(&mut self, final_drain: bool) -> io::Result<Vec<Drained>> {
         let pointer = LIVE.load(Ordering::Acquire);
         if pointer.is_null() {
             return Ok(Vec::new());
@@ -1222,7 +1226,10 @@ impl Drain {
         Ok(groups.into_values().collect())
     }
 
-    pub fn catalog() -> io::Result<Vec<Kind>> {
+    /// # Safety
+    /// Read the catalog only for the current installation's first command packet, before retiring
+    /// its store and before any later attachment.
+    pub unsafe fn catalog() -> io::Result<Vec<Kind>> {
         let pointer = LIVE.load(Ordering::Acquire);
         if pointer.is_null() {
             return Ok(Vec::new());
@@ -1250,10 +1257,13 @@ impl Hooks {
     /// # Safety
     /// `base` identifies the authenticated executable in this process. The caller owns these sites
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
+    /// Publish the state required by `sample_roster` before enabling the taps and retain it until
+    /// every admitted callback has returned. Keep exclusive installation ownership until this
+    /// handle drops, including after releasing its store.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
-        sample_roster: fn(&LiveMemory, usize),
+        sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> Self {
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
@@ -1297,7 +1307,10 @@ impl Hooks {
         }
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    /// # Safety
+    /// Only the owning runtime may toggle these taps in attach or detach order. Keep them alive
+    /// until any shared publication round finishes and all admitted callbacks are quiet.
+    pub unsafe fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !collector_hooks::hook::shared::defer_preparation(|| {
             ENABLED.store(false, Ordering::SeqCst)
         }) {
@@ -1321,7 +1334,11 @@ impl Hooks {
         self.taps.iter().flat_map(Tap::executable_ranges)
     }
 
-    pub fn release_after_quiet(&mut self) {
+    /// # Safety
+    /// Restore taps and wait for callback and publication quiescence before release. Drop this
+    /// handle before any new player-command installation can publish or it can clear that
+    /// installation's store.
+    pub unsafe fn release_after_quiet(&mut self) {
         self.publication_attempted = false;
         LIVE.store(std::ptr::null_mut(), Ordering::Release);
         STORE
@@ -1334,7 +1351,8 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         if !self.publication_attempted {
-            self.release_after_quiet();
+            // SAFETY: The owning hook handle has no published taps or live callbacks here.
+            unsafe { self.release_after_quiet() };
         }
     }
 }

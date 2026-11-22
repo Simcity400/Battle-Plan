@@ -62,7 +62,9 @@ static TABLE_NS: [std::sync::atomic::AtomicU64; replay_data::rows::TABLE_COUNT] 
     [const { std::sync::atomic::AtomicU64::new(0) }; replay_data::rows::TABLE_COUNT];
 
 #[cfg(feature = "phase_cpu")]
-pub fn add_table_ns(table_ns: &[u64; replay_data::rows::TABLE_COUNT]) {
+/// # Safety
+/// Only this session's originating spool may publish the timings of its completed frame.
+pub unsafe fn add_table_ns(table_ns: &[u64; replay_data::rows::TABLE_COUNT]) {
     for (sum, ns) in TABLE_NS.iter().zip(table_ns) {
         sum.fetch_add(*ns, std::sync::atomic::Ordering::Relaxed);
     }
@@ -244,4 +246,11 @@ impl<'a> Span<'a> {
     }
 }
 
-pub static RETRY_CAUSE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+static RETRY_CAUSE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// # Safety
+/// Only the sole spool may publish a retry cause from its own frame. Only the admitted capture
+/// may consume that cause for its next frame, while both belong to the same attachment.
+pub unsafe fn retry_cause() -> &'static std::sync::atomic::AtomicU16 {
+    &RETRY_CAUSE
+}

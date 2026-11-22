@@ -84,11 +84,11 @@ pub(crate) struct GovernanceRequest {
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
-    pub building_store: Option<Box<construction::BuildingStore>>,
-    pub leader_store: Option<Box<governance::LeaderStore>>,
-    pub party_store: Option<Box<governance::PartyStore>>,
-    pub technology_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
-    pub focus_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
+    pub(crate) building_store: Option<Box<construction::BuildingStore>>,
+    pub(crate) leader_store: Option<Box<governance::LeaderStore>>,
+    pub(crate) party_store: Option<Box<governance::PartyStore>>,
+    pub(crate) technology_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
+    pub(crate) focus_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
 }
 pub(crate) struct BuildingsPart {
     countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -132,8 +132,8 @@ pub(crate) struct VariantsRequest {
     pub registry: crate::extended::Registry,
     pub variants: production::Variants,
     pub changes: production::design_changes::Captured,
-    pub changes_ticks: u64,
-    pub changes_finished: bool,
+    pub(crate) changes_ticks: u64,
+    pub(crate) changes_finished: bool,
     pub workers: variant_workers::Dispatch,
 }
 impl VariantsRequest {
@@ -169,8 +169,8 @@ fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool
 pub(crate) struct ResearchRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
-    pub part: governance::ResearchPart,
-    pub fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
+    pub(crate) part: governance::ResearchPart,
+    pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ResearchReport {
@@ -185,20 +185,20 @@ pub(crate) struct IntelResidualRequest {
 pub(crate) struct ScriptVariablesRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: intel::CaptureContext,
-    pub part: intel::VariablePart,
+    pub(crate) part: intel::VariablePart,
     pub store: Option<Box<intel::VariableStore>>,
 }
 pub(crate) struct SupplyTrainsRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
-    pub part: usize,
+    pub(crate) part: usize,
     pub nodes: supply_trains::Part,
     pub trains: Option<supply_trains::Trains>,
     pub slice: Option<supply_trains::Slice>,
 }
 pub(crate) struct CharacterPortraitsRequest {
     pub context: character_portraits::CaptureContext,
-    pub part: usize,
+    pub(crate) part: usize,
     pub captured: character_portraits::Part,
     pub census:
         Option<engine_allocation::SharedBox<engine_native::ccharacter_manager::PortraitCensus>>,
@@ -227,8 +227,8 @@ pub(crate) struct OrdinaryPartRequest {
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
-    pub fresh_modifier_guard: Result<(), &'static str>,
-    pub part: crate::extended::OrdinaryPart,
+    pub(crate) fresh_modifier_guard: Result<(), &'static str>,
+    pub(crate) part: crate::extended::OrdinaryPart,
 }
 impl OrdinaryPartRequest {
     #[cfg(test)]
@@ -254,7 +254,7 @@ pub(crate) struct AirRelationsRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
-    pub part: usize,
+    pub(crate) part: usize,
     pub staging: collector_air_relations::air_relations::Staging,
 }
 #[derive(Clone, Copy, Default)]
@@ -265,8 +265,8 @@ pub(crate) struct AirMissionsRequest {
     pub game_state: usize,
     pub parent: engine_native::walk::Outcome,
     pub pack: Box<collector_air::extended::air::Captured>,
-    pub histories: Vec<collector_air_histories::air_histories::Staging>,
-    pub mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
+    pub(crate) histories: Vec<collector_air_histories::air_histories::Staging>,
+    pub(crate) mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
 }
 impl AirMissionsRequest {
     pub fn refuse(&mut self) {
@@ -280,7 +280,7 @@ pub(crate) struct AirHistoriesRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
-    pub part: usize,
+    pub(crate) part: usize,
     pub staging: collector_air_histories::air_histories::Staging,
 }
 #[derive(Clone, Copy, Default)]
@@ -326,9 +326,10 @@ pub(crate) struct ProductionModifierPartRequest {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
-    pub part: usize,
+    pub(crate) part: usize,
     pub slots: std::ops::Range<u32>,
-    pub provided: Option<Result<engine_production::production_modifiers::Context, &'static str>>,
+    pub(crate) provided:
+        Option<Result<engine_production::production_modifiers::Context, &'static str>>,
     pub captured: Box<collector_production_daily::production_modifiers::Part>,
 }
 #[derive(Clone, Copy, Default)]
@@ -388,7 +389,7 @@ pub(crate) struct LateRequest {
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::LatePacks>,
-    pub plans: collector_plans::extended::plans::Captured,
+    pub(crate) plans: collector_plans::extended::plans::Captured,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LateReport;
@@ -406,7 +407,7 @@ pub(crate) struct AirSupplyReport;
 pub(crate) struct OrdersPartRequest {
     pub base: usize,
     pub index: usize,
-    pub part: Box<collector_divisions::orders_parts::Part>,
+    pub(crate) part: Box<collector_divisions::orders_parts::Part>,
     pub rejected: bool,
 }
 impl OrdersPartRequest {
@@ -422,7 +423,7 @@ impl OrdersPartRequest {
 }
 pub(crate) struct FrontsRequest {
     pub base: usize,
-    pub fronts: collector_plans::extended::plans::Fronts,
+    pub(crate) fronts: collector_plans::extended::plans::Fronts,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FrontsReport;
@@ -431,7 +432,7 @@ pub(crate) struct ArmyIconsRequest {
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub divisions: crate::extended::Divisions,
-    pub icons: collector_army_icons::army_icon_inputs::Captured,
+    pub(crate) icons: collector_army_icons::army_icon_inputs::Captured,
     pub ticks: [u64; 1],
 }
 pub(crate) struct DivisionModelInputsRequest {
@@ -449,18 +450,18 @@ pub(crate) struct ScoresRailsRequest {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
-    pub score_capacity: [usize; 2],
-    pub parts: Box<crate::extended::ScoresRailsParts>,
-    pub air_scores: Box<engine_raid_inputs::raid_air_scores::Held>,
-    pub rail_store: Option<Box<naval_history::RailStore>>,
+    pub(crate) score_capacity: [usize; 2],
+    pub(crate) parts: Box<crate::extended::ScoresRailsParts>,
+    pub(crate) air_scores: Box<engine_raid_inputs::raid_air_scores::Held>,
+    pub(crate) rail_store: Option<Box<naval_history::RailStore>>,
 }
 pub(crate) struct OrdersRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub orders: collector_divisions::orders::Orders,
-    pub plans: collector_plans::extended::plans::Captured,
-    pub group_source: Option<naval_history::NavalJob>,
+    pub(crate) plans: collector_plans::extended::plans::Captured,
+    pub(crate) group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
     fn stitch(&mut self, memory: &impl engine_native::Memory) {
@@ -516,7 +517,7 @@ impl Drop for OrdersRequest {
 pub(crate) struct OrdersReport;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StitchReport {
-    pub contained_panic: bool,
+    pub(crate) contained_panic: bool,
 }
 #[cfg(test)]
 pub(crate) const STITCH_PANIC_BASE: usize = usize::MAX - 0x5717;
@@ -526,7 +527,8 @@ pub(crate) struct GatedRequest {
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::GatedPacks>,
-    pub project_fingerprints: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    pub(crate) project_fingerprints:
+        Option<Box<collector_certificates::slicing::SliceFingerprints>>,
     pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
 }
 pub(crate) struct GatedProjectsRequest {
@@ -536,7 +538,7 @@ pub(crate) struct GatedProjectsRequest {
     pub hour: i32,
     pub force_full: bool,
     pub captured: projects::Captured,
-    pub fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
+    pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
     pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     pub recorded: bool,
     pub ticks: [u64; projects::N],
@@ -648,7 +650,7 @@ pub(crate) struct ShipModelsRequest {
 pub(crate) struct ShipModelDetailsRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
-    pub part: usize,
+    pub(crate) part: usize,
     pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
@@ -658,7 +660,7 @@ pub(crate) struct PresentationRequest {
     pub dispatch: PresentationDispatch,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
-    pub army_stats: Option<division_presentation::held_store::Loan>,
+    pub(crate) army_stats: Option<division_presentation::held_store::Loan>,
 }
 impl PresentationRequest {
     pub(crate) fn take_movement(&mut self) -> PresentationMovementRequest {
@@ -712,9 +714,9 @@ pub(crate) struct PresentationStatusRequest {
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
-    pub part: Option<division_presentation::StatusWork>,
+    pub(crate) part: Option<division_presentation::StatusWork>,
     pub preparation: bool,
-    pub stitch: Option<(Arc<PresentationFanIn>, usize)>,
+    pub(crate) stitch: Option<(Arc<PresentationFanIn>, usize)>,
 }
 
 pub(crate) struct PresentationSpeedTermsRequest {
@@ -744,10 +746,10 @@ pub(crate) struct IntelRequest {
     pub payload: fog::IntelJob,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
-    pub input_failure: Option<&'static str>,
+    pub(crate) input_failure: Option<&'static str>,
 }
 pub(crate) struct CharactersRequest {
-    pub final_inputs: Option<Arc<FinalInputsDispatch>>,
+    pub(crate) final_inputs: Option<Arc<FinalInputsDispatch>>,
     pub context: characters::CharactersCopyContext,
     pub payload: characters::CharactersJob,
     pub roles: characters::Roles<engine_allocation::SharedBox<characters::census::RoleCensus>>,
@@ -778,7 +780,7 @@ pub(crate) struct DivisionPartRequest {
     pub game_state: usize,
     pub slots: (u32, u32),
     pub census: Box<collector_divisions::division_census::Census>,
-    pub presentation: Option<(Arc<PresentationInputs>, usize)>,
+    pub(crate) presentation: Option<(Arc<PresentationInputs>, usize)>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -947,7 +949,7 @@ impl Job {
         self.role().callback_help()
     }
 
-    pub fn worker_only(&self) -> bool {
+    pub(crate) fn worker_only(&self) -> bool {
         match self {
             Self::ChildFronts(request) => request.plans.child_fronts_allocate(),
             job => job.role().worker_only(),
@@ -1065,8 +1067,8 @@ pub struct WorkerCalibration {
     pub stopped: u64,
     pub rejected: u64,
     pub ticks: u64,
-    pub inline_completed: u64,
-    pub inline_panicked: u64,
+    pub(crate) inline_completed: u64,
+    pub(crate) inline_panicked: u64,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct RoleCalibration {
@@ -1301,11 +1303,12 @@ fn run_with_memory(
             request.context,
             &mut request.payload,
         )),
-        Job::Players(request) => Report::Players(map_capture::copy_players_refresh(
-            memory,
-            request.context,
-            &mut request.payload,
-        )),
+        Job::Players(request) => Report::Players(
+            // SAFETY: This is the admitted hour's roster request and its authenticated image.
+            unsafe {
+                map_capture::copy_players_refresh(memory, request.context, &mut request.payload)
+            },
+        ),
         Job::Projects(request) => Report::Projects(projects::copy_projects_refresh(
             memory,
             request.context,
@@ -1334,7 +1337,10 @@ fn run_with_memory(
                 &mut request.payload,
             ))
         }
-        Job::MapCombats(request) => Report::MapCombats(request.capture(memory)),
+        Job::MapCombats(request) => Report::MapCombats(
+            // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+            unsafe { request.capture(memory) },
+        ),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
         Job::EventFeedSeal(feed) => {
             feed.seal();
@@ -1907,12 +1913,16 @@ fn run_with_memory(
         Job::CharacterInputs(request) => Report::CharacterInputs(request.capture(memory)),
         Job::ShipModels(request) => {
             let cached = request.countries.roster_view(memory);
-            request.census.walk(
-                &cached,
-                request.context.base,
-                request.game_state,
-                &mut request.captured,
-            );
+            // SAFETY: The admitted hour owns this naval capture and returns its loan before
+            // teardown.
+            unsafe {
+                request.census.walk(
+                    &cached,
+                    request.context.base,
+                    request.game_state,
+                    &mut request.captured,
+                )
+            };
             Report::ShipModels
         }
         Job::ShipModelDetails(request) => {
@@ -2130,7 +2140,9 @@ impl Pool {
         workers: usize,
         run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
     ) -> Self {
-        let executor = collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
+        let executor =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run) }.unwrap();
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
@@ -2147,24 +2159,28 @@ impl Pool {
         }
     }
 
-    pub fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
+    /// # Safety
+    /// Only the attaching runtime may create the acquisition pool. Keep it in its worker census and
+    /// shut it down after closing and quiescing hourly admission, before freeing any job storage.
+    pub unsafe fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor = collector_workers::acquisition::Pool::start_with_class(
+        let executor =
+        // SAFETY: This attaches the owned acquisition workers and they join before sampler
+        // teardown.
+        unsafe { collector_workers::acquisition::Pool::start_with_class(
             worker_count.max(1),
             capacity,
             Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
             move |job: &mut Job| {
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_job = collector_workers::worker_sampler::job(job.role());
-                // SAFETY: submit's callback lease remains admitted until every
-                // accepted request is collected, including on callback unwind.
-                let memory = unsafe { LiveMemory::new() };
+                let memory =  LiveMemory::new() ;
                 #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
                 let memory = CountedMemory::new(memory);
                 run_with_memory(job, &memory, &runner_calibration)
             },
-        )?;
+        ) }?;
         executor.set_callback_help(Job::callback_help);
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
@@ -2269,16 +2285,22 @@ impl Pool {
         completed
     }
 
-    pub fn worker_count(&self) -> usize {
+    pub(crate) fn worker_count(&self) -> usize {
         self.worker_count
     }
     pub fn thread_ids(&self) -> Vec<u32> {
         self.executor.thread_ids()
     }
-    pub fn hold_pace(&self) {
+    /// # Safety
+    /// Only the owner of the live acquisition schedule may switch its worker policy for the current
+    /// capture placement.
+    pub(crate) unsafe fn hold_pace(&self) {
         self.executor.hold_pace();
     }
-    pub fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+    /// # Safety
+    /// Only the owner of the live acquisition schedule may switch its worker policy for the current
+    /// capture placement.
+    pub(crate) unsafe fn beside_pace(&self, regulars: usize, game: Option<u32>) {
         self.executor.beside_pace(regulars, game);
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -2305,17 +2327,27 @@ impl Pool {
             }),
         }
     }
-    pub fn shutdown(&self) -> Result<(), &'static str> {
-        self.executor.shutdown()
+    /// # Safety
+    /// Only the owning runtime may shut down this pool, after capture is quiescent and all
+    /// submitted work has settled. Keep the session's worker and payload storage live until
+    /// shutdown completes.
+    pub unsafe fn shutdown(&self) -> Result<(), &'static str> {
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { self.executor.shutdown() }
     }
     pub fn stopped(&self) -> bool {
         self.executor.stopped()
     }
-    pub fn stop_for_contained_panic(&self, role: Role) {
+    /// # Safety
+    /// Only the admitted capture that contained a panic may stop this session's pool, before the
+    /// runtime joins it.
+    pub(crate) unsafe fn stop_for_contained_panic(&self, role: Role) {
         self.calibration.roles[role as usize]
             .panicked
             .fetch_add(1, Ordering::Relaxed);
-        self.executor.stop_for_contained_panic();
+        // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+        unsafe { self.executor.stop_for_contained_panic() };
     }
 }
 
@@ -2410,17 +2442,18 @@ impl<'a> Batch<'a> {
     pub fn stopped(&self) -> bool {
         self.pool.stopped()
     }
-    pub fn is_complete(&self, ticket: Ticket) -> bool {
+    pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
         self.pool.executor.is_complete(ticket)
     }
-    pub fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
+    pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
         self.pool.executor.completed_report(ticket)
     }
-    pub fn wait_ready<T>(&self, mut ready: impl FnMut(&Self) -> Option<T>) -> T {
+    pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut(&Self) -> Option<T>) -> T {
         self.pool.executor.wait_ready(|| ready(self))
     }
-    pub fn stop_for_contained_panic(&self, role: Role) {
-        self.pool.stop_for_contained_panic(role);
+    pub(crate) fn stop_for_contained_panic(&self, role: Role) {
+        // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+        unsafe { self.pool.stop_for_contained_panic(role) };
     }
     /// # Safety
     /// The callback must own the live-read lease until this guard is
@@ -2564,7 +2597,8 @@ fn drop_collected(pool: &Pool, ticket: Ticket) {
     }) = &completed
         && !pool.stopped()
     {
-        pool.stop_for_contained_panic(Role::OrdersStitch);
+        // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+        unsafe { pool.stop_for_contained_panic(Role::OrdersStitch) };
     }
 }
 
@@ -3506,7 +3540,8 @@ mod tests {
         let mut direct = world_request();
         let expected = run_world_shared(&mut direct, &memory);
         let pool =
-            collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
                     &engine_native::memory::SliceMemory {
@@ -3514,7 +3549,7 @@ mod tests {
                         bytes: &bytes,
                     },
                 )
-            })
+            }) }
             .unwrap();
         let request = world_request();
         let pointers = [
@@ -3572,7 +3607,9 @@ mod tests {
                 &mut direct.payload,
             );
             let expected_reads = reads.finish();
-            let pool = collector_workers::acquisition::Pool::start(
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::acquisition::Pool::start(
                 workers,
                 1,
                 move |request: &mut EconomyRequest| {
@@ -3584,7 +3621,7 @@ mod tests {
                         }),
                     )
                 },
-            )
+            ) }
             .unwrap();
             let request = economy_request();
             let pointer = request.payload.log.bytes.as_ptr();
@@ -3608,7 +3645,9 @@ mod tests {
     fn absent_world_parts_read_nothing_and_keep_no_economy_attempt() {
         for workers in [0, 1] {
             let bytes = empty_memory();
-            let pool = collector_workers::acquisition::Pool::start(
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::acquisition::Pool::start(
                 workers,
                 1,
                 move |request: &mut WorldRequest| {
@@ -3620,7 +3659,7 @@ mod tests {
                         }),
                     )
                 },
-            )
+            ) }
             .unwrap();
             let mut request = world_request();
             request.production = None;
@@ -3720,7 +3759,10 @@ mod tests {
             ] {
                 let capture = Capture::new();
                 accounted_read(TableId::Clock, 3);
-                let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+                let pool =
+                // SAFETY: The attaching runtime or isolated fixture owns this worker through
+                // shutdown.
+                unsafe { Pool::start(workers, WORKER_ONLY_JOBS + 1) }.unwrap();
                 let make = || {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
@@ -3787,7 +3829,9 @@ mod tests {
         use collector_certificates::slicing::{SliceFingerprints, SliceSelection};
         for workers in [0, 1] {
             let capture = Capture::new();
-            let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, WORKER_ONLY_JOBS + 1) }.unwrap();
             let make = || {
                 let selection = SliceSelection::for_test(5, false, &[7]).with_census(&[7]);
                 Job::Relations(RawRequest {

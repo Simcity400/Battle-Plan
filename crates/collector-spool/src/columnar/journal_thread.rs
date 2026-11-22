@@ -48,17 +48,17 @@ pub(super) struct Opening {
     pub directory: PathBuf,
     pub identity: Vec<u8>,
     pub capture: Capture,
-    pub controls: Vec<Vec<u8>>,
+    pub(crate) controls: Vec<Vec<u8>>,
 }
 
 pub(super) struct Hour {
-    pub starts: Option<(u64, u8, i32)>,
+    pub(crate) starts: Option<(u64, u8, i32)>,
     pub branch: u64,
     pub hour: i32,
-    pub ends_segment: bool,
+    pub(crate) ends_segment: bool,
     pub witness: Option<Witness>,
-    pub manifest: Vec<u8>,
-    pub sections: Vec<Vec<u8>>,
+    pub(crate) manifest: Vec<u8>,
+    pub(crate) sections: Vec<Vec<u8>>,
 }
 
 pub(super) enum Op {
@@ -81,7 +81,7 @@ pub(super) enum Ending {
 pub(super) struct Failure {
     pub failed: Option<(&'static str, io::Error)>,
     pub lost: Vec<(u64, i32)>,
-    pub controls: Vec<Vec<u8>>,
+    pub(crate) controls: Vec<Vec<u8>>,
 }
 
 pub(super) struct Lane {
@@ -480,7 +480,8 @@ impl Drop for JournalThread {
 
 fn serve(shared: &Shared) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Journal);
-    collector_workers::priority::OwnPriority::new().follow(false);
+    // SAFETY: The owning worker adjusts only its own thread's priority.
+    unsafe { collector_workers::priority::OwnPriority::new().follow(false) };
     let mut state = shared.lock();
     loop {
         let Some((lane, op)) = state.work.pop_front() else {

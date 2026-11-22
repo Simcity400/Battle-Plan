@@ -8,7 +8,11 @@ use std::{
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static OBSERVED: AtomicBool = AtomicBool::new(false);
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BATCHING: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicU32 = AtomicU32::new(0);
@@ -51,7 +55,10 @@ impl Hooks {
         })
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    /// # Safety
+    /// Only the owning runtime may publish or restore these taps, in the corresponding attach or
+    /// detach round. Keep the taps alive until the round finishes and callbacks are quiet.
+    pub unsafe fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
             OBSERVED.store(false, Ordering::SeqCst);
@@ -182,14 +189,19 @@ pub mod tests {
         }
         let _serial = crate::capture_point::tests::serial();
         ORIGINAL.store(native as *const () as usize, Ordering::SeqCst);
-        assert!(capture_gate::begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { capture_gate::begin() }
+        );
         let entered = std::thread::spawn(|| unsafe { batch(7) });
         while capture_gate::waiting() == 0 {
             std::thread::yield_now();
         }
         assert!(!others_batching());
         assert!(!RAN.load(Ordering::SeqCst));
-        capture_gate::end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { capture_gate::end() };
         assert_eq!(entered.join().unwrap(), 7);
         assert!(RAN.load(Ordering::SeqCst));
         assert!(!others_batching());
@@ -218,9 +230,14 @@ pub mod tests {
             std::thread::yield_now();
         }
         assert!(!OTHERS.load(Ordering::SeqCst));
-        assert!(capture_gate::begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { capture_gate::begin() }
+        );
         assert!(others_batching());
-        capture_gate::end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { capture_gate::end() };
         RELEASE.store(true, Ordering::SeqCst);
         assert_eq!(inside.join().unwrap(), 2);
         assert!(!others_batching());

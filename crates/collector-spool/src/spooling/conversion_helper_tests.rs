@@ -134,9 +134,12 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
     use collector_capture::pack_conversion::{MAX_THREADS, Plan};
     use collector_projection::projection::{Projection, ProjectionScratch};
     let pool = [
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
     ];
     let helper_calls = collector_workers::spool_phases::HELPER
         .phase(collector_workers::spool_phases::Phase::ConvertPacks)
@@ -148,7 +151,8 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         std::array::from_fn(|pack| Some((packs - pack) as u64));
     for ordinary_failure in [None, Some("synthetic ordinary acquisition failure")] {
         let mut source = hour_frame(3);
-        capture_live_shape(&mut source.extended);
+        // SAFETY: The isolated fixture owns observer preparation.
+        unsafe { capture_live_shape(&mut source.extended) };
         source.extended.set_ordinary_failure(ordinary_failure);
         let clock = source.clock.as_ref().unwrap().copy_owned().unwrap();
         let encoder = FrameEncoder::new();

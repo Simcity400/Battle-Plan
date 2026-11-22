@@ -140,7 +140,10 @@ impl MapCapacities {
         );
     }
 
-    pub fn raise_for_air_wing_names(&mut self, bytes: usize) {
+    /// # Safety
+    /// Use only the active sizing pass's measured name capacity or an isolated fixture. An invalid
+    /// capacity can invoke the process-wide allocation failure handler.
+    pub unsafe fn raise_for_air_wing_names(&mut self, bytes: usize) {
         collector_primitives::country_slots::raise(&mut self.air_wing_names, bytes);
     }
 
@@ -182,7 +185,8 @@ impl ShipCensus {
         Self::new(&[0; 3])
     }
     fn reset(&mut self) {
-        self.discard_owned();
+        // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
+        unsafe { self.discard_owned() };
         self.management = Default::default();
         self.fleets.reset();
         self.fleet_names.clear();
@@ -206,7 +210,11 @@ impl ShipCensus {
             + self.task_forces.allocated_bytes()
             + self.ships.allocated_bytes()
     }
-    pub fn walk(
+    /// # Safety
+    /// Only the admitted naval capture may walk the current game and take its process-wide
+    /// management loan. Settle or discard that loan for this frame before reusing the slot or
+    /// detaching.
+    pub unsafe fn walk(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -216,7 +224,8 @@ impl ShipCensus {
         let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
         let mut reads = collector_memory::read_accounting::table(tables[0]);
         let begin = qpc();
-        self.discard_owned();
+        // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
+        unsafe { self.discard_owned() };
         models.begin_sources();
         let management =
             std::cell::RefCell::new(collector_naval_management::forces::Session::begin_owned(
@@ -290,7 +299,8 @@ impl ShipCensus {
             .saturating_sub(self.ticks[1]);
     }
     pub fn fail(&mut self, reason: &'static str) {
-        self.discard_owned();
+        // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
+        unsafe { self.discard_owned() };
         self.ship_names.clear();
         self.ship_overrides.clear();
         self.management.tables = std::array::from_fn(|_| Err(reason));
@@ -301,13 +311,19 @@ impl ShipCensus {
         self.ticks = [0; 3];
     }
 
-    pub fn decode_owned(&mut self) {
+    /// # Safety
+    /// Settle only this frame's naval management loan, once, before the originating session
+    /// releases its management storage.
+    pub unsafe fn decode_owned(&mut self) {
         if let Some(owned) = self.management_owned.take() {
             self.management = owned.decode();
         }
     }
 
-    pub fn discard_owned(&mut self) {
+    /// # Safety
+    /// Settle only this frame's naval management loan, once, before the originating session
+    /// releases its management storage.
+    pub unsafe fn discard_owned(&mut self) {
         self.management_owned = None;
     }
 }
@@ -325,7 +341,7 @@ pub struct MapCaptured {
     air_wing_names_required: usize,
     pub(crate) air_wing_name_failures: usize,
     pub orders: Orders,
-    pub players_raw_mode: bool,
+    players_raw_mode: bool,
     owned_air_captured: bool,
     air_capture_failure: Option<&'static str>,
     pub player_names: Vec<u8>,
@@ -341,7 +357,19 @@ pub struct MapCaptured {
 }
 
 impl MapCaptured {
-    pub fn install_owned_air(&mut self, job: &mut collector_air::extended::air::AirWingJob) -> u64 {
+    /// # Safety
+    /// Only the admitted frame owner may set this flag, after the matching player job or its
+    /// explicit failure has been installed for the same hour.
+    pub unsafe fn players_raw_mode_mut(&mut self) -> &mut bool {
+        &mut self.players_raw_mode
+    }
+    /// # Safety
+    /// Install once into the originating frame, using the completed job that owns the matching wing
+    /// and name buffers. Do not reuse the job without refreshing its lengths.
+    pub unsafe fn install_owned_air(
+        &mut self,
+        job: &mut collector_air::extended::air::AirWingJob,
+    ) -> u64 {
         if self.air_capture_failure.is_some() {
             return 0;
         }
@@ -481,7 +509,10 @@ impl MapCaptured {
         ]
     }
 
-    pub fn grow(&mut self, capacities: &mut MapCapacities) {
+    /// # Safety
+    /// Only the session's frame sizing owner or isolated fixture may grow this map, using validated
+    /// demands and with no conflicting teardown.
+    pub unsafe fn grow(&mut self, capacities: &mut MapCapacities) {
         self.players.grow(&mut capacities.rows[0]);
         self.human_controllers.grow(&mut capacities.rows[1]);
         self.land_combats.grow(&mut capacities.rows[2]);
@@ -519,7 +550,10 @@ impl MapCaptured {
         grow_vec(&mut self.naval_groups, capacities.naval_groups);
     }
 
-    pub fn sample(
+    /// # Safety
+    /// Only the admitted hour may sample its map with the active game's located image. A deferred
+    /// player or combat walk must belong to and settle into this frame.
+    pub unsafe fn sample(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -824,7 +858,10 @@ fn copy_controller_pass(
     );
 }
 
-pub fn copy_players_refresh(
+/// # Safety
+/// Only the admitted player acquisition may read against the active game's located image, into the
+/// pending job for that hour, before decode takes it.
+pub unsafe fn copy_players_refresh(
     memory: &impl engine_native::Memory,
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
@@ -848,7 +885,10 @@ impl MapCaptured {
         self.players_raw_mode = false;
     }
 
-    pub fn decode_players_payload(
+    /// # Safety
+    /// Decode the completed player job into its originating hour, using its active image while that
+    /// session's roster accounting remains live.
+    pub unsafe fn decode_players_payload(
         &mut self,
         base: usize,
         job: &PlayersJob,
@@ -967,7 +1007,9 @@ mod players_split_tests {
 
     fn direct(memory: &SliceMemory<'_>) -> MapCaptured {
         let mut captured = MapCaptured::with_capacities(&capacities());
-        captured.sample(memory, BASE, GS, &mut NoSources);
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { captured.sample(memory, BASE, GS, &mut NoSources) };
         captured
     }
 
@@ -978,10 +1020,13 @@ mod players_split_tests {
             game_state: GS,
         };
         let mut job = PlayersJob::new();
-        let report = copy_players_refresh(memory, ctx, &mut job);
+        let report =
+        // SAFETY: This is the admitted hour's roster request and its authenticated image.
+        unsafe { copy_players_refresh(memory, ctx, &mut job) };
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
-        captured.decode_players_payload(BASE, &job, &mut [0; 2]);
+        // SAFETY: Decode is settling the matching job into its originating frame.
+        unsafe { captured.decode_players_payload(BASE, &job, &mut [0; 2]) };
         (captured, report)
     }
 
@@ -1019,7 +1064,10 @@ mod players_split_tests {
             caps.rows[0] = players;
             caps.rows[1] = controllers;
             let mut direct = MapCaptured::with_capacities(&caps);
-            let _ = direct.sample(&memory, BASE, GS, &mut NoSources);
+            let _ =
+            // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding
+            // game image.
+            unsafe { direct.sample(&memory, BASE, GS, &mut NoSources) };
             let mut captured = MapCaptured::with_capacities(&caps);
             let ctx = PlayersCopyContext {
                 base: BASE,
@@ -1027,12 +1075,15 @@ mod players_split_tests {
             };
             let mut first = PlayersJob::new();
 
-            let report = copy_players_refresh(&memory, ctx, &mut first);
+            let report =
+            // SAFETY: This is the admitted hour's roster request and its authenticated image.
+            unsafe { copy_players_refresh(&memory, ctx, &mut first) };
 
             assert!(report.raw_ok, "players={players} controllers={controllers}");
             captured.players_raw_mode = true;
             let mut ticks = [0u64; 2];
-            captured.decode_players_payload(BASE, &first, &mut ticks);
+            // SAFETY: Decode is settling the matching job into its originating frame.
+            unsafe { captured.decode_players_payload(BASE, &first, &mut ticks) };
             assert_eq!(
                 captured.players.outcome, direct.players.outcome,
                 "players outcome p={players} c={controllers}"
@@ -1051,7 +1102,10 @@ mod players_split_tests {
         caps.rows[0] = 1;
         caps.rows[1] = 1;
         let mut direct = MapCaptured::with_capacities(&caps);
-        let _ = direct.sample(&memory, BASE, GS, &mut NoSources);
+        let _ =
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { direct.sample(&memory, BASE, GS, &mut NoSources) };
         assert_eq!(direct.players.outcome, Outcome::Rows { len: 1 });
     }
 
@@ -1064,14 +1118,16 @@ mod players_split_tests {
             bytes: &bytes,
         };
         let mut job = PlayersJob::new();
-        let report = copy_players_refresh(
+        let report =
+        // SAFETY: This is the admitted hour's roster request and its authenticated image.
+        unsafe { copy_players_refresh(
             &memory,
             PlayersCopyContext {
                 base: BASE,
                 game_state: GS,
             },
             &mut job,
-        );
+        ) };
         assert!(report.raw_ok);
         assert!(job.log.has_bulk);
         let recorded = collector_raw::raw::Recorded::build(&job.log).unwrap();
@@ -1105,19 +1161,24 @@ mod players_split_tests {
         let mut capacities = capacities();
         capacities.rows[0] = 0;
         let mut direct = MapCaptured::with_capacities(&capacities);
-        direct.sample(&memory, BASE, GS, &mut NoSources);
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { direct.sample(&memory, BASE, GS, &mut NoSources) };
         let mut captured = MapCaptured::with_capacities(&capacities);
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
         };
         let mut first = PlayersJob::new();
-        let report = copy_players_refresh(&memory, ctx, &mut first);
+        let report =
+        // SAFETY: This is the admitted hour's roster request and its authenticated image.
+        unsafe { copy_players_refresh(&memory, ctx, &mut first) };
 
         assert!(report.raw_ok);
         captured.players_raw_mode = true;
         let mut ticks = [0u64; 2];
-        captured.decode_players_payload(BASE, &first, &mut ticks);
+        // SAFETY: Decode is settling the matching job into its originating frame.
+        unsafe { captured.decode_players_payload(BASE, &first, &mut ticks) };
         assert_eq!(captured.players.outcome, direct.players.outcome);
     }
 
@@ -1136,12 +1197,15 @@ mod players_split_tests {
             log: collector_raw::raw::RawLog::new(8, 8),
             game_state: 0,
         };
-        let report = copy_players_refresh(&memory, ctx, &mut tiny);
+        let report =
+        // SAFETY: This is the admitted hour's roster request and its authenticated image.
+        unsafe { copy_players_refresh(&memory, ctx, &mut tiny) };
 
         assert!(report.raw_ok);
         assert!(!tiny.log.overflowed);
         let mut captured = MapCaptured::with_capacities(&capacities());
-        captured.decode_players_payload(BASE, &tiny, &mut [0; 2]);
+        // SAFETY: Decode is settling the matching job into its originating frame.
+        unsafe { captured.decode_players_payload(BASE, &tiny, &mut [0; 2]) };
         assert_eq!(captured.players.outcome, Outcome::Rows { len: 1 });
         assert_eq!(captured.human_controllers.outcome, Outcome::Rows { len: 1 });
     }
@@ -1203,7 +1267,9 @@ mod tests {
         let mut sources = Sources::default();
         let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
         let memory = Unreadable::default();
-        captured.sample(&memory, 0, 0x1000, &mut sources);
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { captured.sample(&memory, 0, 0x1000, &mut sources) };
         assert_eq!(sources.begins, 1);
         assert!(matches!(
             sources.finished[..],
@@ -1217,7 +1283,9 @@ mod tests {
         captured.fail_air_capture(reason);
         memory.0.set(0);
         let mut sources = Sources::default();
-        captured.sample(&memory, 0, 0x1000, &mut sources);
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { captured.sample(&memory, 0, 0x1000, &mut sources) };
         assert_eq!(captured.air_wings.outcome, Outcome::Unavailable { reason });
         assert_eq!(memory.0.get(), ordinary_reads);
         for (index, outcome) in captured.outcomes().into_iter().enumerate() {
@@ -1226,7 +1294,9 @@ mod tests {
             }
         }
         captured.reset();
-        captured.sample(&memory, 0, 0x1000, &mut Sources::default());
+        // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+        // image.
+        unsafe { captured.sample(&memory, 0, 0x1000, &mut Sources::default()) };
         assert_eq!(captured.air_wings.outcome, AIR_NOT_ACQUIRED);
     }
 
@@ -1315,7 +1385,8 @@ mod tests {
         captured.land_participants_required = capacity.land_participants + 11;
         captured.player_names_required = capacity.player_names + 17;
         captured.orders.geometry_required = capacity.order_geometry + 23;
-        captured.grow(&mut capacity);
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { captured.grow(&mut capacity) };
         assert_eq!(captured.naval.ships.rows.len(), 8192);
 
         assert_eq!(captured.naval.ships.rows[0].id, u64::MAX);
@@ -1327,7 +1398,8 @@ mod tests {
         assert_eq!(captured.orders.geometry.len(), 16384 + 23);
 
         let mut idle = MapCaptured::new();
-        idle.grow(&mut capacity);
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { idle.grow(&mut capacity) };
         assert_eq!(idle.naval.ships.rows.len(), captured.naval.ships.rows.len());
         assert_eq!(
             idle.land_participants.len(),
@@ -1565,7 +1637,8 @@ mod tests {
             reason: "naval groups scratch full",
         };
         captured.naval_groups_required = 129;
-        captured.grow(&mut capacity);
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { captured.grow(&mut capacity) };
         assert_eq!(captured.orders.groups.len(), initial_group_capacity * 2);
         assert_eq!(captured.orders.visits.len(), 4096);
         assert_eq!(captured.naval_groups.len(), 256);
@@ -1573,7 +1646,8 @@ mod tests {
         captured.orders.groups_required = initial_group_capacity + 47;
         captured.orders.visits_required = 3500;
         captured.naval_groups_required = 201;
-        captured.grow(&mut capacity);
+        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        unsafe { captured.grow(&mut capacity) };
         assert!(capacity == grown);
         assert!(matches!(
             captured.orders.rows.outcome,

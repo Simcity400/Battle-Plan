@@ -12,11 +12,14 @@ fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() 
     }
     let mut capacities = Capacities::default();
     assert!(
-        capacities
-            .presize_live_inputs_periodic(&Unreadable, 0, false)
-            .is_err()
+        // SAFETY: This is the session's sizing pass, with its observer storage still live.
+        unsafe { capacities.presize_live_inputs_periodic(&Unreadable, 0, false) }.is_err()
     );
-    assert!(capacities.presize_live_inputs(&Unreadable, 0).is_err());
+    assert!(
+        // SAFETY: The sizing owner prepares the session's live storage before callbacks or in its
+        // sizing pass.
+        unsafe { capacities.presize_live_inputs(&Unreadable, 0) }.is_err()
+    );
 }
 
 #[test]
@@ -742,21 +745,24 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                 ))
             });
             let mut costs = crate::pack_conversion::HourCosts::EMPTY;
-            captured.insert_tables(
-                hour,
-                &mut tables,
-                &mut crate::pack_conversion::SpoolConversion {
-                    variables_baseline: None,
-                    variables_scratch: &mut Default::default(),
-                    characters: None,
-                    lexical: None,
-                    intel: None,
-                    projection: None,
-                    helper: None,
-                },
-                false,
-                &mut costs,
-            );
+            // SAFETY: The spool owns the frame and skips any packs on loan to its joined helpers.
+            unsafe {
+                captured.insert_tables(
+                    hour,
+                    &mut tables,
+                    &mut crate::pack_conversion::SpoolConversion {
+                        variables_baseline: None,
+                        variables_scratch: &mut Default::default(),
+                        characters: None,
+                        lexical: None,
+                        intel: None,
+                        projection: None,
+                        helper: None,
+                    },
+                    false,
+                    &mut costs,
+                )
+            };
             for (ids, reason) in [
                 (&slow, "slow acquisition failed"),
                 (

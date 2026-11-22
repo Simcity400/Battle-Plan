@@ -214,7 +214,8 @@ fn rejected_detail_continuations_are_retained_and_unadopted_children_drain() {
         batch.arm_ship_details(&mut request);
         let dispatch = request.details.take().unwrap();
         dispatch.store(&mut request.captured, &Ok(Report::ShipModels));
-        pool.executor.stop_for_contained_panic();
+        // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+        unsafe { pool.executor.stop_for_contained_panic() };
         collector_workers::acquisition::Publication::published(&*dispatch);
         let state = dispatch.lock();
         assert!(state.dispatched);

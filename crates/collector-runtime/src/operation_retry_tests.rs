@@ -14,10 +14,17 @@ fn table_retry_preserves_admitted_operation_completion() {
     complete(&log, &fixture, 1);
     let mut cursors = vec![LaneCursor::default()];
     let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
-    let shared = collector_capture::sampling::Shared::new(0, 0, 1);
-    shared.request_retry_full();
-    let recovery = shared.force_next.swap(false, Ordering::AcqRel);
-    let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
+    // SAFETY: The spool requests recovery after unpublished output in the current session.
+    unsafe { shared.request_retry_full() };
+    let recovery =
+        // SAFETY: The test uses isolated recovery state.
+        unsafe { shared.force_next() }.swap(false, Ordering::AcqRel);
+    let refresh =
+        // SAFETY: The test uses isolated recovery state.
+        unsafe { shared.refresh_next() }.swap(false, Ordering::AcqRel);
     if recovery {
         invalidate();
     }
@@ -28,5 +35,7 @@ fn table_retry_preserves_admitted_operation_completion() {
     assert_eq!(events[0].definition_token, 0xfabc_1234);
     assert_eq!(&bytes[..drained.bytes], b"modded outcome");
     assert!(refresh);
-    assert!(!shared.force_next.load(Ordering::Acquire));
+    assert!(!
+        // SAFETY: This is the isolated fixture's recovery flag.
+        unsafe { shared.force_next() }.load(Ordering::Acquire));
 }

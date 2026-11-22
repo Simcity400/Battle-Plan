@@ -1,7 +1,7 @@
 #![recursion_limit = "512"]
 
-pub mod acquisition_countries;
-pub mod acquisition_factions;
+mod acquisition_countries;
+mod acquisition_factions;
 pub mod acquisition_jobs;
 #[cfg(test)]
 mod advisor_sizing_tests;
@@ -13,7 +13,7 @@ pub mod capture_point;
 pub mod command_batch;
 pub mod country_scale;
 pub mod decode;
-pub mod division_detail;
+mod division_detail;
 pub mod extended;
 pub mod frame_capacities;
 pub mod frame_pool;

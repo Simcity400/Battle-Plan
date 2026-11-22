@@ -81,7 +81,8 @@ impl native_frame::Lanes for Lanes<'_> {
                 .span_now(collector_workers::spool_phases::Phase::Columnar);
             engine_allocation::advisory(job);
         };
-        helpers.join_each(&helper, job);
+        // SAFETY: The spool owns this conversion round and uses no helper in a competing round.
+        unsafe { helpers.join_each(&helper, job) };
     }
 
     fn proceeds(&self) -> bool {

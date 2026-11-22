@@ -230,7 +230,10 @@ impl FramePool {
         self.free.load(Ordering::Acquire)
     }
 
-    pub fn pop(&self) -> Option<usize> {
+    /// # Safety
+    /// Claim a slot only as this frame pool's admitted capture or sizing owner. Finish or return
+    /// the installed slot before any other owner can use it.
+    pub unsafe fn pop(&self) -> Option<usize> {
         self.free
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
                 free.checked_sub(1)
@@ -256,7 +259,7 @@ impl FramePool {
             .is_ok()
     }
 
-    pub fn take(&self, index: usize, keep: usize) -> bool {
+    pub(crate) fn take(&self, index: usize, keep: usize) -> bool {
         if index >= self.made() || self.slot(index).state.load(Ordering::Acquire) != FREE {
             return false;
         }
@@ -276,7 +279,7 @@ impl FramePool {
         false
     }
 
-    pub fn push(&self, index: usize) -> Result<(), usize> {
+    pub(crate) fn push(&self, index: usize) -> Result<(), usize> {
         if index >= self.made() {
             return Err(index);
         }
@@ -285,7 +288,7 @@ impl FramePool {
         self.restore(index)
     }
 
-    pub fn restore(&self, index: usize) -> Result<(), usize> {
+    pub(crate) fn restore(&self, index: usize) -> Result<(), usize> {
         if index >= self.made()
             || self.slot(index).frame.load(Ordering::Acquire).is_null()
             || self
@@ -342,7 +345,7 @@ impl FramePool {
         }
     }
 
-    pub fn install(&self, index: usize, frame: Box<Captured>) {
+    pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
         slot.bytes
@@ -395,7 +398,10 @@ impl FramePool {
         self.live() > STEADY && self.len() > AHEAD
     }
 
-    pub fn vacate(&self, index: usize) -> Box<Captured> {
+    /// # Safety
+    /// The caller must exclusively own an occupied slot in this pool, with no outstanding users,
+    /// and may vacate it only once.
+    pub unsafe fn vacate(&self, index: usize) -> Box<Captured> {
         let slot = self.slot(index);
         let frame = slot.frame.swap(ptr::null_mut(), Ordering::AcqRel);
         assert!(!frame.is_null(), "a vacated slot held a frame");
@@ -477,11 +483,17 @@ impl FramePool {
         unsafe { &mut *self.slot(index).job.get() }
     }
 
-    pub fn push_decode(&self, index: usize) {
+    /// # Safety
+    /// Only the admitted producer may publish this installed slot to decode, with its initialized
+    /// job ready and exclusively owned.
+    pub unsafe fn push_decode(&self, index: usize) {
         self.enqueue(&self.decode, index);
     }
 
-    pub fn pop_decode(&self) -> Option<usize> {
+    /// # Safety
+    /// Only the designated decoder may remove from this session's decode queue. It assumes
+    /// responsibility for the slot until settlement.
+    pub unsafe fn pop_decode(&self) -> Option<usize> {
         self.pop_from(&self.decode)
     }
 
@@ -494,7 +506,10 @@ impl FramePool {
         self.enqueue(&self.ready, index);
     }
 
-    pub fn pop_ready(&self) -> Option<usize> {
+    /// # Safety
+    /// Only the originating spool may take a decoded frame, and must exclusively hold the slot
+    /// until recycling.
+    pub unsafe fn pop_ready(&self) -> Option<usize> {
         self.pop_from(&self.ready)
     }
 

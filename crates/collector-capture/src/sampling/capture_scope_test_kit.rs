@@ -66,7 +66,9 @@ impl Memory for Traced<'_> {
     }
 }
 
-pub fn capture(
+/// # Safety
+/// Run only in an isolated fixture that owns the process-wide capture, observer and decode state.
+pub unsafe fn capture(
     mode: CaptureMode,
     fixture: Fixture,
     refuse: bool,
@@ -102,18 +104,27 @@ pub fn capture(
         reads: Mutex::new(Vec::new()),
         roles: Mutex::new(Vec::new()),
     });
-    let _payloads = decode::prepare_payload_pools(true).unwrap();
+    let _payloads =
+    // SAFETY: Attach owns payload storage through worker join. Fixture processes own their test
+    // pools.
+    unsafe { decode::prepare_payload_pools(true) }.unwrap();
     let mut sizing = crate::country_scale::Sizing::for_slots(5);
     sizing.core[1] = 8;
     sizing.core[3] = 8;
     sizing.core[4] = 64;
     sizing.core[5] = 64;
-    let mut shared = Shared::with_sizing(0, 0, 10_000_000, &sizing).unwrap();
+    let mut shared =
+    // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+    // boundary or detach.
+    unsafe { Shared::with_sizing(0, 0, 10_000_000, &sizing) }.unwrap();
     shared.capture_mode = mode;
-    shared.prepare_roster(&Traced {
-        world: &world,
-        role: None,
-    });
+    // SAFETY: This is the unpublished attachment's own roster.
+    unsafe {
+        shared.prepare_roster(&Traced {
+            world: &world,
+            role: None,
+        })
+    };
     shared.prepare_clock_len(ID.len());
     let worker_world = Arc::clone(&world);
     shared
@@ -139,7 +150,10 @@ pub fn capture(
         if hour == 13 {
             shared.refresh_next.store(true, Ordering::Release);
         }
-        let index = shared.take_frame(&mut 0).unwrap();
+        let index =
+        // SAFETY: This is the admitted hour or isolated fixture taking exclusive ownership of an
+        // installed slot.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let reads = collector_memory::read_accounting::Capture::new();
         unsafe {
             acquire_with_memory(
@@ -171,7 +185,11 @@ pub fn capture(
         }
         let _ = reads.finish();
         decode::drain_for_test(&shared, &mut memo);
-        assert_eq!(shared.frames.pop_ready(), Some(index));
+        assert_eq!(
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+            unsafe { shared.frames.pop_ready() },
+            Some(index)
+        );
         let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(frame.clock.as_ref().unwrap().hour, hour);
         assert_eq!(frame.force_full, matches!(hour, 0 | 13));
@@ -186,10 +204,13 @@ pub fn capture(
             );
         }
         visit(frame, &spans, &roles);
-        shared.recycle_frame_prepared(index);
+        // SAFETY: This owner has finished with the installed slot and its helpers have joined.
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     let pool = shared.acquisition.get().unwrap();
-    pool.shutdown().unwrap();
+    // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+    // shutdown.
+    unsafe { pool.shutdown() }.unwrap();
     assert_eq!(pool.calibration().executor.panicked, 0);
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 0);
 }

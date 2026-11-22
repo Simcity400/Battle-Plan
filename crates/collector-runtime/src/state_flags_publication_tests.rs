@@ -38,7 +38,9 @@ fn state_flags_pool_failure_restores_all_three_buffers_without_native_retry() {
             .copy(address, output)
         }
     }
-    let mut frame = collector_capture::sampling::Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { collector_capture::sampling::Captured::new() };
     for canceled in [false, true] {
         frame.states = vec![cstate::Row::default(); 4];
         frame
@@ -55,18 +57,22 @@ fn state_flags_pool_failure_restores_all_three_buffers_without_native_retry() {
         let calls = Arc::new(AtomicUsize::new(0));
         let runner_calls = Arc::clone(&calls);
         let bytes = memory();
-        let pool = Pool::start(0, 1, move |request: &mut Request| {
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { Pool::start(0, 1, move |request: &mut Request| {
             request.run(&PanicAtRoot {
                 bytes: &bytes,
                 roots: Cell::new(0),
                 calls: &runner_calls,
             })
-        })
+        }) }
         .unwrap();
         let mut pending = Some(request);
         let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
         if canceled {
-            pool.shutdown().unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { pool.shutdown() }.unwrap();
         }
         let completed = pool.finish(ticket).unwrap();
         assert!(
@@ -106,7 +112,9 @@ fn state_flags_pool_failure_restores_all_three_buffers_without_native_retry() {
 
 #[test]
 fn state_flags_successful_states_restore_preserves_timing_and_storage() {
-    let mut frame = collector_capture::sampling::Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { collector_capture::sampling::Captured::new() };
     frame.states = vec![cstate::Row::default(); 1];
     frame.state_inputs = collector_states::acquisition_states::Inputs::with_capacity(1).unwrap();
     frame

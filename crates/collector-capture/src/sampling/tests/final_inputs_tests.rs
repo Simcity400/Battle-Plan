@@ -62,7 +62,9 @@ fn source(index: usize, failure: usize) -> acquisition::Job {
 
 #[test]
 fn final_sources_early_join_requires_every_successful_report_without_consuming_any_ticket() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let pool = acquisition::Pool::with_test_runner(1, |job| {
         let acquisition::Job::Provinces(request) = job else {
             unreachable!()
@@ -144,7 +146,10 @@ fn final_sources_early_join_requires_every_successful_report_without_consuming_a
 fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without_callback_joins() {
     for required in [0_usize, 1 << 2, 0b1110] {
         for arm_before_last in [false, true] {
-            let shared = Shared::new(0, 0, 1);
+            let shared =
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Shared::new(0, 0, 1) };
             let gates: [Arc<Gate>; CHARACTER_PARTS] = std::array::from_fn(|_| Arc::default());
             let (started, running) = mpsc::channel();
             let (finished, finishing) = mpsc::channel();
@@ -265,7 +270,10 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
 #[test]
 fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loan() {
     for failure in 0..5 {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let blocker = Arc::new(Gate::default());
         let (started, running) = mpsc::channel();
         let pool = acquisition::Pool::with_test_runner(1, {
@@ -342,7 +350,9 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
 
 #[test]
 fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_native_retry() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let pool = acquisition::Pool::with_test_runner(1, |_| panic!("rejected successor ran"));
     let mut batch = acquisition::Batch::new(&pool);
     let dispatch = batch.final_inputs();
@@ -415,7 +425,10 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
                 let mut batch = acquisition::Batch::new(&pool);
                 let _release = ReleaseOnDrop(Arc::clone(&gate));
                 if failure == 2 {
-                    let shared = Shared::new(0, 0, 1);
+                    let shared =
+                    // SAFETY: The caller owns the session or isolated fixture state required by
+                    // this constructor.
+                    unsafe { Shared::new(0, 0, 1) };
                     unsafe { submit_acquisition(&shared, &mut batch, source(0, 0)) };
                     running
                         .recv_timeout(collector_test_support::TEST_HANG_GUARD)
@@ -471,7 +484,9 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
 
 #[test]
 fn final_inputs_dispatches_while_the_unrelated_variant_job_is_still_running() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let gate = Arc::new(Gate::default());
     let (started, start) = mpsc::channel();
     let (finished, finish) = mpsc::channel();

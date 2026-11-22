@@ -27,15 +27,15 @@ pub(super) const FOOTER_MAGIC: &[u8; 8] = b"WSMPEND!";
 
 pub(super) struct Header {
     pub interval_us: u32,
-    pub qpc_hz: u64,
-    pub tsc_hz: u64,
-    pub collector_base: u64,
+    pub(crate) qpc_hz: u64,
+    pub(crate) tsc_hz: u64,
+    pub(crate) collector_base: u64,
     pub image_size: u32,
-    pub timestamp: u32,
-    pub guid: [u8; 16],
-    pub age: u32,
-    pub pdb_path: String,
-    pub game_base: u64,
+    pub(crate) timestamp: u32,
+    pub(crate) guid: [u8; 16],
+    pub(crate) age: u32,
+    pub(crate) pdb_path: String,
+    pub(crate) game_base: u64,
 }
 impl Header {
     pub(super) fn current(interval_us: u32, qpc_hz: u64) -> Result<Self, String> {
@@ -174,7 +174,7 @@ pub(super) struct Record {
     pub role: u8,
     pub worker: u8,
     pub job: u16,
-    pub pc: u64,
+    pub(crate) pc: u64,
 }
 impl Record {
     fn encode(self) -> [u8; RECORD_SIZE] {
@@ -229,7 +229,7 @@ pub(super) struct ThreadInfo {
     pub slot: u16,
     pub thread_id: u32,
     pub role: String,
-    pub worker_index: Option<u8>,
+    pub(crate) worker_index: Option<u8>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Module {
@@ -242,16 +242,16 @@ pub(super) struct Drops {
     pub total: u64,
     pub capture: u64,
     pub write: u64,
-    pub writer_backpressure: u64,
-    pub buffer_full: u64,
-    pub game_exit_race: u64,
+    pub(crate) writer_backpressure: u64,
+    pub(crate) buffer_full: u64,
+    pub(crate) game_exit_race: u64,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Trailer {
-    pub record_count: u64,
-    pub dropped_counts: Drops,
+    pub(crate) record_count: u64,
+    pub(crate) dropped_counts: Drops,
     pub threads: Vec<ThreadInfo>,
-    pub job_roles: Vec<String>,
+    pub(crate) job_roles: Vec<String>,
     pub modules: Vec<Module>,
 }
 pub(super) fn modules() -> Vec<Module> {

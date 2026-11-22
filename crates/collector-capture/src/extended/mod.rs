@@ -266,11 +266,11 @@ macro_rules! pack_frame {
 }
 
 macro_rules! packs {
-    ($($pack:ident $(@ $helper:ident)?),+ $(,)?) => {
+    ($($visibility:vis $pack:ident $(@ $helper:ident)?),+ $(,)?) => {
         pub const PACK_NAMES: &[&str] = &[$(stringify!($pack)),+];
         pub const HELPER_PACKS: [bool; PACK_NAMES.len()] =
             [$(helper_marked!($($helper)?)),+];
-        pub const PACK_N: usize = 0 $(+ $pack::N)+;
+        pub(crate) const PACK_N: usize = 0 $(+ $pack::N)+;
         pub const N: usize = PACK_N + FACTION_PROVIDER_TABLES.len() + collector_naval_management::forces::TABLES.len();
         pub const TABLES: [TableId; N] = {
             let mut tables = [TableId::LexicalTokens; N];
@@ -299,7 +299,7 @@ macro_rules! packs {
         };
         #[derive(Clone, Copy, PartialEq, Eq)]
         pub struct Capacities {
-            $(pub $pack: $pack::Capacities,)+
+            $($visibility $pack: $pack::Capacities,)+
             pub fuel_awards: fuel_awards::Capacities,
             pub division_sources: usize,
             pub variant_registry: usize,
@@ -380,12 +380,19 @@ impl Captured {
 
             #[cfg(test)]
             pub fn with_capacities(capacity: &Capacities) -> Self {
-                let mut captured = Self::frame(capacity);
+                let mut captured =
+                // SAFETY: This frame or slot belongs to the current admitted capture or the sole
+                // spool consuming it.
+                unsafe { Self::frame(capacity) };
                 captured.share_homes(&Homes::new(capacity).expect("test homes"));
                 captured
             }
 
-            pub fn frame(capacity: &Capacities) -> Self {
+            /// # Safety
+            /// Only the session's attach, frame-building, sizing or admitted capture sequence may
+            /// prepare this frame. Keep observer storage live and exclude conflicting observer
+            /// preparation and teardown.
+            pub unsafe fn frame(capacity: &Capacities) -> Self {
                 let mut captured = Self {
                     $($pack: pack_frame!($pack, &capacity.$pack),)+
                     fuel_awards: fuel_awards::Captured::with_capacities(&capacity.fuel_awards),
@@ -466,7 +473,7 @@ impl Captured {
                 0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
             }
             #[cfg(test)]
-            pub fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
+            pub(crate) fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
                 engine_allocation::copy_vec(&[
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
                     ("fuel_awards", self.fuel_awards.allocated_bytes()),
@@ -475,12 +482,19 @@ impl Captured {
                     ("acquisition_spares", self.spare_bytes()),
                 ])
             }
-            pub fn grow(&mut self, capacity: &mut Capacities) {
+            /// # Safety
+            /// Only the session's attach, frame-building, sizing or admitted capture sequence may
+            /// prepare this frame. Keep observer storage live and exclude conflicting observer
+            /// preparation and teardown.
+            pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
                 engine_allocation::advisory(|| self.grow_hints(capacity));
             }
             fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
-                $(self.$pack.grow(&mut capacity.$pack);)+
+                // SAFETY: The frame's sizing owner excludes observer teardown and concurrent sizing.
+                unsafe {
+                    $(self.$pack.grow(&mut capacity.$pack);)+
+                }
                 self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
@@ -491,7 +505,11 @@ impl Captured {
                 );
                 self.registry.grow(&mut capacity.variant_registry);
             }
-            pub fn insert_tables(
+            /// # Safety
+            /// Convert only within the frame's single spool round. If a helper round is active,
+            /// skip every pack assigned to a helper and finish reads of those packs only after all
+            /// helpers join.
+            pub unsafe fn insert_tables(
                 &self,
                 hour: i32,
                 destination: &mut [TableInput; TABLE_COUNT],
@@ -516,7 +534,11 @@ impl Captured {
                     }
                 }
             }
-            pub fn helper_view(&self) -> HelperView<'_> {
+            /// # Safety
+            /// The spool must join every helper before reusing the frame. Use one queue for this
+            /// frame and exclude all other access to each non-Sync pack while its helper converts
+            /// it.
+            pub unsafe fn helper_view(&self) -> HelperView<'_> {
                 HelperView(self)
             }
         }
@@ -541,7 +563,10 @@ impl Captured {
             fn sync_pack<T: Sync>(pack: &'a T) -> &'a T {
                 pack
             }
-            pub fn convert_queued<'cache>(
+            /// # Safety
+            /// Use the spool's sole queue for this frame within its joined conversion round. Each
+            /// non-Sync pack must be accessed by only its assigned converter until the round joins.
+            pub unsafe fn convert_queued<'cache>(
                 &self,
                 queue: &crate::pack_conversion::Queue<'_>,
                 hour: i32,
@@ -677,97 +702,97 @@ use collector_war_overview::war_overview;
 use collector_weather::weather;
 
 packs!(
-    air @helper,
-    air_relations,
-    air_histories,
-    army_icon_inputs @helper,
-    naval_counters @helper,
-    railway_guns,
-    active_abilities,
-    country_counters,
-    game_score,
-    group_counters,
-    saved_event_targets,
-    battle_sounds,
-    equipment_destruction,
-    naval_result_sources,
-    experience_gains,
-    event_feed,
-    air_losses,
-    air_records,
-    building_bombing,
-    nuclear_strikes,
-    market,
-    leader_paths,
-    country_appearance @helper_appearance,
-    ship_models,
-    province_unit_order @helper,
-    naval_bases @helper,
-    map_facilities,
-    naval_combat_sources @helper,
-    character_portraits @helper_cached,
-    leader_portraits,
-    supply_trains @helper,
-    characters @helper_cached,
-    combat_progress @helper,
-    combat_details @helper,
-    naval_details @helper,
-    naval_result_details @helper,
-    construction @helper,
-    division_presentation @helper_exclusive,
-    division_model_inputs,
-    division_templates,
-    economy @helper,
-    fog @helper,
-    governance @helper,
-    intel @helper_cached,
-    operation_outcomes,
-    map_events,
-    lexical,
-    map_names,
-    naval_history @helper,
-    production @helper,
-    projects,
-    plans,
-    session,
-    state_flags,
-    visibility @helper,
-    raid_target_statuses @helper,
-    raid_state_inputs,
-    resource_map,
-    raid_launch_inputs,
-    slice_reads,
-    faction_theatres,
-    model_inputs,
-    modifier_definitions,
-    hired_advisors @helper,
-    character_inputs @helper,
-    logistics,
-    combat_log,
-    division_counts,
-    country_factories,
-    state_building_inputs,
-    war_overview,
-    industrial_organisations @helper,
-    production_modifiers @helper,
-    line_output,
-    politics,
-    peace_settlements,
-    peace_bids,
-    land_events,
-    construction_ic,
-    country_stability,
-    new_divisions,
-    country_tactic_unlocks @helper,
-    weather @helper,
-    naval_mission_inputs @helper
+    pub air @helper,
+    pub air_relations,
+    pub air_histories,
+    pub(crate) army_icon_inputs @helper,
+    pub naval_counters @helper,
+    pub railway_guns,
+    pub(crate) active_abilities,
+    pub country_counters,
+    pub game_score,
+    pub group_counters,
+    pub saved_event_targets,
+    pub(crate) battle_sounds,
+    pub equipment_destruction,
+    pub naval_result_sources,
+    pub experience_gains,
+    pub event_feed,
+    pub air_losses,
+    pub air_records,
+    pub building_bombing,
+    pub nuclear_strikes,
+    pub market,
+    pub leader_paths,
+    pub country_appearance @helper_appearance,
+    pub ship_models,
+    pub province_unit_order @helper,
+    pub(crate) naval_bases @helper,
+    pub(crate) map_facilities,
+    pub naval_combat_sources @helper,
+    pub character_portraits @helper_cached,
+    pub leader_portraits,
+    pub(crate) supply_trains @helper,
+    pub characters @helper_cached,
+    pub combat_progress @helper,
+    pub combat_details @helper,
+    pub naval_details @helper,
+    pub(crate) naval_result_details @helper,
+    pub construction @helper,
+    pub division_presentation @helper_exclusive,
+    pub(crate) division_model_inputs,
+    pub division_templates,
+    pub economy @helper,
+    pub fog @helper,
+    pub governance @helper,
+    pub intel @helper_cached,
+    pub operation_outcomes,
+    pub map_events,
+    pub lexical,
+    pub map_names,
+    pub naval_history @helper,
+    pub production @helper,
+    pub projects,
+    pub(crate) plans,
+    pub session,
+    pub state_flags,
+    pub visibility @helper,
+    pub(crate) raid_target_statuses @helper,
+    pub(crate) raid_state_inputs,
+    pub(crate) resource_map,
+    pub(crate) raid_launch_inputs,
+    pub(crate) slice_reads,
+    pub(crate) faction_theatres,
+    pub model_inputs,
+    pub(crate) modifier_definitions,
+    pub hired_advisors @helper,
+    pub character_inputs @helper,
+    pub logistics,
+    pub combat_log,
+    pub(crate) division_counts,
+    pub(crate) country_factories,
+    pub(crate) state_building_inputs,
+    pub war_overview,
+    pub industrial_organisations @helper,
+    pub(crate) production_modifiers @helper,
+    pub line_output,
+    pub politics,
+    pub peace_settlements,
+    pub peace_bids,
+    pub land_events,
+    pub construction_ic,
+    pub country_stability,
+    pub(crate) new_divisions,
+    pub(crate) country_tactic_unlocks @helper,
+    pub weather @helper,
+    pub(crate) naval_mission_inputs @helper
 );
 
 impl Capacities {
     pub fn raise_reserved_visibility(&mut self, slots: usize) {
         self.country_appearance.raise_reverse_visibility(slots);
     }
-    pub fn raise_for_states(&mut self, states: usize) {
+    pub(crate) fn raise_for_states(&mut self, states: usize) {
         self.state_flags.raise_for_states(states);
     }
 
@@ -776,15 +801,22 @@ impl Capacities {
         self.division_presentation.raise_for_provinces(provinces);
     }
 
-    pub fn presize_live_inputs(
+    /// # Safety
+    /// Run only during attach or the session's sizing pass. Use the active image and exclude
+    /// competing presizers and observer teardown until all storage work is complete.
+    pub unsafe fn presize_live_inputs(
         &mut self,
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
-        self.presize_live_inputs_periodic(memory, base, true)
+        // SAFETY: This is the session's sizing pass, with its observer storage still live.
+        unsafe { self.presize_live_inputs_periodic(memory, base, true) }
     }
 
-    pub fn presize_live_inputs_periodic(
+    /// # Safety
+    /// Run only during attach or the session's sizing pass. Use the active image and exclude
+    /// competing presizers and observer teardown until all storage work is complete.
+    pub unsafe fn presize_live_inputs_periodic(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -838,7 +870,7 @@ impl Capacities {
         collector_primitives::country_slots::raise(&mut self.air.scores.regions, regions);
     }
 
-    pub fn raise_for_countries(&mut self, slots: usize) {
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         self.plans.raise_for_countries(slots);
         collector_primitives::country_slots::raise(
             &mut self.event_feed.events,
@@ -1015,7 +1047,7 @@ impl Captured {
 
 pub(crate) struct Homes {
     pub country_intel: daily_intel::Home,
-    pub templates: division_templates::Home,
+    pub(crate) templates: division_templates::Home,
     pub(crate) naval_combat: naval_combat_sources::Home,
 }
 
@@ -1100,11 +1132,17 @@ impl Captured {
         self.overhead[TableId::LandCombatProgress.index()] += ticks;
     }
 
-    pub fn operation_outcomes(&self) -> &operation_outcomes::Captured {
+    /// # Safety
+    /// Only the spool consumer may borrow this live pack for assembly. Use it for the frame's own
+    /// interval and finish all publications before releasing the observer storage.
+    pub unsafe fn operation_outcomes(&self) -> &operation_outcomes::Captured {
         &self.operation_outcomes
     }
 
-    pub fn map_events(&self) -> &map_events::Captured {
+    /// # Safety
+    /// Only the spool consumer may borrow this live pack for assembly. Use it for the frame's own
+    /// interval and finish all publications before releasing the observer storage.
+    pub unsafe fn map_events(&self) -> &map_events::Captured {
         &self.map_events
     }
 
@@ -1115,7 +1153,10 @@ impl Captured {
         ticks
     }
 
-    pub fn discard_event_feed(&mut self) {
+    /// # Safety
+    /// Only the originating spool may discard this frame's event-feed handoff after conversion and
+    /// writer preparation, before returning the slot.
+    pub unsafe fn discard_event_feed(&mut self) {
         self.event_feed.discard();
     }
     pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
@@ -1167,12 +1208,18 @@ impl Captured {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn construction_ic_mut(&mut self) -> &mut construction_ic::Captured {
+    /// # Safety
+    /// Only an isolated fixture or the admitted hour owning the observer interval may take this
+    /// pack. Keep its observer alive and do not drain the interval more than once.
+    pub unsafe fn construction_ic_mut(&mut self) -> &mut construction_ic::Captured {
         &mut self.construction_ic
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn line_output_mut(&mut self) -> &mut line_output::Captured {
+    /// # Safety
+    /// Only an isolated fixture or the admitted hour owning the observer interval may take this
+    /// pack. Keep its observer alive and do not drain the interval more than once.
+    pub unsafe fn line_output_mut(&mut self) -> &mut line_output::Captured {
         &mut self.line_output
     }
 
@@ -1278,7 +1325,10 @@ impl Captured {
         ticks
     }
 
-    pub fn politics(&self) -> &politics::Captured {
+    /// # Safety
+    /// Only the spool consumer may borrow this live pack for assembly. Use it for the frame's own
+    /// interval and finish all publications before releasing the observer storage.
+    pub unsafe fn politics(&self) -> &politics::Captured {
         &self.politics
     }
 
@@ -2619,7 +2669,14 @@ impl Captured {
         self.division_counts.fail(reason);
     }
 
-    pub fn sources<'a, M: Memory>(&'a mut self, memory: &'a M, base: usize) -> Sources<'a, M> {
+    /// # Safety
+    /// Only the admitted capture may create this adapter for its own frame and active image.
+    /// Complete or refuse its sole combat observer loan within the same hour before teardown.
+    pub(crate) unsafe fn sources<'a, M: Memory>(
+        &'a mut self,
+        memory: &'a M,
+        base: usize,
+    ) -> Sources<'a, M> {
         Sources {
             captured: self,
             memory,
@@ -2699,7 +2756,7 @@ impl Captured {
     }
 
     #[cfg(test)]
-    pub fn capture(
+    pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -2773,7 +2830,7 @@ impl Captured {
     }
 
     #[inline(never)]
-    pub fn capture_tables(
+    pub(crate) fn capture_tables(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -3075,7 +3132,7 @@ impl Captured {
 
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    pub fn capture_tables_late(
+    pub(crate) fn capture_tables_late(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -3194,7 +3251,7 @@ impl Captured {
     }
 }
 
-pub struct Sources<'a, M: Memory> {
+pub(crate) struct Sources<'a, M: Memory> {
     captured: &'a mut Captured,
     memory: &'a M,
     base: usize,
@@ -3368,7 +3425,10 @@ pub fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn capture_live_shape(captured: &mut Captured) {
+/// # Safety
+/// Run only in an isolated fixture that owns the collector's process-wide observer and allocation
+/// state.
+pub unsafe fn capture_live_shape(captured: &mut Captured) {
     use naval_details::fixtures::{IMAGE, STATE, live_shape};
     let memory = live_shape();
     let c = &mut captured.naval_details;
@@ -3381,7 +3441,10 @@ pub fn capture_live_shape(captured: &mut Captured) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
+/// # Safety
+/// Run only in an isolated fixture that owns the collector's process-wide observer and allocation
+/// state.
+pub unsafe fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
     use replay_data::{rows::BuildingConstructionRow, rows::ProductionLineRow, rows::TableRows};
     use replay_frame::frame::TableView;
     let capacity = output_continuity::Capacities { entries: 4 };

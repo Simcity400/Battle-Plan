@@ -260,13 +260,16 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         }
     });
     let job_barrier = Arc::clone(&barrier);
-    let pool = crate::acquisition::Pool::start(1, 1, move |_: &mut ()| {
-        let _job = job(crate::roles::Role::World);
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { crate::acquisition::Pool::start(1, 1, move |_: &mut ()| {
+        let _job =
+        job(crate::roles::Role::World);
         let _ = entered_tx.send(());
-        let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
+        let _ = ready_tx.send( GetCurrentThreadId() );
         job_barrier.wait();
         7_u8
-    })
+    }) }
     .unwrap();
     let mut target = pool
         .thread_ids()
@@ -278,7 +281,9 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     // pool/its captured barrier are dropped. There is only one collector.
     let submitted = unsafe { pool.submit(&mut request) };
     let Ok(ticket) = submitted else {
-        let shutdown = pool.shutdown();
+        let shutdown =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { pool.shutdown() };
         drop(pool);
         let _ = release_tx.send(());
         let released = releaser.join();
@@ -305,7 +310,9 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         .as_ref()
         .and_then(|target| target.job.as_ref())
         .map(SampledJob::id);
-    let shutdown = pool.shutdown();
+    let shutdown =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() };
     drop(pool);
     let released = releaser.join();
     assert!(id.is_ok(), "worker did not report job entry: {id:?}");

@@ -144,7 +144,9 @@ fn unit_scale_orders() {
         for _ in 0..4 {
             map.reset();
             map.orders.walk(&live, world.base);
-            map.grow(&mut capacities);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { map.grow(&mut capacities) };
         }
         assert_eq!(map.orders.rows.outcome, Outcome::Rows { len: groups * 2 });
         let retained = map.orders.allocated_bytes();
@@ -405,7 +407,8 @@ fn unit_scale_capture() {
             shape,
             map.air_wings.allocated_bytes(),
             || {
-                map.install_owned_air(&mut job);
+                // SAFETY: This is the completed air job being restored to its original frame once.
+                unsafe { map.install_owned_air(&mut job) };
                 assert_eq!(map.air_wings.outcome, Outcome::Rows { len: shape.wings });
             },
         );

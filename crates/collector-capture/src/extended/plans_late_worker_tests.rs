@@ -25,7 +25,9 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         )
         .unwrap();
         let bytes = captured.allocated_bytes() + orders.allocated_bytes();
-        let pool = collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
             let Job::Late(request) = job else {
                 panic!("only Late is submitted");
             };
@@ -34,10 +36,12 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
                 .plans
                 .fail_unit_transports("synthetic optional transport refusal");
             Report::Late(LateReport)
-        })
+        }) }
         .unwrap();
         if mode == 3 {
-            pool.shutdown().unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { pool.shutdown() }.unwrap();
         }
         let request = captured.take_late_request(&countries, &mut orders, true, 0, 0, 1, false);
         assert!(engine_allocation::SharedBox::ptr_eq(
@@ -67,7 +71,9 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         } else {
             let ticket = submitted.unwrap();
             if mode == 2 {
-                pool.shutdown().unwrap();
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { pool.shutdown() }.unwrap();
             }
             let completion = pool.finish(ticket).unwrap();
             match mode {
@@ -109,6 +115,7 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
             bytes + output_bytes,
             "off-hook growth adds exactly the returned output spare, counting each owner once"
         );
-        pool.shutdown().unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { pool.shutdown() }.unwrap();
     }
 }

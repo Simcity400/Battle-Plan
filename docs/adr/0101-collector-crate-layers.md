@@ -4,6 +4,8 @@ The collector DLL owns the Windows entry point, the exported callback symbols an
 
 Runtime owns attachment, detachment, the hook type and site registries, and the worker and status lifecycles. [Runtime](../../crates/collector-runtime/src/runtime.rs)
 
+Cross-crate lifecycle operations use `unsafe fn` contracts that reserve startup and teardown for the runtime's attach and detach sequence. The contracts preserve the split's existing behaviour.
+
 Capture owns hourly admission and scheduling, the pack registry, frame assembly, and decode. Map capture and player command observation each have a separate crate. The player command observer uses replay's command record types through a dependency with default features disabled. Capture supplies the observer with its roster sampling callback. [Hourly capture](../../crates/collector-capture/src/sampling.rs)
 
 Spooling consumes captured frames and owns conversion, writing, and history replies. The pack registry owns the part of conversion that enumerates captured pack types. [Spool processing](../../crates/collector-spool/src/spooling.rs)

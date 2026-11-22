@@ -32,12 +32,12 @@ pub use pools::*;
 
 pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
 
-pub const CHARACTERS: [TableId; collector_characters::extended::characters::N] =
+pub(crate) const CHARACTERS: [TableId; collector_characters::extended::characters::N] =
     collector_characters::extended::characters::TABLES;
 
-pub const PROJECTS: [TableId; 2] = collector_projects::projects::RAW;
+pub(crate) const PROJECTS: [TableId; 2] = collector_projects::projects::RAW;
 
-pub const LEXICAL: [TableId; 1] = [TableId::LexicalTokens];
+pub(crate) const LEXICAL: [TableId; 1] = [TableId::LexicalTokens];
 pub const DIVISIONS: [TableId; 6] = [
     TableId::Divisions,
     TableId::DivisionEquipment,
@@ -46,33 +46,33 @@ pub const DIVISIONS: [TableId; 6] = [
     TableId::ArmyUpgradeDeliveries,
     TableId::ArmyUpgradeProduced,
 ];
-pub const PLAYERS: [TableId; 2] = [TableId::Players, TableId::HumanControllers];
+pub(crate) const PLAYERS: [TableId; 2] = [TableId::Players, TableId::HumanControllers];
 
-pub const SESSION: [TableId; 3] = [
+pub(crate) const SESSION: [TableId; 3] = [
     TableId::WorldTension,
     TableId::ThreatSources,
     TableId::ThreatCountryAggregates,
 ];
 
-pub const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulative];
+pub(crate) const AIR_WING: [TableId; 2] = [TableId::WingEquipment, TableId::WingCumulative];
 
-pub const AIR_STATS: [TableId; 1] = [TableId::AirStatistics];
+pub(crate) const AIR_STATS: [TableId; 1] = [TableId::AirStatistics];
 
-pub const AIR_BASES: [TableId; 3] = [
+pub(crate) const AIR_BASES: [TableId; 3] = [
     TableId::AirBases,
     TableId::AirBaseRegistrations,
     TableId::AirAces,
 ];
 
-pub const SUPREMACY: [TableId; 1] = [TableId::NavalSupremacy];
+pub(crate) const SUPREMACY: [TableId; 1] = [TableId::NavalSupremacy];
 
 pub const SUNK: [TableId; 1] = [TableId::SunkShips];
 
-pub const RADAR: [TableId; 1] = [TableId::RadarCoverage];
+pub(crate) const RADAR: [TableId; 1] = [TableId::RadarCoverage];
 
-pub const INTEL: [TableId; 1] = [TableId::UnitIntel];
+pub(crate) const INTEL: [TableId; 1] = [TableId::UnitIntel];
 
-pub const NAVAL_ORDER: [TableId; 9] = [
+pub(crate) const NAVAL_ORDER: [TableId; 9] = [
     TableId::LandTheatres,
     TableId::LandTheatreGroups,
     TableId::LandTheatreMembers,
@@ -84,7 +84,7 @@ pub const NAVAL_ORDER: [TableId; 9] = [
     TableId::ArmyGroupMembers,
 ];
 
-pub const PRODUCTION_REST: [TableId; 8] = [
+pub(crate) const PRODUCTION_REST: [TableId; 8] = [
     TableId::ProductionLines,
     TableId::Stockpiles,
     TableId::ProductionLicenses,
@@ -95,7 +95,7 @@ pub const PRODUCTION_REST: [TableId; 8] = [
     TableId::ProductionLicenseRecords,
 ];
 
-pub const CONSTRUCTION_REST: [TableId; 10] = [
+pub(crate) const CONSTRUCTION_REST: [TableId; 10] = [
     TableId::StateBaseResources,
     TableId::BuildingConstruction,
     TableId::RailwayConstruction,
@@ -108,7 +108,7 @@ pub const CONSTRUCTION_REST: [TableId; 10] = [
     TableId::CountryCollaboration,
 ];
 
-pub const ECONOMY_REST: [TableId; collector_economy::economy::N] = [
+pub(crate) const ECONOMY_REST: [TableId; collector_economy::economy::N] = [
     TableId::CountryFuel,
     TableId::CountryExperience,
     TableId::ProvinceSupply,
@@ -123,58 +123,58 @@ pub const ECONOMY_REST: [TableId; collector_economy::economy::N] = [
     TableId::FuelDemandParts,
 ];
 
-pub const WEATHER: [TableId; 2] = [TableId::WeatherRegions, TableId::WeatherProvinces];
+pub(crate) const WEATHER: [TableId; 2] = [TableId::WeatherRegions, TableId::WeatherProvinces];
 
-pub const CAPITULATION: [TableId; 1] = [TableId::Capitulation];
+pub(crate) const CAPITULATION: [TableId; 1] = [TableId::Capitulation];
 
 #[derive(Debug, Default)]
 pub struct DecodeJob {
     pub index: usize,
     pub seq: u64,
     pub hour: i32,
-    pub relations_refresh: bool,
-    pub characters_refresh: [bool; CHARACTER_PARTS],
-    pub projects_refresh: bool,
-    pub lexical_refresh: bool,
-    pub divisions_refresh: bool,
-    pub air_wing_refresh: bool,
-    pub air_stats_refresh: bool,
-    pub naval_refresh: bool,
-    pub players_refresh: bool,
-    pub session_refresh: bool,
-    pub production_rest_refresh: bool,
-    pub construction_rest_refresh: bool,
-    pub economy_rest_refresh: bool,
-    pub air_bases_refresh: bool,
-    pub supremacy_refresh: bool,
-    pub sunk_refresh: bool,
-    pub radar_refresh: bool,
-    pub intel_refresh: bool,
-    pub weather_refresh: bool,
-    pub capitulation_refresh: bool,
+    pub(crate) relations_refresh: bool,
+    pub(crate) characters_refresh: [bool; CHARACTER_PARTS],
+    pub(crate) projects_refresh: bool,
+    pub(crate) lexical_refresh: bool,
+    pub(crate) divisions_refresh: bool,
+    pub(crate) air_wing_refresh: bool,
+    pub(crate) air_stats_refresh: bool,
+    pub(crate) naval_refresh: bool,
+    pub(crate) players_refresh: bool,
+    pub(crate) session_refresh: bool,
+    pub(crate) production_rest_refresh: bool,
+    pub(crate) construction_rest_refresh: bool,
+    pub(crate) economy_rest_refresh: bool,
+    pub(crate) air_bases_refresh: bool,
+    pub(crate) supremacy_refresh: bool,
+    pub(crate) sunk_refresh: bool,
+    pub(crate) radar_refresh: bool,
+    pub(crate) intel_refresh: bool,
+    pub(crate) weather_refresh: bool,
+    pub(crate) capitulation_refresh: bool,
     pub force_full: bool,
-    pub game_elapsed: i64,
-    pub queued_qpc: i64,
-    pub relations_payload: Option<RelationsJob>,
-    pub characters_payload: [Option<CharactersJob>; CHARACTER_PARTS],
-    pub projects_payload: Option<ProjectsJob>,
-    pub lexical_payload: Option<LexicalJob>,
-    pub divisions_payload: Option<DivisionsJob>,
-    pub air_wing_payload: Option<AirWingJob>,
-    pub air_stats_payload: Option<AirStatsJob>,
-    pub naval_payload: Option<NavalJob>,
-    pub players_payload: Option<PlayersJob>,
-    pub session_payload: Option<SessionJob>,
-    pub production_rest_payload: Option<ProductionRestJob>,
-    pub construction_rest_payload: Option<ConstructionRestJob>,
-    pub economy_rest_payload: Option<EconomyRestJob>,
-    pub air_bases_payload: Option<AirBasesJob>,
-    pub supremacy_payload: Option<SupremacyJob>,
-    pub sunk_payload: Option<SunkJob>,
-    pub radar_payload: Option<RadarJob>,
-    pub intel_payload: Option<IntelJob>,
-    pub weather_payload: Option<WeatherJob>,
-    pub capitulation_payload: Option<CapitulationJob>,
+    pub(crate) game_elapsed: i64,
+    pub(crate) queued_qpc: i64,
+    pub(crate) relations_payload: Option<RelationsJob>,
+    pub(crate) characters_payload: [Option<CharactersJob>; CHARACTER_PARTS],
+    pub(crate) projects_payload: Option<ProjectsJob>,
+    pub(crate) lexical_payload: Option<LexicalJob>,
+    pub(crate) divisions_payload: Option<DivisionsJob>,
+    pub(crate) air_wing_payload: Option<AirWingJob>,
+    pub(crate) air_stats_payload: Option<AirStatsJob>,
+    pub(crate) naval_payload: Option<NavalJob>,
+    pub(crate) players_payload: Option<PlayersJob>,
+    pub(crate) session_payload: Option<SessionJob>,
+    pub(crate) production_rest_payload: Option<ProductionRestJob>,
+    pub(crate) construction_rest_payload: Option<ConstructionRestJob>,
+    pub(crate) economy_rest_payload: Option<EconomyRestJob>,
+    pub(crate) air_bases_payload: Option<AirBasesJob>,
+    pub(crate) supremacy_payload: Option<SupremacyJob>,
+    pub(crate) sunk_payload: Option<SunkJob>,
+    pub(crate) radar_payload: Option<RadarJob>,
+    pub(crate) intel_payload: Option<IntelJob>,
+    pub(crate) weather_payload: Option<WeatherJob>,
+    pub(crate) capitulation_payload: Option<CapitulationJob>,
 }
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -189,19 +189,19 @@ pub fn worker_finished() -> bool {
         slot.as_ref().is_none_or(|handle| handle.is_finished())
     })
 }
-pub fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn relations_refresh_hour(hour: i32, force_full: bool) -> bool {
     RELATIONS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-pub fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn characters_refresh_hour(hour: i32, force_full: bool) -> bool {
     CHARACTERS
         .iter()
         .any(|table| replay_data::cadence::should_walk(*table, hour, force_full))
 }
 
-pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     let walk = replay_data::cadence::should_walk(PROJECTS[0], hour, force_full);
     for table in PROJECTS.iter().skip(1) {
         debug_assert_eq!(
@@ -212,11 +212,14 @@ pub fn projects_refresh_hour(hour: i32, force_full: bool) -> bool {
     walk
 }
 
-pub fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
+pub(crate) fn lexical_refresh_hour(hour: i32, force_full: bool) -> bool {
     replay_data::cadence::should_walk(LEXICAL[0], hour, force_full)
 }
 
-pub fn next_seq() -> u64 {
+/// # Safety
+/// Only an admitted capture may advance the session's decode sequence, once for each job published
+/// to decode.
+pub(crate) unsafe fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -405,7 +408,11 @@ impl Drop for PayloadPools {
     }
 }
 
-pub fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
+/// # Safety
+/// Only the attaching runtime may prepare the global payload pools, before starting decode or
+/// publishing any hook. Retain the returned guard until acquisition and decode are joined and their
+/// payloads returned.
+pub unsafe fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
     let pools = PayloadPools;
     prepare_retirement()?;
     for _ in 0..JOB_POOL_STEADY {
@@ -509,17 +516,27 @@ fn reclaim_payloads() {
 static SPARE_RETIREMENT: Mutex<Vec<RetiredPayload>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
-pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
+/// # Safety
+/// The caller must own the named frame's unpublished decode job and transfer it to the active
+/// session's sole decode worker exactly once, before recycling the frame or releasing the payload
+/// pools.
+pub(crate) unsafe fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     if collector_memory::terminal::failed() {
         return Some(job);
     }
     job.queued_qpc = collector_primitives::clock::qpc();
-    push(shared, job);
+    // SAFETY: The decode consumer is returning a job for its original slot before releasing the
+    // slot.
+    unsafe { push(shared, job) };
     enqueued(shared);
     None
 }
 
-pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
+/// # Safety
+/// The caller must own the named frame's unpublished decode job and transfer it to the active
+/// session's sole decode worker exactly once, before recycling the frame or releasing the payload
+/// pools.
+pub(crate) unsafe fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
     if collector_memory::terminal::failed() {
         recycle_payloads(reserved.job());
         return false;
@@ -602,7 +619,9 @@ fn recycle_payloads(job: &mut DecodeJob) {
 fn decode_loop() {
     let _worker = collector_memory::terminal::enter(collector_memory::terminal::Phase::Decode);
     let mut air_bases_memo = AirBasesMemo::default();
-    let mut priority = collector_workers::priority::OwnPriority::frame_pipeline();
+    let mut priority =
+    // SAFETY: This is the dedicated worker applying its own session's priority policy.
+    unsafe { collector_workers::priority::OwnPriority::frame_pipeline() };
     let mut registered = false;
     loop {
         if STOP.load(Ordering::Acquire) {
@@ -616,18 +635,24 @@ fn decode_loop() {
         let shared = unsafe { &*shared_ptr };
         if !registered {
             let _ = shared.decode_waker.set(std::thread::current());
-            priority.follow_pipeline(
-                &shared.frame_priority,
-                collector_workers::frame_priority::Role::Decode,
-            );
-            registered = true;
-        }
-        match pop(shared) {
-            Some(job) => {
+            // SAFETY: This owned worker updates its priority from its session's own pipeline.
+            unsafe {
                 priority.follow_pipeline(
                     &shared.frame_priority,
                     collector_workers::frame_priority::Role::Decode,
-                );
+                )
+            };
+            registered = true;
+        }
+        match
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(shared) } {
+            Some(job) => {
+                // SAFETY: This owned worker updates its priority from its session's own pipeline.
+                unsafe { priority.follow_pipeline(
+                    &shared.frame_priority,
+                    collector_workers::frame_priority::Role::Decode,
+                ) };
                 collector_workers::tick_gate::wait();
                 process_owned_job(shared, job, &mut air_bases_memo);
             }
@@ -647,13 +672,17 @@ fn decode_loop() {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
-    while let Some(job) = pop(shared) {
+    while let Some(job) =
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { pop(shared) }
+    {
         process_owned_job(shared, job, memo);
     }
 }
 
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
-    shared.frame_stage(job.index, sampling::FrameStage::Decoding);
+    // SAFETY: This stage owns the installed frame slot.
+    unsafe { shared.frame_stage(job.index, sampling::FrameStage::Decoding) };
     let failure_scope = failure::Scope::frame(failure::Frame {
         index: job.index,
         seq: job.seq,
@@ -688,7 +717,8 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     }
 
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-    frame.map.naval.discard_owned();
+    // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
+    unsafe { frame.map.naval.discard_owned() };
     frame.extended.discard_owned_censuses();
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
@@ -764,7 +794,8 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         frame.pool_bytes = shared.pool_total();
     }
     failure::stage("publish ready", None);
-    shared.frame_stage(job.index, sampling::FrameStage::Ready);
+    // SAFETY: This stage owns the installed frame slot.
+    unsafe { shared.frame_stage(job.index, sampling::FrameStage::Ready) };
     publish_ready(shared, job.index, job.game_elapsed);
     drop(failure_scope);
     failure::stage("after ready handoff", None);
@@ -810,7 +841,10 @@ fn exercise_projects() -> Option<ProjectsJob> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
+/// # Safety
+/// Only an isolated collector test may run this fixture. The test must own the global capture,
+/// decode and allocation-failure state and supply the frame claimed by that fixture.
+pub unsafe fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
     let Some(payload) = exercise_projects() else {
         return false;
     };
@@ -845,7 +879,10 @@ pub struct RefusalHour {
 }
 
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
-pub fn refusal_exercise(
+/// # Safety
+/// Only an isolated collector test may run this fixture. The test must own the global capture,
+/// decode and allocation-failure state and supply the frame claimed by that fixture.
+pub unsafe fn refusal_exercise(
     shared: &Shared,
     index: usize,
     hour: i32,
@@ -872,25 +909,32 @@ pub fn refusal_exercise(
     let outcomes = frame.extended.outcomes();
     let hour = RefusalHour {
         terminal: collector_memory::terminal::failed(),
-        published: shared.frames.pop_ready() == Some(index),
+        published:
+        // SAFETY: The sole spool consumer takes responsibility for the decoded slot until recycle.
+        unsafe { shared.frames.pop_ready() } == Some(index),
         projects: PROJECTS.map(|table| outcomes[table.index()]),
         capitulation: outcomes[CAPITULATION[0].index()],
     };
     if !hour.terminal {
         let _setup =
             collector_memory::terminal::enter(collector_memory::terminal::Phase::Bootstrap);
-        shared.prepare_frame_for_reuse(index);
+        // SAFETY: This owner has finished using the frame and no other stage or helper borrows it.
+        unsafe { shared.prepare_frame_for_reuse(index) };
     }
     hour
 }
 
-pub fn start_worker() -> Result<(), &'static str> {
+/// # Safety
+/// Only the runtime may start decode, once after preparing its payload pools and before the hourly
+/// hook can submit work. Join it through detach_drain before releasing that storage.
+pub unsafe fn start_worker() -> Result<(), &'static str> {
     let mut slot = WORKER.lock().map_err(|_| "decode worker lock poisoned")?;
     if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
         return Err("decode worker already running");
     }
     STOP.store(false, Ordering::Release);
-    set_decode_worker(0);
+    // SAFETY: Startup and joined detach own this session's decode registration.
+    unsafe { set_decode_worker(0) };
     *slot = Some(
         std::thread::Builder::new()
             .name("hoi4-decode".into())
@@ -898,12 +942,18 @@ pub fn start_worker() -> Result<(), &'static str> {
             .spawn(|| {
                 collector_workers::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+                // SAFETY: This runtime-owned worker keeps the guard until it exits.
+                let _sampler_exit =
+                    unsafe { collector_workers::thread_cpu::StopOnThreadExit::new() };
                 #[cfg(feature = "worker_sampler")]
-                collector_workers::thread_cpu::register_decode();
-                set_decode_worker(unsafe {
-                    windows_sys::Win32::System::Threading::GetCurrentThreadId()
-                });
+                // SAFETY: This is the session decode thread and its exit path joins the sampler.
+                unsafe {
+                    collector_workers::thread_cpu::register_decode()
+                };
+                // SAFETY: Startup and joined detach own this session's decode registration.
+                unsafe {
+                    set_decode_worker(windows_sys::Win32::System::Threading::GetCurrentThreadId())
+                };
                 failure::worker(decode_loop);
             })
             .map_err(|_| "cannot start decode worker")?,
@@ -1152,7 +1202,8 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     frame.extended.decode_capture_tails();
     failure::stage("owned census publication", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-    frame.map.naval.decode_owned();
+    // SAFETY: The decode path settles this frame's naval loan before reuse.
+    unsafe { frame.map.naval.decode_owned() };
     frame.extended.decode_owned_censuses();
     failure::stage("owned mission tails", None);
     frame.extended.decode_mission_tails();
@@ -1290,9 +1341,12 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         failure::stage("players", None);
         let mut decode_ticks = [0; 2];
         decode_contained(shared, index, Family::Players, |frame| {
-            frame
-                .map
-                .decode_players_payload(shared.base, payload, &mut decode_ticks);
+            // SAFETY: Decode is settling the matching job into its originating frame.
+            unsafe {
+                frame
+                    .map
+                    .decode_players_payload(shared.base, payload, &mut decode_ticks)
+            };
         });
         account_decode(shared, &PLAYERS, &decode_ticks);
     }
@@ -1508,7 +1562,10 @@ fn decode_presentation(shared: &Shared, index: usize) {
     }
 }
 
-pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
+/// # Safety
+/// Only the runtime may drain and join its decode worker, after closing hourly admission and
+/// quiescing capture. Keep shared state and the payload pools alive until it returns.
+pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     let _failure = failure::Scope::worker("decode detach drain");
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
@@ -1523,7 +1580,8 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     }
     #[cfg(feature = "worker_sampler")]
     if worker.is_some() {
-        collector_workers::worker_sampler_state::stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe { collector_workers::worker_sampler_state::stop_before_thread_exit() };
     }
     if let Some(handle) = worker
         && let Err(payload) = handle.join()
@@ -1539,7 +1597,8 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
             "decode worker panicked; its in-flight frame may be incomplete",
         ));
     }
-    set_decode_worker(0);
+    // SAFETY: Startup and joined detach own this session's decode registration.
+    unsafe { set_decode_worker(0) };
     let shared_ptr = sampling::SHARED.load(Ordering::Acquire);
     if shared_ptr.is_null() {
         STOP.store(false, Ordering::Release);
@@ -1549,7 +1608,10 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     let mut air_bases_memo = AirBasesMemo::default();
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut count = 0;
-        while let Some(job) = pop(shared) {
+        while let Some(job) =
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { pop(shared) }
+        {
             process_owned_job(shared, job, &mut air_bases_memo);
             count += 1;
             failure::stage("drain progress", None);
@@ -1572,19 +1634,33 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     panic_failure().or(error).map_or(Ok(()), Err)
 }
 
-pub fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
+/// # Safety
+/// The caller must exclusively own an installed frame at index in shared, with no decode job queued
+/// for it, and must settle or transfer that claim before recycling the frame.
+pub(crate) unsafe fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
     Reserved { shared, index }
 }
 
-pub fn pop(shared: &Shared) -> Option<DecodeJob> {
-    let index = shared.frames.pop_decode()?;
+/// # Safety
+/// Only the sole decode consumer may remove a queued job, and it must hold the corresponding frame
+/// until the job is settled.
+pub(crate) unsafe fn pop(shared: &Shared) -> Option<DecodeJob> {
+    let index =
+    // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+    unsafe { shared.frames.pop_decode() }?;
     // SAFETY: popping the index hands its frame, and so its job, to this consumer.
     Some(std::mem::take(unsafe { shared.frames.job(index) }))
 }
 
 #[cfg(test)]
-pub fn push(shared: &Shared, job: DecodeJob) {
-    let mut reserved = reserve(shared, job.index);
+/// # Safety
+/// Only the sole decode consumer may requeue its own job, while the frame remains installed and
+/// exclusively owned by decode.
+pub(crate) unsafe fn push(shared: &Shared, job: DecodeJob) {
+    let mut reserved =
+    // SAFETY: The capture path holds this installed slot exclusively before publishing its decode
+    // job.
+    unsafe { reserve(shared, job.index) };
     *reserved.job() = job;
     reserved.publish();
 }
@@ -1601,7 +1677,8 @@ impl Reserved<'_> {
     }
 
     fn publish(self) {
-        self.shared.frames.push_decode(self.index);
+        // SAFETY: The producer owns this slot and its initialized decode job.
+        unsafe { self.shared.frames.push_decode(self.index) };
         std::mem::forget(self);
     }
 }
@@ -1636,7 +1713,11 @@ impl Drop for Reserved<'_> {
 pub(crate) fn reset_for_test() {
     prepare_retirement().unwrap();
     reclaim_payloads();
-    std::mem::forget(prepare_payload_pools(false).unwrap());
+    std::mem::forget(
+        // SAFETY: Attach owns payload storage through worker join. Fixture processes own their test
+        // pools.
+        unsafe { prepare_payload_pools(false) }.unwrap(),
+    );
     SEQ.store(0, Ordering::Relaxed);
 }
 

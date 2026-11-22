@@ -12,17 +12,25 @@ const CAP: Duration = Duration::from_millis(200);
 
 static GATE: Gate = Gate::new();
 
-pub fn enter(idle: Option<&crate::event::Event>) {
+/// # Safety
+/// Only the admitted native tick may enter the live gate, using its session's idle event.
+pub unsafe fn enter(idle: Option<&crate::event::Event>) {
     GATE.enter();
     if let Some(idle) = idle {
-        idle.reset();
+        // SAFETY: This worker is resetting the event it owns, or the isolated fixture owns the
+        // panic witness.
+        unsafe { idle.reset() };
     }
 }
 
-pub fn leave(idle: Option<&crate::event::Event>) {
+/// # Safety
+/// Only the tick that entered this gate may leave it, after native work is complete and using the
+/// same live idle event.
+pub unsafe fn leave(idle: Option<&crate::event::Event>) {
     GATE.leave();
     if let Some(idle) = idle {
-        idle.set();
+        // SAFETY: The tick exit owns the session's idle event and sets it after leaving the gate.
+        unsafe { idle.set() };
     }
 }
 
@@ -35,10 +43,10 @@ pub(crate) fn copy_only(copy_only: bool) {
 }
 
 pub fn gated() -> Gated {
-    Gated(COPY_ONLY.replace(false))
+    Gated(COPY_ONLY.replace(false), std::marker::PhantomData)
 }
 
-pub struct Gated(bool);
+pub struct Gated(bool, std::marker::PhantomData<*mut ()>);
 
 impl Drop for Gated {
     fn drop(&mut self) {

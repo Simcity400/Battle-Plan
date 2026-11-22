@@ -244,18 +244,25 @@ fn decode_refused(ordinal: usize) {
         move || collector_memory::terminal::inject_any(&[Phase::Decode, Phase::Raw], ordinal)
     };
     let shared =
-        collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).unwrap();
-    let index = shared.take_frame(&mut 0).unwrap();
+        // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+        // boundary or detach.
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.unwrap();
+    let index =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     let baseline =
-        collector_capture::decode::refusal_exercise(&shared, index, 20, decode_work(u64::MAX));
+        // SAFETY: This fixture owns the claimed frame and process-wide refusal state.
+        unsafe { collector_capture::decode::refusal_exercise(&shared, index, 20, decode_work(u64::MAX)) };
     assert!(!baseline.terminal && baseline.published, "{baseline:?}");
     assert!(!baseline.projects.contains(&by_name) && baseline.capitulation != by_name);
-    let refused = collector_capture::decode::refusal_exercise(
+    let refused =
+    // SAFETY: This fixture owns the claimed frame and process-wide refusal state.
+    unsafe { collector_capture::decode::refusal_exercise(
         &shared,
         index,
         21,
         decode_work(ordinal as u64),
-    );
+    ) };
     if ordinal == usize::MAX {
         assert_eq!(refused.projects, baseline.projects);
         assert_eq!(refused.capitulation, baseline.capitulation);
@@ -288,22 +295,29 @@ fn decode_refused(ordinal: usize) {
         assert_eq!(refused.projects, baseline.projects);
     }
     let next =
-        collector_capture::decode::refusal_exercise(&shared, index, 22, decode_work(u64::MAX));
+        // SAFETY: This fixture owns the claimed frame and process-wide refusal state.
+        unsafe { collector_capture::decode::refusal_exercise(&shared, index, 22, decode_work(u64::MAX)) };
     assert!(!next.terminal && next.published, "{next:?}");
     assert_eq!(next.projects, baseline.projects);
     assert_eq!(next.capitulation, baseline.capitulation);
-    shared.recycle_frame(index);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame(index) };
     println!("collector-decode-refused=contained");
 }
 
 fn payload_pools_refused() {
     collector_memory::terminal::reset();
     collector_memory::terminal::install_hooks();
-    drop(collector_capture::decode::prepare_payload_pools(true).unwrap());
+    drop(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_capture::decode::prepare_payload_pools(true) }.unwrap(),
+    );
     let prepare = |ordinal: usize| {
         let scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let guard = NullGuard::new(ordinal);
-        let prepared = collector_capture::decode::prepare_payload_pools(true);
+        let prepared =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_capture::decode::prepare_payload_pools(true) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -350,12 +364,21 @@ fn payload_pools_refused() {
 fn frame_build_refused() {
     collector_memory::terminal::reset();
     collector_memory::terminal::install_hooks();
-    let shared = collector_capture::sampling::Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
     let held: Vec<_> = (0..collector_capture::frame_pool::STEADY)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
-    let extra = shared.take_frame(&mut 0).unwrap();
-    drop(shared.frames.vacate(extra));
+    let extra =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
+    drop(
+        // SAFETY: The caller owns the installed slot and all other frame users are finished.
+        unsafe { shared.frames().vacate(extra) },
+    );
     let context = Context {
         campaign_id: Some(*CAMPAIGN),
         branch: None,
@@ -366,15 +389,24 @@ fn frame_build_refused() {
         let _scope = collector_memory::terminal::enter(Phase::Callback);
         collector_memory::terminal::set_context(context);
         let guard = NullGuard::new(usize::MAX);
-        let built = shared.take_frame(&mut 0);
+        let built =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) };
         let count = ATTEMPTS.load(Ordering::Relaxed);
         drop(guard);
-        drop(shared.frames.vacate(built.expect("an unrefused frame")));
+        drop(
+            // SAFETY: The caller owns the installed slot and all other frame users are finished.
+            unsafe { shared.frames().vacate(built.expect("an unrefused frame")) },
+        );
         count
     };
     assert!(!collector_memory::terminal::failed());
-    let live = shared.frames.live();
-    let grown = shared.frames.gauge().grown;
+    let live =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.live();
+    let grown =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.gauge().grown;
     for ordinal in 1..=built {
         collector_memory::terminal::reset();
         collector_memory::terminal::install_hooks();
@@ -382,7 +414,9 @@ fn frame_build_refused() {
         collector_memory::terminal::set_context(context);
         let mut grow_ns = u64::MAX;
         let guard = NullGuard::new(ordinal);
-        let refused = shared.take_frame(&mut grow_ns);
+        let refused =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut grow_ns) };
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
         drop(scope);
@@ -402,8 +436,16 @@ fn frame_build_refused() {
             (Phase::Callback as u8, Code::Reserve as u8, Some(41)),
             "allocation {ordinal} of {built}"
         );
-        assert_eq!(shared.frames.live(), live);
-        assert_eq!(shared.frames.gauge().grown, grown);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.live(),
+            live
+        );
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.gauge().grown,
+            grown
+        );
     }
     let complete = unsafe {
         collector_capture::sampling::synthetic_callback(
@@ -414,11 +456,21 @@ fn frame_build_refused() {
         )
     };
     assert!(!complete);
-    assert!(!shared.recording.load(Ordering::Acquire));
-    assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
-    assert!(unsafe { &*shared.pending.get() }.iter().next().is_none());
+    assert!(!
+        // SAFETY: This is the owning runtime's stop or an isolated fixture's recording flag.
+        unsafe { shared.recording() }.load(Ordering::Acquire));
+    assert_eq!(
+        // SAFETY: The spool or fixture reads the count maintained by its own capture.
+        unsafe { shared.dropped() }.load(Ordering::Relaxed),
+        0
+    );
+    assert!(
+        // SAFETY: The isolated fixture owns this loss state and no other thread can access it.
+        unsafe { &*shared.pending().get() }.iter().next().is_none()
+    );
     for index in held {
-        shared.recycle_frame(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(index) };
     }
     collector_memory::terminal::clear_handle();
     println!("collector-allocation-count={built}");
@@ -432,10 +484,18 @@ fn attach_refused() {
     let unbind = || unsafe {
         collector_observers::doctrine_changes::bind(0, collector_slow_tables::doctrines::observe);
     };
-    drop(collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing).unwrap());
+    drop(
+        // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+        // boundary or detach.
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) }.unwrap(),
+    );
     let stores = {
         let guard = NullGuard::new(usize::MAX);
-        drop(collector_capture::sampling::Shared::without_frames(0, 0, 1, &sizing).unwrap());
+        drop(
+            // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+            unsafe { collector_capture::sampling::Shared::without_frames(0, 0, 1, &sizing) }
+                .unwrap(),
+        );
         let stores = ATTEMPTS.load(Ordering::Relaxed);
         drop(guard);
         stores
@@ -444,7 +504,10 @@ fn attach_refused() {
         unbind();
         let scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let guard = NullGuard::new(ordinal);
-        let attached = collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing);
+        let attached =
+        // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+        // boundary or detach.
+        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -498,9 +561,13 @@ fn attach_refused() {
 fn frame_growth_refused() {
     collector_memory::terminal::reset();
     collector_memory::terminal::install_hooks();
-    let shared = collector_capture::sampling::Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
     let held: Vec<_> = (0..collector_capture::frame_pool::STEADY)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
     let scope = collector_memory::terminal::enter(Phase::Callback);
     collector_memory::terminal::set_context(Context {
@@ -510,7 +577,9 @@ fn frame_growth_refused() {
         failed_hour: Some(41),
     });
     let mut grow_ns = u64::MAX;
-    let refused = with_allocations_denied(|| shared.take_frame(&mut grow_ns));
+    let refused = with_allocations_denied(||
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut grow_ns) });
     drop(scope);
     assert_eq!(refused, None);
     assert_eq!(grow_ns, 0);
@@ -519,8 +588,16 @@ fn frame_growth_refused() {
     assert_eq!(witness.phase, Phase::Callback as u8);
     assert_eq!(witness.code, Code::Reserve as u8);
     assert_eq!(witness.failed_hour, Some(41));
-    assert_eq!(shared.frames.live(), collector_capture::frame_pool::STEADY);
-    assert_eq!(shared.frames.gauge().grown, 0);
+    assert_eq!(
+        // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+        unsafe { shared.frames() }.live(),
+        collector_capture::frame_pool::STEADY
+    );
+    assert_eq!(
+        // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+        unsafe { shared.frames() }.gauge().grown,
+        0
+    );
     let complete = unsafe {
         collector_capture::sampling::synthetic_callback(
             &shared,
@@ -530,11 +607,21 @@ fn frame_growth_refused() {
         )
     };
     assert!(!complete);
-    assert!(!shared.recording.load(Ordering::Acquire));
-    assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
-    assert!(unsafe { &*shared.pending.get() }.iter().next().is_none());
+    assert!(!
+        // SAFETY: This is the owning runtime's stop or an isolated fixture's recording flag.
+        unsafe { shared.recording() }.load(Ordering::Acquire));
+    assert_eq!(
+        // SAFETY: The spool or fixture reads the count maintained by its own capture.
+        unsafe { shared.dropped() }.load(Ordering::Relaxed),
+        0
+    );
+    assert!(
+        // SAFETY: The isolated fixture owns this loss state and no other thread can access it.
+        unsafe { &*shared.pending().get() }.iter().next().is_none()
+    );
     for index in held {
-        shared.recycle_frame(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(index) };
     }
     collector_memory::terminal::clear_handle();
     println!("collector-frame-growth-refused=ok");
@@ -738,10 +825,12 @@ fn allocation_safety_child() {
         #[cfg(feature = "alloc-fault-injection")]
         "decode-refused" => decode_refused(ordinal),
         "batch-drain-terminal" => {
-            collector_capture::acquisition_jobs::batch_drain_tests::exercise("terminal")
+            // SAFETY: This test fixture runs in isolation and owns the process-wide failure state.
+            unsafe { collector_capture::acquisition_jobs::batch_drain_tests::exercise("terminal") }
         }
         "batch-drain-midway" => {
-            collector_capture::acquisition_jobs::batch_drain_tests::exercise("midway")
+            // SAFETY: This test fixture runs in isolation and owns the process-wide failure state.
+            unsafe { collector_capture::acquisition_jobs::batch_drain_tests::exercise("midway") }
         }
         "null" => prepared_buffers_null(phase, ordinal).unwrap(),
         "concurrent-watermark" => {
@@ -829,15 +918,21 @@ fn thread_label(phase: Phase) -> io::Result<()> {
     collector_memory::terminal::prepare(&witness_file, 1, 1000);
     match phase {
         Phase::SpoolHelper => {
-            let helper = collector_workers::spool_helper::SpoolHelper::start(None)?;
+            let helper =
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }?;
             let job = || drop(engine_allocation::vec::<u64>(usize::MAX));
-            helper.join(false, &job, || ());
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe { helper.join(false, &job, || ()) };
         }
         Phase::Spool => collector_spool::spooling::write_behind_tests::idle_sync_refused(),
         #[cfg(feature = "alloc-fault-injection")]
         Phase::Journal => {
             collector_memory::terminal::inject(Phase::Journal, 1);
-            let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+            let mut processor =
+            // SAFETY: The isolated test owns the spool's failure state.
+            unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
             let mut frame = collector_spool::spooling::allocation_failure_frame(19);
             {
                 let _spool = collector_memory::terminal::enter(Phase::Spool);
@@ -845,9 +940,15 @@ fn thread_label(phase: Phase) -> io::Result<()> {
                     if let Some(clock) = &mut frame.clock {
                         clock.hour = hour;
                     }
-                    let _ = processor
-                        .prepare(&frame)
-                        .and_then(|()| processor.frame(&frame));
+                    let _ =
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { processor
+                        .prepare(&frame) }
+                        .and_then(|()|
+                        // SAFETY: This fixture owns its frame and worker state and runs without a
+                        // live attachment.
+                        unsafe { processor.frame(&frame) });
                 }
             }
             drop(processor);
@@ -879,13 +980,19 @@ fn set_aside_witness() -> io::Result<()> {
         .truncate(true)
         .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     collector_memory::terminal::prepare(&witness_file, 1, 1000);
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+    let mut processor =
+    // SAFETY: The isolated test owns the spool's failure state.
+    unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
     {
         let _scope = collector_memory::terminal::enter(Phase::Spool);
         for hour in 10..=11 {
-            processor.frame(&collector_spool::spooling::campaign_frame(
-                CAMPAIGN, 1, hour,
-            ))?;
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe {
+                processor.frame(&collector_spool::spooling::campaign_frame(
+                    CAMPAIGN, 1, hour,
+                ))
+            }?;
         }
         processor.lost(&collector_capture::sampling::LostObservation {
             campaign_id: engine_native::capture_text::Owned {
@@ -898,7 +1005,8 @@ fn set_aside_witness() -> io::Result<()> {
             count: 1,
             ..Default::default()
         })?;
-        processor.frame(&collector_spool::spooling::campaign_frame(OTHER, 2, 30))?;
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&collector_spool::spooling::campaign_frame(OTHER, 2, 30)) }?;
         collector_memory::terminal::fail(Phase::Spool, Code::Reserve);
     }
     let witness = collector_memory::terminal::failure().unwrap();
@@ -947,7 +1055,8 @@ fn cpu_sets_null(phase: Phase, ordinal: usize, query_failure: Option<usize>) -> 
     context(Some(21));
     let _scope = collector_memory::terminal::enter(phase);
     let attempts =
-        collector_workers::priority::background_cpu_sets_failure_exercise(ordinal, query_failure);
+        // SAFETY: This isolated fixture owns the affinity failure injection.
+        unsafe { collector_workers::priority::background_cpu_sets_failure_exercise(ordinal, query_failure) };
     assert!(
         !collector_memory::terminal::failed(),
         "optional placement must not stop capture"
@@ -1304,8 +1413,13 @@ fn exercise_pipeline(
         .create(true)
         .truncate(true)
         .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
-    let shared = collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing())?;
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&root)?;
+    let shared =
+    // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+    // boundary or detach.
+    unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }?;
+    let mut processor =
+    // SAFETY: The isolated test owns the spool's failure state.
+    unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
     if phase == Phase::Spool {
         processor.lockstep_writer();
     }
@@ -1313,23 +1427,29 @@ fn exercise_pipeline(
     if changed_loads {
         frame.clock.as_mut().unwrap().play_session_started_at = 19;
     }
-    processor.prepare(&frame)?;
-    processor.frame(&frame)?;
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.prepare(&frame) }?;
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&frame) }?;
     if let Some(clock) = &mut frame.clock {
         clock.hour = 20;
         if changed_loads {
             clock.play_session_started_at = 20;
         }
     }
-    processor.prepare(&frame)?;
-    processor.frame(&frame)?;
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.prepare(&frame) }?;
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&frame) }?;
     let preceding_publication = processor.allocation_failure_publication_state(20);
     let bytes = collector_divisions::census_test_fixture::fixture();
     let mut divisions = collector_capture::sampling::DivisionsJob::new();
     if let Some(clock) = &mut frame.clock {
         clock.hour = 21;
     }
-    let index = shared.take_frame(&mut 0).ok_or(io::ErrorKind::Other)?;
+    let index =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.ok_or(io::ErrorKind::Other)?;
     let mut status_probe = if phase == Phase::Status {
         Some(crate::status_writer::AllocationProbe::prepare(&root)?)
     } else {
@@ -1366,7 +1486,8 @@ fn exercise_pipeline(
     collector_memory::terminal::inject(phase, ordinal as u64);
     TARGET_PHASE.store(phase as u8, Ordering::Relaxed);
     REACHED.store(false, Ordering::Relaxed);
-    collector_spool::spooling::fail_publication_for_test(fail_publication);
+    // SAFETY: Only the isolated spool test changes this publication failure setting.
+    unsafe { collector_spool::spooling::fail_publication_for_test(fail_publication) };
     let mut original_calls = 0;
     let mut conversion_matched = true;
     let mut callback_calls = 0;
@@ -1377,7 +1498,9 @@ fn exercise_pipeline(
         let _scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let before = collector_capture::sampling::SHARED.identity_for_test();
         bootstrap_refused =
-            collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).is_err();
+            // SAFETY: This is unpublished attach or isolated fixture state, with no competing
+            // observer boundary or detach.
+            unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.is_err();
         assert!(before.is_null());
         assert_eq!(
             before,
@@ -1562,8 +1685,17 @@ fn exercise_pipeline(
             }));
     let incomplete_published = failed
         && phase == Phase::Decode
-        && (shared.frames.slot(index).completed.load(Ordering::Acquire) != 0
-            || !shared.frames.ready_is_empty());
+        && (
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }
+                .slot(index)
+                .completed
+                .load(Ordering::Acquire)
+                != 0
+                || !
+                // SAFETY: This is the runtime's frame pool for the current session.
+                unsafe { shared.frames() }.ready_is_empty()
+        );
     let mut admitted_after_failure = false;
     unsafe {
         collector_capture::sampling::synthetic_callback(

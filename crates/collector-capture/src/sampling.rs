@@ -53,9 +53,9 @@ const CHARACTER_PARTS: usize = collector_characters::extended::characters::PARTS
 const AIR_RELATION_PARTS: usize = collector_air_relations::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = collector_air_histories::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = collector_characters::extended::character_portraits::PARTS;
-pub const INITIAL_CAPACITIES: [usize; 12] = [0; 12];
+pub(crate) const INITIAL_CAPACITIES: [usize; 12] = [0; 12];
 
-pub fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
+pub(crate) fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
     let rows = collector_primitives::country_slots::rows(slots, 1);
     for index in [0, 2, 7] {
         collector_primitives::country_slots::raise(&mut core[index], rows);
@@ -87,7 +87,10 @@ impl SharedSlot {
             .store(std::ptr::from_ref(shared).cast_mut(), Ordering::Release);
     }
 
-    pub fn clear(&self) {
+    /// # Safety
+    /// Only the owning runtime may unpublish the live slot, after restoring hooks and waiting for
+    /// every callback and worker to stop borrowing Shared.
+    pub unsafe fn clear(&self) {
         self.0.store(ptr::null_mut(), Ordering::Release);
     }
 
@@ -129,7 +132,11 @@ impl SharedIdentity {
     }
 }
 
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 #[derive(Debug, Default)]
 struct CadenceState {
     initialized: bool,
@@ -341,8 +348,8 @@ pub struct Captured {
     pub map: MapCaptured,
     pub extended: extended::Captured,
     pub country_cache_status: SeedStatus,
-    pub country_cache_entries: usize,
-    pub country_cache_ns: u64,
+    pub(crate) country_cache_entries: usize,
+    pub(crate) country_cache_ns: u64,
     pub clock: Option<Clock>,
     clock_spare: Owned,
     pub counters: Option<AllocationCounters>,
@@ -352,7 +359,7 @@ pub struct Captured {
     pub state_inputs: acquisition_states::Inputs,
     pub state_names: Vec<u8>,
     pub state_names_len: usize,
-    pub state_names_required: usize,
+    pub(crate) state_names_required: usize,
     pub divisions: Vec<carmy::Row>,
     pub wars: Vec<cwar_relation::Row>,
     pub(crate) wars_snapshot: cwar_relation::OwnedSnapshotScratch,
@@ -362,7 +369,7 @@ pub struct Captured {
     pub faction_goals: collector_factions::faction_goals::Captured,
     pub faction_companions: collector_factions::faction_companions::Captured,
     pub faction_names_len: usize,
-    pub faction_names_required: usize,
+    pub(crate) faction_names_required: usize,
     pub faction_members: Vec<cfaction_system::MemberRow>,
     pub links: Vec<ccountry::LinkRow>,
     pub countries_result: Outcome,
@@ -423,17 +430,27 @@ impl Captured {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new() -> Self {
+    /// # Safety
+    /// Allocate only in the session's attach, sizing or capture sequence, or in an isolated
+    /// fixture. Keep live observer stores active and exclude conflicting sizing or teardown while
+    /// creating packs.
+    pub unsafe fn new() -> Self {
         let packs = extended::Capacities::default();
         let mut frame =
-            Self::with_capacities(&INITIAL_CAPACITIES, &MapCapacities::default(), &packs).unwrap();
+            // SAFETY: The session or isolated fixture owns this frame's observer allocations and
+            // excludes teardown.
+            unsafe { Self::with_capacities(&INITIAL_CAPACITIES, &MapCapacities::default(), &packs) }.unwrap();
         frame
             .extended
             .share_homes(&extended::Homes::new(&packs).unwrap());
         frame
     }
 
-    pub fn with_capacities(
+    /// # Safety
+    /// Allocate only in the session's attach, sizing or capture sequence, or in an isolated
+    /// fixture. Keep live observer stores active and exclude conflicting sizing or teardown while
+    /// creating packs.
+    pub unsafe fn with_capacities(
         capacities: &[usize; 12],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
@@ -446,7 +463,10 @@ impl Captured {
             capture_seq: 0,
             fixed_layout: None,
             map: MapCaptured::with_capacities(map_capacities),
-            extended: extended::Captured::frame(extended_capacities),
+            extended:
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { extended::Captured::frame(extended_capacities) },
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
             },
@@ -702,9 +722,9 @@ pub struct ProfilePhases {
     pub parallel_ns: AtomicU64,
     pub residual_ns: AtomicU64,
     pub calls: AtomicU64,
-    pub dispatch_ns: AtomicU64,
+    pub(crate) dispatch_ns: AtomicU64,
     pub segments: [AtomicU64; SEGMENTS],
-    pub join_wait: [AtomicU64; collector_workers::roles::ROLE_COUNT],
+    pub(crate) join_wait: [AtomicU64; collector_workers::roles::ROLE_COUNT],
 }
 
 #[cfg(feature = "callback_profile")]
@@ -760,33 +780,34 @@ impl WaitCounter {
 }
 
 pub struct Shared {
-    pub acquisition: OnceLock<acquisition::Pool>,
-    pub acquisition_panics: AtomicU64,
+    pub(crate) acquisition: OnceLock<acquisition::Pool>,
+    pub(crate) acquisition_panics: AtomicU64,
     #[cfg(feature = "callback_profile")]
-    pub profile: ProfilePhases,
-    pub native_tick_ns: AtomicU64,
-    pub native_tick_calls: AtomicU64,
+    pub(crate) profile: ProfilePhases,
+    pub(crate) native_tick_ns: AtomicU64,
+    pub(crate) native_tick_calls: AtomicU64,
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
     pub game_score_enabled: bool,
     pub capture_mode: replay_data::scope::CaptureMode,
-    pub tick_idle: Option<collector_workers::event::Event>,
-    pub frames: crate::frame_pool::FramePool,
-    pub frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
-    pub history_frames: collector_workers::frame_fence::Frames,
+    pub(crate) tick_idle: Option<collector_workers::event::Event>,
+    pub(crate) frames: crate::frame_pool::FramePool,
+    pub(crate) frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
+    pub(crate) history_frames: collector_workers::frame_fence::Frames,
     pub heap_waits: WaitCounter,
-    pub frame_priority: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
-    pub dropped: AtomicU64,
-    pub pool_bytes: engine_allocation::SharedBox<AtomicU64>,
-    pub recording: AtomicBool,
-    pub stop_spool: AtomicBool,
-    pub spool_waker: OnceLock<std::thread::Thread>,
+    pub(crate) frame_priority:
+        engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
+    pub(crate) dropped: AtomicU64,
+    pub(crate) pool_bytes: engine_allocation::SharedBox<AtomicU64>,
+    pub(crate) recording: AtomicBool,
+    pub(crate) stop_spool: AtomicBool,
+    pub(crate) spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
-    pub roster: UnsafeCell<Option<Box<Roster>>>,
-    pub roster_ready: AtomicBool,
+    pub(crate) roster: UnsafeCell<Option<Box<Roster>>>,
+    pub(crate) roster_ready: AtomicBool,
     roster_sampling: AtomicBool,
-    pub pending: UnsafeCell<LossBatch>,
+    pub(crate) pending: UnsafeCell<LossBatch>,
     clock_capture: UnsafeCell<ClockCapture>,
     clock_required: AtomicUsize,
     clock_frames: AtomicUsize,
@@ -870,27 +891,27 @@ pub struct Shared {
     appearance_store:
         UnsafeCell<Option<Box<collector_country_counters::country_appearance::AppearanceStore>>>,
     appearance_store_bytes: AtomicU64,
-    pub force_next: AtomicBool,
-    pub refresh_next: AtomicBool,
-    pub forget_families: std::sync::atomic::AtomicU32,
-    pub lexical_max: AtomicI32,
-    pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
-    pub fixed_layout_buffer: UnsafeCell<Vec<u8>>,
-    pub modifier_table: [AtomicU64; 2],
-    pub division_mark: AtomicU64,
-    pub country_cache_swap: Mutex<CountryCacheSwap>,
-    pub country_cache_cells: AtomicUsize,
-    pub country_intel: collector_intel::daily_intel::Home,
-    pub template_home: collector_division_templates::extended::division_templates::Home,
-    pub naval_combat_home: collector_naval_details::naval_combat_sources::Home,
-    pub weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
+    pub(crate) force_next: AtomicBool,
+    pub(crate) refresh_next: AtomicBool,
+    pub(crate) forget_families: std::sync::atomic::AtomicU32,
+    pub(crate) lexical_max: AtomicI32,
+    pub(crate) fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
+    pub(crate) fixed_layout_buffer: UnsafeCell<Vec<u8>>,
+    pub(crate) modifier_table: [AtomicU64; 2],
+    pub(crate) division_mark: AtomicU64,
+    pub(crate) country_cache_swap: Mutex<CountryCacheSwap>,
+    pub(crate) country_cache_cells: AtomicUsize,
+    pub(crate) country_intel: collector_intel::daily_intel::Home,
+    pub(crate) template_home: collector_division_templates::extended::division_templates::Home,
+    pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
+    pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(any(test, feature = "test-support"))]
-    pub build_ahead_seam: OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>>,
+    pub(crate) build_ahead_seam: OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>>,
     #[cfg(test)]
     pub(crate) clock_frame_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
     #[cfg(any(test, feature = "test-support"))]
-    pub surplus_free_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    pub(crate) surplus_free_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -909,28 +930,220 @@ enum Return {
 unsafe impl Sync for Shared {}
 
 impl Shared {
-    pub fn request_retry_full(&self) {
+    /// # Safety
+    /// Only attach may install the pool, before publication. Only the runtime and its admitted
+    /// capture workers may use the installed pool, and only until it has joined at detach.
+    pub unsafe fn acquisition(&self) -> &OnceLock<acquisition::Pool> {
+        &self.acquisition
+    }
+
+    /// # Safety
+    /// Only attach may set the idle event, before publishing the shared state.
+    pub unsafe fn tick_idle_mut(&mut self) -> &mut Option<collector_workers::event::Event> {
+        &mut self.tick_idle
+    }
+
+    /// # Safety
+    /// Use the live pool only within this session's runtime, acquire, decode and spool sequences.
+    /// Respect slot ownership for every frame operation and keep the pool live through detach.
+    pub unsafe fn frames(&self) -> &crate::frame_pool::FramePool {
+        &self.frames
+    }
+
+    /// # Safety
+    /// Only the session sizing owner may mutate these capacities. Publish and read them only for
+    /// this session's own frames.
+    pub unsafe fn frame_capacities(
+        &self,
+    ) -> &engine_allocation::SharedBox<crate::frame_capacities::Capacities> {
+        &self.frame_capacities
+    }
+
+    /// # Safety
+    /// Use only this session's fence with this session's frame slots. The capture sequence
+    /// publishes it and the spool alone checks it for history requests.
+    pub unsafe fn history_frames(&self) -> &collector_workers::frame_fence::Frames {
+        &self.history_frames
+    }
+
+    /// # Safety
+    /// Use only the session's priority pipeline, registering only its owned worker threads and
+    /// keeping the pipeline live until they join.
+    pub unsafe fn frame_priority(
+        &self,
+    ) -> &engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline> {
+        &self.frame_priority
+    }
+
+    /// # Safety
+    /// Only the capture path may account dropped frames. Runtime and spool status may read this
+    /// counter for the active session.
+    pub unsafe fn dropped(&self) -> &AtomicU64 {
+        &self.dropped
+    }
+
+    /// # Safety
+    /// Use only to account memory for owners in this session and while the session is live.
+    /// Runtime and spool status may read the current total.
+    pub unsafe fn pool_bytes(&self) -> &engine_allocation::SharedBox<AtomicU64> {
+        &self.pool_bytes
+    }
+
+    /// # Safety
+    /// Only the runtime or the originating spool may stop recording, in response to terminal
+    /// failure or as part of detach.
+    pub unsafe fn recording(&self) -> &AtomicBool {
+        &self.recording
+    }
+
+    /// # Safety
+    /// Only the runtime may set this flag, after quiescing capture and arranging for the spool to
+    /// drain. Only its spool reads it to decide when to exit.
+    pub unsafe fn stop_spool(&self) -> &AtomicBool {
+        &self.stop_spool
+    }
+
+    /// # Safety
+    /// Only the session's spool thread may register itself, once before consuming frames.
+    pub unsafe fn spool_waker(&self) -> &OnceLock<std::thread::Thread> {
+        &self.spool_waker
+    }
+
+    /// # Safety
+    /// Only the originating spool or detached fixture may consume the roster, after observing its
+    /// ready flag with acquire ordering and only once.
+    pub unsafe fn roster(&self) -> &UnsafeCell<Option<Box<Roster>>> {
+        &self.roster
+    }
+
+    /// # Safety
+    /// Use only with the roster from this same session. Only the roster producer may publish
+    /// readiness, and the spool must observe readiness before taking the roster.
+    pub unsafe fn roster_ready(&self) -> &AtomicBool {
+        &self.roster_ready
+    }
+
+    /// # Safety
+    /// Only the sole spool consumer may take this loss batch, after acquisition is quiescent and
+    /// before disposing of capture state.
+    pub unsafe fn pending(&self) -> &UnsafeCell<LossBatch> {
+        &self.pending
+    }
+
+    /// # Safety
+    /// Only the isolated retry fixture may inspect or change this flag directly outside capture.
+    pub unsafe fn force_next(&self) -> &AtomicBool {
+        &self.force_next
+    }
+
+    /// # Safety
+    /// Only an isolated retry fixture may change this flag directly outside the session capture
+    /// and spool.
+    pub unsafe fn refresh_next(&self) -> &AtomicBool {
+        &self.refresh_next
+    }
+
+    /// # Safety
+    /// Only the session's spool may change this set, using the families from a failed publication
+    /// before capture takes the recovery request.
+    pub unsafe fn forget_families(&self) -> &std::sync::atomic::AtomicU32 {
+        &self.forget_families
+    }
+
+    /// # Safety
+    /// Use this home for the originating session's sizing and capture loans. Return each loan
+    /// before its frame or session is retired.
+    pub unsafe fn country_intel(&self) -> &collector_intel::daily_intel::Home {
+        &self.country_intel
+    }
+
+    /// # Safety
+    /// Use this home only for the originating session's sizing and capture, with no competing
+    /// teardown.
+    pub unsafe fn template_home(
+        &self,
+    ) -> &collector_division_templates::extended::division_templates::Home {
+        &self.template_home
+    }
+
+    /// # Safety
+    /// Use this home only for the originating session's sizing and capture, with no competing
+    /// teardown.
+    pub unsafe fn naval_combat_home(&self) -> &collector_naval_details::naval_combat_sources::Home {
+        &self.naval_combat_home
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// Install the callback only on fixture Shared storage in an isolated test before the
+    /// fixture's builder begins.
+    pub unsafe fn build_ahead_seam_for_test(
+        &self,
+    ) -> &OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>> {
+        &self.build_ahead_seam
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// Install the callback only on fixture Shared storage in an isolated test before any fixture
+    /// frame is recycled.
+    pub unsafe fn surplus_free_seam(&self) -> &OnceLock<Box<dyn Fn() + Send + Sync>> {
+        &self.surplus_free_seam
+    }
+
+    /// # Safety
+    /// Only the native callback may advance this counter. The status writer may read it, and
+    /// isolated fixtures may seed it before publication.
+    pub unsafe fn native_tick_calls(&self) -> &AtomicU64 {
+        &self.native_tick_calls
+    }
+
+    /// # Safety
+    /// Only the native callback may advance this counter. The status writer may read it for the
+    /// active session.
+    pub unsafe fn native_tick_ns(&self) -> &AtomicU64 {
+        &self.native_tick_ns
+    }
+
+    /// # Safety
+    /// Only the originating spool may request a refresh after unpublished output, while the
+    /// session's capture state is live.
+    pub unsafe fn request_retry_full(&self) {
         self.refresh_next.store(true, Ordering::Release);
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
-        Self::with_sizing(
-            base,
-            trampoline,
-            frequency,
-            &crate::country_scale::Sizing::for_slots(0),
-        )
+    /// # Safety
+    /// The attaching runtime or isolated fixture must have exclusive use of the global observer
+    /// bindings. Keep Shared alive through hook restoration and callback quiescence once its
+    /// doctrine store is bound.
+    pub unsafe fn new(base: usize, trampoline: usize, frequency: u64) -> Self {
+        // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+        // boundary or detach.
+        unsafe {
+            Self::with_sizing(
+                base,
+                trampoline,
+                frequency,
+                &crate::country_scale::Sizing::for_slots(0),
+            )
+        }
         .expect("synthetic capture buffers")
     }
 
-    pub fn with_sizing(
+    /// # Safety
+    /// The attaching runtime or isolated fixture must have exclusive use of the global observer
+    /// bindings. Keep Shared alive through hook restoration and callback quiescence once its
+    /// doctrine store is bound.
+    pub unsafe fn with_sizing(
         base: usize,
         trampoline: usize,
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
-        let shared = Self::without_frames(base, trampoline, frequency, sizing)?;
+        let shared =
+        // SAFETY: This sequence prepares its own attachment with no competing observer boundary.
+        unsafe { Self::without_frames(base, trampoline, frequency, sizing) }?;
         shared.publish_steady_frames()?;
         shared.bind_doctrine_observer();
         Ok(shared)
@@ -963,7 +1176,10 @@ impl Shared {
         Ok(())
     }
 
-    pub fn without_frames(
+    /// # Safety
+    /// Only the attaching runtime or an isolated collector fixture may prime the live observers.
+    /// Exclude other observer boundaries, capture and detach from construction.
+    pub unsafe fn without_frames(
         base: usize,
         trampoline: usize,
         frequency: u64,
@@ -1267,7 +1483,10 @@ impl Shared {
         Ok(shared)
     }
 
-    pub fn offer_country_cache(&self, cells: usize) {
+    /// # Safety
+    /// Only the originating session's sizing pass may replace the pending cache. Keep the session
+    /// live and exclude competing presizers and teardown.
+    pub unsafe fn offer_country_cache(&self, cells: usize) {
         let Ok(mut swap) = self.country_cache_swap.lock() else {
             return;
         };
@@ -1327,11 +1546,13 @@ impl Shared {
     }
 
     fn frame_for(&self, capacities: &FrameCapacities) -> std::io::Result<Box<Captured>> {
-        let mut frame = engine_allocation::boxed(Captured::with_capacities(
-            &capacities.core,
-            &capacities.map,
-            &capacities.extended,
-        )?)?;
+        let mut frame = engine_allocation::boxed(
+            // SAFETY: The session or isolated fixture owns this frame's observer allocations and
+            // excludes teardown.
+            unsafe {
+                Captured::with_capacities(&capacities.core, &capacities.map, &capacities.extended)
+            }?,
+        )?;
         frame.extended.share_country_intel(&self.country_intel);
         frame.extended.share_template_home(&self.template_home);
         frame
@@ -1344,7 +1565,10 @@ impl Shared {
         Ok(frame)
     }
 
-    pub fn build_frame_ahead(&self) -> std::io::Result<()> {
+    /// # Safety
+    /// Only the session frame builder or isolated fixture may prepare a spare. Ensure the observer
+    /// stores remain live throughout its preparation.
+    pub unsafe fn build_frame_ahead(&self) -> std::io::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         self.build_ahead_seam(BuildAhead::Starting);
         let frame = self.new_frame()?;
@@ -1361,7 +1585,10 @@ impl Shared {
         }
     }
 
-    pub fn build_ahead_until(
+    /// # Safety
+    /// Only the designated builder may register itself once on this session's Shared. Keep it and
+    /// its observer stores alive until the builder is stopped and joined.
+    pub unsafe fn build_ahead_until(
         &self,
         stop: &AtomicBool,
         mut follow: impl FnMut(),
@@ -1373,7 +1600,9 @@ impl Shared {
                 return Ok(());
             }
             if crate::frame_pool::builds_ahead(self.frames.len(), self.frames.spool_stalled()) {
-                self.build_frame_ahead()?;
+                // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
+                // remain live.
+                unsafe { self.build_frame_ahead() }?;
                 continue;
             }
             #[cfg(any(test, feature = "test-support"))]
@@ -1382,17 +1611,25 @@ impl Shared {
         }
     }
 
-    pub fn take_frame(&self, grow_ns: &mut u64) -> Option<usize> {
+    /// # Safety
+    /// Take an hour's frame only during admitted capture or an isolated fixture. Settle the unique
+    /// slot claim before another owner can recycle it.
+    pub unsafe fn take_frame(&self, grow_ns: &mut u64) -> Option<usize> {
         *grow_ns = 0;
         if self.acquisition_failed() {
             return None;
         }
         use crate::frame_pool::HourFrame;
-        match crate::frame_pool::hour_frame(self.frames.pop(), self.frames.spool_stalled()) {
+        match crate::frame_pool::hour_frame(
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe { self.frames.pop() },
+            self.frames.spool_stalled(),
+        ) {
             HourFrame::Free(index) => {
                 self.frames.taken(index);
                 self.frame_priority.claim();
-                self.frame_stage(index, FrameStage::Callback);
+                // SAFETY: This stage owns the installed frame slot.
+                unsafe { self.frame_stage(index, FrameStage::Callback) };
                 if self.frames.len() < crate::frame_pool::AHEAD {
                     self.wake_builder();
                 }
@@ -1425,12 +1662,15 @@ impl Shared {
             .frame_grow_ns
             .fetch_add(elapsed, Ordering::Relaxed);
         *grow_ns = elapsed;
-        self.frame_stage(index, FrameStage::Callback);
+        // SAFETY: This stage owns the installed frame slot.
+        unsafe { self.frame_stage(index, FrameStage::Callback) };
         self.frame_priority.refresh();
         Some(index)
     }
 
-    pub fn spool_stalled(&self, stalled: bool) {
+    /// # Safety
+    /// Only this frame pool's spool consumer may publish its stall status and wake the builder.
+    pub unsafe fn spool_stalled(&self, stalled: bool) {
         self.frames.set_spool_stalled(stalled);
         if !stalled {
             self.wake_builder();
@@ -1453,11 +1693,16 @@ impl Shared {
         held
     }
 
-    pub fn frame_stage(&self, index: usize, stage: FrameStage) {
+    /// # Safety
+    /// Update the stage only for the installed frame that the current pipeline stage owns.
+    pub unsafe fn frame_stage(&self, index: usize, stage: FrameStage) {
         self.frames.stage(index, stage, qpc() as u64);
     }
 
-    pub fn take_idle_frame_for_growth(&self, index: usize) -> bool {
+    /// # Safety
+    /// Only the active sizing owner may take an idle frame to grow it. Return the slot exactly once
+    /// before releasing the sizing pass.
+    pub unsafe fn take_idle_frame_for_growth(&self, index: usize) -> bool {
         if !self.frames.take(index, crate::frame_pool::AHEAD) {
             return false;
         }
@@ -1509,7 +1754,10 @@ impl Shared {
             )
     }
 
-    pub fn prepare_frame_for_reuse(&self, index: usize) {
+    /// # Safety
+    /// The caller must exclusively own the installed slot at index, with no outstanding decode,
+    /// spool, sizing or helper borrow, and give up that claim on return to the pool.
+    pub unsafe fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
         frame.reset_verdicts();
         frame.verdicts_reset = true;
@@ -1524,26 +1772,50 @@ impl Shared {
         self.return_frame(index, Return::Kept);
     }
 
-    pub fn recycle_frame_prepared(&self, index: usize) {
-        self.prepare_frame_for_reuse(index);
-        self.recycle_frame(index);
+    /// # Safety
+    /// The caller must exclusively own the installed slot at index, with no outstanding decode,
+    /// spool, sizing or helper borrow, and give up that claim on return to the pool.
+    pub unsafe fn recycle_frame_prepared(&self, index: usize) {
+        // SAFETY: This owner has finished using the frame and no other stage or helper borrows it.
+        unsafe { self.prepare_frame_for_reuse(index) };
+        // SAFETY: This is the last owner of the installed slot and all other uses have ended.
+        unsafe { self.recycle_frame(index) };
     }
 
-    pub fn restore_idle_frame_prepared(&self, index: usize) {
-        self.prepare_frame_for_reuse(index);
+    /// # Safety
+    /// The caller must exclusively own the installed slot at index, with no outstanding decode,
+    /// spool, sizing or helper borrow, and give up that claim on return to the pool.
+    pub unsafe fn restore_idle_frame_prepared(&self, index: usize) {
+        // SAFETY: This owner has finished using the frame and no other stage or helper borrows it.
+        unsafe { self.prepare_frame_for_reuse(index) };
         self.return_frame(index, Return::Idle);
     }
 
-    pub fn recycle_frame(&self, index: usize) {
-        self.free_surplus(self.recycle_frame_unfreed(index));
+    /// # Safety
+    /// The caller must exclusively own the installed slot at index, with no outstanding decode,
+    /// spool, sizing or helper borrow, and give up that claim on return to the pool.
+    pub unsafe fn recycle_frame(&self, index: usize) {
+        // SAFETY: The frame was removed from its slot after every previous use ended.
+        unsafe {
+            self.free_surplus(
+                // SAFETY: This is the last owner of the installed slot and all other uses have ended.
+                self.recycle_frame_unfreed(index),
+            )
+        };
     }
 
     #[must_use]
-    pub fn recycle_frame_unfreed(&self, index: usize) -> Option<Box<Captured>> {
+    /// # Safety
+    /// The caller must exclusively own the installed slot at index, with no outstanding decode,
+    /// spool, sizing or helper borrow, and give up that claim on return to the pool.
+    pub unsafe fn recycle_frame_unfreed(&self, index: usize) -> Option<Box<Captured>> {
         self.return_frame(index, Return::Newest)
     }
 
-    pub fn free_surplus(&self, frame: Option<Box<Captured>>) {
+    /// # Safety
+    /// Drop only this session's retired frame outside its owning slot, after any users of that
+    /// frame have joined.
+    pub unsafe fn free_surplus(&self, frame: Option<Box<Captured>>) {
         #[cfg(any(test, feature = "test-support"))]
         if frame.is_some()
             && let Some(seam) = self.surplus_free_seam.get()
@@ -1554,15 +1826,20 @@ impl Shared {
     }
 
     fn return_frame(&self, index: usize, how: Return) -> Option<Box<Captured>> {
-        self.history_frames.recycle(&self.frames.slot(index).fence);
+        // SAFETY: The spool or refusing capture is the last owner of this frame slot.
+        unsafe { self.history_frames.recycle(&self.frames.slot(index).fence) };
         unsafe {
             (&mut *self.frames[index].load(Ordering::Acquire))
                 .dropped_before
                 .clear();
         }
-        self.frame_stage(index, FrameStage::Free);
+        // SAFETY: This stage owns the installed frame slot.
+        unsafe { self.frame_stage(index, FrameStage::Free) };
         if how == Return::Newest && self.frames.surplus() {
-            return Some(self.frames.vacate(index));
+            return Some(
+                // SAFETY: The caller owns the installed slot and all other frame users are finished.
+                unsafe { self.frames.vacate(index) },
+            );
         }
         self.frame_priority.publish();
         let published = if how == Return::Idle {
@@ -1597,7 +1874,10 @@ impl Shared {
         ((ticks.max(0) as u128 * 1_000_000_000) / self.frequency as u128) as u64
     }
 
-    pub fn prepare_clock_capture(&mut self, memory: &impl engine_native::Memory) {
+    /// # Safety
+    /// Prepare only unpublished attach state or isolated fixture state using its own image, before
+    /// publishing a callback that can use these buffers.
+    pub unsafe fn prepare_clock_capture(&mut self, memory: &impl engine_native::Memory) {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         self.prepare_clock_len(native);
     }
@@ -1610,7 +1890,10 @@ impl Shared {
         *self.clock_frames.get_mut() = len;
     }
 
-    pub fn prepare_frame_clocks(&self, memory: &impl engine_native::Memory) {
+    /// # Safety
+    /// Only the spool's exclusive sizing pass may prepare this session's frames while respecting
+    /// every slot claim.
+    pub unsafe fn prepare_frame_clocks(&self, memory: &impl engine_native::Memory) {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         let required = native.max(self.clock_required());
         if required > self.clock_frames.load(Ordering::Acquire) {
@@ -1702,7 +1985,10 @@ impl Shared {
         self.clock_required.load(Ordering::Acquire)
     }
 
-    pub fn prepare_roster(&mut self, memory: &impl engine_native::Memory) {
+    /// # Safety
+    /// Prepare only unpublished attach state or isolated fixture state using its own image, before
+    /// publishing a callback that can use these buffers.
+    pub unsafe fn prepare_roster(&mut self, memory: &impl engine_native::Memory) {
         let roster = self
             .roster
             .get_mut()
@@ -1832,8 +2118,10 @@ fn lost_observer_interval() {
 }
 
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
-    frame.extended.discard_event_feed();
-    frame.map.naval.discard_owned();
+    // SAFETY: The spool settled this frame's event-feed handoff before returning the slot.
+    unsafe { frame.extended.discard_event_feed() };
+    // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
+    unsafe { frame.map.naval.discard_owned() };
     frame.extended.discard_owned_censuses();
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
@@ -2012,11 +2300,18 @@ pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
     if recording {
         if let Some(pool) = shared.acquisition.get() {
             match placement {
-                Placement::Held => pool.hold_pace(),
+                Placement::Held =>
+                // SAFETY: Only this session's acquisition scheduling owner changes its policy
+                // here.
+                unsafe { pool.hold_pace() },
                 Placement::Beside(game) => {
-                    pool.beside_pace(crate::capture_point::BESIDE_READERS, game);
+                    // SAFETY: Only this session's acquisition scheduling owner changes its policy
+                    // here.
+                    unsafe { pool.beside_pace(crate::capture_point::BESIDE_READERS, game) };
                     if crate::capture_point::hurried() {
-                        pool.hold_pace();
+                        // SAFETY: Only this session's acquisition scheduling owner changes its
+                        // policy here.
+                        unsafe { pool.hold_pace() };
                     }
                 }
             }
@@ -2027,12 +2322,15 @@ pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
     true
 }
 
-pub fn hurry() {
+/// # Safety
+/// Call only for the active session's capture, while its capture resources are live.
+pub(crate) unsafe fn hurry() {
     let shared = SHARED.load(Ordering::Acquire);
     if !shared.is_null()
         && let Some(pool) = unsafe { &*shared }.acquisition.get()
     {
-        pool.hold_pace();
+        // SAFETY: Only this session's acquisition scheduling owner changes its policy here.
+        unsafe { pool.hold_pace() };
     }
 }
 
@@ -2051,7 +2349,9 @@ pub unsafe fn record_lost(shared: &Shared, hours: u32) {
 /// # Safety
 /// As [`capture`], and `shared` is the published runtime state.
 unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, full: bool) {
-    let history_capture = shared.history_frames.capture();
+    let history_capture =
+    // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+    unsafe { shared.history_frames.capture() };
     let _frame_priority = shared.frame_priority.callback();
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Callback);
     let _reads = collector_memory::read_accounting::Capture::new();
@@ -2112,10 +2412,15 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     if phases.free_frames == 0 {
         phases.holders = Some(holders(shared));
     }
-    let index = shared.take_frame(&mut phases.frame_grow_ns);
+    let index =
+    // SAFETY: This is the admitted hour or isolated fixture taking exclusive ownership of an
+    // installed slot.
+    unsafe { shared.take_frame(&mut phases.frame_grow_ns) };
     if let Some(index) = index {
         let slot = shared.frames.slot(index);
-        history_capture.frame(&slot.fence);
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { history_capture.frame(&slot.fence) };
         slot.completed.store(0, Ordering::Relaxed);
         slot.callback_tail.store(0, Ordering::Relaxed);
     }
@@ -2170,7 +2475,9 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
 /// once attach has published the runtime state.
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     #[cfg(feature = "worker_sampler")]
-    let sampler_callback = collector_workers::worker_sampler::callback();
+    let sampler_callback =
+    // SAFETY: Only the current capture callback publishes its own sampler observation.
+    unsafe { collector_workers::worker_sampler::callback() };
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::Hourly);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
@@ -2184,11 +2491,14 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
     let ticking = TICKING.replace(true);
-    collector_workers::tick_gate::enter(shared.tick_idle.as_ref());
+    // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+    // hourly exit.
+    unsafe { collector_workers::tick_gate::enter(shared.tick_idle.as_ref()) };
     shared.frame_priority.tick(Some(main_processor()));
     timing.original(|| unsafe { original(state, commands) });
     shared.frame_priority.tick(None);
-    collector_workers::tick_gate::leave(shared.tick_idle.as_ref());
+    // SAFETY: This is the matching native tick exit, with the same live idle event.
+    unsafe { collector_workers::tick_gate::leave(shared.tick_idle.as_ref()) };
     TICKING.set(ticking);
     let original_end = qpc();
     if recording {
@@ -2338,7 +2648,10 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         });
         let clock_reads = qpc() - before;
         let clock_ticks = entry_ticks + clock_reads;
-        let mut decode_slot = decode::reserve(shared, index);
+        let mut decode_slot =
+        // SAFETY: The capture path holds this installed slot exclusively before publishing its
+        // decode job.
+        unsafe { decode::reserve(shared, index) };
         let decode::DecodeJob {
             queued_qpc: _,
             relations_payload,
@@ -2416,8 +2729,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 | u8::from(refresh) * FULL_REFRESH;
             force_full = phases.full_reasons != 0;
             if refresh {
-                phases.retry_cause =
-                    collector_workers::spool_phases::RETRY_CAUSE.swap(0, Ordering::Relaxed);
+                // SAFETY: This admitted capture consumes its session's spool retry cause.
+                phases.retry_cause = unsafe { collector_workers::spool_phases::retry_cause() }
+                    .swap(0, Ordering::Relaxed);
             }
             if !continuous || recovery {
                 collector_characters::portrait_changes::invalidate();
@@ -3324,9 +3638,10 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 .extended
                 .records_any(&collector_land_events::extended::combat_progress::TABLES);
             let combat_request =
-                frame
+                // SAFETY: The admitted hour owns this frame and takes its combat job once.
+                unsafe { frame
                     .map
-                    .take_combat_request(shared.base, state, progress, progress_recorded);
+                    .take_combat_request(shared.base, state, progress, progress_recorded) };
             let combat_pending = queue!(acquisition::Job::MapCombats(combat_request));
             let scores_rails_pending = queue!(acquisition::Job::ScoresRails({
                 let air_scores = unsafe { &mut *shared.raid_air_scores.get() }
@@ -4438,7 +4753,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             let failure = failure.or((!report.raw_ok)
                                 .then_some("Players owned acquisition could not complete"));
                             players_report = report;
-                            frame.map.players_raw_mode = report.raw_ok || failure.is_some();
+                            // SAFETY: The admitted frame owner just settled this hour's player job.
+                            *unsafe { frame.map.players_raw_mode_mut() } =
+                                report.raw_ok || failure.is_some();
                             if report.raw_ok && failure.is_none() {
                                 *players_payload = Some(request.payload);
                             } else {
@@ -4546,7 +4863,10 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                         .naval_pilot()
                                         .install_owned_wings(&mut naval_request.payload);
                                 }
-                                air_wing_report.copy_ticks[0] += frame.map.install_owned_air(wings);
+                                air_wing_report.copy_ticks[0] +=
+                                // SAFETY: This is the completed air job being restored to its
+                                // original frame once.
+                                unsafe { frame.map.install_owned_air(wings) };
                             }
                             frame.extended.naval_pilot().raw_mode =
                                 naval_report.raw_ok || naval_failure.is_some();
@@ -4599,20 +4919,29 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         }
                         let (combat_request, combat_report, combat_failure) =
                             completed!(combat_pending.take().expect("combat producer"), MapCombats);
-                        let progress = frame.map.restore_combat_request(
+                        let progress =
+                        // SAFETY: The admitted hour is settling its own combat request in the
+                        // originating frame.
+                        unsafe { frame.map.restore_combat_request(
                             combat_request,
                             combat_report,
                             combat_failure,
-                        );
+                        ) };
                         frame
                             .extended
                             .restore_combat_progress(progress, combat_report.progress_ticks);
-                        map_ticks = frame.map.sample(
+                        map_ticks =
+                        // SAFETY: The admitted hour or isolated fixture owns this map and the
+                        // corresponding game image.
+                        unsafe { frame.map.sample(
                             &cached,
                             shared.base,
                             state,
-                            &mut frame.extended.sources(&cached, shared.base),
-                        );
+                            &mut
+                            // SAFETY: These are the admitted hour's own extended combat buffers
+                            // and active image.
+                             frame.extended.sources(&cached, shared.base) ,
+                        ) };
                         if air_missions_pending.is_none() {
                             air_missions_pending = Some(queue!(acquisition::Job::AirMissions(
                                 frame.extended.take_air_missions_request(
@@ -5814,7 +6143,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         #[cfg(any(test, feature = "test-support"))]
         collector_memory::read_accounting::snapshot_into(&mut frame.table_reads);
         if frame.world_generation != collector_lifetime::world_lifetime::generation() {
-            frame.extended.discard_event_feed();
+            // SAFETY: The spool settled this frame's event-feed handoff before returning the slot.
+            unsafe { frame.extended.discard_event_feed() };
             lost_observer_interval();
             frame.set_clock(None);
             shared.force_next.store(true, Ordering::Release);
@@ -5877,7 +6207,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             &|ticks| shared.ns(ticks),
         );
         frame.phases = phases;
-        frame.capture_seq = decode::next_seq();
+        frame.capture_seq =
+        // SAFETY: Only the admitted hour advances this session's decode sequence.
+        unsafe { decode::next_seq() };
         let decode::DecodeJob {
             queued_qpc: _,
             index: job_index,
@@ -5951,8 +6283,11 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         *capitulation_refresh = capitulation_report.raw_ok;
         *force_full = decode_force_full;
         *job_elapsed = game_elapsed;
-        shared.frame_stage(index, FrameStage::Queued);
-        if decode::enqueue_reserved(shared, decode_slot) {
+        // SAFETY: This stage owns the installed frame slot.
+        unsafe { shared.frame_stage(index, FrameStage::Queued) };
+        if
+        // SAFETY: This unpublished decode job belongs to the capture's owned frame.
+        unsafe { decode::enqueue_reserved(shared, decode_slot) } {
             unsafe { (&mut *shared.pending.get()).clear() }
         } else {
             drop_owned_frame(shared, frame, index);
@@ -6988,7 +7323,10 @@ mod tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod capture_scope_test_kit;
 
-pub fn sample_command_roster(memory: &LiveMemory, state: usize) {
+/// # Safety
+/// Only the installed player-command callback for this attachment may invoke this function. Shared
+/// and its roster storage must remain live until this invocation returns.
+pub unsafe fn sample_command_roster(memory: &LiveMemory, state: usize) {
     let shared = SHARED.load(Ordering::Acquire);
     if !shared.is_null() {
         let shared = unsafe { &*shared };

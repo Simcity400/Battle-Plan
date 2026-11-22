@@ -34,7 +34,9 @@ fn park(batch: &mut acquisition::Batch<'_>, request: acquisition::Job) -> Pendin
 
 #[test]
 fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_store_alive() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let bound = collector_observers::doctrine_changes::bound_context();
     let stores = unsafe { lend_slow_stores(&shared) };
     let lent = stores
@@ -60,8 +62,12 @@ fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_stor
 
 #[test]
 fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inputs() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
     let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
@@ -114,9 +120,14 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
 #[test]
 fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     assert!(size_of::<PendingAcquisition>() <= 2 * size_of::<acquisition::Ticket>());
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
     let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
@@ -156,9 +167,14 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
 
 #[test]
 fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_refusals() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut captured = extended::Captured::with_capacities(&extended::Capacities::default());
     let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
@@ -209,9 +225,14 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
 
 #[test]
 fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut request = acquisition::PresentationRequest {
         dispatch: Default::default(),
@@ -259,9 +280,14 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
 fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (orders_failure, reason) in [
         (
@@ -299,9 +325,14 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
 
 #[test]
 fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let part = Box::new(collector_divisions::orders_parts::Part::new());
     let at: *const collector_divisions::orders_parts::Part = &*part;
@@ -336,9 +367,14 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
 fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (earlier, reason) in [
         (
@@ -398,8 +434,12 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
 #[test]
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     use engine_native::walk::Outcome;
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job =
         || acquisition::Job::OrdersStitch(stitch_request(acquisition::STITCH_PANIC_BASE, None));
@@ -440,8 +480,12 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
 
 #[test]
 fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job = acquisition::Job::OrdersStitch(stitch_request(0, Some("original census refusal")));
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job) };
@@ -457,7 +501,8 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
         }
     );
     drop(request);
-    pool.shutdown().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let pending = unsafe {
         submit_acquisition(
             &shared,
@@ -482,7 +527,9 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
 
 #[test]
 fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let ticket = batch
         .park(&mut Some(acquisition::Job::OrdersStitch(stitch_request(
@@ -522,9 +569,13 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
 
 #[test]
 fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     for stopped_first in [false, true] {
-        let pool = acquisition::Pool::start(2, collector_workers::roles::MAX_JOBS).unwrap();
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { acquisition::Pool::start(2, collector_workers::roles::MAX_JOBS) }.unwrap();
         {
             let mut batch = acquisition::Batch::new(&pool);
             let job = acquisition::Job::OrdersStitch(stitch_request(
@@ -543,7 +594,9 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
             }
             assert!(!batch.stopped());
             if stopped_first {
-                pool.shutdown().unwrap();
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { pool.shutdown() }.unwrap();
             }
         }
         let calibration = pool.calibration();
@@ -565,8 +618,11 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
     use engine_native::walk::Outcome;
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
-    pool.shutdown().unwrap();
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let batch = acquisition::Batch::new(&pool);
     let stopped = Some("acquisition worker stopped");
     let panicked = acquisition::StitchReport {
@@ -609,7 +665,9 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         },
     );
     let memory = world.slice();
-    let shared = Shared::new(0, 0, 10_000_000);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 10_000_000) };
     let hour = |orders: &mut Orders, millis: u64, fail: bool| {
         unsafe { begin_order_parts(&shared, orders) };
         orders.walk_roots(&memory, world.base);
@@ -695,7 +753,9 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
     let repeated = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
     assert_eq!(memory.attempts.get(), 1);
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     decode_divisions_payload(&mut frame, kit::BASE, &mut job, &mut [0; 6]);
     assert_eq!(frame.divisions_result, unavailable);
     for table in crate::decode::DIVISIONS.into_iter().skip(1) {
@@ -840,7 +900,10 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
             ..Default::default()
         });
         job.supply_sources(&mut sink, None);
-        let mut frame = Captured::new();
+        let mut frame =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Captured::new() };
         job.supply_sources(&mut frame.extended, None);
         frame.extended.set_new_division_mark(Mark::Above(Counters {
             unit: 0,
@@ -875,8 +938,12 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
 
 #[test]
 fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut selection = collector_certificates::slicing::SliceSelection::new();
     selection.reset(5, false);
@@ -930,7 +997,9 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
 
 #[test]
 fn failed_division_job_publishes_hourly_census_reason_even_without_details() {
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     for details_active in [false, true] {
         frame.extended.reset();
         let before = frame.extended.outcomes();
@@ -981,7 +1050,9 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
             true
         }
     }
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     assert_eq!(
         new_division_mark(&shared, &Counterset(9, 9), false),
         Mark::Unknown
@@ -1039,7 +1110,9 @@ fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
         job.details
             .ready_for([0, job.census.source_requirement(), 0, 0, 0])
     );
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     let frame_before = frame.allocated_bytes();
     let payload_before = expected(&job);
     let detail_bytes = job.details.allocated_bytes() as u64;
@@ -1079,7 +1152,9 @@ fn callback_time_waits_for_decode_and_includes_the_game_thread_tail() {
 #[test]
 fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
     use collector_certificates::slicing::{RESEARCH, SliceSelection};
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let store = || {
         unsafe { &mut *shared.slice_fingerprints[RESEARCH].get() }
             .as_mut()
@@ -1097,7 +1172,9 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
     early_at(0);
     assert_eq!(early_at(1), [false, false]);
     for (clock, expected) in [(Some(clock(7, 1)), [true, false]), (None, [false, false])] {
-        let index = shared.frames.pop().expect("pooled buffer");
+        let index =
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { shared.frames.pop() }.expect("pooled buffer");
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         frame.extended.prepare_hour(7, false);
         frame.clock = clock;
@@ -1114,7 +1191,9 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
 #[test]
 fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
     use collector_certificates::slicing::{RAID_STATE, RESEARCH, SliceSelection};
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let store = |family: usize| {
         unsafe { &mut *shared.slice_fingerprints[family].get() }
             .as_mut()
@@ -1144,8 +1223,12 @@ fn a_family_the_spool_could_not_publish_is_read_in_full_next_hour() {
 
 #[test]
 fn a_refused_hand_off_records_its_hour_and_returns_the_frame() {
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.frames.pop().expect("pooled frame");
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.expect("pooled frame");
     shared.frame_priority.claim();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.clock = Some(clock(42, 7));
@@ -1166,7 +1249,9 @@ fn a_refused_hand_off_records_its_hour_and_returns_the_frame() {
 
 #[test]
 fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     assert_eq!(shared.frames.len(), BUFFERS);
     assert_eq!(shared.frames.live(), BUFFERS);
     let mut bytes = engine_allocation::SharedBox::<AtomicU64>::BYTES;
@@ -1200,7 +1285,10 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
 #[test]
 fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frames() {
     use std::{collections::HashSet, sync::mpsc};
-    let shared = Arc::new(Shared::new(0, 0, 1));
+    let shared = Arc::new(
+        // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+        unsafe { Shared::new(0, 0, 1) },
+    );
     let hours = 3 * BUFFERS + 1;
     let (send, taken) = mpsc::channel();
     let producer = {
@@ -1208,11 +1296,15 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
         std::thread::spawn(move || {
             for hour in 0..hours {
                 let mut grow_ns = u64::MAX;
-                let index = shared
-                    .take_frame(&mut grow_ns)
+                let index =
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared
+                    .take_frame(&mut grow_ns) }
                     .expect("a frame for every hour");
                 unsafe { (*shared.frames[index].load(Ordering::Acquire)).qpc = hour as i64 };
-                shared.frames.push_decode(index);
+                // SAFETY: The producer owns this slot and its initialized decode job.
+                unsafe { shared.frames.push_decode(index) };
                 send.send((index, grow_ns)).unwrap();
             }
         })
@@ -1237,15 +1329,22 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
     assert_eq!(backlog.grown, (hours - BUFFERS) as u64);
     assert!(backlog.in_flight_bytes > 0);
     for (hour, &expected) in indices.iter().enumerate() {
-        let index = shared.frames.pop_decode().expect("every queued hour");
+        let index =
+        // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+        unsafe { shared.frames.pop_decode() }.expect("every queued hour");
         assert_eq!(index, expected, "hour {hour} out of order");
         assert_eq!(
             unsafe { (*shared.frames[index].load(Ordering::Acquire)).qpc },
             hour as i64
         );
-        shared.recycle_frame(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(index) };
     }
-    assert_eq!(shared.frames.pop_decode(), None);
+    assert_eq!(
+        // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+        unsafe { shared.frames.pop_decode() },
+        None
+    );
     let caught_up = shared.frames.gauge();
     assert_eq!(
         (caught_up.live, caught_up.free, caught_up.in_flight),
@@ -1254,16 +1353,22 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
     assert_eq!(caught_up.freed, (hours - BUFFERS) as u64);
     assert_eq!(caught_up.in_flight_bytes, 0);
     let mut grow_ns = u64::MAX;
-    let index = shared.take_frame(&mut grow_ns).unwrap();
+    let index =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut grow_ns) }.unwrap();
     assert_eq!(grow_ns, 0);
-    shared.recycle_frame(index);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame(index) };
 }
 
 #[test]
 fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame() {
     use crate::frame_pool::{AHEAD, STEADY};
     use std::sync::mpsc;
-    let shared = Arc::new(Shared::new(0, 0, collector_test_support::qpc_frequency()));
+    let shared = Arc::new(
+        // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+        unsafe { Shared::new(0, 0, collector_test_support::qpc_frequency()) },
+    );
     let watching = Arc::clone(&shared);
     collector_test_support::watched(
         move || format!("{:?}", watching.frames.gauge()),
@@ -1285,8 +1390,11 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             let hour = |at: usize, held: &mut Vec<usize>| {
                 steps.at(format_args!("hour {at}: taking its frame; {}", gauge()));
                 let mut grow_ns = u64::MAX;
-                let index = shared
-                    .take_frame(&mut grow_ns)
+                let index =
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared
+                    .take_frame(&mut grow_ns) }
                     .unwrap_or_else(|| panic!("hour {at}: no frame: {}", gauge()));
                 held.push(index);
                 steps.at(format_args!("hour {at}: took frame {index}; {}", gauge()));
@@ -1368,7 +1476,9 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             );
             for index in held.drain(..) {
                 steps.at(format_args!("recycling frame {index}; {}", gauge()));
-                shared.recycle_frame(index);
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.recycle_frame(index) };
             }
             let caught_up = shared.frames.gauge();
             assert_eq!(
@@ -1404,7 +1514,10 @@ impl TestBuilder {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let builder = {
             let (shared, stop) = (Arc::clone(shared), Arc::clone(&stop));
-            collector_test_support::spawn_ending(move || shared.build_ahead_until(&stop, follow))
+            collector_test_support::spawn_ending(move ||
+            // SAFETY: This is the session's designated builder, which the runtime joins before
+            // releasing Shared.
+            unsafe { shared.build_ahead_until(&stop, follow) })
         };
         Self {
             stop,
@@ -1456,7 +1569,11 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
         Looking,
     }
     for stopped in [Stopped::Parked, Stopped::MidBuild, Stopped::BeforeItsLook] {
-        let shared = Arc::new(Shared::new(0, 0, collector_test_support::qpc_frequency()));
+        let shared = Arc::new(
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Shared::new(0, 0, collector_test_support::qpc_frequency()) },
+        );
         let watching = Arc::clone(&shared);
         collector_test_support::watched(
             move || format!("{stopped:?}: {:?}", watching.frames.gauge()),
@@ -1507,7 +1624,9 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                     for at in 0..STEADY {
                         steps.at(format_args!("taking frame {at}; {}", gauge()));
                         let mut grow_ns = u64::MAX;
-                        shared.take_frame(&mut grow_ns).expect("a free frame");
+                        // SAFETY: This fixture owns its frame and worker state and runs without a
+                        // live attachment.
+                        unsafe { shared.take_frame(&mut grow_ns) }.expect("a free frame");
                         assert_eq!(grow_ns, 0, "{}", gauge());
                     }
                     wait_for(match stopped {
@@ -1548,8 +1667,12 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
         }
     }
 
-    let shared = Shared::new(0, 0, 1);
-    let index = shared.take_frame(&mut 0).unwrap();
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let index =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     unsafe { (&mut *shared.pending.get()).push(Some(clock(40, 7).borrowed())) };
     let acquisitions = AtomicUsize::new(0);
     let completed = unsafe {
@@ -1562,7 +1685,11 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     assert!(shared.acquisition_failed());
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
     assert_eq!(shared.frames.len(), BUFFERS - 1);
-    assert_eq!(shared.take_frame(&mut 0), None);
+    assert_eq!(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) },
+        None
+    );
     assert_eq!(shared.frames.live(), BUFFERS);
 
     assert!(!unsafe {
@@ -1577,8 +1704,14 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     let run = losses.iter().next().unwrap();
     assert_eq!((run.first_hour, run.last_hour, run.count), (40, 42, 3));
 
-    while shared.frames.pop().is_some() {}
-    assert_eq!(shared.take_frame(&mut 0), None);
+    while
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { shared.frames.pop() }.is_some() {}
+    assert_eq!(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) },
+        None
+    );
     assert_eq!(
         shared.frames.slot(index).completed.load(Ordering::Acquire),
         0
@@ -1635,7 +1768,9 @@ fn losses_after_the_update_record_the_hour_it_ended_as_the_lost_and_loaded_hour(
 
 #[test]
 fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     let before = frame.allocated_bytes();
     let mut capacities = INITIAL_CAPACITIES;
     frame.wars_result = Outcome::Truncated {
@@ -1660,7 +1795,9 @@ fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
     assert!(frame.state_names.len() >= 40_000);
     assert_eq!(frame.state_names.len(), capacities[11]);
     assert!(frame.allocated_bytes() > before);
-    let mut idle = Captured::new();
+    let mut idle =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     idle.grow(&mut capacities);
     assert_eq!(idle.allocated_bytes(), frame.allocated_bytes());
 }
@@ -1798,10 +1935,13 @@ fn table_retry_preserves_admitted_politics_mutations() {
     );
     let mut cursors = vec![LaneCursor::default()];
     let handoff = fixture.handoff(&mut cursors).unwrap();
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let mut cadence = prepared_cadence();
     cadence.force_full(&cadence_clock(61320026, 1).borrowed());
-    shared.request_retry_full();
+    // SAFETY: The spool requests recovery after unpublished output in the current session.
+    unsafe { shared.request_retry_full() };
     let clock = cadence_clock(61320027, 1);
     let continuous = cadence.continuous(&clock.borrowed());
     let recovery = shared.force_next.swap(false, Ordering::AcqRel);
@@ -2117,7 +2257,9 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     assert_eq!(first_sources[0].division, 101);
     assert_eq!(first_sources[0].template, 0x3455_0000_0034);
     assert_eq!(first_sources[0].country, 1);
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     first.supply_sources(&mut frame.extended, None);
     frame
         .extended
@@ -2380,8 +2522,12 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
         1
     );
     drop(inputs);
-    let mut actual = Captured::new();
-    let mut expected = Captured::new();
+    let mut actual =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
+    let mut expected =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     decode_divisions_payload(&mut actual, kit::BASE, &mut payload, &mut [0; 6]);
     decode_divisions_payload(&mut expected, kit::BASE, &mut composed, &mut [0; 6]);
     assert_eq!(actual.divisions, expected.divisions);
@@ -2513,7 +2659,9 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     assert_eq!(job.census.rows(), census.rows());
     drop(lease);
 
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     frame
         .extended
         .fail_division_details(replay_data::cadence::SKIPPED_REASON);
@@ -2546,7 +2694,9 @@ fn divisions_copy_decode_counters_keep_game_thread_cost_separate() {
     let report = copy_divisions_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     assert!(report.copy_ticks[0] > 0);
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     frame.table_ns[6] = report.copy_ticks[0];
     let before = frame.table_ns;
     let mut ticks = [0; 6];
@@ -2591,7 +2741,9 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     shared.roster_ready.store(true, Ordering::Release);
     let index = None;
     unsafe {
@@ -2614,7 +2766,9 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
         sources::drain(&mut entries).unwrap_err(),
         "naval result sources lost observation; interval unavailable"
     );
-    let held = shared.take_frame(&mut 0).unwrap();
+    let held =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     sources::boundary(Some(clock(42, 7).with_campaign_id(0)));
     assert_eq!(
         sources::drain(&mut entries).unwrap_err(),
@@ -2626,7 +2780,8 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     let losses = unsafe { &*shared.pending.get() };
     let run = losses.iter().next().unwrap();
     assert_eq!((run.first_hour, run.last_hour, run.count), (41, 41, 1));
-    shared.recycle_frame(held);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame(held) };
 }
 
 #[test]
@@ -2639,7 +2794,9 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let acquired = std::cell::Cell::new(false);
     let mut update_returned_first = false;
     assert!(!unsafe {
@@ -2697,15 +2854,20 @@ fn campaign_clock_memory(len: usize) -> CampaignClockMemory {
     CampaignClockMemory { bytes }
 }
 fn campaign_shared() -> Shared {
-    Shared::with_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)).unwrap()
+    // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+    // boundary or detach.
+    unsafe { Shared::with_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)) }.unwrap()
 }
 
 #[test]
 fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_denial() {
     let mut memory = campaign_clock_memory(5_001);
     let mut shared = campaign_shared();
-    shared.prepare_clock_capture(&memory);
-    let index = shared.take_frame(&mut 0).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&memory) };
+    let index =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let before = frame.allocated_bytes();
     let capture = unsafe { shared.prepared_clock_capture(&memory) };
@@ -2747,7 +2909,8 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     });
     assert_eq!(pending.iter().count(), 2);
     assert_eq!(frame.allocated_bytes(), before);
-    shared.recycle_frame(index);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame(index) };
 }
 
 #[test]
@@ -2755,7 +2918,8 @@ fn campaign_clock_growth_refused_by_the_allocator_fails_the_read_and_a_later_cal
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
     let mut shared = campaign_shared();
-    shared.prepare_clock_capture(&short);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&short) };
     let (prepared, read) = collector_test_support::with_allocations_denied(|| {
         let capture = unsafe { shared.prepared_clock_capture(&long) };
         let read = capture.read(&long, 0).is_ok();
@@ -2769,22 +2933,30 @@ fn campaign_clock_growth_refused_by_the_allocator_fails_the_read_and_a_later_cal
 
 #[test]
 fn frame_growth_refused_a_slot_segment_gives_up_without_aborting() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let held: Vec<_> = (0..BUFFERS)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
     let mut grow_ns = u64::MAX;
-    let segment =
-        collector_test_support::with_allocations_denied(|| shared.take_frame(&mut grow_ns));
+    let segment = collector_test_support::with_allocations_denied(||
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut grow_ns) });
     assert_eq!((segment, grow_ns), (None, 0));
     assert_eq!(
         (shared.frames.made(), shared.frames.live()),
         (BUFFERS, BUFFERS)
     );
-    let grown = shared.take_frame(&mut grow_ns).unwrap();
+    let grown =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut grow_ns) }.unwrap();
     assert!(grow_ns > 0);
     for index in held.into_iter().chain(Some(grown)) {
-        shared.recycle_frame(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(index) };
     }
     assert_eq!(
         (shared.frames.made(), shared.frames.live()),
@@ -2797,16 +2969,22 @@ fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
     let mut shared = campaign_shared();
-    shared.prepare_clock_capture(&short);
-    shared.prepare_frame_clocks(&long);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&short) };
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_frame_clocks(&long) };
     assert_eq!(unsafe { shared.prepared_clock_capture(&short) }.prepared, 1);
     let capture = unsafe { shared.prepared_clock_capture(&long) };
     assert_eq!(capture.prepared, 5_001);
     assert!(capture.read(&long, 0).is_ok());
     let frames = collector_test_support::with_allocations_denied(|| {
-        let frames: [Option<usize>; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0));
+        let frames: [Option<usize>; BUFFERS] = std::array::from_fn(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) });
         for index in frames.into_iter().flatten() {
-            shared.recycle_frame(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame(index) };
         }
         frames
     });
@@ -2822,7 +3000,8 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
     let short = campaign_clock_memory(1);
     let long = Arc::new(campaign_clock_memory(5_001));
     let mut shared = campaign_shared();
-    shared.prepare_clock_capture(&short);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&short) };
     let (holding, held) = mpsc::channel::<()>();
     let (release, released) = mpsc::channel::<()>();
     let released = Mutex::new(released);
@@ -2842,7 +3021,10 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
             let release = release;
             let spool = {
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
-                collector_test_support::spawn_ending(move || shared.prepare_frame_clocks(&*long))
+                collector_test_support::spawn_ending(move ||
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.prepare_frame_clocks(&*long) })
             };
             steps.at("waiting for the spool's clock preparation to hold a frame");
             held.recv_timeout(collector_test_support::TEST_HANG_GUARD)
@@ -2851,7 +3033,10 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
                 collector_test_support::spawn_ending(move || {
                     let capture = unsafe { shared.prepared_clock_capture(&*long) };
-                    let index = shared.take_frame(&mut 0);
+                    let index =
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { shared.take_frame(&mut 0) };
                     let read = capture.read(&*long, 0);
                     match (index, read) {
                         (Some(index), Ok((entry, epoch))) => {
@@ -2883,7 +3068,9 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
             spool.end(|| "the spool's clock preparation, released,".into());
             assert_eq!((hour, epoch), (42, 1));
             assert_eq!(campaign_id, vec![b'a'; 5_001]);
-            shared.recycle_frame(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame(index) };
         },
     );
 }
@@ -2893,19 +3080,26 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     let short = campaign_clock_memory(1);
     let long = campaign_clock_memory(5_001);
     let mut shared = campaign_shared();
-    shared.prepare_clock_capture(&short);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&short) };
     let held: Vec<_> = (0..BUFFERS)
-        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
     let _ = unsafe { shared.prepared_clock_capture(&long) };
-    shared.prepare_frame_clocks(&long);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_frame_clocks(&long) };
     for index in held {
-        shared.recycle_frame_prepared(index);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     collector_test_support::with_allocations_denied(|| {
         let capture = unsafe { shared.prepared_clock_capture(&long) };
         let (entry, _) = capture.read(&long, 0).unwrap();
-        let held: [usize; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+        let held: [usize; BUFFERS] = std::array::from_fn(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap());
         for &index in &held {
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.set_clock(Some(entry));
@@ -2915,7 +3109,9 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
             );
         }
         for index in held {
-            shared.recycle_frame(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame(index) };
         }
     });
 }
@@ -2924,10 +3120,13 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
 fn campaign_clock_optional_preparation_denial_is_named_and_nonterminal() {
     let memory = campaign_clock_memory(5_001);
     let mut shared = campaign_shared();
-    collector_test_support::with_allocations_denied(|| shared.prepare_clock_capture(&memory));
+    collector_test_support::with_allocations_denied(||
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&memory) });
     assert!(!collector_memory::terminal::failed());
     assert_eq!(shared.clock_capture.get_mut().prepared, 0);
-    shared.prepare_clock_capture(&memory);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.prepare_clock_capture(&memory) };
     assert_eq!(shared.clock_capture.get_mut().prepared, 5_001);
 }
 
@@ -2974,7 +3173,11 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
 fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
     use std::sync::mpsc;
     for wake_before_park in [false, true] {
-        let shared = Arc::new(Shared::new(0, 0, 1));
+        let shared = Arc::new(
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Shared::new(0, 0, 1) },
+        );
         shared.wake_spool();
         let (admitted_tx, admitted) = mpsc::channel();
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -3031,10 +3234,15 @@ fn buffer_return_runs_on_a_small_stack() {
         .stack_size(SMALL_STACK)
         .spawn(move || {
             let held: Vec<_> = (0..BUFFERS)
-                .map(|_| worker.take_frame(&mut 0).unwrap())
+                .map(|_|
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { worker.take_frame(&mut 0) }.unwrap())
                 .collect();
             for index in held {
-                worker.recycle_frame_prepared(index);
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { worker.recycle_frame_prepared(index) };
             }
             worker.frames.len()
         })
@@ -3047,17 +3255,26 @@ fn buffer_return_runs_on_a_small_stack() {
 #[test]
 fn buffers_backlogged_with_one_free_buffer() {
     let shared = campaign_shared();
-    let first = shared.take_frame(&mut 0).unwrap();
-    let second = shared.take_frame(&mut 0).unwrap();
+    let first =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
+    let second =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(shared.frames.len(), 2);
     assert!(!shared.buffers_backlogged());
-    let third = shared.take_frame(&mut 0).unwrap();
+    let third =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(shared.frames.len(), 1);
     assert!(shared.buffers_backlogged());
-    shared.recycle_frame_prepared(first);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame_prepared(first) };
     assert!(!shared.buffers_backlogged());
-    shared.recycle_frame_prepared(second);
-    shared.recycle_frame_prepared(third);
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame_prepared(second) };
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { shared.recycle_frame_prepared(third) };
     assert_eq!(shared.frames.len(), BUFFERS);
 }
 

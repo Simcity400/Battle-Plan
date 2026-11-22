@@ -45,7 +45,7 @@ impl DivisionsJob {
     pub fn initialized(&self) -> bool {
         self.census.initialized()
     }
-    pub fn grow_for_next(&self) -> bool {
+    pub(crate) fn grow_for_next(&self) -> bool {
         self.overflowed || self.census.overflowed || self.census.counts_need_growth()
     }
     pub fn grow(&mut self) {
@@ -94,8 +94,8 @@ impl DivisionsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DivisionsCopyReport {
-    pub raw_ok: bool,
-    pub copy_ticks: [u64; 6],
+    pub(crate) raw_ok: bool,
+    pub(crate) copy_ticks: [u64; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionsCopyContext {

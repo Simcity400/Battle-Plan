@@ -240,10 +240,13 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
 }
 #[cfg(test)]
 fn admit(processor: &mut Processor, campaign: &[u8; 36], load: i64, hour: i32) {
-    let prepared = processor
-        .prepare_frame(&campaign_frame(campaign, load, hour))
+    let prepared =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor
+        .prepare_frame(&campaign_frame(campaign, load, hour)) }
         .unwrap();
-    processor.write_prepared(prepared).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.write_prepared(prepared) }.unwrap();
 }
 #[cfg(test)]
 fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
@@ -259,7 +262,8 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
 }
 pub fn idle_sync_refused() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     processor.writer.drain().unwrap();
     let (refused, polled) = std::sync::mpsc::channel();
     store.lock().unwrap().refuse_poll = Some(refused);
@@ -276,7 +280,8 @@ fn block(store: &Arc<Mutex<Store>>, hour: i32, fail: bool) -> Release {
 #[test]
 fn slow_sink_serves_owned_records_until_the_byte_budget_including_inflight_is_full() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, false);
     admit(&mut processor, ID, 7, 11);
     release.0.entered();
@@ -298,13 +303,16 @@ fn slow_sink_serves_owned_records_until_the_byte_budget_including_inflight_is_fu
     processor.drain_writer().unwrap();
     assert_eq!(processor.recorded_hours(), 23);
     assert_eq!(processor.writer.test_bytes(), 0);
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
 }
 
 #[test]
 fn failed_write_gaps_all_queued_hours_once_and_restarts_with_a_keyframe() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, true);
     admit(&mut processor, ID, 7, 11);
     release.0.entered();
@@ -319,7 +327,10 @@ fn failed_write_gaps_all_queued_hours_once_and_restarts_with_a_keyframe() {
     assert_eq!(campaign.encoder.committed::<tables::Clock>().unwrap().0, 13);
     release.0.release();
     processor.drain_writer().unwrap();
-    assert!(processor.flush().is_err());
+    assert!(
+        // SAFETY: The originating spool flushes its own writer before releasing its observer state.
+        unsafe { processor.flush() }.is_err()
+    );
     let campaign = processor
         .campaigns
         .get_mut(std::str::from_utf8(ID).unwrap())
@@ -345,7 +356,9 @@ fn failed_write_gaps_all_queued_hours_once_and_restarts_with_a_keyframe() {
     assert_eq!(written_gaps, 1);
     restart.0.release();
     processor.drain_writer().unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let replay = replay(&store);
     assert_eq!(replay.recorded_hours(branch).unwrap(), [10, 14]);
     assert_eq!(
@@ -375,16 +388,26 @@ fn later_failures_are_recorded_when_older_writes_complete_at_poll_or_detach() {
     for preparation in [false, true] {
         for detach in [false, true] {
             let (mut processor, store) = processor();
-            processor.frame(&campaign_frame(ID, 7, 8)).unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.frame(&campaign_frame(ID, 7, 8)) }.unwrap();
             let release = block(&store, 9, false);
             admit(&mut processor, ID, 7, 9);
             release.0.entered();
-            let prepared = processor.prepare_frame(&campaign_frame(ID, 7, 10)).unwrap();
-            processor.write_prepared(prepared).unwrap();
+            let prepared =
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.prepare_frame(&campaign_frame(ID, 7, 10)) }.unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.write_prepared(prepared) }.unwrap();
             assert_eq!(processor.queued.len(), 2);
             assert_eq!(processor.recorded_hours(), 1);
             let source = campaign_frame(ID, 7, 11);
-            let mut prepared = processor.prepare_frame(&source).unwrap();
+            let mut prepared =
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.prepare_frame(&source) }.unwrap();
             let branch = prepared.source.branch;
             prepared.source.tables[TableId::Clock.index()] =
                 TableView::Complete(TableRows::Clock(vec![ClockRow {
@@ -403,11 +426,15 @@ fn later_failures_are_recorded_when_older_writes_complete_at_poll_or_detach() {
                         .err()
                         .unwrap()
                 } else {
-                    processor.write_prepared(prepared).unwrap_err()
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { processor.write_prepared(prepared) }.unwrap_err()
                 };
                 assert_eq!(error.to_string(), detail);
                 if detach {
-                    processor.detach().unwrap();
+                    // SAFETY: This spool's frame and command processing have finished before its
+                    // processor is closed.
+                    unsafe { processor.detach() }.unwrap();
                 } else {
                     processor.writer.drain().unwrap();
                     processor.poll_writer().unwrap();
@@ -422,7 +449,9 @@ fn later_failures_are_recorded_when_older_writes_complete_at_poll_or_detach() {
             assert!(processor.queued.is_empty());
             assert_eq!(processor.json()["write_errors"], 1);
             assert_eq!(processor.json()["last_error"], expected);
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             let replay = replay(&store);
             assert_eq!(replay.recorded_hours(branch).unwrap(), [8, 9, 10]);
             assert_eq!(replay.gaps.len(), 1);
@@ -437,7 +466,10 @@ fn later_failures_are_recorded_when_older_writes_complete_at_poll_or_detach() {
 fn postcommit_sync_failure_does_not_gap_the_committed_frame() {
     let (mut processor, store) = processor();
     store.lock().unwrap().fail_sync = true;
-    assert!(processor.frame(&campaign_frame(ID, 7, 10)).is_err());
+    assert!(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.is_err()
+    );
     assert_eq!(processor.recorded_hours(), 1);
     assert!(processor.campaigns.values().all(|campaign| {
         campaign
@@ -445,9 +477,12 @@ fn postcommit_sync_failure_does_not_gap_the_committed_frame() {
             .iter()
             .all(|pending| pending.gaps.is_empty())
     }));
-    processor.frame(&campaign_frame(ID, 7, 11)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 11)) }.unwrap();
     assert_eq!(processor.stats.errors, 1);
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let replay = replay(&store);
     assert!(replay.gaps.is_empty());
     assert_eq!(
@@ -470,7 +505,8 @@ fn close(processor: &mut Processor) -> crate::spool_writer::CloseReceipt {
 fn campaign_and_live_branch_transitions_service_frames_without_draining() {
     for campaign_switch in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, false);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
@@ -484,7 +520,9 @@ fn campaign_and_live_branch_transitions_service_frames_without_draining() {
         release.0.release();
         processor.drain_writer().unwrap();
         assert_eq!(processor.recorded_hours(), 4);
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
     }
 }
 
@@ -517,7 +555,8 @@ fn written_parent(written: &replay::campaign::Replay, branch: BranchId) -> Paren
 fn a_load_before_its_hours_write_settles_takes_ancestry_from_that_writes_outcome() {
     for fail in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, fail);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
@@ -535,12 +574,18 @@ fn a_load_before_its_hours_write_settles_takes_ancestry_from_that_writes_outcome
         release.0.release();
         processor.drain_writer().unwrap();
         if fail {
-            assert!(processor.flush().is_err());
+            assert!(
+                // SAFETY: The originating spool flushes its own writer before releasing its observer
+                // state.
+                unsafe { processor.flush() }.is_err()
+            );
             assert_eq!(parent(&mut processor, loaded), Parentage::Unknown);
             admit(&mut processor, ID, 8, 12);
             processor.drain_writer().unwrap();
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let replay = replay(&store);
         assert_eq!(
             written_parent(&replay, loaded),
@@ -561,8 +606,10 @@ fn a_load_before_its_hours_write_settles_takes_ancestry_from_that_writes_outcome
 fn a_load_while_another_branch_queues_its_hour_stays_ambiguous_unless_that_write_fails() {
     for fail in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
-        processor.frame(&campaign_frame(ID, 7, 11)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 11)) }.unwrap();
         let release = block(&store, 11, fail);
         admit(&mut processor, ID, 8, 11);
         release.0.entered();
@@ -581,12 +628,18 @@ fn a_load_while_another_branch_queues_its_hour_stays_ambiguous_unless_that_write
         release.0.release();
         processor.drain_writer().unwrap();
         if fail {
-            assert!(processor.flush().is_err());
+            assert!(
+                // SAFETY: The originating spool flushes its own writer before releasing its observer
+                // state.
+                unsafe { processor.flush() }.is_err()
+            );
             assert_eq!(parent(&mut processor, third), original);
             admit(&mut processor, ID, 9, 12);
             processor.drain_writer().unwrap();
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let replay = replay(&store);
         assert_eq!(written_parent(&replay, second), original);
         assert_eq!(
@@ -608,7 +661,8 @@ fn a_load_while_another_branch_queues_its_hour_stays_ambiguous_unless_that_write
 #[test]
 fn checkpoint_close_and_start_service_frames_and_acknowledge_only_real_handle_close() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let first = block(&store, 11, false);
     admit(&mut processor, ID, 7, 11);
     first.0.entered();
@@ -635,14 +689,17 @@ fn checkpoint_close_and_start_service_frames_and_acknowledge_only_real_handle_cl
     assert!(second.records.iter().any(|record| matches!(record,
         Record::Frame(frame) if frame.hour == 12 && frame.keyframe)));
     drop(store);
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
 }
 
 #[test]
 fn a_queued_close_or_start_failure_gaps_exactly_the_cancelled_suffix() {
     for start_failure in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let first = block(&store, 11, false);
         admit(&mut processor, ID, 7, 11);
         first.0.entered();
@@ -664,7 +721,11 @@ fn a_queued_close_or_start_failure_gaps_exactly_the_cancelled_suffix() {
         );
         transition.0.release();
         processor.drain_writer().unwrap();
-        assert!(processor.flush().is_err());
+        assert!(
+            // SAFETY: The originating spool flushes its own writer before releasing its observer
+            // state.
+            unsafe { processor.flush() }.is_err()
+        );
         assert_eq!(
             receipt.result(),
             if start_failure {
@@ -677,7 +738,9 @@ fn a_queued_close_or_start_failure_gaps_exactly_the_cancelled_suffix() {
         assert_eq!(processor.writer.test_uncommitted_hours(), [12, 13, 14]);
         admit(&mut processor, ID, 7, 15);
         processor.drain_writer().unwrap();
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let replay = replay(&store);
         assert_eq!(
             replay
@@ -697,7 +760,8 @@ fn a_queued_close_or_start_failure_gaps_exactly_the_cancelled_suffix() {
 #[test]
 fn a_failed_close_retries_its_flushed_gap_without_duplicating_recorded_loss() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let loss = LostObservation {
         campaign_id: campaign_frame(ID, 7, 11).clock.unwrap().campaign_id,
         first_hour: 11,
@@ -715,11 +779,16 @@ fn a_failed_close_retries_its_flushed_gap_without_duplicating_recorded_loss() {
     admit(&mut processor, ID, 7, 14);
     closing.0.release();
     processor.drain_writer().unwrap();
-    assert!(processor.flush().is_err());
+    assert!(
+        // SAFETY: The originating spool flushes its own writer before releasing its observer state.
+        unsafe { processor.flush() }.is_err()
+    );
     assert_eq!(receipt.result(), Some(Err(io::ErrorKind::Other)));
     admit(&mut processor, ID, 7, 15);
     processor.drain_writer().unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let replay = replay(&store);
     assert_eq!(
         replay.recorded_hours(replay.branches[0].id).unwrap(),
@@ -738,7 +807,8 @@ fn a_failed_close_retries_its_flushed_gap_without_duplicating_recorded_loss() {
 #[test]
 fn a_failed_start_sync_keeps_its_flushed_keyframe_and_gaps_only_queued_successors() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let starting = Release(Arc::new(Gate::default()));
     store.lock().unwrap().create_gate = Some((1, Arc::clone(&starting.0), false));
     let receipt = close(&mut processor);
@@ -754,12 +824,17 @@ fn a_failed_start_sync_keeps_its_flushed_keyframe_and_gaps_only_queued_successor
     admit(&mut processor, ID, 7, 14);
     syncing.0.release();
     processor.drain_writer().unwrap();
-    assert!(processor.flush().is_err());
+    assert!(
+        // SAFETY: The originating spool flushes its own writer before releasing its observer state.
+        unsafe { processor.flush() }.is_err()
+    );
     assert_eq!(processor.recorded_hours(), 2);
     assert_eq!(processor.writer.test_uncommitted_hours(), [12, 13, 14]);
     admit(&mut processor, ID, 7, 15);
     processor.drain_writer().unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let replay = replay(&store);
     assert_eq!(
         replay
@@ -779,7 +854,8 @@ fn a_failed_start_sync_keeps_its_flushed_keyframe_and_gaps_only_queued_successor
 fn failure_cancels_and_gaps_each_live_transition_context_without_stranding_the_next_campaign() {
     for campaign_switch in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, true);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
@@ -789,14 +865,20 @@ fn failure_cancels_and_gaps_each_live_transition_context_without_stranding_the_n
         admit(&mut processor, current, 8, 21);
         release.0.release();
         processor.drain_writer().unwrap();
-        assert!(processor.flush().is_err());
+        assert!(
+            // SAFETY: The originating spool flushes its own writer before releasing its observer
+            // state.
+            unsafe { processor.flush() }.is_err()
+        );
         assert_eq!(processor.recorded_hours(), 1);
         assert_eq!(processor.writer.test_uncommitted_hours(), [11, 12, 20, 21]);
         admit(&mut processor, current, 8, 22);
         processor.drain_writer().unwrap();
         assert_eq!(processor.recorded_hours(), 2);
         assert!(processor.writer.test_uncommitted_hours().is_empty());
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let files = &store.lock().unwrap().files;
         let gaps = files
             .values()
@@ -813,13 +895,16 @@ fn failure_cancels_and_gaps_each_live_transition_context_without_stranding_the_n
 #[test]
 fn detach_waits_only_after_production_has_stopped() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, false);
     admit(&mut processor, ID, 7, 11);
     release.0.entered();
     let drain = processor.writer.test_drain_probe();
     let stopped = std::thread::spawn(move || {
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         processor
     });
     drain();
@@ -834,7 +919,8 @@ fn detach_waits_only_after_production_has_stopped() {
 fn a_failed_range_stays_witnessed_until_written_before_campaign_branch_or_detach() {
     for boundary in 0..3 {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, true);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
@@ -842,11 +928,20 @@ fn a_failed_range_stays_witnessed_until_written_before_campaign_branch_or_detach
         release.0.release();
         processor.drain_writer().unwrap();
         assert_eq!(processor.writer.test_uncommitted_hours(), [11, 12]);
-        assert!(processor.flush().is_err());
+        assert!(
+            // SAFETY: The originating spool flushes its own writer before releasing its observer
+            // state.
+            unsafe { processor.flush() }.is_err()
+        );
         match boundary {
             0 => admit(&mut processor, OTHER, 8, 20),
             1 => admit(&mut processor, ID, 8, 20),
-            2 => processor.detach().unwrap(),
+            2 =>
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            {
+                unsafe { processor.detach() }.unwrap()
+            }
             _ => unreachable!(),
         }
         processor.drain_writer().unwrap();
@@ -871,7 +966,9 @@ fn a_failed_range_stays_witnessed_until_written_before_campaign_branch_or_detach
             })
             .collect::<Vec<_>>();
         assert_eq!(gaps, [(11, 12)]);
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
     }
 }
 
@@ -879,17 +976,25 @@ fn a_failed_range_stays_witnessed_until_written_before_campaign_branch_or_detach
 fn conversion_failure_after_a_load_cannot_hide_an_earlier_failed_campaign_range() {
     for detach in [false, true] {
         let (mut processor, store) = processor();
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, true);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
         admit(&mut processor, ID, 7, 12);
         release.0.release();
         processor.drain_writer().unwrap();
-        assert!(processor.flush().is_err());
+        assert!(
+            // SAFETY: The originating spool flushes its own writer before releasing its observer
+            // state.
+            unsafe { processor.flush() }.is_err()
+        );
         for (load, hour) in [(8, 20), (9, 30)] {
             let captured = campaign_frame(ID, load, hour);
-            let prepared = processor.prepare_frame(&captured).unwrap();
+            let prepared =
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.prepare_frame(&captured) }.unwrap();
             let branch = prepared.source.branch;
             drop(prepared);
             assert!(
@@ -905,7 +1010,9 @@ fn conversion_failure_after_a_load_cannot_hide_an_earlier_failed_campaign_range(
             );
         }
         if detach {
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
         } else {
             admit(&mut processor, OTHER, 10, 40);
             processor.drain_writer().unwrap();
@@ -925,18 +1032,23 @@ fn conversion_failure_after_a_load_cannot_hide_an_earlier_failed_campaign_range(
                 (30, 30, "spool frame preparation failed")
             ],
         );
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
     }
 }
 
 #[test]
 fn a_write_failure_after_preparing_the_next_branch_restores_context_in_observation_order() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, true);
     admit(&mut processor, ID, 7, 11);
     release.0.entered();
-    let prepared = processor.prepare_frame(&campaign_frame(ID, 8, 20)).unwrap();
+    let prepared =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.prepare_frame(&campaign_frame(ID, 8, 20)) }.unwrap();
     let next = prepared.source.branch;
     let id = std::str::from_utf8(ID).unwrap();
     assert_eq!(
@@ -945,8 +1057,14 @@ fn a_write_failure_after_preparing_the_next_branch_restores_context_in_observati
     );
     release.0.release();
     processor.writer.drain().unwrap();
-    assert!(processor.write_prepared(prepared).is_err());
-    assert!(processor.flush().is_err());
+    assert!(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.write_prepared(prepared) }.is_err()
+    );
+    assert!(
+        // SAFETY: The originating spool flushes its own writer before releasing its observer state.
+        unsafe { processor.flush() }.is_err()
+    );
     let campaign = processor.campaigns.get_mut(id).unwrap();
     let previous = campaign.tracker.branches().next().unwrap().id;
     assert_eq!(
@@ -959,7 +1077,9 @@ fn a_write_failure_after_preparing_the_next_branch_restores_context_in_observati
     );
     admit(&mut processor, ID, 8, 21);
     processor.drain_writer().unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let replay = replay(&store);
     assert_eq!(replay.recorded_hours(previous).unwrap(), [10]);
     assert_eq!(replay.recorded_hours(next).unwrap(), [21]);
@@ -976,8 +1096,10 @@ fn a_write_failure_after_preparing_the_next_branch_restores_context_in_observati
 
 #[cfg(test)]
 fn large_receipt(processor: &mut Processor, hour: i32, bytes: usize) -> PreparedFrame {
-    let mut prepared = processor
-        .prepare_frame(&campaign_frame(ID, 7, hour))
+    let mut prepared =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor
+        .prepare_frame(&campaign_frame(ID, 7, hour)) }
         .unwrap();
     prepared.event_feed_publication =
         Some(collector_observers::event_feed_history::Prepared::for_test(
@@ -997,17 +1119,21 @@ fn deferred_observer_payloads_share_the_byte_budget_and_pool_charge_until_applie
     let counter = engine_allocation::shared(AtomicU64::new(BASELINE)).unwrap();
     let (mut processor, store) = processor();
     processor.account_writer(counter.clone());
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, false);
     let prepared = large_receipt(&mut processor, 11, PAYLOAD);
-    processor.write_prepared(prepared).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.write_prepared(prepared) }.unwrap();
     release.0.entered();
     assert!(processor.writer.test_storage().0 >= PAYLOAD);
     let check = processor.writer.test_storage_probe(BASELINE);
     let producer = std::thread::spawn(move || {
         for hour in 12..=20 {
             let prepared = large_receipt(&mut processor, hour, PAYLOAD);
-            processor.write_prepared(prepared).unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { processor.write_prepared(prepared) }.unwrap();
         }
         processor
     });
@@ -1024,7 +1150,9 @@ fn deferred_observer_payloads_share_the_byte_budget_and_pool_charge_until_applie
         counter.load(Ordering::Relaxed),
         BASELINE + processor.writer.test_storage().1 as u64
     );
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     drop(processor);
     assert_eq!(counter.load(Ordering::Relaxed), BASELINE);
 }
@@ -1035,10 +1163,12 @@ fn a_real_write_keeps_its_deferred_storage_charged_until_the_spool_applies_the_r
         let counter = engine_allocation::shared(AtomicU64::new(0)).unwrap();
         let (mut processor, store) = processor();
         processor.account_writer(counter.clone());
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let release = block(&store, 11, fail);
         let prepared = large_receipt(&mut processor, 11, 1024 * 1024);
-        processor.write_prepared(prepared).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.write_prepared(prepared) }.unwrap();
         release.0.entered();
         let receipt = processor.writer.test_storage().0;
         assert!(receipt >= 1024 * 1024);
@@ -1055,7 +1185,9 @@ fn a_real_write_keeps_its_deferred_storage_charged_until_the_spool_applies_the_r
         assert_eq!(processor.writer.test_bytes() != 0, fail);
         assert_eq!(processor.writer.test_storage().0, 0);
         if !fail {
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
         }
         drop(processor);
         assert_eq!(counter.load(Ordering::Relaxed), 0);
@@ -1068,7 +1200,8 @@ fn a_queued_close_keeps_its_pending_context_charged_until_its_receipt_is_applied
         let counter = engine_allocation::shared(AtomicU64::new(0)).unwrap();
         let (mut processor, store) = processor();
         processor.account_writer(counter.clone());
-        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
         let id = std::str::from_utf8(ID).unwrap();
         let campaign = processor.campaigns.get_mut(id).unwrap();
         let branch = campaign.tracker.current_branch().unwrap();
@@ -1105,7 +1238,8 @@ fn a_queued_close_keeps_its_pending_context_charged_until_its_receipt_is_applied
 #[test]
 fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 8)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 8)) }.unwrap();
     processor.drain_writer().unwrap();
     let id = std::str::from_utf8(ID).unwrap().to_owned();
     let branch = processor
@@ -1182,7 +1316,8 @@ fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
 #[test]
 fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry() {
     let (mut processor, store) = processor();
-    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
     let release = block(&store, 11, true);
     admit(&mut processor, ID, 7, 11);
     release.0.entered();
@@ -1260,7 +1395,9 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
     processor.drain_writer().unwrap();
     admit(&mut processor, ID, 8, 12);
     processor.drain_writer().unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let rows = replay(&store);
     assert_eq!(written_parent(&rows, branch), Parentage::Unknown);
     let Record::Control(control) = record else {

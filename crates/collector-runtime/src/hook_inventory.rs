@@ -26,12 +26,12 @@ use engine_sites::Rva;
 
 use collector_hook_failures::Patch;
 
-pub const PATCH: usize = 5;
+pub(crate) const PATCH: usize = 5;
 const INDIRECT: usize = 6;
 const FIVE: Option<usize> = Some(PATCH);
 const TAP: Option<usize> = None;
 
-pub fn patches() -> Vec<Patch> {
+pub(crate) fn patches() -> Vec<Patch> {
     let mut out = Vec::new();
     let mut add = |family: &'static str, name: &str, rva: Rva, len: Option<usize>| {
         out.push(Patch {

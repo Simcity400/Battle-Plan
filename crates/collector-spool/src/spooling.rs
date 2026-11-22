@@ -10,7 +10,7 @@ use collector_projection::projection::{
 #[cfg(test)]
 use collector_projection::table_conversion::table_iter;
 use collector_status::status::status;
-use collector_workers::spool_phases::RETRY_CAUSE;
+use collector_workers::spool_phases::retry_cause;
 use engine_native::{cgame_state::Clock, walk::Outcome};
 #[cfg(test)]
 use replay::spool::SegmentedSpool;
@@ -1706,7 +1706,10 @@ impl CapturedStatistics {
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
         .count();
         #[cfg(feature = "phase_cpu")]
-        collector_workers::spool_phases::add_table_ns(&captured.table_ns);
+        // SAFETY: The sole spool publishes timing for the completed frame.
+        unsafe {
+            collector_workers::spool_phases::add_table_ns(&captured.table_ns)
+        };
         Ok(Self {
             total_ns: captured.total_ns,
             hour: captured.clock.as_ref().map(|clock| clock.hour),
@@ -1961,7 +1964,15 @@ impl Processor {
             self.writer.wait_receipt_progress()?;
         }
     }
-    pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
+    /// # Safety
+    /// Only the runtime's spool startup may construct the processor for this session's directory
+    /// and history leases. It must join its writer before releasing those leases or unloading
+    /// collector code.
+    pub unsafe fn new(
+        root: &Path,
+        history: PreparedCampaigns,
+        session: SessionStart,
+    ) -> io::Result<Self> {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
@@ -2074,7 +2085,10 @@ impl Processor {
         }
     }
 
-    pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
+    /// # Safety
+    /// Only the active spool may prepare its own capture frame. Use a frame from this session and
+    /// complete preparation before recording it or returning its slot.
+    pub unsafe fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
@@ -2170,9 +2184,16 @@ impl Processor {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn frame(&mut self, captured: &Captured) -> io::Result<()> {
-        let prepared = self.prepare_frame(captured)?;
-        self.write_prepared(prepared)?;
+    /// # Safety
+    /// Only the session's spool may submit a frame. It must be the matching hour's fully decoded
+    /// frame, owned by this spool until conversion is complete.
+    pub unsafe fn frame(&mut self, captured: &Captured) -> io::Result<()> {
+        let prepared =
+        // SAFETY: This is the decoded frame held by its originating spool.
+        unsafe { self.prepare_frame(captured) }?;
+        // SAFETY: This spool submits the prepared frame to its originating processor before
+        // teardown.
+        unsafe { self.write_prepared(prepared) }?;
         self.drain_writer()?;
         match self.writer_error.take() {
             Some(kind) => Err(kind.into()),
@@ -2180,7 +2201,10 @@ impl Processor {
         }
     }
 
-    pub fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+    /// # Safety
+    /// Only the session's spool may submit a frame. It must be the matching hour's fully decoded
+    /// frame, owned by this spool until conversion is complete.
+    pub unsafe fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
         self.poll_writer()?;
         if let Some(clock) = captured.clock.as_ref()
             && let Ok(id) = campaign_name(clock.campaign_id.as_bytes())
@@ -2422,23 +2446,39 @@ impl Processor {
                 TableView::Complete(replay_data::rows::TableRows::EventFeedHistory(rows)),
             );
         }
-        let operation_publication = campaign
+        let operation_publication =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { campaign
             .operation_outcomes
-            .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
-        let map_event_publication = campaign
+            .assemble_owned(
+            // SAFETY: The spool borrows its own frame and keeps the operation log live to
+            // publication.
+             captured.extended.operation_outcomes() , &mut source.tables) };
+        let map_event_publication =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { campaign
             .map_events
-            .assemble_owned(captured.extended.map_events(), &mut source.tables);
+            .assemble_owned(
+            // SAFETY: The spool borrows its own frame for assembly before releasing event storage.
+             captured.extended.map_events() , &mut source.tables) };
         if collector_memory::terminal::failed() {
             return Err(collector_memory::terminal::oom());
         }
-        campaign.politics.assemble_owned(
-            source.branch,
-            source.hour,
-            captured.extended.politics(),
-            &captured.countries,
-            captured.countries_result,
-            &mut source.tables,
-        )?;
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe {
+            campaign.politics.assemble_owned(
+                source.branch,
+                source.hour,
+                // SAFETY: The spool borrows the political interval belonging to its decoded frame.
+                captured.extended.politics(),
+                &captured.countries,
+                captured.countries_result,
+                &mut source.tables,
+            )
+        }?;
         campaign.assemble_construction_ic(&mut source, captured);
         campaign.fuel_awards.assemble(
             source.branch,
@@ -2448,12 +2488,14 @@ impl Processor {
         )?;
         let retry = retry_table(&source.tables);
         if let Some(table) = retry {
-            RETRY_CAUSE.store(
+            // SAFETY: The sole spool publishes the retry cause for its own frame.
+            unsafe { retry_cause() }.store(
                 table.index() as u16 + 1,
                 std::sync::atomic::Ordering::Relaxed,
             );
         } else if sliced_retry {
-            RETRY_CAUSE.store(RETRY_SLICED, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY: The sole spool publishes the retry cause for its own frame.
+            unsafe { retry_cause() }.store(RETRY_SLICED, std::sync::atomic::Ordering::Relaxed);
         }
         let retry_full = retry.is_some() || sliced_retry;
         campaign
@@ -2487,7 +2529,10 @@ impl Processor {
         })
     }
 
-    pub fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+    /// # Safety
+    /// Submit exactly once to the same processor that prepared the frame, in capture order and
+    /// before the associated observer logs are released.
+    pub unsafe fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
@@ -2640,7 +2685,8 @@ impl Processor {
         }
         collector_memory::terminal::attempted_hour(None);
         if work.validation_refused {
-            RETRY_CAUSE.store(RETRY_VALIDATION, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY: The sole spool publishes the retry cause for its own frame.
+            unsafe { retry_cause() }.store(RETRY_VALIDATION, std::sync::atomic::Ordering::Relaxed);
         }
         self.retry_full |= retry_full || work.validation_refused;
         self.unpublished_families |= work.validation_families;
@@ -2654,10 +2700,14 @@ impl Processor {
             .last_ticket()
             .expect("processor always uses its collector writer");
         if let Some(publication) = &frame.operation_publication {
-            publication.admitted();
+            // SAFETY: This is the spool's actual queue admission while its originating observer
+            // remains live.
+            unsafe { publication.admitted() };
         }
         if let Some(publication) = &frame.map_event_publication {
-            publication.admitted();
+            // SAFETY: This is the spool's actual queue admission while its originating observer
+            // remains live.
+            unsafe { publication.admitted() };
         }
         self.queued.push_back(frame);
         self.flight = Some((flight_id, branch));
@@ -2684,10 +2734,12 @@ impl Processor {
             collector_observers::event_feed_observer::accepted(&publication)?;
         }
         if let Some(publication) = operation_publication {
-            publication.commit();
+            // SAFETY: The originating spool has the writer receipt and still owns the observers.
+            unsafe { publication.commit() };
         }
         if let Some(publication) = map_event_publication {
-            publication.commit();
+            // SAFETY: The originating spool has the writer receipt and still owns the observers.
+            unsafe { publication.commit() };
         }
         let campaign = self.campaigns.get_mut(&id).unwrap();
         campaign.line_output.written(line_output_receipt);
@@ -2802,8 +2854,12 @@ impl Processor {
             }
         }
         if lost {
-            collector_operation_outcomes::extended::operation_outcomes::reset_admitted();
-            collector_capture::extended::map_events::reset_admitted();
+            // SAFETY: The sole spool has invalidated pending writes and still owns its observer
+            // frontier.
+            unsafe { collector_operation_outcomes::extended::operation_outcomes::reset_admitted() };
+            // SAFETY: The sole spool has invalidated pending writes and still owns its observer
+            // frontier.
+            unsafe { collector_capture::extended::map_events::reset_admitted() };
         }
         if failed {
             self.writer.resume_after_failure();
@@ -2848,7 +2904,9 @@ impl Processor {
         }
         let Some(campaign) = self.campaigns.get_mut(id) else {
             let receipt = crate::spool_writer::CloseReceipt::default();
-            receipt.complete(Ok(()));
+            // SAFETY: This is the close result from its originating writer, or an isolated receipt
+            // owned by the fixture.
+            unsafe { receipt.complete(Ok(())) };
             return Ok(receipt);
         };
         if load.is_some_and(|load| {
@@ -2880,7 +2938,14 @@ impl Processor {
         })
     }
 
-    pub fn exchange_history_lease(&mut self, id: &str, mut file: Option<File>) -> Option<File> {
+    /// # Safety
+    /// Only the session's spool may move the lease for a campaign, after its matching history
+    /// request is clear of capture and writer work.
+    pub unsafe fn exchange_history_lease(
+        &mut self,
+        id: &str,
+        mut file: Option<File>,
+    ) -> Option<File> {
         match self.campaigns.get_mut(id) {
             Some(campaign) => {
                 std::mem::swap(&mut campaign.history_lease, &mut file);
@@ -2890,7 +2955,10 @@ impl Processor {
         }
     }
 
-    pub fn try_history_request(
+    /// # Safety
+    /// The sole spool must supply the originating session's history fence and matching pool slots.
+    /// A close or release must wait for all captures through that fence and their publications.
+    pub unsafe fn try_history_request(
         &mut self,
         request: &str,
     ) -> io::Result<Option<(HistoryReply, Option<File>)>> {
@@ -2911,7 +2979,10 @@ impl Processor {
                 Some("the campaign is recording")
             }
             "release" | "lend" => {
-                lease = self.exchange_history_lease(&id, None);
+                lease =
+                // SAFETY: The originating spool has cleared this request through its capture and
+                // writer fence.
+                unsafe { self.exchange_history_lease(&id, None) };
                 None
             }
             "close" => {
@@ -2950,7 +3021,9 @@ impl Processor {
     ) -> io::Result<Option<crate::spool_writer::CloseReceipt>> {
         let Some(campaign) = self.campaigns.get_mut(id) else {
             let receipt = crate::spool_writer::CloseReceipt::default();
-            receipt.complete(Ok(()));
+            // SAFETY: This is the close result from its originating writer, or an isolated receipt
+            // owned by the fixture.
+            unsafe { receipt.complete(Ok(())) };
             return Ok(Some(receipt));
         };
         if load.is_some_and(|load| {
@@ -3105,14 +3178,20 @@ impl Processor {
         Ok(())
     }
 
-    pub fn flush_commands(&mut self, final_drain: bool) -> io::Result<()> {
+    /// # Safety
+    /// Only the session's spool may drain its live command installation. Request the final drain
+    /// only after hooks are restored and their callbacks are quiet.
+    pub unsafe fn flush_commands(&mut self, final_drain: bool) -> io::Result<()> {
         if !final_drain
             && self.command_last_flush.elapsed() < std::time::Duration::from_secs(5)
             && !collector_player_commands::player_commands::urgent()
         {
             return Ok(());
         }
-        let drained = self.command_drain.take(final_drain)?;
+        let drained =
+        // SAFETY: The sole spool drains its current installation, with hooks quiet for a final
+        // drain.
+        unsafe { self.command_drain.take(final_drain) }?;
         engine_allocation::reserve(&mut self.command_pending, drained.len())?;
         self.command_pending.extend(drained);
         self.command_last_flush = std::time::Instant::now();
@@ -3171,7 +3250,10 @@ impl Processor {
                 .ok_or_else(|| invalid("command campaign context disappeared"))?;
             let ordinal = self.command_ordinals.entry(drained.world).or_default();
             if *ordinal == 0 {
-                drained.batch.kinds = collector_player_commands::player_commands::Drain::catalog()?;
+                drained.batch.kinds =
+                // SAFETY: This catalog belongs to the command installation the spool is still
+                // draining.
+                unsafe { collector_player_commands::player_commands::Drain::catalog() }?;
             }
             let mut packet = replay::commands::Packet::pack(
                 *branch,
@@ -3341,18 +3423,29 @@ impl Processor {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> io::Result<()> {
+    /// # Safety
+    /// Only the active spool or detach sequence may flush the originating writer and settle its
+    /// publication receipts.
+    pub unsafe fn flush(&mut self) -> io::Result<()> {
         self.poll_writer()?;
-        self.flush_commands(false)?;
+        // SAFETY: The session's spool owns this command drain and detachment has quieted callbacks
+        // for the final drain.
+        unsafe { self.flush_commands(false) }?;
         match self.writer_error.take() {
             Some(kind) => Err(kind.into()),
             None => Ok(()),
         }
     }
 
-    pub fn detach(&mut self) -> io::Result<()> {
+    /// # Safety
+    /// Only the spool's detach sequence may close the processor, after draining frames and commands
+    /// and before releasing their observer stores.
+    pub unsafe fn detach(&mut self) -> io::Result<()> {
         self.drain_writer()?;
-        let command_error = self.flush_commands(true).err();
+        let command_error =
+        // SAFETY: The session's spool owns this command drain and detachment has quieted callbacks
+        // for the final drain.
+        unsafe { self.flush_commands(true) }.err();
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Teardown);
         collector_memory::terminal::attempted_hour(None);
@@ -3805,13 +3898,17 @@ fn decoded_with_costs(
                 }
                 tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
                 let _packs = span.switch(collector_workers::spool_phases::Phase::ConvertPacks);
-                captured.extended.insert_tables(
-                    clock.hour,
-                    &mut tables,
-                    conversion,
-                    false,
-                    &mut costs,
-                );
+                // SAFETY: The spool owns the frame and skips any packs on loan to its joined
+                // helpers.
+                unsafe {
+                    captured.extended.insert_tables(
+                        clock.hour,
+                        &mut tables,
+                        conversion,
+                        false,
+                        &mut costs,
+                    )
+                };
                 costs.thread(started);
             }
             Some(split) => {
@@ -4088,7 +4185,10 @@ fn convert_with_helper(
         .as_ref()
         .map(|projection| **projection);
     let hour = clock.hour;
-    let view = captured.extended.helper_view();
+    let view =
+    // SAFETY: The spool joins all converters before reusing the frame and gives each pack one
+    // queue owner.
+    unsafe { captured.extended.helper_view() };
     let map = &captured.map;
     let context = collector_memory::terminal::context();
     let SpoolConversion {
@@ -4132,14 +4232,17 @@ fn convert_with_helper(
         let span = HELPER.span(Phase::ConvertCore);
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
-        view.convert_queued(
-            &queue,
-            hour,
-            projection.as_mut(),
-            &lent,
-            &mut packs,
-            &mut costs,
-        );
+        // SAFETY: This conversion belongs to the joined spool round and uses its shared queue.
+        unsafe {
+            view.convert_queued(
+                &queue,
+                hour,
+                projection.as_mut(),
+                &lent,
+                &mut packs,
+                &mut costs,
+            )
+        };
         costs.thread(started);
         span.finish();
         take_in(&converted, map, &mut packs, Some(&costs));
@@ -4153,26 +4256,30 @@ fn convert_with_helper(
         }
         tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
         let span = span.switch(Phase::ConvertPacks);
-        captured
-            .extended
-            .insert_tables(clock.hour, tables, conversion, true, costs);
+        // SAFETY: The spool owns the frame and skips any packs on loan to its joined helpers.
+        unsafe {
+            captured
+                .extended
+                .insert_tables(clock.hour, tables, conversion, true, costs)
+        };
         let mut packs = [const { None }; TABLE_COUNT];
-        view.convert_queued(
-            &queue,
-            hour,
-            conversion.projection.as_deref_mut(),
-            &lent,
-            &mut packs,
-            costs,
-        );
+        // SAFETY: This conversion belongs to the joined spool round and uses its shared queue.
+        unsafe {
+            view.convert_queued(
+                &queue,
+                hour,
+                conversion.projection.as_deref_mut(),
+                &lent,
+                &mut packs,
+                costs,
+            )
+        };
         costs.thread(started);
         take_in(&converted, None, &mut packs, None);
         span.switch(Phase::HelperWait)
     };
-    split
-        .helpers
-        .join_some(split.plan.helpers(), &helper, own)
-        .finish();
+    // SAFETY: The caller's single spool round owns each selected helper until it joins.
+    unsafe { split.helpers.join_some(split.plan.helpers(), &helper, own) }.finish();
     let Converted {
         map,
         packs,
@@ -4258,8 +4365,11 @@ fn retired_reason(table: TableId) -> Option<&'static str> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
-    Processor::new(root, PreparedCampaigns::default(), session())
+/// # Safety
+/// Run only in an isolated fixture with exclusive use of the process-wide recorder state.
+pub unsafe fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Processor::new(root, PreparedCampaigns::default(), session()) }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4336,11 +4446,14 @@ fn clock(hour: i32) -> Clock {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn captured(hour: i32) -> Captured {
-    let mut captured = Captured::with_capacities(
+    let mut captured =
+    // SAFETY: The session or isolated fixture owns this frame's observer allocations and excludes
+    // teardown.
+    unsafe { Captured::with_capacities(
         &[1, 1, 1, 1, 2, 1, 1, 2, 6, 0, 0, 0],
         &collector_map_capture::map_capture::MapCapacities::default(),
         &collector_capture::extended::Capacities::default(),
-    )
+    ) }
     .unwrap();
     captured.clock = Some(clock(hour));
     captured.qpc = 1000 + i64::from(hour);
@@ -4471,10 +4584,16 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-contain-table-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
-        processor.frame(&captured(10)).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&captured(10)) }.unwrap();
         for hour in [11, 12] {
-            let mut prepared = processor.prepare_frame(&captured(hour)).unwrap();
+            let mut prepared =
+            // SAFETY: This is the decoded frame held by its originating spool.
+            unsafe { processor.prepare_frame(&captured(hour)) }.unwrap();
             prepared.source.tables[TableId::States.index()] =
                 TableView::Complete(TableRows::States(vec![StateRow {
                     id: 64,
@@ -4484,10 +4603,16 @@ mod tests {
                 .into();
             prepared.source.tables[TableId::Campaign.index()] =
                 TableView::Complete(TableRows::Campaign(Vec::new())).into();
-            processor.write_prepared(prepared).unwrap();
+            // SAFETY: This spool submits the prepared frame to its originating processor before
+            // teardown.
+            unsafe { processor.write_prepared(prepared) }.unwrap();
         }
-        processor.frame(&captured(13)).unwrap();
-        processor.detach().unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&captured(13)) }.unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let status = processor.json();
         assert_eq!(status["hours"], 4);
         assert_eq!(status["write_errors"], 0);
@@ -4539,7 +4664,9 @@ mod tests {
             ));
             fs::create_dir_all(&directory).unwrap();
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+                // SAFETY: The caller owns the session or isolated fixture state required by this
+                // constructor.
+                unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
             processor
                 .command_pending
                 .push(collector_player_commands::player_commands::Drained {
@@ -4576,7 +4703,11 @@ mod tests {
                         ..Default::default()
                     },
                 });
-            assert!(processor.flush_commands(true).is_err());
+            assert!(
+                // SAFETY: The session's spool owns this command drain and detachment has quieted
+                // callbacks for the final drain.
+                unsafe { processor.flush_commands(true) }.is_err()
+            );
             assert!(processor.campaigns.is_empty());
             let mut verified = session();
             verified.identity.verification = replay_data::identity::Verification::Verified {
@@ -4584,7 +4715,9 @@ mod tests {
                 memory: Default::default(),
             };
             processor.set_verified_session(verified.clone()).unwrap();
-            processor.flush_commands(true).unwrap();
+            // SAFETY: The session's spool owns this command drain and detachment has quieted
+            // callbacks for the final drain.
+            unsafe { processor.flush_commands(true) }.unwrap();
             let command_branch = processor.command_contexts[&1].1;
             assert!(
                 processor
@@ -4599,10 +4732,14 @@ mod tests {
             if let Some(hour) = hourly {
                 let mut frame = captured(hour);
                 frame.world_generation = 1;
-                processor.frame(&frame).unwrap();
+                // SAFETY: This frame or slot belongs to the current admitted capture or the sole
+                // spool consuming it.
+                unsafe { processor.frame(&frame) }.unwrap();
                 assert_eq!(processor.command_contexts[&1].1, command_branch);
             }
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             drop(processor);
             let campaign = directory.join(std::str::from_utf8(ID).unwrap());
             let mut files: Vec<_> = fs::read_dir(&campaign)
@@ -4679,14 +4816,20 @@ mod tests {
             memory: Default::default(),
         };
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
         processor.set_verified_session(verified).unwrap();
         processor.command_pending =
             collector_player_commands::player_commands::tests::reactivated_world();
-        processor.flush_commands(true).unwrap();
+        // SAFETY: The session's spool owns this command drain and detachment has quieted callbacks
+        // for the final drain.
+        unsafe { processor.flush_commands(true) }.unwrap();
         let branch = processor.command_contexts[&1].1;
         assert_eq!(processor.command_anchors[&(1, branch)], (100, 10, 5));
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         drop(processor);
         let campaign = directory.join(std::str::from_utf8(ID).unwrap());
         let mut files: Vec<_> = fs::read_dir(&campaign)
@@ -4754,7 +4897,9 @@ mod tests {
                 std::process::id()
             ));
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+                // SAFETY: The caller owns the session or isolated fixture state required by this
+                // constructor.
+                unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
             let mut verified = session();
             verified.identity.verification = replay_data::identity::Verification::Verified {
                 launcher: Default::default(),
@@ -4763,7 +4908,9 @@ mod tests {
             processor.set_verified_session(verified).unwrap();
             let mut frame = captured(11);
             frame.world_generation = 2;
-            processor.frame(&frame).unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&frame) }.unwrap();
             let current = processor.command_contexts[&2].1;
             processor
                 .command_pending
@@ -4790,7 +4937,9 @@ mod tests {
                         ..Default::default()
                     },
                 });
-            processor.flush_commands(true).unwrap();
+            // SAFETY: The session's spool owns this command drain and detachment has quieted
+            // callbacks for the final drain.
+            unsafe { processor.flush_commands(true) }.unwrap();
             let past = processor.command_contexts[&1].1;
             assert_ne!(past, current);
             assert_eq!(
@@ -4805,9 +4954,13 @@ mod tests {
             if later {
                 let mut frame = captured(12);
                 frame.world_generation = 2;
-                processor.frame(&frame).unwrap();
+                // SAFETY: This frame or slot belongs to the current admitted capture or the sole
+                // spool consuming it.
+                unsafe { processor.frame(&frame) }.unwrap();
             }
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             drop(processor);
             let campaign = directory.join(std::str::from_utf8(ID).unwrap());
             let mut files: Vec<_> = fs::read_dir(&campaign)
@@ -4846,10 +4999,12 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-close-request-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
-        processor
-            .frame(&crate::spooling::campaign_frame(ID, 1234, 10))
-            .unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&crate::spooling::campaign_frame(ID, 1234, 10)) }.unwrap();
         let name = std::str::from_utf8(ID).unwrap();
         let segment = fs::read_dir(directory.join(name))
             .unwrap()
@@ -4886,7 +5041,9 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("hoi4-set-aside-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
         let load = |campaign: &[u8], signal: i64, hour: i32| {
             let mut source = captured(hour);
             let clock = source.clock.as_mut().unwrap();
@@ -4912,16 +5069,28 @@ mod tests {
                 .open(path)
                 .is_ok()
         };
-        processor.frame(&load(ID, 1234, 10)).unwrap();
-        processor.frame(&load(ID, 1234, 11)).unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&load(ID, 1234, 10)) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&load(ID, 1234, 11)) }.unwrap();
         let [open] = segments().try_into().unwrap();
         assert!(!settled(&open), "the campaign being recorded keeps writing");
-        processor.frame(&load(OTHER, 5678, 20)).unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&load(OTHER, 5678, 20)) }.unwrap();
         assert!(settled(&open), "the left campaign's segment is closed");
         let closed = fs::read(&open).unwrap();
-        processor.frame(&load(OTHER, 5678, 21)).unwrap();
-        processor.frame(&load(ID, 9999, 30)).unwrap();
-        processor.detach().unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&load(OTHER, 5678, 21)) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&load(ID, 9999, 30)) }.unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         assert_eq!(
             fs::read(&open).unwrap(),
             closed,
@@ -5015,10 +5184,14 @@ mod tests {
             };
             let folder = root.join("sessions").join(process.to_string());
             let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
-            let mut processor = Processor::new(&folder, history, session).unwrap();
+            let mut processor =
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&folder, history, session) }.unwrap();
             for hour in hours {
-                processor
-                    .frame(&crate::spooling::campaign_frame(ID, signal, hour))
+                // SAFETY: This frame or slot belongs to the current admitted capture or the sole
+                // spool consuming it.
+                unsafe { processor.frame(&crate::spooling::campaign_frame(ID, signal, hour)) }
                     .unwrap();
             }
             branches.push(
@@ -5029,7 +5202,9 @@ mod tests {
                     .tracker
                     .current_branch(),
             );
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             drop(processor);
             let ended = replay_io::finalize_session_ahead(
                 &folder,
@@ -5108,13 +5283,17 @@ mod tests {
             };
         let earlier = root.join("sessions").join("1");
         let mut processor =
-            Processor::new(&earlier, PreparedCampaigns::default(), session()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&earlier, PreparedCampaigns::default(), session()) }.unwrap();
         for hour in 10..=11 {
-            processor
-                .frame(&crate::spooling::campaign_frame(ID, 1234, hour))
-                .unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&crate::spooling::campaign_frame(ID, 1234, hour)) }.unwrap();
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         drop(processor);
         let recording = end(replay_io::Live::default(), &earlier);
         let session = SessionStart {
@@ -5124,15 +5303,18 @@ mod tests {
         };
         let folder = root.join("sessions").join("2");
         let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
-        let mut processor = Processor::new(&folder, history, session).unwrap();
+        let mut processor =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Processor::new(&folder, history, session) }.unwrap();
         for hour in 20..=21 {
-            processor
-                .frame(&crate::spooling::campaign_frame(ID, 5678, hour))
-                .unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&crate::spooling::campaign_frame(ID, 5678, hour)) }.unwrap();
         }
-        processor
-            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
-            .unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&crate::spooling::campaign_frame(OTHER, 9012, 30)) }.unwrap();
         processor.settle_journals();
         let held = fs::read(&recording).unwrap();
         let conflict = fs::OpenOptions::new()
@@ -5211,7 +5393,9 @@ mod tests {
             processor.history_request("4 rename x"),
             "4 refused unknown request"
         );
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         drop(processor);
         assert_eq!(end(writers, &folder), recording);
         let frames = recorded_frames(&recording);
@@ -5229,8 +5413,12 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-native-halted-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
-        processor.frame(&captured(10)).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&captured(10)) }.unwrap();
         processor.take_retry_full();
         let campaign = processor
             .campaigns
@@ -5238,10 +5426,14 @@ mod tests {
             .unwrap();
         campaign.columnar = crate::columnar::Columnar::Unopened;
         for hour in [11, 12] {
-            processor.frame(&captured(hour)).unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&captured(hour)) }.unwrap();
             assert!(!processor.take_retry_full(), "hour {hour}");
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let campaign = processor
             .campaigns
             .get_mut(std::str::from_utf8(ID).unwrap())
@@ -5283,11 +5475,17 @@ mod tests {
             let mut start = session();
             start.capture_mode = mode;
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+                // SAFETY: The caller owns the session or isolated fixture state required by this
+                // constructor.
+                unsafe { Processor::new(&directory, PreparedCampaigns::default(), start) }.unwrap();
             for hour in [10, 11] {
-                processor.frame(&captured(hour)).unwrap();
+                // SAFETY: This frame or slot belongs to the current admitted capture or the sole
+                // spool consuming it.
+                unsafe { processor.frame(&captured(hour)) }.unwrap();
             }
-            processor.detach().unwrap();
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             let campaign = processor
                 .campaigns
                 .get_mut(std::str::from_utf8(ID).unwrap())
@@ -5389,61 +5587,69 @@ mod tests {
             let mut start = session();
             start.capture_mode = mode;
             let mut processor =
-                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+                // SAFETY: The caller owns the session or isolated fixture state required by this
+                // constructor.
+                unsafe { Processor::new(&directory, PreparedCampaigns::default(), start) }.unwrap();
             collector_map_events::interval::begin(0, 0).unwrap();
-            kit::capture(mode, fixture, refuse, |frame, trace, roles| {
-                let hour = frame.clock.as_ref().unwrap().hour;
-                if mode == CaptureMode::Map {
-                    assert!(
-                        roles.iter().all(|role| !exclusive_roles.contains(role)),
-                        "{fixture:?} hour {hour}: {roles:?}"
-                    );
-                    assert!(trace.iter().all(|span| {
-                        span.role
-                            .is_none_or(|role| !exclusive_roles.contains(&role))
-                    }));
-                    for &table in &exclusive_tables {
-                        assert_eq!(
-                            frame.table_reads[table.index()],
-                            engine_native::memory::ReadCounts::ZERO,
-                            "{fixture:?} hour {hour} {table:?}"
-                        );
-                    }
-                } else if hour == 0 {
-                    for role in [Role::Research, Role::Intel, Role::AirStats] {
-                        assert!(roles.contains(&role), "Full must exercise {role:?}");
-                    }
-                }
-                for field in [
-                    engine_native::cgame_state::GLOBAL_FLAGS,
-                    engine_native::cgame_state::GLOBAL_VARIABLES,
-                ] {
-                    let field = frame.clock.as_ref().unwrap().game_state as usize + field;
-                    let touched = trace.iter().any(|span| {
-                        span.address < field + 8 && field < span.address.saturating_add(span.len)
-                    });
+            // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+            unsafe {
+                kit::capture(mode, fixture, refuse, |frame, trace, roles| {
+                    let hour = frame.clock.as_ref().unwrap().hour;
                     if mode == CaptureMode::Map {
                         assert!(
-                            !touched,
-                            "omitted script source read at hour {hour}: {trace:?}"
+                            roles.iter().all(|role| !exclusive_roles.contains(role)),
+                            "{fixture:?} hour {hour}: {roles:?}"
                         );
+                        assert!(trace.iter().all(|span| {
+                            span.role
+                                .is_none_or(|role| !exclusive_roles.contains(&role))
+                        }));
+                        for &table in &exclusive_tables {
+                            assert_eq!(
+                                frame.table_reads[table.index()],
+                                engine_native::memory::ReadCounts::ZERO,
+                                "{fixture:?} hour {hour} {table:?}"
+                            );
+                        }
                     } else if hour == 0 {
-                        assert!(touched, "Full did not exercise the script source");
+                        for role in [Role::Research, Role::Intel, Role::AirStats] {
+                            assert!(roles.contains(&role), "Full must exercise {role:?}");
+                        }
                     }
-                }
-                if matches!(fixture, Fixture::Divisions) {
-                    if refuse && matches!(hour, 2 | 13) {
-                        assert!(matches!(
-                            frame.divisions_result,
-                            Outcome::Unavailable { .. }
-                        ));
-                    } else {
-                        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+                    for field in [
+                        engine_native::cgame_state::GLOBAL_FLAGS,
+                        engine_native::cgame_state::GLOBAL_VARIABLES,
+                    ] {
+                        let field = frame.clock.as_ref().unwrap().game_state as usize + field;
+                        let touched = trace.iter().any(|span| {
+                            span.address < field + 8
+                                && field < span.address.saturating_add(span.len)
+                        });
+                        if mode == CaptureMode::Map {
+                            assert!(
+                                !touched,
+                                "omitted script source read at hour {hour}: {trace:?}"
+                            );
+                        } else if hour == 0 {
+                            assert!(touched, "Full did not exercise the script source");
+                        }
                     }
-                }
-                processor.frame(frame).unwrap();
-            });
-            processor.detach().unwrap();
+                    if matches!(fixture, Fixture::Divisions) {
+                        if refuse && matches!(hour, 2 | 13) {
+                            assert!(matches!(
+                                frame.divisions_result,
+                                Outcome::Unavailable { .. }
+                            ));
+                        } else {
+                            assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+                        }
+                    }
+                    processor.frame(frame).unwrap();
+                })
+            };
+            // SAFETY: This spool's frame and command processing have finished before its processor
+            // is closed.
+            unsafe { processor.detach() }.unwrap();
             let campaign = processor
                 .campaigns
                 .get_mut(std::str::from_utf8(kit::ID).unwrap())
@@ -5616,13 +5822,20 @@ mod tests {
             std::process::id()
         ));
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
         let mut source = captured(10);
-        processor.prepare(&source).unwrap();
-        processor.frame(&source).unwrap();
+        // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+        unsafe { processor.prepare(&source) }.unwrap();
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&source) }.unwrap();
 
         source = captured(11);
-        let mut prepared = processor.prepare_frame(&source).unwrap();
+        let mut prepared =
+        // SAFETY: This is the decoded frame held by its originating spool.
+        unsafe { processor.prepare_frame(&source) }.unwrap();
         prepared.source.tables[TableId::Clock.index()] =
             TableView::Complete(TableRows::Clock(vec![ClockRow {
                 hour: 12,
@@ -5632,7 +5845,11 @@ mod tests {
         let detail = "Clock: clock row hour differs from frame hour";
         let expected = format!("spool validation failed: {detail}");
         assert_eq!(
-            processor.write_prepared(prepared).unwrap_err().to_string(),
+            // SAFETY: This spool submits the prepared frame to its originating processor before
+            // teardown.
+            unsafe { processor.write_prepared(prepared) }
+                .unwrap_err()
+                .to_string(),
             detail
         );
         let campaign = processor
@@ -5652,7 +5869,9 @@ mod tests {
             processor.lost(&loss).unwrap_err().to_string(),
             "queue loss witness has inconsistent hours and count"
         );
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
 
         let mut bytes = Vec::new();
         collector_status::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
@@ -5663,9 +5882,14 @@ mod tests {
         assert_eq!(persisted["last_error"], expected);
 
         let mut preflight =
-            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session()) }.unwrap();
         assert_eq!(
-            preflight.prepare(&source).unwrap_err().to_string(),
+            // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+            unsafe { preflight.prepare(&source) }
+                .unwrap_err()
+                .to_string(),
             "attach output already contains spool segments; use a fresh attach directory"
         );
         let loss = LostObservation {
@@ -5843,16 +6067,21 @@ mod tests {
         prepared.retry_full = needs_retry(&prepared.source.tables);
         assert!(prepared.needs_retry());
         assert!(!prepared.allows_early_recycle());
-        let shared = collector_capture::sampling::Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
         if prepared.needs_retry() {
-            shared.request_retry_full();
+            // SAFETY: The spool requests recovery after unpublished output in the current session.
+            unsafe { shared.request_retry_full() };
         }
         assert!(
-            shared
-                .refresh_next
-                .load(std::sync::atomic::Ordering::Acquire)
+            // SAFETY: This is the isolated fixture's refresh flag.
+            unsafe { shared.refresh_next() }.load(std::sync::atomic::Ordering::Acquire)
         );
-        assert!(!shared.force_next.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!
+            // SAFETY: This is the isolated fixture's recovery flag.
+            unsafe { shared.force_next() }.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -6861,8 +7090,13 @@ mod tests {
         assert!(processor.lost(&loss).is_err());
         let mut captured = captured(4);
         captured.clock.as_mut().unwrap().campaign_id = owned_text(b"../invalid");
-        processor.prepare(&captured).unwrap();
-        assert!(processor.frame(&captured).is_err());
+        // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+        unsafe { processor.prepare(&captured) }.unwrap();
+        assert!(
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&captured) }.is_err()
+        );
         assert_eq!(processor.unknown_pending, 4);
         assert!(processor.suppress_origin);
         assert!(processor.campaigns.is_empty());
@@ -8109,7 +8343,10 @@ mod tests {
         const VARIANT: u64 = 0x5_0000_0046;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
-        let mut captured = Captured::new();
+        let mut captured =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Captured::new() };
         let mut decoder = FrameDecoder::new();
         let mut published = Vec::new();
         for (hour, first, ticks, skip) in [(0, 10, 1, false), (1, 11, 2, true), (2, 13, 0, false)] {
@@ -8128,7 +8365,8 @@ mod tests {
                 };
                 ticks
             ];
-            captured.extended.line_output_mut().set_drained_for_test(
+            // SAFETY: The isolated fixture owns the production interval and its observer.
+            unsafe { captured.extended.line_output_mut() }.set_drained_for_test(
                 Ok(Drained {
                     epoch: 1,
                     first,
@@ -8176,7 +8414,10 @@ mod tests {
         const RAIL: u64 = 0x11_0000_1269;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
-        let mut captured = Captured::new();
+        let mut captured =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Captured::new() };
         let mut decoder = FrameDecoder::new();
         let mut published = Vec::new();
         for (hour, first, days, skip) in [(0, 10, 1, false), (1, 11, 2, true), (2, 13, 0, false)] {
@@ -8189,19 +8430,17 @@ mod tests {
                     ..Entry::default()
                 })
                 .collect();
-            captured
-                .extended
-                .construction_ic_mut()
-                .set_drained_for_test(
-                    Ok(Drained {
-                        epoch: 1,
-                        first,
-                        cursor: first + days as u64,
-                        copied: days,
-                        pending: days,
-                    }),
-                    &entries,
-                );
+            // SAFETY: The isolated fixture owns the construction interval and its observer.
+            unsafe { captured.extended.construction_ic_mut() }.set_drained_for_test(
+                Ok(Drained {
+                    epoch: 1,
+                    first,
+                    cursor: first + days as u64,
+                    copied: days,
+                    pending: days,
+                }),
+                &entries,
+            );
             let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
             if !skip {
                 source.tables[TableId::BuildingConstruction.index()] =
@@ -8259,7 +8498,10 @@ mod tests {
         const VARIANT: u64 = 0x5_0000_0046;
         let (mut campaign, store) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
-        let mut captured = Captured::new();
+        let mut captured =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Captured::new() };
         for (hour, first, lines, ticks, fails) in [
             (0, 10, &[LINE_A, LINE_B][..], 0, false),
             (1, 10, &[LINE_A][..], 1, true),
@@ -8283,7 +8525,8 @@ mod tests {
                 };
                 ticks
             ];
-            captured.extended.line_output_mut().set_drained_for_test(
+            // SAFETY: The isolated fixture owns the production interval and its observer.
+            unsafe { captured.extended.line_output_mut() }.set_drained_for_test(
                 Ok(Drained {
                     epoch: 1,
                     first,
@@ -9250,6 +9493,8 @@ fn before_spool_publication() {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub fn fail_publication_for_test(fail: bool) {
+/// # Safety
+/// Run only in an isolated publication-failure fixture with no live collector or competing fixture.
+pub unsafe fn fail_publication_for_test(fail: bool) {
     FAIL_PUBLICATION.set(fail);
 }

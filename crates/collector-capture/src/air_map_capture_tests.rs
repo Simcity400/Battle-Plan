@@ -60,7 +60,8 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
     let owned_rows = job.map_rows.as_ptr();
     let owned_names = job.names.as_ptr();
     let owned_identities = job.identities.as_ptr();
-    map.install_owned_air(&mut job);
+    // SAFETY: This is the completed air job being restored to its original frame once.
+    unsafe { map.install_owned_air(&mut job) };
     captured.install_owned_mission_identities(&mut job);
     assert_eq!(map.air_wings.rows.as_ptr(), owned_rows);
     assert_eq!(map.air_wing_names.as_ptr(), owned_names);

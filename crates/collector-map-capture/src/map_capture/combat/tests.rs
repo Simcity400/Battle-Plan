@@ -196,29 +196,41 @@ impl Memory for NoReads {
 #[test]
 fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_failure() {
     let mut map = empty_map();
-    let request = map.take_combat_request(0, 0, progress(), true);
+    let request =
+    // SAFETY: The admitted hour owns this frame and takes its combat job once.
+    unsafe { map.take_combat_request(0, 0, progress(), true) };
     let unavailable = Outcome::Unavailable {
         reason: "combat worker rejected",
     };
-    let returned = map.restore_combat_request(
+    let returned =
+    // SAFETY: The admitted hour is settling its own combat request in the originating frame.
+    unsafe { map.restore_combat_request(
         request,
         CombatReport::default(),
         Some("combat worker rejected"),
-    );
+    ) };
     assert_eq!(map.land_combats.outcome, unavailable);
     assert_eq!(map.naval_combats.outcome, unavailable);
     assert_eq!(map.naval_combat_participants.outcome, unavailable);
     assert_eq!(returned.outcomes(), [unavailable; combat_progress::N]);
     map.players_raw_mode = true;
     map.owned_air_captured = true;
-    map.sample(&NoReads, 0, 0, &mut NoSources);
+    // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
+    // image.
+    unsafe { map.sample(&NoReads, 0, 0, &mut NoSources) };
 
     map.reset();
     let world = World::new(1, 2);
-    let mut request = map.take_combat_request(0, world.state(), returned, true);
-    let report = request.capture(&world);
+    let mut request =
+    // SAFETY: The admitted hour owns this frame and takes its combat job once.
+    unsafe { map.take_combat_request(0, world.state(), returned, true) };
+    let report =
+    // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+    unsafe { request.capture(&world) };
     request.naval_finished = false;
-    let returned = map.restore_combat_request(request, report, Some("naval worker panicked"));
+    let returned =
+    // SAFETY: The admitted hour is settling its own combat request in the originating frame.
+    unsafe { map.restore_combat_request(request, report, Some("naval worker panicked")) };
     assert_eq!(map.land_combats.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
         returned.outcomes(),
@@ -236,21 +248,33 @@ fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_fail
 fn combat_log_take_restore_moves_owned_storage_without_callback_allocation() {
     let world = World::new(1, 2);
     let mut map = empty_map();
-    let mut request = map.take_combat_request(0, world.state(), progress(), true);
-    let report = request.capture(&world);
-    let progress = map.restore_combat_request(request, report, None);
+    let mut request =
+    // SAFETY: The admitted hour owns this frame and takes its combat job once.
+    unsafe { map.take_combat_request(0, world.state(), progress(), true) };
+    let report =
+    // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+    unsafe { request.capture(&world) };
+    let progress =
+    // SAFETY: The admitted hour is settling its own combat request in the originating frame.
+    unsafe { map.restore_combat_request(request, report, None) };
     let original = (
         map.land_combats.rows.as_ptr(),
         map.land_participants.as_ptr(),
     );
     let request = collector_test_support::with_allocations_denied(|| {
-        let request = map.take_combat_request(0, world.state(), progress, true);
+        let request =
+        // SAFETY: The admitted hour owns this frame and takes its combat job once.
+        unsafe { map.take_combat_request(0, world.state(), progress, true) };
         assert_eq!(map.land_combats.rows.capacity(), 0);
         assert_eq!(map.land_participants.capacity(), 0);
-        let progress = map.restore_combat_request(request, report, None);
-        map.take_combat_request(0, world.state(), progress, true)
+        let progress =
+        // SAFETY: The admitted hour is settling its own combat request in the originating frame.
+        unsafe { map.restore_combat_request(request, report, None) };
+        // SAFETY: The admitted hour owns this frame and takes its combat job once.
+        unsafe { map.take_combat_request(0, world.state(), progress, true) }
     });
-    map.restore_combat_request(request, report, None);
+    // SAFETY: The admitted hour is settling its own combat request in the originating frame.
+    unsafe { map.restore_combat_request(request, report, None) };
     assert_eq!(
         (
             map.land_combats.rows.as_ptr(),

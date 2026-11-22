@@ -12,10 +12,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     OPEN_EXISTING,
 };
 
-pub fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
+pub(crate) fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
     write_status_bytes(path, &collector_status::status::serialize(status)?)
 }
-pub fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, bytes)?;
     replace_status(&temp, path)
@@ -140,6 +140,6 @@ fn status_rename_retries_only_transient_errors_before_deadline() {
 }
 
 #[cfg(test)]
-pub fn posix_rename_supported_for_test() -> bool {
+pub(crate) fn posix_rename_supported_for_test() -> bool {
     !POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed)
 }

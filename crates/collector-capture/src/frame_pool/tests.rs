@@ -3,9 +3,14 @@ use crate::sampling::Shared;
 
 #[test]
 fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let free = &shared.frames;
-    let all: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
+    let all: Vec<_> = std::iter::from_fn(||
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { free.pop() })
+    .collect();
     assert_eq!(all.len(), STEADY);
     for index in 0..STEADY {
         free.push(index).unwrap();
@@ -16,22 +21,35 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert!(!free.take(1, 0));
     assert!(!free.take(2, STEADY - 1));
     assert_eq!(free.len(), STEADY - 1);
-    let newest = free.pop().unwrap();
+    let newest =
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { free.pop() }.unwrap();
     assert_eq!(newest, STEADY - 1);
     free.push(newest).unwrap();
     free.restore(1).unwrap();
     assert_eq!(free.restore(1), Err(1));
     assert!(free.take(STEADY - 1, 0));
     free.restore(STEADY - 1).unwrap();
-    let newest_first: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
+    let newest_first: Vec<_> = std::iter::from_fn(||
+    // SAFETY: This consumer owns the queue removal for the named pool.
+    unsafe { free.pop() })
+    .collect();
     assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
     assert_eq!(free.len(), 0);
     assert!(!free.take(0, 0));
     free.push(2).unwrap();
     free.push(0).unwrap();
-    assert_eq!(free.pop(), Some(0));
+    assert_eq!(
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { free.pop() },
+        Some(0)
+    );
     free.push(0).unwrap();
-    assert_eq!(free.pop(), Some(0));
+    assert_eq!(
+        // SAFETY: This consumer owns the queue removal for the named pool.
+        unsafe { free.pop() },
+        Some(0)
+    );
     assert!(!free.take(2, 1));
     assert!(free.take(2, 0));
     assert_eq!(free.len(), 0);
@@ -119,12 +137,17 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
     for _ in 0..count {
         pool.vacant().unwrap();
     }
-    assert_eq!(pool.pop_decode(), None);
+    assert_eq!(
+        // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+        unsafe { pool.pop_decode() },
+        None
+    );
     let producer = {
         let pool = std::sync::Arc::clone(&pool);
         std::thread::spawn(move || {
             for index in 0..count {
-                pool.push_decode(index);
+                // SAFETY: The producer owns this slot and its initialized decode job.
+                unsafe { pool.push_decode(index) };
             }
         })
     };
@@ -135,7 +158,9 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
             std::time::Instant::now() < deadline,
             "the FIFO lost an index"
         );
-        match pool.pop_decode() {
+        match
+        // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+        unsafe { pool.pop_decode() } {
             Some(index) => {
                 popped.push(index);
                 pool.push_ready(index);
@@ -147,13 +172,26 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
     assert_eq!(popped, (0..count).collect::<Vec<_>>());
     assert_eq!(pool.decode_len(), 0);
     assert_eq!(pool.ready_len(), count);
-    let ready: Vec<_> = std::iter::from_fn(|| pool.pop_ready()).collect();
+    let ready: Vec<_> = std::iter::from_fn(|| {
+        // SAFETY: The test is the only consumer of this fixture's ready queue.
+        unsafe { pool.pop_ready() }
+    })
+    .collect();
     assert_eq!(ready, (0..count).collect::<Vec<_>>());
     assert!(pool.ready_is_empty());
-    pool.push_decode(3);
-    pool.push_decode(1);
+    // SAFETY: The producer owns this slot and its initialized decode job.
+    unsafe { pool.push_decode(3) };
+    // SAFETY: The producer owns this slot and its initialized decode job.
+    unsafe { pool.push_decode(1) };
     assert_eq!(
-        (pool.pop_decode(), pool.pop_decode(), pool.pop_decode()),
+        (
+            // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+            unsafe { pool.pop_decode() },
+            // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+            unsafe { pool.pop_decode() },
+            // SAFETY: The sole decode consumer owns this queue and takes responsibility for the slot.
+            unsafe { pool.pop_decode() }
+        ),
         (Some(3), Some(1), None)
     );
 }

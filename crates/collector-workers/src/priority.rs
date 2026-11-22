@@ -156,21 +156,29 @@ impl OwnPriority {
         }
     }
 
-    pub fn frame_pipeline() -> Self {
+    /// # Safety
+    /// Only the assigned collector worker may apply this session's priority policy to the current
+    /// thread.
+    pub unsafe fn frame_pipeline() -> Self {
         let mut priority = Self {
             frame_pipeline: true,
             ..Self::new()
         };
-        priority.follow(false);
+        // SAFETY: The owning worker adjusts only its own thread's priority.
+        unsafe { priority.follow(false) };
         priority
     }
 
-    pub fn follow_pipeline(
+    /// # Safety
+    /// Only the assigned collector worker may apply this session's priority policy to the current
+    /// thread.
+    pub unsafe fn follow_pipeline(
         &mut self,
         pipeline: &crate::frame_priority::Pipeline,
         role: crate::frame_priority::Role,
     ) {
-        self.follow(false);
+        // SAFETY: The owning worker adjusts only its own thread's priority.
+        unsafe { self.follow(false) };
         if !self.boosts_disabled
             || self.lowest != Some(false)
             || self.eco_qos != Some(false)
@@ -179,7 +187,8 @@ impl OwnPriority {
             crate::tick_gate::copy_only(false);
             return;
         }
-        pipeline.register(role);
+        // SAFETY: Only the current session's designated thread registers this role.
+        unsafe { pipeline.register(role) };
         pipeline.refresh();
         crate::tick_gate::copy_only(
             !matches!(role, crate::frame_priority::Role::Sizing)
@@ -188,8 +197,12 @@ impl OwnPriority {
         );
     }
 
-    pub fn reconciler(&mut self) -> bool {
-        self.follow(false);
+    /// # Safety
+    /// Only the assigned collector worker may apply this session's priority policy to the current
+    /// thread.
+    pub unsafe fn reconciler(&mut self) -> bool {
+        // SAFETY: The owning worker adjusts only its own thread's priority.
+        unsafe { self.follow(false) };
         if !self.boosts_disabled
             || self.lowest != Some(false)
             || self.eco_qos != Some(false)
@@ -209,7 +222,10 @@ impl OwnPriority {
         !self.frame_pipeline && !backlogged
     }
 
-    pub fn follow(&mut self, backlogged: bool) {
+    /// # Safety
+    /// Only the assigned collector worker may apply this session's priority policy to the current
+    /// thread.
+    pub unsafe fn follow(&mut self, backlogged: bool) {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, SetThreadInformation, SetThreadPriority, SetThreadPriorityBoost,
             THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED,
@@ -287,7 +303,12 @@ impl OwnPriority {
 }
 
 #[cfg(feature = "test-support")]
-pub fn background_cpu_sets_failure_exercise(ordinal: usize, query_failure: Option<usize>) -> usize {
+/// # Safety
+/// Run only in an isolated fixture that owns the collector affinity state and failure injection.
+pub unsafe fn background_cpu_sets_failure_exercise(
+    ordinal: usize,
+    query_failure: Option<usize>,
+) -> usize {
     use collector_test_support::{ATTEMPTS, DENIALS, NullGuard};
     use windows_sys::Win32::System::SystemInformation::{
         CpuSetInformation, SYSTEM_CPU_SET_INFORMATION, SYSTEM_CPU_SET_INFORMATION_0,
@@ -355,12 +376,14 @@ pub fn background_cpu_sets_failure_exercise(ordinal: usize, query_failure: Optio
     if expected != "selected" {
         assert!(sets.is_empty());
         let mut priority = OwnPriority::new();
-        priority.follow(false);
+        // SAFETY: The owning worker adjusts only its own thread's priority.
+        unsafe { priority.follow(false) };
         assert!(priority.lowest == Some(true) || PRIORITY_FAILURES.load(Ordering::Relaxed) > 0);
         assert!(priority.eco_qos == Some(true) || ECO_QOS_FAILURES.load(Ordering::Relaxed) > 0);
         let priority_failures = PRIORITY_FAILURES.load(Ordering::Relaxed);
         let eco_qos_failures = ECO_QOS_FAILURES.load(Ordering::Relaxed);
-        priority.follow(true);
+        // SAFETY: The owning worker adjusts only its own thread's priority.
+        unsafe { priority.follow(true) };
         assert!(
             priority.lowest == Some(false)
                 || PRIORITY_FAILURES.load(Ordering::Relaxed) > priority_failures
@@ -412,9 +435,12 @@ mod tests {
     #[test]
     fn frame_pipeline_applies_normal_policy_before_waiting_and_keeps_it_between_jobs() {
         std::thread::spawn(|| {
-            let mut priority = OwnPriority::frame_pipeline();
+            let mut priority =
+            // SAFETY: This is the dedicated worker applying its own session's priority policy.
+            unsafe { OwnPriority::frame_pipeline() };
             for backlogged in [false, true, false] {
-                priority.follow(backlogged);
+                // SAFETY: The owning worker adjusts only its own thread's priority.
+                unsafe { priority.follow(backlogged) };
                 assert_eq!(priority.lowest, Some(false));
                 assert_eq!(priority.eco_qos, Some(false));
                 assert_eq!(priority.confined, Some(false));

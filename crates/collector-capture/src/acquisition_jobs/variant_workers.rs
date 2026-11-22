@@ -3,7 +3,7 @@ use std::sync::Weak;
 
 pub struct Request {
     pub base: usize,
-    pub part: Work,
+    pub(crate) part: Work,
 }
 pub enum Work {
     Variant(production::VariantPart),

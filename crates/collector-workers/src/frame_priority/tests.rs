@@ -9,7 +9,8 @@ fn fixture(high: bool) -> Arc<Pipeline> {
             pipeline.publish();
         }
     }
-    pipeline.register(Role::Decode);
+    // SAFETY: Only the current session's designated thread registers this role.
+    unsafe { pipeline.register(Role::Decode) };
     pipeline
 }
 fn change(pipeline: &Pipeline, high: bool) {
@@ -138,7 +139,8 @@ fn a_target_registered_after_the_final_read_is_not_lost() {
             .hook
             .set(Box::new(move |at| {
                 if at == Boundary::FinalDesiredRead && !fired.swap(true, Ordering::SeqCst) {
-                    weak.upgrade().unwrap().register(Role::Sizing);
+                    // SAFETY: Only the current session's designated thread registers this role.
+                    unsafe { weak.upgrade().unwrap().register(Role::Sizing) };
                 }
             }))
             .is_ok()
@@ -193,7 +195,8 @@ fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wa
     let pipeline = fixture(true);
     let callback = pipeline.callback();
     for role in [Role::Spool, Role::Helper(0), Role::Helper(1), Role::Sizing] {
-        pipeline.register(role);
+        // SAFETY: Only the current session's designated thread registers this role.
+        unsafe { pipeline.register(role) };
     }
     let calls = AtomicUsize::new(0);
     let mut budget = Budget::default();
@@ -227,7 +230,8 @@ fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wa
 fn a_long_sizing_item_is_demoted_at_expiry_and_cooldown_starts_after_success() {
     let pipeline = fixture(true);
     let _callback = pipeline.callback();
-    pipeline.register(Role::Sizing);
+    // SAFETY: Only the current session's designated thread registers this role.
+    unsafe { pipeline.register(Role::Sizing) };
     let mut budget = Budget::default();
     let native = AtomicU32::new(0);
     apply(&pipeline, &mut budget, 0, &native);
@@ -312,7 +316,9 @@ fn shutdown_racing_the_last_write_still_gets_a_normal_pass() {
 #[test]
 fn the_owned_reconciler_starts_boost_disabled_and_joins_without_targets() {
     let pipeline = engine_allocation::shared(Pipeline::new()).unwrap();
-    let mut worker = Reconciler::start(pipeline.clone()).unwrap();
+    let mut worker =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { Reconciler::start(pipeline.clone()) }.unwrap();
     assert_ne!(worker.thread_id(), 0);
     let mut disabled = 0;
     let valid = unsafe {

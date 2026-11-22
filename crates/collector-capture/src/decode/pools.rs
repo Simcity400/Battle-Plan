@@ -55,7 +55,7 @@ pub(super) static INTEL_JOB_POOL: Mutex<Vec<IntelJob>> = Mutex::new(Vec::new());
 pub(super) static WEATHER_JOB_POOL: Mutex<Vec<WeatherJob>> = Mutex::new(Vec::new());
 pub(super) static CAPITULATION_JOB_POOL: Mutex<Vec<CapitulationJob>> = Mutex::new(Vec::new());
 
-pub fn acquire_relations_job() -> RelationsJob {
+pub(crate) fn acquire_relations_job() -> RelationsJob {
     if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -64,7 +64,7 @@ pub fn acquire_relations_job() -> RelationsJob {
     RelationsJob::default()
 }
 
-pub fn recycle_relations_job(job: RelationsJob) {
+pub(crate) fn recycle_relations_job(job: RelationsJob) {
     defer_payload(RetiredPayload::Relations(job));
 }
 
@@ -91,7 +91,7 @@ pub(super) fn release_relations_job(mut job: RelationsJob) {
     }
 }
 
-pub fn acquire_characters_job(part: usize) -> CharactersJob {
+pub(crate) fn acquire_characters_job(part: usize) -> CharactersJob {
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.try_lock()
         && let Some(job) = pool[part].pop()
     {
@@ -100,7 +100,7 @@ pub fn acquire_characters_job(part: usize) -> CharactersJob {
     CharactersJob::vacant(part)
 }
 
-pub fn recycle_characters_job(job: CharactersJob) {
+pub(crate) fn recycle_characters_job(job: CharactersJob) {
     defer_payload(RetiredPayload::Characters(job));
 }
 
@@ -132,7 +132,7 @@ pub(super) fn release_characters_job(mut job: CharactersJob) {
     }
 }
 
-pub fn acquire_projects_job() -> ProjectsJob {
+pub(crate) fn acquire_projects_job() -> ProjectsJob {
     if let Ok(mut pool) = PROJECTS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -141,7 +141,7 @@ pub fn acquire_projects_job() -> ProjectsJob {
     ProjectsJob::default()
 }
 
-pub fn recycle_projects_job(job: ProjectsJob) {
+pub(crate) fn recycle_projects_job(job: ProjectsJob) {
     defer_payload(RetiredPayload::Projects(job));
 }
 
@@ -178,11 +178,11 @@ fn pop_job<J: Default>(pool: &Mutex<Vec<J>>) -> J {
     J::default()
 }
 
-pub fn acquire_lexical_job() -> LexicalJob {
+pub(crate) fn acquire_lexical_job() -> LexicalJob {
     pop_job(&LEXICAL_JOB_POOL)
 }
 
-pub fn recycle_lexical_job(job: LexicalJob) {
+pub(crate) fn recycle_lexical_job(job: LexicalJob) {
     defer_payload(RetiredPayload::Lexical(job));
 }
 
@@ -200,11 +200,11 @@ pub(super) fn release_lexical_job(mut job: LexicalJob) {
     }
 }
 
-pub fn acquire_divisions_job() -> DivisionsJob {
+pub(crate) fn acquire_divisions_job() -> DivisionsJob {
     pop_job(&DIVISIONS_JOB_POOL)
 }
 
-pub fn recycle_divisions_job(job: DivisionsJob) {
+pub(crate) fn recycle_divisions_job(job: DivisionsJob) {
     defer_payload(RetiredPayload::Divisions(job));
 }
 
@@ -230,7 +230,10 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
     }
 }
 
-pub fn presize_air_wing_names() {
+/// # Safety
+/// Only the attaching runtime or serial sizing owner may grow the live decode pools, with storage
+/// kept alive and conflicting teardown excluded.
+pub unsafe fn presize_air_wing_names() {
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
         for job in pool.iter_mut() {
             if job.grow_for_next() {
@@ -240,11 +243,11 @@ pub fn presize_air_wing_names() {
     }
 }
 
-pub fn acquire_air_wing_job() -> AirWingJob {
+pub(crate) fn acquire_air_wing_job() -> AirWingJob {
     pop_job(&AIR_WING_JOB_POOL)
 }
 
-pub fn recycle_air_wing_job(job: AirWingJob) {
+pub(crate) fn recycle_air_wing_job(job: AirWingJob) {
     defer_payload(RetiredPayload::AirWing(job));
 }
 
@@ -274,11 +277,11 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
     }
 }
 
-pub fn acquire_air_stats_job() -> AirStatsJob {
+pub(crate) fn acquire_air_stats_job() -> AirStatsJob {
     pop_job(&AIR_STATS_JOB_POOL)
 }
 
-pub fn recycle_air_stats_job(job: AirStatsJob) {
+pub(crate) fn recycle_air_stats_job(job: AirStatsJob) {
     defer_payload(RetiredPayload::AirStats(job));
 }
 
@@ -305,7 +308,7 @@ pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
     }
 }
 
-pub fn acquire_naval_job() -> NavalJob {
+pub(crate) fn acquire_naval_job() -> NavalJob {
     if let Ok(mut pool) = NAVAL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -314,7 +317,7 @@ pub fn acquire_naval_job() -> NavalJob {
     NavalJob::default()
 }
 
-pub fn recycle_naval_job(job: NavalJob) {
+pub(crate) fn recycle_naval_job(job: NavalJob) {
     defer_payload(RetiredPayload::Naval(job));
 }
 
@@ -342,7 +345,7 @@ pub(super) fn release_naval_job(mut job: NavalJob) {
     }
 }
 
-pub fn acquire_players_job() -> PlayersJob {
+pub(crate) fn acquire_players_job() -> PlayersJob {
     if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -351,7 +354,7 @@ pub fn acquire_players_job() -> PlayersJob {
     PlayersJob::default()
 }
 
-pub fn recycle_players_job(job: PlayersJob) {
+pub(crate) fn recycle_players_job(job: PlayersJob) {
     defer_payload(RetiredPayload::Players(job));
 }
 
@@ -378,7 +381,7 @@ pub(super) fn release_players_job(mut job: PlayersJob) {
     }
 }
 
-pub fn acquire_session_job() -> SessionJob {
+pub(crate) fn acquire_session_job() -> SessionJob {
     if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -387,7 +390,7 @@ pub fn acquire_session_job() -> SessionJob {
     SessionJob::default()
 }
 
-pub fn recycle_session_job(job: SessionJob) {
+pub(crate) fn recycle_session_job(job: SessionJob) {
     defer_payload(RetiredPayload::Session(job));
 }
 
@@ -414,7 +417,7 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     }
 }
 
-pub fn acquire_production_rest_job() -> ProductionRestJob {
+pub(crate) fn acquire_production_rest_job() -> ProductionRestJob {
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -423,7 +426,7 @@ pub fn acquire_production_rest_job() -> ProductionRestJob {
     ProductionRestJob::default()
 }
 
-pub fn recycle_production_rest_job(job: ProductionRestJob) {
+pub(crate) fn recycle_production_rest_job(job: ProductionRestJob) {
     defer_payload(RetiredPayload::ProductionRest(job));
 }
 
@@ -455,7 +458,7 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
     }
 }
 
-pub fn acquire_construction_rest_job() -> ConstructionRestJob {
+pub(crate) fn acquire_construction_rest_job() -> ConstructionRestJob {
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -464,7 +467,7 @@ pub fn acquire_construction_rest_job() -> ConstructionRestJob {
     ConstructionRestJob::default()
 }
 
-pub fn recycle_construction_rest_job(job: ConstructionRestJob) {
+pub(crate) fn recycle_construction_rest_job(job: ConstructionRestJob) {
     defer_payload(RetiredPayload::ConstructionRest(job));
 }
 
@@ -492,7 +495,7 @@ pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
     }
 }
 
-pub fn acquire_economy_rest_job() -> EconomyRestJob {
+pub(crate) fn acquire_economy_rest_job() -> EconomyRestJob {
     if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -501,7 +504,7 @@ pub fn acquire_economy_rest_job() -> EconomyRestJob {
     EconomyRestJob::default()
 }
 
-pub fn recycle_economy_rest_job(job: EconomyRestJob) {
+pub(crate) fn recycle_economy_rest_job(job: EconomyRestJob) {
     defer_payload(RetiredPayload::EconomyRest(job));
 }
 
@@ -528,7 +531,7 @@ pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
     }
 }
 
-pub fn acquire_air_bases_job() -> AirBasesJob {
+pub(crate) fn acquire_air_bases_job() -> AirBasesJob {
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -537,7 +540,7 @@ pub fn acquire_air_bases_job() -> AirBasesJob {
     AirBasesJob::default()
 }
 
-pub fn recycle_air_bases_job(job: AirBasesJob) {
+pub(crate) fn recycle_air_bases_job(job: AirBasesJob) {
     defer_payload(RetiredPayload::AirBases(job));
 }
 
@@ -565,7 +568,7 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
     }
 }
 
-pub fn acquire_supremacy_job() -> SupremacyJob {
+pub(crate) fn acquire_supremacy_job() -> SupremacyJob {
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -574,7 +577,7 @@ pub fn acquire_supremacy_job() -> SupremacyJob {
     SupremacyJob::default()
 }
 
-pub fn recycle_supremacy_job(job: SupremacyJob) {
+pub(crate) fn recycle_supremacy_job(job: SupremacyJob) {
     defer_payload(RetiredPayload::Supremacy(job));
 }
 
@@ -601,7 +604,7 @@ pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
     }
 }
 
-pub fn acquire_sunk_job() -> SunkJob {
+pub(crate) fn acquire_sunk_job() -> SunkJob {
     if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -610,7 +613,7 @@ pub fn acquire_sunk_job() -> SunkJob {
     SunkJob::default()
 }
 
-pub fn recycle_sunk_job(job: SunkJob) {
+pub(crate) fn recycle_sunk_job(job: SunkJob) {
     defer_payload(RetiredPayload::Sunk(job));
 }
 
@@ -637,7 +640,7 @@ pub(super) fn release_sunk_job(mut job: SunkJob) {
     }
 }
 
-pub fn acquire_radar_job() -> RadarJob {
+pub(crate) fn acquire_radar_job() -> RadarJob {
     if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -646,7 +649,7 @@ pub fn acquire_radar_job() -> RadarJob {
     RadarJob::default()
 }
 
-pub fn recycle_radar_job(job: RadarJob) {
+pub(crate) fn recycle_radar_job(job: RadarJob) {
     defer_payload(RetiredPayload::Radar(job));
 }
 
@@ -673,7 +676,7 @@ pub(super) fn release_radar_job(mut job: RadarJob) {
     }
 }
 
-pub fn acquire_intel_job() -> IntelJob {
+pub(crate) fn acquire_intel_job() -> IntelJob {
     if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -682,7 +685,7 @@ pub fn acquire_intel_job() -> IntelJob {
     IntelJob::default()
 }
 
-pub fn recycle_intel_job(job: IntelJob) {
+pub(crate) fn recycle_intel_job(job: IntelJob) {
     defer_payload(RetiredPayload::Intel(job));
 }
 
@@ -709,7 +712,7 @@ pub(super) fn release_intel_job(mut job: IntelJob) {
     }
 }
 
-pub fn acquire_weather_job() -> WeatherJob {
+pub(crate) fn acquire_weather_job() -> WeatherJob {
     if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -718,7 +721,10 @@ pub fn acquire_weather_job() -> WeatherJob {
     WeatherJob::default()
 }
 
-pub fn presize_weather_jobs() {
+/// # Safety
+/// Only the attaching runtime or serial sizing owner may grow the live decode pools, with storage
+/// kept alive and conflicting teardown excluded.
+pub unsafe fn presize_weather_jobs() {
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
         for job in pool.iter_mut().filter(|job| job.grow_for_next()) {
             job.grow();
@@ -726,7 +732,7 @@ pub fn presize_weather_jobs() {
     }
 }
 
-pub fn recycle_weather_job(job: WeatherJob) {
+pub(crate) fn recycle_weather_job(job: WeatherJob) {
     defer_payload(RetiredPayload::Weather(job));
 }
 
@@ -753,7 +759,7 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     }
 }
 
-pub fn acquire_capitulation_job() -> CapitulationJob {
+pub(crate) fn acquire_capitulation_job() -> CapitulationJob {
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
     {
@@ -762,7 +768,7 @@ pub fn acquire_capitulation_job() -> CapitulationJob {
     CapitulationJob::default()
 }
 
-pub fn recycle_capitulation_job(job: CapitulationJob) {
+pub(crate) fn recycle_capitulation_job(job: CapitulationJob) {
     defer_payload(RetiredPayload::Capitulation(job));
 }
 
@@ -789,7 +795,10 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
     }
 }
 
-pub fn presize_country_pools() {
+/// # Safety
+/// Only the attaching runtime or serial sizing owner may grow the live decode pools, with storage
+/// kept alive and conflicting teardown excluded.
+pub unsafe fn presize_country_pools() {
     presize_pool(
         &AIR_WING_JOB_POOL,
         AirWingJob::presize_game_score,

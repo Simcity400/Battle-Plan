@@ -104,16 +104,19 @@ impl Memory for TraceMemory<'_> {
 }
 
 fn capture(memory: &impl Memory, job: &mut PlayersJob, captured: &mut MapCaptured) {
-    let report = copy_players_refresh(
+    let report =
+    // SAFETY: This is the admitted hour's roster request and its authenticated image.
+    unsafe { copy_players_refresh(
         memory,
         PlayersCopyContext {
             base: 0,
             game_state: GS,
         },
         job,
-    );
+    ) };
     assert!(report.raw_ok);
-    captured.decode_players_payload(0, job, &mut [0; 2]);
+    // SAFETY: Decode is settling the matching job into its originating frame.
+    unsafe { captured.decode_players_payload(0, job, &mut [0; 2]) };
 }
 
 #[test]

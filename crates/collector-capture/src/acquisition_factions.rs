@@ -37,10 +37,10 @@ pub(crate) struct Request {
     pub countries: engine_allocation::SharedBox<Cache>,
     pub factions: GatherRequest<Names>,
     pub members: GatherRequest<Vec<cfaction_system::MemberRow>>,
-    pub goal_store: Option<Box<collector_factions::faction_goals::Store>>,
-    pub goals: collector_factions::faction_goals::Captured,
-    pub companion_store: Option<Box<collector_factions::faction_companions::Store>>,
-    pub companions: collector_factions::faction_companions::Captured,
+    pub(crate) goal_store: Option<Box<collector_factions::faction_goals::Store>>,
+    pub(crate) goals: collector_factions::faction_goals::Captured,
+    pub(crate) companion_store: Option<Box<collector_factions::faction_companions::Store>>,
+    pub(crate) companions: collector_factions::faction_companions::Captured,
     pub force_full: bool,
 }
 
@@ -64,8 +64,8 @@ pub(crate) struct Report {
     pub factions: GatherReport,
     pub members: GatherReport,
     pub ticks: [u64; 2],
-    pub goal_ticks: u64,
-    pub companion_ticks: u64,
+    pub(crate) goal_ticks: u64,
+    pub(crate) companion_ticks: u64,
 }
 
 impl Report {
@@ -469,7 +469,9 @@ mod tests {
         for workers in [0, 2] {
             let bytes = fixture();
             let countries = snapshot(&bytes, 512);
-            let pool = collector_workers::acquisition::Pool::start(
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::acquisition::Pool::start(
                 workers,
                 1,
                 move |request: &mut Request| {
@@ -481,7 +483,7 @@ mod tests {
                         },
                     )
                 },
-            )
+            ) }
             .unwrap();
             let mut rows = vec![cfaction::Row::default(); 2];
             let mut names = vec![0; 16];

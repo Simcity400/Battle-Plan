@@ -34,11 +34,22 @@ static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
 static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "worker_sampler")]
-pub struct StopOnThreadExit;
+pub struct StopOnThreadExit(std::marker::PhantomData<*mut ()>);
+
+#[cfg(feature = "worker_sampler")]
+impl StopOnThreadExit {
+    /// # Safety
+    /// Only an owned sampled worker may create this guard, on its own thread. Keep it until
+    /// that worker exits and keep its sampler control alive through the exit handshake.
+    pub unsafe fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
 #[cfg(feature = "worker_sampler")]
 impl Drop for StopOnThreadExit {
     fn drop(&mut self) {
-        crate::worker_sampler_state::stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe { crate::worker_sampler_state::stop_before_thread_exit() };
     }
 }
 
@@ -47,7 +58,10 @@ static HELPERS: [AtomicU32; MAX_HELPERS] = [const { AtomicU32::new(0) }; MAX_HEL
 static HELPER_CREATION: [AtomicU64; MAX_HELPERS] = [const { AtomicU64::new(0) }; MAX_HELPERS];
 use crate::spool_helper::MAX_HELPERS;
 
-pub fn register_helper(index: usize, id: u32) {
+/// # Safety
+/// Only attach may register the live helper thread for this index. Keep the helper in the
+/// worker census and join it through the sampler handshake before releasing the slot.
+pub unsafe fn register_helper(index: usize, id: u32) {
     let Some(slot) = HELPERS.get(index) else {
         return;
     };
@@ -71,11 +85,18 @@ pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-pub fn register(role: Role) {
-    register_id(role, unsafe { GetCurrentThreadId() });
+/// # Safety
+/// Register only the designated worker for this live session and role. If the sampler can target
+/// it, the thread must run the sampler exit handshake before exiting.
+pub unsafe fn register(role: Role) {
+    // SAFETY: This updates the designated role of this runtime's owned worker.
+    unsafe { register_id(role, GetCurrentThreadId()) };
 }
 
-pub fn register_id(role: Role, id: u32) {
+/// # Safety
+/// Register only the designated worker for this live session and role. If the sampler can target
+/// it, the thread must run the sampler exit handshake before exiting.
+pub unsafe fn register_id(role: Role, id: u32) {
     #[cfg(feature = "worker_sampler")]
     REGISTERED_CREATION[role as usize]
         .store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
@@ -100,7 +121,10 @@ fn registered_creation_time(id: u32) -> Option<u64> {
 }
 
 #[cfg(feature = "worker_sampler")]
-pub fn register_decode() {
+/// # Safety
+/// Only the active session's decode thread may register its own identity. It must perform the
+/// sampler exit handshake before exiting.
+pub unsafe fn register_decode() {
     DECODE_CREATION.store(
         registered_creation_time(unsafe { GetCurrentThreadId() }).unwrap_or(0),
         Ordering::Release,
@@ -467,9 +491,11 @@ mod tests {
 
     #[test]
     fn registered_threads_appear_in_live_status() {
-        register(Role::Runtime);
+        // SAFETY: Only the current session's designated thread registers this role.
+        unsafe { register(Role::Runtime) };
         let me = unsafe { GetCurrentThreadId() };
-        register_id(Role::Capture, me);
+        // SAFETY: This updates the designated role of this runtime's owned worker.
+        unsafe { register_id(Role::Capture, me) };
         let status: Value = serde_json::to_value(status(&[me])).unwrap();
         let threads = status["threads"].as_array().unwrap();
         let worker = threads
@@ -495,6 +521,9 @@ pub fn decode_worker() -> u32 {
     WORKER_ID.load(Ordering::Acquire)
 }
 
-pub fn set_decode_worker(id: u32) {
+/// # Safety
+/// Only the decode owner's startup and joined detach sequences may set or clear this session's
+/// decode thread id.
+pub unsafe fn set_decode_worker(id: u32) {
     WORKER_ID.store(id, Ordering::Release);
 }

@@ -28,11 +28,20 @@ impl<'a> Helpers<'a> {
         1 + self.pool.len().min(ENCODING_HELPERS)
     }
 
-    pub fn join_each<R>(self, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
-        self.join_some(ENCODING_HELPERS, &|_: usize| job(), own)
+    /// # Safety
+    /// The spool must be the only caller using each selected helper, including through other join
+    /// APIs, until the whole round returns. Keep the helper and its borrowed job alive through that
+    /// join.
+    pub unsafe fn join_each<R>(self, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
+        // SAFETY: The caller's single spool round owns each selected helper until it joins.
+        unsafe { self.join_some(ENCODING_HELPERS, &|_: usize| job(), own) }
     }
 
-    pub fn join_some<R>(
+    /// # Safety
+    /// The spool must be the only caller using each selected helper, including through other join
+    /// APIs, until the whole round returns. Keep the helper and its borrowed job alive through that
+    /// join.
+    pub unsafe fn join_some<R>(
         self,
         count: usize,
         job: &(dyn Fn(usize) + Sync),
@@ -59,9 +68,12 @@ fn join_from(
         None => own(),
         Some(helper) => {
             let mine = || job(at);
-            helper.join(backlogged, &mine, || {
-                join_from(helpers, at + 1, backlogged, job, own)
-            });
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe {
+                helper.join(backlogged, &mine, || {
+                    join_from(helpers, at + 1, backlogged, job, own)
+                })
+            };
         }
     }
 }
@@ -98,7 +110,10 @@ pub struct SpoolHelper {
 }
 
 impl SpoolHelper {
-    pub fn start(
+    /// # Safety
+    /// Start only an owned spool helper during attach or in an isolated fixture. Keep it in the
+    /// worker census and join or drop it before releasing the session's sampler or resources.
+    pub unsafe fn start(
         priority: Option<(
             engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
             crate::frame_priority::Role,
@@ -113,7 +128,8 @@ impl SpoolHelper {
             .spawn(move || {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
+                // SAFETY: This runtime-owned worker keeps the guard until it exits.
+                let _sampler_exit = unsafe { crate::thread_cpu::StopOnThreadExit::new() };
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
                 serve(&worker, priority);
@@ -132,7 +148,16 @@ impl SpoolHelper {
         self.thread_id
     }
 
-    pub fn join<'a, R>(&self, _backlogged: bool, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
+    /// # Safety
+    /// The spool must be the only caller using each selected helper, including through other join
+    /// APIs, until the whole round returns. Keep the helper and its borrowed job alive through that
+    /// join.
+    pub unsafe fn join<'a, R>(
+        &self,
+        _backlogged: bool,
+        job: &'a Job<'a>,
+        own: impl FnOnce() -> R,
+    ) -> R {
         // SAFETY: erases the borrow of `job`; `Finish` below waits for the
         // helper before this frame can return or unwind.
         let erased =
@@ -186,7 +211,8 @@ impl Drop for SpoolHelper {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
         if self.thread.is_some() {
-            crate::worker_sampler_state::stop_before_thread_exit();
+            // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+            unsafe { crate::worker_sampler_state::stop_before_thread_exit() };
         }
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
@@ -204,12 +230,16 @@ fn serve(
     )>,
 ) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::SpoolHelper);
-    let mut priority = crate::priority::OwnPriority::frame_pipeline();
+    let mut priority =
+    // SAFETY: This is the dedicated worker applying its own session's priority policy.
+    unsafe { crate::priority::OwnPriority::frame_pipeline() };
     let mut refresh = || {
         if let Some((pipeline, role)) = &pipeline {
-            priority.follow_pipeline(pipeline, *role);
+            // SAFETY: This owned worker updates its priority from its session's own pipeline.
+            unsafe { priority.follow_pipeline(pipeline, *role) };
         } else {
-            priority.follow(false);
+            // SAFETY: The owning worker adjusts only its own thread's priority.
+            unsafe { priority.follow(false) };
         }
     };
     refresh();
@@ -250,26 +280,30 @@ mod tests {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
         };
-        let helper = SpoolHelper::start(None).unwrap();
+        let helper =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { SpoolHelper::start(None) }.unwrap();
         for backlogged in [false, true, false] {
             let observed = AtomicI32::new(i32::MIN);
-            helper.join(
-                backlogged,
-                &|| {
-                    observed.store(
-                        unsafe { GetThreadPriority(GetCurrentThread()) },
-                        Ordering::Relaxed,
-                    );
-                },
-                || (),
-            );
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe {
+                helper.join(
+                    backlogged,
+                    &|| {
+                        observed.store(GetThreadPriority(GetCurrentThread()), Ordering::Relaxed);
+                    },
+                    || (),
+                )
+            };
             assert_eq!(observed.load(Ordering::Relaxed), THREAD_PRIORITY_NORMAL);
         }
     }
 
     #[test]
     fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let helper =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { SpoolHelper::start(None) }.unwrap();
         let ran_on = AtomicU32::new(0);
         let total = AtomicUsize::new(0);
         for round in 1..=5 {
@@ -280,7 +314,9 @@ mod tests {
                 let previous = ran_on.swap(id, Ordering::Relaxed);
                 assert!(previous == 0 || previous == id);
             };
-            let own = helper.join(round % 2 == 0, &job, || round * 10);
+            let own =
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe { helper.join(round % 2 == 0, &job, || round * 10) };
             assert_eq!(own, round * 10);
         }
         assert_eq!(total.load(Ordering::Relaxed), 15);
@@ -292,18 +328,27 @@ mod tests {
 
     #[test]
     fn a_helper_panic_is_resumed_and_an_own_panic_still_waits_for_the_job() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let helper =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { SpoolHelper::start(None) }.unwrap();
         let failing = || panic!("synthetic helper failure");
-        let resumed = catch_unwind(AssertUnwindSafe(|| helper.join(false, &failing, || 1)));
+        let resumed = catch_unwind(AssertUnwindSafe(||
+        // SAFETY: The spool exclusively uses this helper until the job joins.
+        unsafe { helper.join(false, &failing, || 1) }));
         assert!(resumed.is_err());
-        assert_eq!(helper.join(false, &|| {}, || 2), 2);
+        assert_eq!(
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe { helper.join(false, &|| {}, || 2) },
+            2
+        );
         let finished = AtomicUsize::new(0);
         let slow = || {
             std::thread::sleep(std::time::Duration::from_millis(30));
             finished.fetch_add(1, Ordering::Relaxed);
         };
         let own_panic = catch_unwind(AssertUnwindSafe(|| {
-            helper.join(false, &slow, || panic!("synthetic own failure"))
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe { helper.join(false, &slow, || panic!("synthetic own failure")) }
         }));
         assert!(own_panic.is_err());
         assert_eq!(finished.load(Ordering::Relaxed), 1);
@@ -312,9 +357,12 @@ mod tests {
     #[test]
     fn join_some_runs_each_index_once_on_its_own_helper_beside_the_own_share() {
         let pool = [
-            SpoolHelper::start(None).unwrap(),
-            SpoolHelper::start(None).unwrap(),
-            SpoolHelper::start(None).unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { SpoolHelper::start(None) }.unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { SpoolHelper::start(None) }.unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { SpoolHelper::start(None) }.unwrap(),
         ];
         let helpers = Helpers {
             pool: &pool,
@@ -328,7 +376,9 @@ mod tests {
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 assert_eq!(ran[index].swap(id, Ordering::Relaxed), 0);
             };
-            let own = helpers.join_some(count, &job, || count * 10);
+            let own =
+            // SAFETY: The caller's single spool round owns each selected helper until it joins.
+            unsafe { helpers.join_some(count, &job, || count * 10) };
             assert_eq!(own, count * 10);
             let used = count.min(pool.len());
             assert_eq!(runs.load(Ordering::Relaxed), used);
@@ -342,14 +392,18 @@ mod tests {
 
     #[test]
     fn joining_allocates_nothing_on_the_spool_thread() {
-        let helper = SpoolHelper::start(None).unwrap();
+        let helper =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { SpoolHelper::start(None) }.unwrap();
         let count = AtomicUsize::new(0);
         let job = || {
             count.fetch_add(1, Ordering::Relaxed);
         };
-        helper.join(false, &job, || ());
+        // SAFETY: The spool exclusively uses this helper until the job joins.
+        unsafe { helper.join(false, &job, || ()) };
         collector_test_support::with_allocations_denied(|| {
-            helper.join(true, &job, || ());
+            // SAFETY: The spool exclusively uses this helper until the job joins.
+            unsafe { helper.join(true, &job, || ()) };
         });
         assert_eq!(count.load(Ordering::Relaxed), 2);
     }

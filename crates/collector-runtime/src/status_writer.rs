@@ -107,7 +107,8 @@ impl StatusWriter {
             .name("collector-status".into())
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                collector_workers::priority::OwnPriority::new().follow(false);
+                // SAFETY: The owning worker adjusts only its own thread's priority.
+                unsafe { collector_workers::priority::OwnPriority::new().follow(false) };
                 run(&worker, &write)
             })?;
         Ok(Self {
@@ -127,7 +128,10 @@ impl StatusWriter {
             return;
         };
         #[cfg(feature = "worker_sampler")]
-        collector_workers::worker_sampler_state::stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe {
+            collector_workers::worker_sampler_state::stop_before_thread_exit()
+        };
         self.handle.inner.lock().stop = true;
         self.handle.inner.wake.notify_one();
         let _ = thread.join();
@@ -186,8 +190,10 @@ pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io:
 }
 fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
-    collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Status);
+    // SAFETY: This runtime-owned worker keeps the guard until it exits.
+    let _sampler_exit = unsafe { collector_workers::thread_cpu::StopOnThreadExit::new() };
+    // SAFETY: Only the current session's designated thread registers this role.
+    unsafe { collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Status) };
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Status);
     collector_memory::terminal::attempted_hour(None);
     let mut stopping_since: Option<Instant> = None;

@@ -36,7 +36,9 @@ fn peer(index: usize) -> acquisition::Job {
 }
 
 fn deferred_stitch_failure(naval_panics: bool) {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let naval_gate = Arc::new(Gate::default());
     let peer_gate = Arc::new(Gate::default());
     let (started, running) = mpsc::channel();

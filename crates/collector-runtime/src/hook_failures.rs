@@ -93,12 +93,12 @@ runtime_families! {
 }
 
 pub struct FamilyHooks<T> {
-    pub inner: Option<T>,
+    pub(crate) inner: Option<T>,
     family: Family,
     base: usize,
 }
 impl<T: RegisteredFamily> FamilyHooks<T> {
-    pub fn construct<E: AsRef<str>>(
+    pub(crate) fn construct<E: AsRef<str>>(
         base: usize,
         construct: impl FnOnce() -> Result<T, E>,
     ) -> Result<Self, &'static str> {
@@ -142,7 +142,10 @@ impl<T: RegisteredFamily> FamilyHooks<T> {
 }
 impl<T> FamilyHooks<T> {
     #[cfg(test)]
-    pub fn new(family: Family, hooks: Result<T, &'static str>) -> Result<Self, &'static str> {
+    pub(crate) fn new(
+        family: Family,
+        hooks: Result<T, &'static str>,
+    ) -> Result<Self, &'static str> {
         let inner = match hooks {
             Ok(hooks) => Some(hooks),
             Err(cause) => {
@@ -212,17 +215,26 @@ impl<T> FamilyHooks<T> {
     }
 }
 macro_rules! family_hooks {
-    ($( $($module:ident)::+ ),* $(,)?) => {$ (
+    (@set_enabled $hooks:ident, $enabled:ident, unsafe) => {
+        // SAFETY: The runtime's publication round owns these taps and retains them through
+        // publication and native callback quiescence.
+        unsafe { $hooks.set_enabled($enabled) }
+    };
+    (@set_enabled $hooks:ident, $enabled:ident) => {
+        $hooks.set_enabled($enabled)
+    };
+    ($( $($module:ident)::+ $(; $safety:ident)? ),* $(,)?) => {$ (
         impl FamilyHooks<$($module)::+::Hooks> {
-            pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-                self.toggle(enabled, |hooks, enabled| hooks.set_enabled(enabled).map_err(|cause|
+            pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+                self.toggle(enabled, |hooks, enabled|
+                family_hooks!(@set_enabled hooks, enabled $(, $safety)?).map_err(|cause|
                     if enabled {
                         cause.into()
                     } else {
                         std::borrow::Cow::Borrowed("hook restoration failed; collector retained")
                     }))
             }
-            pub fn executable_ranges(&self) -> impl Iterator<Item=Range<usize>> + '_ {
+            pub(crate) fn executable_ranges(&self) -> impl Iterator<Item=Range<usize>> + '_ {
                 self.inner.iter().flat_map(|hooks| hooks.executable_ranges().into_iter())
             }
         }
@@ -238,7 +250,7 @@ family_hooks!(
     collector_factions::faction_goal_changes,
     collector_factions::faction_companion_changes,
     collector_observers::market_changes,
-    collector_capture::command_batch,
+    collector_capture::command_batch; unsafe,
     collector_equipment_destruction::equipment_destruction,
     collector_land_events::land_events,
     collector_characters::portrait_changes,
@@ -278,7 +290,7 @@ family_hooks!(
     collector_observers::province_combat_changes,
     collector_observers::air_base_carry_changes,
     collector_experience_gains::experience_gains,
-    collector_player_commands::player_commands,
+    collector_player_commands::player_commands; unsafe,
     collector_fuel_awards::fuel_awards,
     collector_operation_outcomes::operation_outcomes,
     collector_politics::politics_changes,
@@ -292,12 +304,12 @@ family_hooks!(
     collector_lifetime::world_lifetime
 );
 impl FamilyHooks<collector_map_events::hooks::Hooks> {
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         self.toggle(enabled, |hooks, enabled| {
             hooks.set_enabled(enabled).map_err(Into::into)
         })
     }
-    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+    pub(crate) fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.inner
             .iter()
             .flat_map(|hooks| hooks.executable_ranges())
@@ -502,7 +514,11 @@ mod tests {
                 }
                 let mut drain = collector_player_commands::player_commands::Drain::default();
                 for final_drain in [false, true] {
-                    assert!(drain.take(final_drain).unwrap().is_empty());
+                    assert!(
+                        // SAFETY: The sole spool drains its current installation, with hooks quiet for
+                        // a final drain.
+                        unsafe { drain.take(final_drain) }.unwrap().is_empty()
+                    );
                 }
                 assert!(source.tables.iter().all(|table| matches!(
                     table,

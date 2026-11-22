@@ -278,10 +278,18 @@ fn equipment_destruction_successful_run_exit_quiesces_releases_and_unloads() {
 #[test]
 fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_capture() {
     let admission = CaptureAdmission::new();
-    let lease = admission.enter().unwrap();
-    admission.close();
+    let lease =
+    // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+    // hourly exit.
+    unsafe { admission.enter() }.unwrap();
+    // SAFETY: Detach closes admission before waiting for admitted capture to complete.
+    unsafe { admission.close() };
     assert!(!admission.quiet());
-    assert!(admission.enter().is_none());
+    assert!(
+        // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+        // hourly exit.
+        unsafe { admission.enter() }.is_none()
+    );
     let passed = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
@@ -293,7 +301,11 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
         waiter.join().unwrap();
     });
     assert!(passed.load(Ordering::SeqCst));
-    assert!(admission.enter().is_none());
+    assert!(
+        // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+        // hourly exit.
+        unsafe { admission.enter() }.is_none()
+    );
 }
 
 #[test]
@@ -333,7 +345,8 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     );
     let restoration_error = restore_result.unwrap_err();
     let admission = CaptureAdmission::new();
-    admission.close();
+    // SAFETY: Detach closes admission before waiting for admitted capture to complete.
+    unsafe { admission.close() };
     wait_acquisitions(&admission, Instant::now()).unwrap();
     assert!(observers_active());
     let retained_shared = SharedSlot::retained_for_test();
@@ -350,12 +363,20 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     )));
     fs::create_dir_all(&root.0).unwrap();
     let session_dir = root.0.join("session");
-    let mut processor = collector_spool::spooling::spool_failure_fixture(&session_dir).unwrap();
+    let mut processor =
+    // SAFETY: The isolated test owns the spool's failure state.
+    unsafe { collector_spool::spooling::spool_failure_fixture(&session_dir) }.unwrap();
     let frame = collector_spool::spooling::allocation_failure_frame(2);
-    processor.prepare(&frame).unwrap();
-    let prepared = processor.prepare_frame(&frame).unwrap();
-    processor.write_prepared(prepared).unwrap();
-    processor.detach().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.prepare(&frame) }.unwrap();
+    let prepared =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.prepare_frame(&frame) }.unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { processor.write_prepared(prepared) }.unwrap();
+    // SAFETY: This spool's frame and command processing have finished before its processor is
+    // closed.
+    unsafe { processor.detach() }.unwrap();
     let directories = processor.spool_directories().unwrap();
     let bytes = fs::read(directories[0].join("spool.0000.h4s")).unwrap();
     let recovered = recover_prefix(&bytes);
@@ -379,8 +400,12 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
             _ => None,
         })
         .unwrap();
-    let shared = Shared::new(0, 0, session.qpc_frequency);
-    shared.recording.store(false, Ordering::Release);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, session.qpc_frequency) };
+
+    // SAFETY: The current runtime or its spool owns the session's terminal stop.
+    unsafe { shared.recording() }.store(false, Ordering::Release);
     let mut writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
     let status = collector_status::status::serialize(
         &spool_status(

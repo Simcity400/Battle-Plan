@@ -14,9 +14,9 @@ use windows_sys::Win32::{
 };
 
 static JOBS: Mutex<Vec<(u32, u64, Weak<AtomicU16>)>> = Mutex::new(Vec::new());
-pub static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
-pub static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
-pub static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
+pub(crate) static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
+pub(crate) static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
+pub(crate) static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static JOB_SLOT: RefCell<Option<Arc<AtomicU16>>> = const { RefCell::new(None) };
 }
@@ -42,7 +42,8 @@ pub(crate) fn register_worker() -> WorkerRegistration {
 }
 impl Drop for WorkerRegistration {
     fn drop(&mut self) {
-        stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe { stop_before_thread_exit() };
         JOB_SLOT.replace(None);
         self.slot.store(0, Ordering::Release);
         JOBS.lock()
@@ -71,7 +72,10 @@ pub struct JobGuard {
     _thread: PhantomData<Rc<()>>,
 }
 
-pub fn job(id: u16, game_slot: impl FnOnce() -> Option<&'static AtomicU16>) -> JobGuard {
+/// # Safety
+/// Register the role only for the live collector worker executing that job. Drop its guard on this
+/// thread before another job or detach can consume the registration.
+pub unsafe fn job(id: u16, game_slot: impl FnOnce() -> Option<&'static AtomicU16>) -> JobGuard {
     let slot = JOB_SLOT
         .with_borrow(Clone::clone)
         .map(JobSlot::Worker)
@@ -107,7 +111,7 @@ impl SampledJob {
     }
 }
 
-pub fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
+pub(crate) fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
     JOBS.lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -115,20 +119,20 @@ pub fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
         .and_then(|(_, created, job)| job.upgrade().map(|job| (*created, SampledJob(job))))
 }
 
-pub fn clear_jobs() {
+pub(crate) fn clear_jobs() {
     let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
     drop(jobs);
 }
 
 pub struct Control {
-    pub on_panic: fn(),
+    pub(crate) on_panic: fn(),
     pub stop: Arc<AtomicBool>,
     pub active: Arc<AtomicBool>,
     pub thread: Mutex<Option<JoinHandle<()>>>,
     pub ready: AtomicBool,
-    pub join_complete: AtomicBool,
+    pub(crate) join_complete: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
-    pub follower_waits: std::sync::atomic::AtomicUsize,
+    pub(crate) follower_waits: std::sync::atomic::AtomicUsize,
 }
 impl Control {
     pub fn new(
@@ -149,7 +153,7 @@ impl Control {
         }
     }
 
-    pub fn stop_join(&self) {
+    pub(crate) fn stop_join(&self) {
         self.stop.store(true, Ordering::Release);
         while !self.ready.load(Ordering::Acquire) {
             thread::yield_now();
@@ -170,7 +174,10 @@ impl Control {
         }
     }
 }
-pub fn stop_before_thread_exit() {
+/// # Safety
+/// Only the owner of a live sampled worker or the runtime joining it may perform this handshake,
+/// before allowing the sampled thread to exit.
+pub unsafe fn stop_before_thread_exit() {
     EARLY_EXIT.store(true, Ordering::Release);
     let control = {
         SAMPLER_CONTROL

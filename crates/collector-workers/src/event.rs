@@ -22,12 +22,18 @@ impl Event {
             Ok(Self(handle))
         }
     }
-    pub fn set(&self) {
+    /// # Safety
+    /// Mutate a live event only as its owning collector role, at the matching publication or reset
+    /// point in the session.
+    pub unsafe fn set(&self) {
         unsafe {
             SetEvent(self.0);
         }
     }
-    pub fn reset(&self) {
+    /// # Safety
+    /// Mutate a live event only as its owning collector role, at the matching publication or reset
+    /// point in the session.
+    pub unsafe fn reset(&self) {
         unsafe {
             ResetEvent(self.0);
         }

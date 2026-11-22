@@ -244,7 +244,10 @@ impl Pipeline {
         self.refresh();
         Callback(self)
     }
-    pub fn register(&self, role: Role) {
+    /// # Safety
+    /// Register only this session's designated collector worker on its own thread, and keep it in
+    /// the worker census until it exits.
+    pub unsafe fn register(&self, role: Role) {
         let Some(slot) = self.targets.get(role.slot()) else {
             return;
         };
@@ -392,7 +395,9 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         None
     };
     if sets.is_some() {
-        let selected = select(target.handle.as_handle(), sets);
+        let selected =
+        // SAFETY: The live handle belongs to a worker whose affinity this policy owns.
+        unsafe { select(target.handle.as_handle(), sets) };
         if selected {
             target.confined.store(true, Ordering::SeqCst);
             target
@@ -401,7 +406,9 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         }
         applied &= selected;
     } else if target.confined.load(Ordering::SeqCst) {
-        let cleared = select(target.handle.as_handle(), None);
+        let cleared =
+        // SAFETY: The live handle belongs to a worker whose affinity this policy owns.
+        unsafe { select(target.handle.as_handle(), None) };
         if cleared {
             target.confined.store(false, Ordering::SeqCst);
         }
@@ -458,7 +465,12 @@ pub struct Reconciler {
     thread: Option<JoinHandle<()>>,
 }
 impl Reconciler {
-    pub fn start(pipeline: engine_allocation::SharedBox<Pipeline>) -> Result<Self, &'static str> {
+    /// # Safety
+    /// Only the runtime may start the reconciler for this session's pipeline. Keep it in the worker
+    /// census and join it before tearing down the pipeline and scheduler state.
+    pub unsafe fn start(
+        pipeline: engine_allocation::SharedBox<Pipeline>,
+    ) -> Result<Self, &'static str> {
         let (event, timer) = unsafe {
             (
                 CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()),
@@ -486,10 +498,17 @@ impl Reconciler {
             .spawn(move || {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
-                crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority);
-                let mut own = crate::priority::OwnPriority::frame_pipeline();
-                if !own.reconciler() {
+                // SAFETY: This runtime-owned worker keeps the guard until it exits.
+                let _sampler_exit = unsafe { crate::thread_cpu::StopOnThreadExit::new() };
+                // SAFETY: Only the current session's designated thread registers this role.
+                unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority) };
+                let mut own =
+                // SAFETY: This is the dedicated worker applying its own session's priority policy.
+                unsafe { crate::priority::OwnPriority::frame_pipeline() };
+                if !
+                // SAFETY: This runtime-owned reconciler adjusts only its current thread.
+                unsafe { own.reconciler() }
+                {
                     let _ = send.send(false);
                     return;
                 }
@@ -523,7 +542,8 @@ impl Reconciler {
             .map_err(|_| "frame priority reconciler could not start")?;
         if ready.recv() != Ok(true) {
             let _ = thread.join();
-            crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);
+            // SAFETY: This updates the designated role of this runtime's owned worker.
+            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
             return Err("frame priority reconciler policy failed");
         }
         Ok(Self {
@@ -547,7 +567,8 @@ impl Reconciler {
             // SAFETY: the pipeline owns this event until after the joined worker exits.
             unsafe { SetEvent(self.pipeline.event.get().unwrap().as_raw_handle()) };
             let _ = thread.join();
-            crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);
+            // SAFETY: This updates the designated role of this runtime's owned worker.
+            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
         }
     }
 }

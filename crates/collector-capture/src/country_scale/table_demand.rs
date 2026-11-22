@@ -3,16 +3,25 @@ pub(crate) use collector_extended_support::demand::rows;
 use collector_map_capture::map_capture::MapCapacities;
 use engine_native::Memory;
 
-pub fn presize(
+/// # Safety
+/// Run only in the active session's serial sizing pass or before callback publication at attach.
+/// Use that session's image, keep its observer storage live throughout, and exclude detach and
+/// competing presizers.
+pub unsafe fn presize(
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
     extended: &mut extended::Capacities,
 ) -> Result<(), &'static str> {
-    presize_periodic(memory, base, map, extended, true)
+    // SAFETY: The serialized sizing pass owns the observer storage and excludes teardown.
+    unsafe { presize_periodic(memory, base, map, extended, true) }
 }
 
-pub fn presize_periodic(
+/// # Safety
+/// Run only in the active session's serial sizing pass or before callback publication at attach.
+/// Use that session's image, keep its observer storage live throughout, and exclude detach and
+/// competing presizers.
+pub unsafe fn presize_periodic(
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
@@ -249,7 +258,11 @@ mod tests {
         assert_eq!(super::super::observe(&memory, 0), Some(5001));
         let mut sizing = super::super::Sizing::for_slots(5001);
         assert!(sizing.extended.economy.rows[2] < 20000);
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            // SAFETY: The serialized sizing pass or isolated fixture owns the observer storage
+            // throughout.
+            unsafe { presize(&memory, 0, &mut sizing.map, &mut sizing.extended) }.is_err()
+        );
         assert!(sizing.extended.economy.rows[2] >= 20000);
         let mut order =
             collector_divisions::extended::province_unit_order::Captured::with_capacities(
@@ -258,11 +271,19 @@ mod tests {
         order.capture(&memory, 0, 0x1000);
         assert_eq!(order.outcomes(), [Outcome::Rows { len: 20000 }]);
         memory.provinces = 70001;
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            // SAFETY: The serialized sizing pass or isolated fixture owns the observer storage
+            // throughout.
+            unsafe { presize(&memory, 0, &mut sizing.map, &mut sizing.extended) }.is_err()
+        );
         assert!(sizing.extended.economy.rows[2] >= 70000);
         let retained = sizing.extended.economy.rows[2];
         memory.provinces = 2;
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            // SAFETY: The serialized sizing pass or isolated fixture owns the observer storage
+            // throughout.
+            unsafe { presize(&memory, 0, &mut sizing.map, &mut sizing.extended) }.is_err()
+        );
         assert_eq!(sizing.extended.economy.rows[2], retained);
     }
 }

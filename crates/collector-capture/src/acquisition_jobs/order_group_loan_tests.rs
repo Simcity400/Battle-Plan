@@ -75,7 +75,9 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
     for mode in 0..3 {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let pool = collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+        let pool =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
             let Job::ChildFronts(request) = job else {
                 panic!("unexpected fixture runner");
             };
@@ -98,7 +100,7 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
                 request.plans.fail_child_fronts();
             }
             Report::ChildFronts(OrdersReport)
-        })
+        }) }
         .unwrap();
         let mut pending = Some(Job::ChildFronts(request(7)));
         let payload = loan(pending.as_ref().unwrap());
@@ -113,22 +115,26 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         inspect_job(completed.request, bytes, spans, 7);
-        pool.shutdown().unwrap();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { pool.shutdown() }.unwrap();
     }
 }
 
 #[test]
 fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
-    let pool = collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
         panic!("cancelled ChildFronts runner must not execute");
-    })
+    }) }
     .unwrap();
     let mut pending = Some(Job::ChildFronts(request(8)));
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
     let spans = payload.log.spans.as_ptr() as usize;
     let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
-    pool.shutdown().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let completed = pool.finish(ticket).unwrap();
     assert!(matches!(completed.report, Err(Failure::Stopped)));
     assert_eq!(
@@ -140,11 +146,14 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
 
 #[test]
 fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
-    let pool = collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
+    let pool =
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
         panic!("rejected ChildFronts must never run");
-    })
+    }) }
     .unwrap();
-    pool.shutdown().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut pending = Some(Job::ChildFronts(request(9)));
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
@@ -222,7 +231,9 @@ fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_r
             bytes
         );
         if mode == 2 {
-            pool.shutdown().unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { pool.shutdown() }.unwrap();
         }
         let completion = match unsafe { batch.submit(&mut child) } {
             Ok(ticket) => {

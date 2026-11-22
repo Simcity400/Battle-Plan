@@ -6,7 +6,6 @@ use history_requests::{HistoryWorker, SpoolHistory};
 use collector_capture::acquisition_jobs as acquisition;
 use collector_capture::decode;
 use collector_capture::sampling;
-use collector_capture::sampling::ACTIVE;
 use collector_capture::sampling::Shared;
 use collector_capture::sampling::{SHARED, SharedSlot};
 use collector_hooks::hook::Hook;
@@ -450,9 +449,15 @@ fn run(
 ) -> Result<(), &'static str> {
     engine_sites::production();
     collector_timing::hook_timing::start();
-    collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime);
+    // SAFETY: Only the current session's designated thread registers this role.
+    unsafe {
+        collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime)
+    };
     #[cfg(feature = "worker_sampler")]
-    collector_workers::worker_sampler::prepare();
+    // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+    unsafe {
+        collector_workers::worker_sampler::prepare()
+    };
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
         &fs::read(dll_path.with_file_name("collector.json"))
@@ -555,10 +560,13 @@ fn run(
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let progress = crate::progress::Progress::open(&config.output_dir);
-    let worker_panic = collector_workers::worker_panic::Guard::install(
+    let worker_panic =
+    // SAFETY: The runtime owns the process hook until all workers exit, or the fixture owns it in
+    // isolation.
+    unsafe { collector_workers::worker_panic::Guard::install(
         &config.output_dir.join(crate::progress::FILE),
         progress.opened(),
-    );
+    ) };
     progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
@@ -663,7 +671,9 @@ fn run(
     collector_observers::building_bombing::restore_sequence(bombing_sequence)?;
     collector_observers::nuclear_strikes::restore_sequence(nuclear_sequence)?;
     collector_observers::market_changes::restore_sequence(market_sequence)?;
-    let mut processor = Processor::new(&config.output_dir, history, session.clone())
+    let mut processor =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Processor::new(&config.output_dir, history, session.clone()) }
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let mut hook =
         unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }.map_err(
@@ -984,15 +994,24 @@ fn run(
     }
     collector_observers::occupation_changes::demand(sizing.core[3].saturating_mul(9));
     collector_observers::occupation_changes::prepare();
-    if let Err(reason) = collector_capture::country_scale::table_demand::presize(
-        &memory,
-        base,
-        &mut sizing.map,
-        &mut sizing.extended,
-    ) {
+    if let Err(reason) =
+        // SAFETY: The serialized sizing pass or isolated fixture owns the observer storage throughout.
+        unsafe {
+            collector_capture::country_scale::table_demand::presize(
+                &memory,
+                base,
+                &mut sizing.map,
+                &mut sizing.extended,
+            )
+        }
+    {
         processor.observe_input_demand_error(reason);
     }
-    if let Err(reason) = sizing.extended.presize_live_inputs(&memory, base) {
+    if let Err(reason) =
+        // SAFETY: The sizing owner prepares the session's live storage before callbacks or in its
+        // sizing pass.
+        unsafe { sizing.extended.presize_live_inputs(&memory, base) }
+    {
         processor.observe_input_demand_error(reason);
     }
     collector_land_events::land_events::install_offered();
@@ -1045,7 +1064,8 @@ fn run(
         .flatten()
     {
         collector_air::sizing::note_air_wing_name_bytes(bytes);
-        sizing.map.raise_for_air_wing_names(bytes);
+        // SAFETY: The sizing pass uses this session's measured name demand.
+        unsafe { sizing.map.raise_for_air_wing_names(bytes) };
     }
     if let Some(demand) = processor
         .observe_input_demand(collector_capture::country_scale::observe_railway_gun_names(
@@ -1161,7 +1181,8 @@ fn run(
     {
         sizing.extended.economy.demand.raise(demand);
     }
-    sizing.extended.operation_outcomes.prepare();
+    // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+    unsafe { sizing.extended.operation_outcomes.prepare() };
     progress.step("inputs_sized", None);
     let combat_hints = CombatHints::observe(&memory, base);
     for reason in combat_hints.failures.into_iter().flatten() {
@@ -1246,15 +1267,25 @@ fn run(
     ranges.extend(fuel_hooks.executable_ranges());
     ranges.extend(operation_hooks.executable_ranges());
     ranges.extend(politics_hooks.executable_ranges());
-    let mut shared = Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
+    let mut shared =
+    // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+    // boundary or detach.
+    unsafe { Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing) }
         .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
     shared.capture_mode = session.capture_mode;
-    shared.tick_idle = Some(idle);
-    shared.prepare_roster(&memory);
-    shared.prepare_clock_capture(&memory);
+
+    // SAFETY: Attach initializes the idle event before publishing Shared.
+    *unsafe { shared.tick_idle_mut() } = Some(idle);
+    // SAFETY: This is the unpublished attachment's own roster.
+    unsafe { shared.prepare_roster(&memory) };
+    // SAFETY: This is unpublished attach state or the isolated fixture's private capture clock.
+    unsafe { shared.prepare_clock_capture(&memory) };
     let shared = engine_allocation::shared(shared)
         .map_err(|e| error_reason(e, "collector state allocation failed"))?;
-    processor.account_writer(shared.pool_bytes.clone());
+    processor.account_writer(
+        // SAFETY: The writer accounts memory to this same session and drains before it is released.
+        unsafe { shared.pool_bytes() }.clone(),
+    );
     progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
@@ -1266,18 +1297,25 @@ fn run(
         &combat_hints,
         &mut spool_state.applied_combat_hints,
     );
-    let acquisition = acquisition::Pool::start(
+    let acquisition =
+    // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+    unsafe { acquisition::Pool::start(
         collector_workers::acquisition::recommended_worker_count(),
         collector_workers::roles::MAX_JOBS,
-    )?;
-    shared
-        .pool_bytes
+    ) }?;
+
+    // SAFETY: The writer accounts memory to this same session and drains before it is released.
+    unsafe { shared.pool_bytes() }
         .fetch_add(acquisition.allocated_bytes() as u64, Ordering::Relaxed);
-    shared
-        .acquisition
+
+    // SAFETY: The runtime owns this attachment's worker pool from startup through join.
+    unsafe { shared.acquisition() }
         .set(acquisition)
         .map_err(|_| "acquisition pool already initialized")?;
-    let _payload_pools = decode::prepare_payload_pools(config.game_score)
+    let _payload_pools =
+    // SAFETY: Attach owns payload storage through worker join. Fixture processes own their test
+    // pools.
+    unsafe { decode::prepare_payload_pools(config.game_score) }
         .map_err(|e| error_reason(e, "payload pools allocation failed"))?;
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation");
@@ -1285,23 +1323,35 @@ fn run(
     if collector_memory::terminal::failed() {
         return Err("collector allocation failed before hooks");
     }
-    let acquisition = shared.acquisition.get().expect("initialized before hook");
+    let acquisition =
+        // SAFETY: The runtime owns this attachment's worker pool from startup through join.
+        unsafe { shared.acquisition() }.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
     let mut priority_reconciler =
-        collector_workers::frame_priority::Reconciler::start(shared.frame_priority.clone())?;
+    // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+    unsafe { collector_workers::frame_priority::Reconciler::start(
+        // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+         shared.frame_priority() .clone(),
+    ) }?;
     owned_workers.push(priority_reconciler.thread_id());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
         config.replay_dir.clone(),
-        Some(collector_capture::capture_point::settle_next),
+        Some(|| {
+            // SAFETY: The session's history worker invokes this before the capture state is retired.
+            unsafe { collector_capture::capture_point::settle_next() }
+        }),
     )
     .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
     for index in 0..collector_workers::spool_helper::pool_size() {
-        let Ok(helper) = collector_workers::spool_helper::SpoolHelper::start(Some((
-            shared.frame_priority.clone(),
+        let Ok(helper) =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        (unsafe { collector_workers::spool_helper::SpoolHelper::start(Some((
+            // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+             shared.frame_priority() .clone(),
             collector_workers::frame_priority::Role::Helper(index),
-        ))) else {
+        ))) }) else {
             break;
         };
         let id = helper.thread_id();
@@ -1309,22 +1359,29 @@ fn run(
             break;
         }
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_helper(index, id);
+        // SAFETY: This is the live, owned helper at its assigned runtime index.
+        unsafe { collector_workers::thread_cpu::register_helper(index, id) };
     }
     let sizing = SizingThread::start(shared.clone(), spool_state);
     if let Some(id) = sizing.thread_id() {
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::SpoolSizing,
-            id,
-        );
+        // SAFETY: This updates the designated role of this runtime's owned worker.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::SpoolSizing,
+                id,
+            )
+        };
     }
     if let Some(id) = sizing.builder_id() {
         owned_workers.push(id);
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::FrameBuilder,
-            id,
-        );
+        // SAFETY: This updates the designated role of this runtime's owned worker.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::FrameBuilder,
+                id,
+            )
+        };
     }
     let spool_id = Arc::new(AtomicU32::new(0));
     let spool_thread_id = Arc::clone(&spool_id);
@@ -1346,7 +1403,10 @@ fn run(
         .spawn(move || {
             collector_workers::private_heap::off_hold_path();
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Spool);
+            // SAFETY: Only the current session's designated thread registers this role.
+            unsafe {
+                collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Spool)
+            };
             spool_loop(
                 &spool_shared,
                 &config,
@@ -1360,8 +1420,13 @@ fn run(
             )
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
-    let decode_panic_hook = collector_workers::panic_failure::HookGuard::install();
-    let mut installation_error = decode::start_worker().err();
+    let decode_panic_hook =
+    // SAFETY: The runtime owns the process hook until all workers exit, or the fixture owns it in
+    // isolation.
+    unsafe { collector_workers::panic_failure::HookGuard::install() };
+    let mut installation_error =
+    // SAFETY: Attach starts decode once and retains its pools through detach.
+    unsafe { decode::start_worker() }.err();
     while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
         std::thread::yield_now();
     }
@@ -1370,16 +1435,19 @@ fn run(
         collector_workers::thread_cpu::decode_worker(),
     ]);
     let mut capture_thread =
-        collector_capture::capture_point::Thread::start(BACKGROUND_STACK_BYTES).ok();
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { collector_capture::capture_point::Thread::start(BACKGROUND_STACK_BYTES) }.ok();
     owned_workers.extend(capture_thread.as_ref().map(|thread| thread.id()));
     collector_hook_failures::workers_started();
     progress.step("workers_started", None);
     #[cfg(feature = "worker_sampler")]
-    let mut sampler = match collector_workers::worker_sampler::start(
+    let mut sampler = match
+    // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+    unsafe { collector_workers::worker_sampler::start(
         sampler_config.as_deref(),
         &sampler_output,
         acquisition.thread_ids(),
-    ) {
+    ) } {
         Ok(sampler) => {
             let id = collector_workers::worker_sampler::thread_id();
             if id != 0 {
@@ -1602,17 +1670,24 @@ fn run(
     if installation_error.is_none()
         && !collector_memory::terminal::failed()
         && let Some(sampler) = sampler.as_mut()
-        && let Err(error) = sampler.activate()
+        && let Err(error) =
+            // SAFETY: Attach activates its sole sampler after the target workers are ready.
+            unsafe { sampler.activate() }
     {
         installation_error = Some(error);
     }
     if installation_error.is_none() && !collector_memory::terminal::failed() {
-        HOURLY_ADMISSION.open();
-        collector_capture::capture_point::set_beside(
-            capture_thread.is_some() && collector_capture::command_batch::enabled(),
-        );
+        // SAFETY: Attach has published Shared and is opening admission for this session.
+        unsafe { HOURLY_ADMISSION.open() };
+        // SAFETY: Attach selects the capture mode before hourly hook publication.
+        unsafe {
+            collector_capture::capture_point::set_beside(
+                capture_thread.is_some() && collector_capture::command_batch::enabled(),
+            )
+        };
         progress.step("ready", None);
-        ready.set();
+        // SAFETY: The tick exit owns the session's idle event and sets it after leaving the gate.
+        unsafe { ready.set() };
     } else {
         progress.step("installation_refused", None);
     }
@@ -1635,7 +1710,10 @@ fn run(
     #[cfg(feature = "worker_sampler")]
     if let Some(sampler) = sampler.as_mut() {
         let id = collector_workers::worker_sampler::thread_id();
-        let samples = sampler.stop();
+        let samples =
+        // SAFETY: This is the owning runtime's shutdown, while the worker's shared state is still
+        // live.
+        unsafe { sampler.stop() };
         if id != 0 {
             owned_workers.retain(|worker| *worker != id);
         }
@@ -1650,7 +1728,9 @@ fn run(
                 .or_else(collector_workers::worker_panic::first)
                 .unwrap_or(reason);
             refuse_detach!(error, |_error| {
-                shared.recording.store(false, Ordering::Release);
+
+                    // SAFETY: This is the owning runtime's stop or an isolated fixture's recording flag.
+                    unsafe { shared.recording() }.store(false, Ordering::Release);
                 status_writer.finish();
                 if !collector_memory::terminal::failed() {
                     let status = collector_status::status::status!({
@@ -1694,11 +1774,16 @@ fn run(
         Some(u64::from(restored[RestoreFamily::Hourly as usize])),
     );
     if !restored[RestoreFamily::Hourly as usize] {
-        shared.recording.store(false, Ordering::Release);
+        // SAFETY: The current runtime or its spool owns the session's terminal stop.
+        unsafe { shared.recording() }.store(false, Ordering::Release);
     }
-    let drained = collector_capture::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT);
+    let drained =
+    // SAFETY: This is the detach drain after closing hourly admission, with capture state still
+    // live.
+    unsafe { collector_capture::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT) };
     progress.step("final_hour_read", Some(u64::from(drained)));
-    HOURLY_ADMISSION.close();
+    // SAFETY: Detach closes admission before waiting for admitted capture to complete.
+    unsafe { HOURLY_ADMISSION.close() };
     if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
         progress.step("acquisitions_refused", None);
         retain_detach!(
@@ -1708,11 +1793,15 @@ fn run(
         );
     }
     if let Some(thread) = capture_thread.as_mut() {
-        thread.stop();
+        // SAFETY: This is the owning runtime's shutdown, while the worker's shared state is still
+        // live.
+        unsafe { thread.stop() };
         let id = thread.id();
         owned_workers.retain(|worker| *worker != id);
     }
-    let unread = collector_capture::capture_point::take_unread();
+    let unread =
+    // SAFETY: Detach has drained capture and transfers the loss count to this session's spool.
+    unsafe { collector_capture::capture_point::take_unread() };
     if unread != 0 {
         // SAFETY: no capture runs or can start.
         unsafe { sampling::record_lost(&shared, unread) };
@@ -1892,7 +1981,8 @@ fn run(
         installation_error,
     });
     if restore_result.is_err() {
-        shared.recording.store(false, Ordering::Release);
+        // SAFETY: The current runtime or its spool owns the session's terminal stop.
+        unsafe { shared.recording() }.store(false, Ordering::Release);
     }
     let hooks = HookLifetime {
         restored: restore_result.is_ok(),
@@ -1923,8 +2013,14 @@ fn run(
         },
         None,
     );
-    shared.recording.store(false, Ordering::Release);
-    if let Err(reason) = acquisition.shutdown() {
+
+    // SAFETY: The current runtime or its spool owns the session's terminal stop.
+    unsafe { shared.recording() }.store(false, Ordering::Release);
+    if let Err(reason) =
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { acquisition.shutdown() }
+    {
         progress.step("acquisition_refused", None);
         retain_detach!(
             reason,
@@ -1934,18 +2030,24 @@ fn run(
     }
     progress.step("acquisition_joined", None);
     let mut logged = Instant::now();
-    let decode_outcome = decode::detach_drain(|count| {
+    let decode_outcome =
+    // SAFETY: Hourly admission is closed and capture is quiet before this decode drain.
+    unsafe { decode::detach_drain(|count| {
         if logged.elapsed() >= Duration::from_secs(1) {
             logged = Instant::now();
             progress.step("decode_draining", Some(count));
         }
-    });
+    }) };
     progress.step("decode_drained", None);
-    shared.stop_spool.store(true, Ordering::Release);
+
+    // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
+    unsafe { shared.stop_spool() }.store(true, Ordering::Release);
     shared.wake_spool();
     let mut pending = usize::MAX;
     while !spool.is_finished() {
-        let ready = shared.frames.ready_len();
+        let ready =
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.ready_len();
         if ready != pending {
             pending = ready;
             progress.step("spool_draining", Some(ready as u64));
@@ -1972,7 +2074,9 @@ fn run(
     if shared.acquisition_failed() {
         add_terminal_error(&mut spool_result, "game-thread acquisition failed");
     }
-    if shared.frame_priority.failed() {
+    if
+    // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+    unsafe { shared.frame_priority() }.failed() {
         add_terminal_error(&mut spool_result, "frame priority reconciler failed");
     }
     if let Err(error) = decode_outcome {
@@ -2006,7 +2110,8 @@ fn run(
             hooks.release_after_quiet();
         }
         if let Some(hooks) = command_hooks.inner.as_mut() {
-            hooks.release_after_quiet();
+            // SAFETY: The owning hook handle has no published taps or live callbacks here.
+            unsafe { hooks.release_after_quiet() };
         }
         let _ = match event_feed_hooks
             .inner
@@ -2148,7 +2253,8 @@ fn run(
     }
     #[cfg(feature = "worker_sampler")]
     if restore_result.is_ok() {
-        collector_workers::worker_sampler::release();
+        // SAFETY: Detach has stopped and joined the workers that use this state.
+        unsafe { collector_workers::worker_sampler::release() };
     }
     if let Err(error) = spool_result
         && !collector_memory::terminal::failed()
@@ -2178,7 +2284,7 @@ impl ObserverState for RestoreFamily {
                 "command observers did not quiesce; collector retained",
             ),
             Self::Hourly => (
-                ACTIVE.load(Ordering::SeqCst) != 0,
+                sampling::active() != 0,
                 "hourly callbacks did not quiesce; collector retained",
             ),
             Self::EquipmentDestruction => (
@@ -2190,7 +2296,7 @@ impl ObserverState for RestoreFamily {
                 "land event callbacks did not quiesce; collector retained",
             ),
             Self::CommandBatch => (
-                collector_capture::command_batch::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_capture::command_batch::active() != 0,
                 "command batch callbacks did not quiesce; collector retained",
             ),
             Self::Portrait => (
@@ -2669,7 +2775,9 @@ impl HookLifetime<'_> {
     fn release<T>(self, hooks: T, wait: impl FnOnce()) {
         self.wait_quiet(wait);
         if self.restored {
-            self.shared.clear();
+            // SAFETY: The runtime has restored hooks and stopped users of this published state.
+            // Fixtures clear only their own slot.
+            unsafe { self.shared.clear() };
             drop(hooks);
         } else {
             std::mem::forget(hooks);
@@ -2718,7 +2826,8 @@ fn ticks_to_micros(ticks: i64, frequency: i64) -> u64 {
 
 fn signal_done(output_lock: File, done: &Event) {
     drop(output_lock);
-    done.set();
+    // SAFETY: The tick exit owns the session's idle event and sets it after leaving the gate.
+    unsafe { done.set() };
 }
 
 fn wait_acquisitions(admission: &CaptureAdmission, started: Instant) -> Result<(), &'static str> {
@@ -2851,14 +2960,19 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let shared = shared.map(|shared| {
         status!({
             "native_tick_work": {
-                "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
-                "calls": shared.native_tick_calls.load(Ordering::Relaxed),
+                "elapsed_ns":
+                    // SAFETY: Status reads the counter maintained by this session's native callback.
+                    unsafe { shared.native_tick_ns() }.load(Ordering::Relaxed),
+                "calls":
+                    // SAFETY: Status reads this session's counter and the fixture seeds only its own counter.
+                    unsafe { shared.native_tick_calls() }.load(Ordering::Relaxed),
             },
             "acquisition_work": acquisition_work(shared),
             "hour_stages": collector_workers::hour_stages::status(),
             "collector_thread_cpu": collector_workers::thread_cpu::status(
-                shared
-                    .acquisition
+
+                    // SAFETY: This is the runtime's own acquisition pool, retained through worker join.
+                    unsafe { shared.acquisition() }
                     .get()
                     .map(|acquisition| acquisition.calibration().executor.thread_ids)
                     .unwrap_or_default()
@@ -2895,11 +3009,20 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
             Ok(())
         }
     }
-    let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS)
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    let pool =
+    // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+    unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-    assert!(shared.acquisition.set(pool).is_ok());
-    shared.native_tick_calls.store(3, Ordering::Relaxed);
+    assert!(
+        // SAFETY: This is the runtime's own acquisition pool, retained through worker join.
+        unsafe { shared.acquisition() }.set(pool).is_ok()
+    );
+
+    // SAFETY: Status reads the live counter. The fixture writes only isolated state.
+    unsafe { shared.native_tick_calls() }.store(3, Ordering::Relaxed);
     let decode = with_allocations_denied(|| decode_status_from(Some(&shared)));
     let value = collector_status::status::status!({"decode": decode});
     let mut count = Count(0);
@@ -2907,7 +3030,9 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut bytes = Vec::new();
     engine_allocation::reserve_exact(&mut bytes, count.0)?;
-    shared.native_tick_calls.store(30, Ordering::Relaxed);
+
+    // SAFETY: Status reads the live counter. The fixture writes only isolated state.
+    unsafe { shared.native_tick_calls() }.store(30, Ordering::Relaxed);
     with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     assert_eq!(bytes.len(), count.0);
@@ -2937,11 +3062,10 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         assert!(absent[family].get(reason).is_some(), "{family}.{reason}");
     }
     assert!(absent["combat_log_history"].get("first_loss").is_some());
-    shared
-        .acquisition
-        .get()
-        .unwrap()
-        .shutdown()
+
+    // SAFETY: The runtime owns this attachment's worker pool through join. No submitted work is still borrowing its storage at
+    // shutdown.
+    unsafe { shared.acquisition().get().unwrap().shutdown() }
         .map_err(|_| io::Error::from(io::ErrorKind::Other))
 }
 
@@ -3389,8 +3513,12 @@ mod detach_tests {
         );
         assert!(!restored[RestoreFamily::Hourly as usize]);
         let admission = CaptureAdmission::new();
-        let lease = admission.enter().unwrap();
-        admission.close();
+        let lease =
+        // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+        // hourly exit.
+        unsafe { admission.enter() }.unwrap();
+        // SAFETY: Detach closes admission before waiting for admitted capture to complete.
+        unsafe { admission.close() };
         assert_eq!(
             wait_acquisitions(&admission, started),
             Err("hourly acquisitions did not quiesce; collector retained"),
@@ -3422,7 +3550,11 @@ mod detach_tests {
     #[test]
     fn world_signal_restores_in_the_round_where_the_last_callback_returns() {
         let callbacks = CaptureAdmission::new();
-        let mut native_return = Some(callbacks.enter().unwrap());
+        let mut native_return = Some(
+            // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+            // hourly exit.
+            unsafe { callbacks.enter() }.unwrap(),
+        );
         let mut restored = [false; RestoreFamily::ALL.len()];
         let mut errors = [false; RestoreFamily::ALL.len()];
         let mut world_restores = 0;
@@ -3486,7 +3618,10 @@ mod detach_tests {
     #[test]
     fn world_signal_waits_for_a_native_return_after_its_entry_was_restored() {
         let callbacks = CaptureAdmission::new();
-        let native_return = callbacks.enter().unwrap();
+        let native_return =
+        // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+        // hourly exit.
+        unsafe { callbacks.enter() }.unwrap();
         let mut restored = [true; RestoreFamily::ALL.len()];
         restored[RestoreFamily::WorldLifetime as usize] = false;
         let mut errors = [false; RestoreFamily::ALL.len()];
@@ -4031,8 +4166,12 @@ fn grow_combat_hints(
     hints: &CombatHints,
     applied: &mut AppliedHints,
 ) -> bool {
-    let generation = |index: usize| shared.frames.slot(index).generation.load(Ordering::Acquire);
-    let made = shared.frames.made();
+    let generation = |index: usize|
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.slot(index).generation.load(Ordering::Acquire);
+    let made =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.made();
     if (0..made).all(|index| {
         let hint = hints.pending(capacities, &applied.get(index, generation(index)));
         hint.land.is_none() && hint.naval.is_none()
@@ -4041,17 +4180,24 @@ fn grow_combat_hints(
     }
     let mut refused = false;
     for index in 0..made {
-        if !shared.take_idle_frame_for_growth(index) {
+        if !
+        // SAFETY: The sizing owner reserves the idle slot and later returns it.
+        unsafe { shared.take_idle_frame_for_growth(index) }
+        {
             continue;
         }
         let generation = generation(index);
         let mut state = applied.get(index, generation);
         let hint = hints.pending(capacities, &state);
         if hint.land.is_none() && hint.naval.is_none() {
-            shared.restore_idle_frame_prepared(index);
+            // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
+            unsafe { shared.restore_idle_frame_prepared(index) };
             continue;
         }
-        let frame = unsafe { shared.frames[index].captured_mut() };
+        let frame = unsafe {
+            // SAFETY: This is the runtime's frame pool for the current session.
+            shared.frames()[index].captured_mut()
+        };
         let success = frame
             .extended
             .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
@@ -4063,7 +4209,8 @@ fn grow_combat_hints(
             state.naval = hint.naval;
         }
         applied.set(index, generation, state);
-        shared.restore_idle_frame_prepared(index);
+        // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
+        unsafe { shared.restore_idle_frame_prepared(index) };
     }
     refused
 }
@@ -4074,18 +4221,29 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .extended
         .combat_progress
         .presize(&live, shared.base);
-    for idle_index in 0..shared.frames.made() {
-        if !shared.take_idle_frame_for_growth(idle_index) {
+    for idle_index in 0..
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.made()
+    {
+        if !
+        // SAFETY: The sizing owner reserves the idle slot and later returns it.
+        unsafe { shared.take_idle_frame_for_growth(idle_index) }
+        {
             continue;
         }
         #[cfg(test)]
         if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
             check(sizing, shared);
         }
-        let idle = unsafe { shared.frames[idle_index].captured_mut() };
-        capacities.grow_frame(idle);
+        let idle = unsafe {
+            // SAFETY: This is the runtime's frame pool for the current session.
+            shared.frames()[idle_index].captured_mut()
+        };
+        // SAFETY: The sizing path owns this frame exclusively while the observer storage is live.
+        unsafe { capacities.grow_frame(idle) };
         sizing.account_homes(shared);
-        shared.restore_idle_frame_prepared(idle_index);
+        // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
+        unsafe { shared.restore_idle_frame_prepared(idle_index) };
     }
 }
 
@@ -4102,7 +4260,9 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
         collector_workers::private_heap::PRIVATE_HEAP.hold(),
         collector_workers::private_heap::PRIVATE_HEAP.other(),
     );
-    let frames = shared.frames.gauge();
+    let frames =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.gauge();
     collector_status::status::status!({
         "buffer_wait_calls": 0,
         "buffer_wait_ns": 0,
@@ -4192,8 +4352,12 @@ fn spool_status<'a>(
         state: if pinned { "pinned" } else { state },
         session: session.id,
         pool_bytes: shared.pool_total(),
-        dropped_frames: shared.dropped.load(Ordering::Relaxed),
-        dropped_spool_stalled: shared.frames.stalled_drops(),
+        dropped_frames:
+            // SAFETY: This reads the counter maintained by the originating capture.
+            unsafe { shared.dropped() }.load(Ordering::Relaxed),
+        dropped_spool_stalled:
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.stalled_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
@@ -4237,12 +4401,20 @@ fn verify_content_roster(
     processor: &mut Processor,
     writer: &crate::status_writer::StatusHandle,
 ) -> Result<(), &'static str> {
-    if !shared.roster_ready.load(Ordering::Acquire) {
+    if !
+        // SAFETY: The spool checks readiness before taking this session's roster.
+        unsafe { shared.roster_ready() }.load(Ordering::Acquire)
+    {
         return Ok(());
     }
-    if let Some(roster) = unsafe { (&mut *shared.roster.get()).take() } {
-        shared
-            .pool_bytes
+    if let Some(roster) = unsafe {
+        (&mut *
+        // SAFETY: The session's spool has observed roster readiness and alone takes this roster.
+         shared.roster() .get())
+            .take()
+    } {
+        // SAFETY: The writer accounts memory to this same session and drains before it is released.
+        unsafe { shared.pool_bytes() }
             .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
         let verification = roster.verify(
             &mut session.identity,
@@ -4280,9 +4452,12 @@ fn spool_loop(
     history_requests: SpoolHistory,
 ) -> Result<SpoolOutcome, &'static str> {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+    // SAFETY: This runtime-owned worker keeps the guard until it exits.
+    let _sampler_exit = unsafe { collector_workers::thread_cpu::StopOnThreadExit::new() };
     let stop_recording = StopRecordingOnSpoolExit {
-        recording: &shared.recording,
+        recording:
+            // SAFETY: The current runtime or its spool owns the session's terminal stop.
+            unsafe { shared.recording() },
     };
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
@@ -4290,12 +4465,20 @@ fn spool_loop(
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
     let mut reported = Instant::now() - Duration::from_secs(1);
-    let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(
-        &shared.frame_priority,
-        collector_workers::frame_priority::Role::Spool,
-    );
-    let _ = shared.spool_waker.set(std::thread::current());
+    let mut priority =
+    // SAFETY: This is the dedicated worker applying its own session's priority policy.
+    unsafe { OwnPriority::frame_pipeline() };
+    // SAFETY: This owned worker updates its priority from its session's own pipeline.
+    unsafe {
+        priority.follow_pipeline(
+            // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+            shared.frame_priority(),
+            collector_workers::frame_priority::Role::Spool,
+        )
+    };
+    let _ =
+        // SAFETY: The sole spool registers itself before handling frames.
+        unsafe { shared.spool_waker() }.set(std::thread::current());
     let phases = &collector_workers::spool_phases::SPOOL;
     loop {
         if collector_memory::terminal::failed() {
@@ -4303,36 +4486,60 @@ fn spool_loop(
         }
         let span = phases.span(Phase::Observers);
         if !collector_workers::tick_gate::game_ticking() {
-            shared.prepare_frame_clocks(&live);
+            // SAFETY: This session's spool prepares only slots owned by its sizing pass.
+            unsafe { shared.prepare_frame_clocks(&live) };
         }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
-        priority.follow_pipeline(
-            &shared.frame_priority,
-            collector_workers::frame_priority::Role::Spool,
-        );
+        // SAFETY: This owned worker updates its priority from its session's own pipeline.
+        unsafe {
+            priority.follow_pipeline(
+                // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+                shared.frame_priority(),
+                collector_workers::frame_priority::Role::Spool,
+            )
+        };
         let mut received = false;
-        while let Some(index) = shared.frames.pop_ready() {
-            shared.frame_stage(index, sampling::FrameStage::Spool);
+        while let Some(index) =
+            // SAFETY: The sole spool consumer takes responsibility for the decoded slot until
+            // recycle.
+            unsafe { shared.frames().pop_ready() }
+        {
+            // SAFETY: This stage owns the installed frame slot.
+            unsafe { shared.frame_stage(index, sampling::FrameStage::Spool) };
             let watch = collector_spool::slow_hours::SpoolWatch::start();
-            let watched_hour = unsafe { shared.frames[index].captured() }
-                .clock
-                .as_ref()
-                .map(|clock| clock.hour);
+            let watched_hour = unsafe {
+                // SAFETY: This is the runtime's frame pool for the current session.
+                shared.frames()[index].captured()
+            }
+            .clock
+            .as_ref()
+            .map(|clock| clock.hour);
             received = true;
             if collector_memory::terminal::failed() {
                 return Err("collector allocation failed");
             }
-            priority.follow_pipeline(
-                &shared.frame_priority,
-                collector_workers::frame_priority::Role::Spool,
-            );
+            // SAFETY: This owned worker updates its priority from its session's own pipeline.
+            unsafe {
+                priority.follow_pipeline(
+                    // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+                    shared.frame_priority(),
+                    collector_workers::frame_priority::Role::Spool,
+                )
+            };
             let span = phases.span(Phase::Receive);
             let elapsed = wait_completed_callback(
-                &shared.frames.slot(index).completed,
-                &shared.frames.slot(index).callback_tail,
+                &
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.slot(index).completed,
+                &
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.slot(index).callback_tail,
             )?;
-            let frame = unsafe { shared.frames[index].captured_mut() };
+            let frame = unsafe {
+                // SAFETY: This is the runtime's frame pool for the current session.
+                shared.frames()[index].captured_mut()
+            };
             frame.total_ns = shared.ns(elapsed);
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
                 campaign_id: frame
@@ -4346,7 +4553,10 @@ fn spool_loop(
                     .map(|clock| clock.play_session_started_at),
                 failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
-            if !shared.roster_ready.load(Ordering::Acquire) {
+            if !
+                // SAFETY: The spool checks readiness before taking this session's roster.
+                unsafe { shared.roster_ready() }.load(Ordering::Acquire)
+            {
                 startup_unknown = startup_unknown
                     .saturating_add(1)
                     .saturating_add(frame.dropped_before.unknown_count)
@@ -4357,15 +4567,21 @@ fn spool_loop(
                             .map(|loss| loss.count)
                             .sum::<u64>(),
                     );
-                shared.recycle_frame_prepared(index);
+                // SAFETY: This owner has finished with the installed slot and its helpers have
+                // joined.
+                unsafe { shared.recycle_frame_prepared(index) };
                 continue;
             }
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             let mut stalled = false;
-            while let Err(error) = processor.prepare(frame) {
+            while let Err(error) =
+                // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+                unsafe { processor.prepare(frame) }
+            {
                 if !stalled {
                     stalled = true;
-                    shared.spool_stalled(true);
+                    // SAFETY: This is the sole spool consumer reporting its own stall state.
+                    unsafe { shared.spool_stalled(true) };
                 }
                 collector_memory::terminal::observe(&error);
                 if collector_memory::terminal::failed() {
@@ -4373,7 +4589,10 @@ fn spool_loop(
                 }
                 if error.kind() == io::ErrorKind::InvalidData {
                     stop_recording.stop();
-                    let _ = processor.detach();
+                    let _ =
+                    // SAFETY: This spool's frame and command processing have finished before its
+                    // processor is closed.
+                    unsafe { processor.detach() };
                     return Err("campaign recording refused; observations remain unwritten");
                 }
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
@@ -4383,20 +4602,30 @@ fn spool_loop(
                         collector_status::status::status!({
                             "state":"campaign spool unavailable", "session":session.id,
                             "warning":last_warning, "drain_complete":false,
-                            "dropped_frames":shared.dropped.load(Ordering::Relaxed),
-                            "dropped_spool_stalled":shared.frames.stalled_drops(),
+                            "dropped_frames":
+                                // SAFETY: The spool or fixture reads the count maintained by its own capture.
+                                unsafe { shared.dropped() }.load(Ordering::Relaxed),
+                            "dropped_spool_stalled":
+                                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                                unsafe { shared.frames() }.stalled_drops(),
                         }),
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
-                if shared.stop_spool.load(Ordering::Acquire) {
+                if
+                // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
+                unsafe { shared.stop_spool() }.load(Ordering::Acquire) {
                     stop_recording.stop();
-                    let _ = processor.detach();
+                    let _ =
+                    // SAFETY: This spool's frame and command processing have finished before its
+                    // processor is closed.
+                    unsafe { processor.detach() };
                     return Err("cannot open campaign spool; observations remain unwritten");
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             if stalled {
-                shared.spool_stalled(false);
+                // SAFETY: This is the sole spool consumer reporting its own stall state.
+                unsafe { shared.spool_stalled(false) };
             }
             if startup_unknown != 0 {
                 processor.unknown_loss(std::mem::take(&mut startup_unknown));
@@ -4411,10 +4640,15 @@ fn spool_loop(
             }
             span.finish();
             processor.set_backlogged(shared.buffers_backlogged());
-            let pending_write = match processor.prepare_frame(frame) {
+            let pending_write = match
+            // SAFETY: This is the decoded frame held by its originating spool.
+            unsafe { processor.prepare_frame(frame) } {
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
                 Ok(prepared) => {
-                    if let Err(error) = processor.write_prepared(prepared) {
+                    if let Err(error) =
+                    // SAFETY: This spool submits the prepared frame to its originating processor
+                    // before teardown.
+                    unsafe { processor.write_prepared(prepared) } {
                         collector_equipment_destruction::equipment_destruction::lost_drain();
                         collector_naval_results::naval_result_sources::lost_drain();
                         collector_experience_gains::experience_gains::lost_drain();
@@ -4432,7 +4666,9 @@ fn spool_loop(
                     None
                 }
                 Err(error) => {
-                    frame.extended.discard_event_feed();
+                    // SAFETY: The spool settled this frame's event-feed handoff before returning
+                    // the slot.
+                    unsafe { frame.extended.discard_event_feed() };
                     collector_equipment_destruction::equipment_destruction::lost_drain();
                     collector_naval_results::naval_result_sources::lost_drain();
                     collector_experience_gains::experience_gains::lost_drain();
@@ -4454,13 +4690,14 @@ fn spool_loop(
                 return Err("collector allocation failed");
             }
             if processor.take_retry_full() {
-                shared.request_retry_full();
+                // SAFETY: The spool requests recovery after unpublished output in the current
+                // session.
+                unsafe { shared.request_retry_full() };
             }
             let unpublished = processor.take_unpublished_families();
             if unpublished != 0 {
-                shared
-                    .forget_families
-                    .fetch_or(unpublished, Ordering::Release);
+                // SAFETY: The sole spool requests forgetting only the families from a failed publication.
+                unsafe { shared.forget_families() }.fetch_or(unpublished, Ordering::Release);
             }
             if pending_write.is_none() {
                 collector_memory::terminal::attempted_hour(None);
@@ -4468,7 +4705,10 @@ fn spool_loop(
             sizing.sizing.recycle_frame(shared, index);
             span.finish();
             if let Some(prepared) = pending_write
-                && let Err(error) = processor.write_prepared(prepared)
+                && let Err(error) =
+                    // SAFETY: This spool submits the prepared frame to its originating processor
+                    // before teardown.
+                    unsafe { processor.write_prepared(prepared) }
             {
                 collector_equipment_destruction::equipment_destruction::lost_drain();
                 collector_naval_results::naval_result_sources::lost_drain();
@@ -4485,13 +4725,19 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
-            if let Err(error) = processor.flush_commands(false) {
+            if let Err(error) =
+                // SAFETY: The session's spool owns this command drain and detachment has quieted
+                // callbacks for the final drain.
+                unsafe { processor.flush_commands(false) }
+            {
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
             history_requests.poll(
                 &mut processor,
-                &shared.history_frames,
-                shared.frames.slots().map(|slot| &slot.fence),
+                // SAFETY: This is the same session's fence and the request is checked against its own slots.
+                unsafe { shared.history_frames() },
+                // SAFETY: This is the runtime's frame pool for the current session.
+                unsafe { shared.frames() }.slots().map(|slot| &slot.fence),
             );
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
@@ -4510,7 +4756,11 @@ fn spool_loop(
         if collector_memory::terminal::failed() {
             return Err("collector allocation failed");
         }
-        if let Err(error) = processor.flush() {
+        if let Err(error) =
+            // SAFETY: The originating spool flushes its own writer before releasing its observer
+            // state.
+            unsafe { processor.flush() }
+        {
             collector_equipment_destruction::equipment_destruction::lost_drain();
             collector_naval_results::naval_result_sources::lost_drain();
             collector_experience_gains::experience_gains::lost_drain();
@@ -4528,10 +4778,14 @@ fn spool_loop(
         span.finish();
         history_requests.poll(
             &mut processor,
-            &shared.history_frames,
-            shared.frames.slots().map(|slot| &slot.fence),
+            // SAFETY: This is the same session's fence and the request is checked against its own slots.
+            unsafe { shared.history_frames() },
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.slots().map(|slot| &slot.fence),
         );
-        if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
+        if reported.elapsed() >= Duration::from_secs(1) ||
+            // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
+            unsafe { shared.stop_spool() }.load(Ordering::Acquire)
         {
             let _span = phases.span(Phase::Status);
             collector_memory::terminal::attempted_hour(None);
@@ -4547,7 +4801,9 @@ fn spool_loop(
                 &processor,
                 shared,
                 &session,
-                if shared.recording.load(Ordering::Acquire) {
+                if
+                // SAFETY: The current runtime or its spool owns the session's terminal stop.
+                unsafe { shared.recording() }.load(Ordering::Acquire) {
                     "recording"
                 } else {
                     "detaching"
@@ -4573,15 +4829,24 @@ fn spool_loop(
         processor
             .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
             .map_err(|_| "spool slow-frame allocation failed")?;
-        if shared.stop_spool.load(Ordering::Acquire) {
-            if !shared.frames.ready_is_empty() {
+        if
+        // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
+        unsafe { shared.stop_spool() }.load(Ordering::Acquire) {
+            if !
+                // SAFETY: This is the runtime's frame pool for the current session.
+                unsafe { shared.frames() }.ready_is_empty()
+            {
                 continue;
             }
             let _teardown =
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Teardown);
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             collector_memory::terminal::attempted_hour(None);
-            let pending = unsafe { std::mem::take(&mut *shared.pending.get()) };
+            let pending = unsafe {
+                std::mem::take(&mut *
+                // SAFETY: Capture is quiescent before the spool takes pending losses. Tests use isolated state.
+                 shared.pending() .get())
+            };
             match processor.prepare_losses(&pending) {
                 Err(error) => add_terminal_error(
                     &mut drain_result,
@@ -4607,7 +4872,11 @@ fn spool_loop(
             if collector_memory::terminal::failed() {
                 return Err("collector allocation failed");
             }
-            if let Err(error) = processor.detach() {
+            if let Err(error) =
+                // SAFETY: This spool's frame and command processing have finished before its processor
+                // is closed.
+                unsafe { processor.detach() }
+            {
                 add_terminal_error(
                     &mut drain_result,
                     error_reason(error, "cannot finish spool detach"),
@@ -4644,7 +4913,9 @@ fn spool_loop(
                 directories,
             });
         }
-        if shared.frames.ready_is_empty() {
+        if
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.ready_is_empty() {
             let _span = phases.span(Phase::Wait);
             std::thread::park_timeout(SPOOL_IDLE_WAIT);
         }
@@ -4742,11 +5013,17 @@ struct SizingShared {
 
 impl SizingShared {
     fn new(shared: &Shared, capacities: BufferCapacities, state: Option<SizingState>) -> Self {
-        *shared.frame_capacities.lock() = capacities;
+        *
+            // SAFETY: These are the owned capacity snapshots for this session's frames.
+            unsafe { shared.frame_capacities() }.lock() = capacities;
         Self {
-            capacities: shared.frame_capacities.clone(),
+            capacities:
+                // SAFETY: These are the owned capacity snapshots for this session's frames.
+                unsafe { shared.frame_capacities() }.clone(),
             idle_growth_requested: AtomicBool::new(false),
-            country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
+            country_intel_accounted: AtomicUsize::new(
+                // SAFETY: Sizing and the test use only the home associated with these session frames.
+                unsafe { shared.country_intel() }.allocated_bytes()),
             template_home_accounted: AtomicUsize::new(0),
             naval_combat_home_accounted: AtomicUsize::new(0),
             pass_requested: AtomicBool::new(false),
@@ -4816,31 +5093,36 @@ impl SizingShared {
     fn account_homes(&self, shared: &Shared) {
         for (bytes, accounted) in [
             (
-                shared.country_intel.allocated_bytes(),
+                // SAFETY: Sizing and the test use only the home associated with these session frames.
+                unsafe { shared.country_intel() }.allocated_bytes(),
                 &self.country_intel_accounted,
             ),
             (
                 collector_division_templates::extended::division_templates::home_allocated_bytes(
-                    &shared.template_home,
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.template_home() },
                 ),
                 &self.template_home_accounted,
             ),
             (
                 collector_naval_details::naval_combat_sources::home_allocated_bytes(
-                    &shared.naval_combat_home,
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.naval_combat_home() },
                 ),
                 &self.naval_combat_home_accounted,
             ),
         ] {
             let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
-            shared
-                .pool_bytes
+
+            // SAFETY: The writer accounts memory to this same session and drains before it is released.
+            unsafe { shared.pool_bytes() }
                 .fetch_add(bytes.saturating_sub(previous) as u64, Ordering::Relaxed);
         }
     }
 
     fn recycle_frame(&self, shared: &Shared, index: usize) {
-        shared.frame_stage(index, sampling::FrameStage::Recycle);
+        // SAFETY: This stage owns the installed frame slot.
+        unsafe { shared.frame_stage(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
         if !collector_workers::tick_gate::game_ticking() {
             let live = unsafe { LiveMemory::new() };
@@ -4850,18 +5132,29 @@ impl SizingShared {
                 .presize(&live, shared.base);
         }
         let admitted = {
-            let frame = unsafe { shared.frames[index].captured() };
+            let frame = unsafe {
+                // SAFETY: This is the runtime's frame pool for the current session.
+                shared.frames()[index].captured()
+            };
             frame.clock.is_some().then_some(frame.world_generation)
         };
         loop {
             {
-                let frame = unsafe { shared.frames[index].captured_mut() };
-                proposal.grow_frame(frame);
+                let frame = unsafe {
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    shared.frames()[index].captured_mut()
+                };
+                // SAFETY: The sizing path owns this frame exclusively while the observer storage
+                // is live.
+                unsafe { proposal.grow_frame(frame) };
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
-                    shared.offer_country_cache(required_cells);
+                    // SAFETY: This is the sizing pass for the active session's cache.
+                    unsafe { shared.offer_country_cache(required_cells) };
                 }
             }
-            shared.prepare_frame_for_reuse(index);
+            // SAFETY: This owner has finished using the frame and no other stage or helper borrows
+            // it.
+            unsafe { shared.prepare_frame_for_reuse(index) };
             self.account_homes(shared);
             #[cfg(test)]
             if let Some(check) = lock(&self.before_recycle_publish).take() {
@@ -4870,14 +5163,18 @@ impl SizingShared {
             let mut capacities = self.capacities.lock();
             self.merge_capacities(&mut capacities, proposal);
             if *capacities == proposal {
-                let surplus = shared.recycle_frame_unfreed(index);
+                let surplus =
+                // SAFETY: This is the last owner of the installed slot and all other uses have
+                // ended.
+                unsafe { shared.recycle_frame_unfreed(index) };
                 if let Some(generation) = admitted
                     && collector_lifetime::world_lifetime::token() == Some(generation)
                 {
                     self.settled_world.store(generation, Ordering::Release);
                 }
                 drop(capacities);
-                shared.free_surplus(surplus);
+                // SAFETY: The frame was removed from its slot after every previous use ended.
+                unsafe { shared.free_surplus(surplus) };
                 return;
             }
             proposal = *capacities;
@@ -4926,9 +5223,12 @@ impl SizingThread {
                 .stack_size(BACKGROUND_STACK_BYTES)
                 .spawn(move || {
                     collector_workers::private_heap::off_hold_path();
-                    collector_workers::thread_cpu::register(
-                        collector_workers::thread_cpu::Role::FrameBuilder,
-                    );
+                    // SAFETY: Only the current session's designated thread registers this role.
+                    unsafe {
+                        collector_workers::thread_cpu::register(
+                            collector_workers::thread_cpu::Role::FrameBuilder,
+                        )
+                    };
                     frame_builder(&shared, &sizing);
                 })
                 .ok()
@@ -4939,9 +5239,12 @@ impl SizingThread {
             .stack_size(BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                collector_workers::thread_cpu::register(
-                    collector_workers::thread_cpu::Role::SpoolSizing,
-                );
+                // SAFETY: Only the current session's designated thread registers this role.
+                unsafe {
+                    collector_workers::thread_cpu::register(
+                        collector_workers::thread_cpu::Role::SpoolSizing,
+                    )
+                };
                 sizing_loop(&shared, &worker);
             })
             .ok();
@@ -5029,7 +5332,8 @@ impl Drop for SizingThread {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
         if self.thread.is_some() {
-            collector_workers::worker_sampler_state::stop_before_thread_exit();
+            // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+            unsafe { collector_workers::worker_sampler_state::stop_before_thread_exit() };
         }
         self.sizing.stop.store(true, Ordering::Release);
         for thread in [self.thread.take(), self.builder.take()]
@@ -5052,14 +5356,19 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
-    let mut priority = OwnPriority::frame_pipeline();
-    let built = shared.build_ahead_until(&sizing.stop, || {
+    let mut priority =
+    // SAFETY: This is the dedicated worker applying its own session's priority policy.
+    unsafe { OwnPriority::frame_pipeline() };
+    let built =
+    // SAFETY: This is the session's designated builder, which the runtime joins before releasing
+    // Shared.
+    unsafe { shared.build_ahead_until(&sizing.stop, || {
         priority.follow_pipeline(
-            &shared.frame_priority,
+            shared.frame_priority(),
             collector_workers::frame_priority::Role::Builder,
-        );
+        ) ;
         collector_memory::terminal::set_context(*lock(&sizing.context));
-    });
+    }) };
     if let Err(error) = built {
         let _ = sizing
             .failure
@@ -5070,23 +5379,34 @@ fn frame_builder(shared: &Shared, sizing: &SizingShared) {
 
 fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+    // SAFETY: This runtime-owned worker keeps the guard until it exits.
+    let _sampler_exit = unsafe { collector_workers::thread_cpu::StopOnThreadExit::new() };
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let Some(mut state) = lock(&sizing.state).take() else {
         return;
     };
     let phases = &collector_workers::spool_phases::SIZING;
-    let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(
-        &shared.frame_priority,
-        collector_workers::frame_priority::Role::Sizing,
-    );
+    let mut priority =
+    // SAFETY: This is the dedicated worker applying its own session's priority policy.
+    unsafe { OwnPriority::frame_pipeline() };
+    // SAFETY: This owned worker updates its priority from its session's own pipeline.
+    unsafe {
+        priority.follow_pipeline(
+            // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+            shared.frame_priority(),
+            collector_workers::frame_priority::Role::Sizing,
+        )
+    };
     let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !collector_memory::terminal::failed() {
-        priority.follow_pipeline(
-            &shared.frame_priority,
-            collector_workers::frame_priority::Role::Sizing,
-        );
+        // SAFETY: This owned worker updates its priority from its session's own pipeline.
+        unsafe {
+            priority.follow_pipeline(
+                // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+                shared.frame_priority(),
+                collector_workers::frame_priority::Role::Sizing,
+            )
+        };
         collector_memory::terminal::set_context(*lock(&sizing.context));
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
@@ -5232,7 +5552,8 @@ fn sizing_pass(
     });
     let operations =
         sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-    operations.prepare();
+    // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+    unsafe { operations.prepare() };
     collector_experience_gains::experience_gains::prepare(registry.slots);
     collector_output::line_output::collect();
     collector_output::construction_ic::collect();
@@ -5244,13 +5565,16 @@ fn sizing_pass(
             &live,
             base,
             registry.slots,
-            shared.frames.live(),
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.live(),
         ) {
             collector_politics::politics_changes::resize(entries, 0);
         }
         collector_fuel_awards::fuel_awards::presize(&live, base);
     }
-    let frames = shared.frames.live().max(sampling::BUFFERS);
+    let frames =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.live().max(sampling::BUFFERS);
     if frames > state.politics_frames
         && let Some(entries) = collector_capture::country_scale::observe_politics_demand(
             &live,
@@ -5326,7 +5650,8 @@ fn sizing_pass(
             }
         });
         if changed {
-            decode::presize_weather_jobs();
+            // SAFETY: This session's sizing owner is preparing live decode pools before teardown.
+            unsafe { decode::presize_weather_jobs() };
         }
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
@@ -5337,7 +5662,8 @@ fn sizing_pass(
                 &live,
                 base,
                 slots,
-                shared.frames.live(),
+                // SAFETY: This is the runtime's frame pool for the current session.
+                unsafe { shared.frames() }.live(),
             )
             .unwrap_or(slots),
             sizing
@@ -5350,7 +5676,8 @@ fn sizing_pass(
         collector_air_relations::relation_changes::presize(slots);
         collector_observers::world_input_changes::presize(slots);
         collector_air_histories::history_changes::presize(slots, regions);
-        decode::presize_country_pools();
+        // SAFETY: This session's sizing owner is preparing live decode pools before teardown.
+        unsafe { decode::presize_country_pools() };
         let country_cells = sizing.raise(shared, |capacities| {
             let mut raised = collector_capture::country_scale::Sizing {
                 core: capacities.core,
@@ -5366,7 +5693,8 @@ fn sizing_pass(
             capacities.extended = raised.extended;
             raised.country_cells
         });
-        shared.offer_country_cache(country_cells);
+        // SAFETY: This is the sizing pass for the active session's cache.
+        unsafe { shared.offer_country_cache(country_cells) };
     }
     if once_a_second {
         if let Err(reason) = collector_output::construction_ic::presize_from_live(&live, base) {
@@ -5405,18 +5733,25 @@ fn sizing_pass(
         }
         sizing.raise_from_live_observation(shared, |capacities| {
             [
-                collector_capture::country_scale::table_demand::presize_periodic(
-                    &live,
-                    base,
-                    &mut capacities.map,
-                    &mut capacities.extended,
-                    capacity_census,
-                )
+                // SAFETY: The serialized sizing pass owns the observer storage and excludes
+                // teardown.
+                unsafe {
+                    collector_capture::country_scale::table_demand::presize_periodic(
+                        &live,
+                        base,
+                        &mut capacities.map,
+                        &mut capacities.extended,
+                        capacity_census,
+                    )
+                }
                 .err(),
-                capacities
-                    .extended
-                    .presize_live_inputs_periodic(&live, base, capacity_census)
-                    .err(),
+                // SAFETY: This is the session's sizing pass, with its observer storage still live.
+                unsafe {
+                    capacities
+                        .extended
+                        .presize_live_inputs_periodic(&live, base, capacity_census)
+                }
+                .err(),
             ]
         });
         if collector_lifetime::world_lifetime::token().is_some() {
@@ -5449,9 +5784,11 @@ fn sizing_pass(
             .flatten()
     {
         collector_air::sizing::note_air_wing_name_bytes(bytes);
-        decode::presize_air_wing_names();
+        // SAFETY: This session's sizing owner is preparing live decode pools before teardown.
+        unsafe { decode::presize_air_wing_names() };
         sizing.raise(shared, |capacities| {
-            capacities.map.raise_for_air_wing_names(bytes)
+            // SAFETY: The sizing pass uses this session's measured name demand.
+            unsafe { capacities.map.raise_for_air_wing_names(bytes) }
         });
     }
     if capacity_census
@@ -5468,7 +5805,8 @@ fn sizing_pass(
         if let Ok(carrier) = demand.carrier
             && collector_air::sizing::note_carrier_demand(carrier)
         {
-            decode::presize_country_pools();
+            // SAFETY: This session's sizing owner is preparing live decode pools before teardown.
+            unsafe { decode::presize_country_pools() };
         }
         for reason in demand.map_refusals() {
             sizing.error(reason);
@@ -5536,7 +5874,8 @@ fn sizing_pass(
         if sizing.raise(shared, |capacities| {
             capacities.extended.game_score.raise(demand)
         }) {
-            decode::presize_country_pools();
+            // SAFETY: This session's sizing owner is preparing live decode pools before teardown.
+            unsafe { decode::presize_country_pools() };
         }
     }
     if capacity_census
@@ -5579,7 +5918,8 @@ fn sizing_pass(
         });
         let operations =
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-        operations.prepare();
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { operations.prepare() };
     }
     if capacity_census
         && let Some(slots) = sizing
@@ -5746,7 +6086,10 @@ mod tests {
 
     #[test]
     fn a_slow_spool_s_backlog_is_in_the_status_and_clears_when_it_catches_up() {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let status = |shared: &Shared| serde_json::to_value(acquisition_work(shared)).unwrap();
         let steady = collector_capture::frame_pool::STEADY as u64;
         let quiet = status(&shared);
@@ -5759,8 +6102,13 @@ mod tests {
         let hours = 2 * collector_capture::frame_pool::STEADY + 1;
         let taken: Vec<_> = (0..hours)
             .map(|_| {
-                let index = shared.take_frame(&mut 0).unwrap();
-                shared.frames.push_decode(index);
+                let index =
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.take_frame(&mut 0) }.unwrap();
+
+                // SAFETY: The producer owns this slot and its initialized decode job.
+                unsafe { shared.frames().push_decode(index) };
                 index
             })
             .collect();
@@ -5771,28 +6119,42 @@ mod tests {
         assert_eq!(behind["frames"]["grown"], hours as u64 - steady);
         let bytes: u64 = taken
             .iter()
-            .map(|&index| shared.frames.slot(index).bytes.load(Ordering::Relaxed))
+            .map(|&index|
+                // SAFETY: This is the runtime's frame pool for the current session.
+                unsafe { shared.frames() }.slot(index).bytes.load(Ordering::Relaxed))
             .sum();
         assert!(bytes > 0);
         assert_eq!(behind["frames"]["in_flight_bytes"], bytes);
         assert_eq!(behind["frames"]["live_bytes"], bytes);
         assert_eq!(behind["frames"]["built_ahead"], 0);
         for _ in 0..collector_capture::frame_pool::AHEAD {
-            shared.build_frame_ahead().unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.build_frame_ahead() }.unwrap();
         }
         let ahead = status(&shared);
         let built = collector_capture::frame_pool::AHEAD as u64;
         assert_eq!(ahead["frames"]["built_ahead"], built);
         assert_eq!(ahead["frames"]["ahead_ready"], built);
         assert_eq!(ahead["frames"]["free"], built);
-        let index = shared.take_frame(&mut 0).unwrap();
-        shared.frames.push_decode(index);
+        let index =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
+
+        // SAFETY: The producer owns this slot and its initialized decode job.
+        unsafe { shared.frames().push_decode(index) };
         let taken_ahead = status(&shared);
         assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
         assert_eq!(taken_ahead["frames"]["ahead_ready"], built - 1);
         assert_eq!(taken_ahead["frames"]["grown"], hours as u64 - steady);
-        while let Some(index) = shared.frames.pop_decode() {
-            shared.recycle_frame(index);
+        while let Some(index) =
+            // SAFETY: The sole decode consumer owns this queue and takes responsibility for the
+            // slot.
+            unsafe { shared.frames().pop_decode() }
+        {
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame(index) };
         }
         let caught_up = status(&shared);
         assert_eq!(caught_up["frames"]["in_flight"], 0);
@@ -5805,14 +6167,21 @@ mod tests {
 
     #[test]
     fn a_stalled_spool_drops_hours_instead_of_growing_frames() {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let frames = |shared: &Shared| {
             serde_json::to_value(acquisition_work(shared)).unwrap()["frames"].clone()
         };
         let steady = collector_capture::frame_pool::STEADY;
-        shared.spool_stalled(true);
+        // SAFETY: This is the sole spool consumer reporting its own stall state.
+        unsafe { shared.spool_stalled(true) };
         let taken: Vec<_> = (0..2 * steady + 1)
-            .map(|_| shared.take_frame(&mut 0))
+            .map(|_|
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.take_frame(&mut 0) })
             .collect();
         assert!(
             taken[..steady].iter().all(Option::is_some),
@@ -5830,8 +6199,12 @@ mod tests {
         assert_eq!(stalled["grown"], 0);
         assert_eq!(stalled["built_ahead"], 0);
         assert_eq!(stalled["dropped_spool_stalled"], steady as u64 + 1);
-        shared.spool_stalled(false);
-        assert!(shared.take_frame(&mut 0).is_some());
+        // SAFETY: This is the sole spool consumer reporting its own stall state.
+        unsafe { shared.spool_stalled(false) };
+        assert!(
+            // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+            unsafe { shared.take_frame(&mut 0) }.is_some()
+        );
         let resumed = frames(&shared);
         assert_eq!(resumed["grown"], 1);
         assert_eq!(resumed["dropped_spool_stalled"], steady as u64 + 1);
@@ -5839,28 +6212,42 @@ mod tests {
 
     #[test]
     fn an_hour_building_its_own_frame_never_waits_on_the_held_frame_capacities() {
-        let shared = Arc::new(Shared::new(0, 0, collector_test_support::qpc_frequency()));
+        let shared = Arc::new(
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Shared::new(0, 0, collector_test_support::qpc_frequency()) },
+        );
         for _ in 0..collector_capture::frame_pool::STEADY {
-            shared.take_frame(&mut 0).unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.take_frame(&mut 0) }.unwrap();
         }
-        let before = shared.frame_capacities.published();
-        let mut held = shared.frame_capacities.lock();
+        let before =
+            // SAFETY: These are the owned capacity snapshots for this session's frames.
+            unsafe { shared.frame_capacities() }.published();
+        let mut held =
+            // SAFETY: These are the owned capacity snapshots for this session's frames.
+            unsafe { shared.frame_capacities() }.lock();
         held.core[5] += 8;
         let hour = {
             let shared = Arc::clone(&shared);
             std::thread::spawn(move || {
                 let mut grow_ns = 0;
-                shared.take_frame(&mut grow_ns).map(|_| grow_ns)
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.take_frame(&mut grow_ns) }.map(|_| grow_ns)
             })
         };
         let grow_ns = hour.join().unwrap().expect("the hour's own frame");
         assert!(
-            shared.frame_capacities.published() == before,
+            // SAFETY: This fixture reads the published capacities for its own frame pool.
+            unsafe { shared.frame_capacities() }.published() == before,
             "a change still held is not read"
         );
         drop(held);
         assert_eq!(
-            shared.frame_capacities.published().core[5],
+            // SAFETY: This fixture reads the published capacities for its own frame pool.
+            unsafe { shared.frame_capacities() }.published().core[5],
             before.core[5] + 8
         );
         assert!(grow_ns > 0, "an hour with no free frame builds its own");
@@ -5905,7 +6292,9 @@ mod tests {
             assert!(acks.is_empty());
             assert!(requests.pending.is_some());
         }
-        receipt.complete(Ok(()));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { receipt.complete(Ok(())) };
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["original ok"]);
         assert!(requests.pending.is_none());
@@ -5927,7 +6316,9 @@ mod tests {
             }),
             &mut acks,
         );
-        receipt.complete(Err(io::ErrorKind::WriteZero));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { receipt.complete(Err(io::ErrorKind::WriteZero)) };
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["failed refused its segment could not be closed"]);
         assert!(requests.pending.is_none());
@@ -5954,7 +6345,9 @@ mod tests {
             &mut acks,
         );
         assert!(acks.is_empty());
-        receipt.complete(Ok(()));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { receipt.complete(Ok(())) };
         poll_history_reply(
             &mut requests,
             Some("same close campaign 42"),
@@ -5988,7 +6381,9 @@ mod tests {
                     &mut acks,
                 );
                 if complete_before_retake {
-                    receipt.complete(result);
+                    // SAFETY: This is the close result from its originating writer, or an isolated
+                    // receipt owned by the fixture.
+                    unsafe { receipt.complete(result) };
                 }
                 poll_history_reply(
                     &mut requests,
@@ -5998,7 +6393,9 @@ mod tests {
                 );
                 assert_eq!(acks, ["new ok"]);
                 if !complete_before_retake {
-                    receipt.complete(result);
+                    // SAFETY: This is the close result from its originating writer, or an isolated
+                    // receipt owned by the fixture.
+                    unsafe { receipt.complete(result) };
                 }
                 poll_history_reply(&mut requests, None, None, &mut acks);
                 assert_eq!(acks, ["new ok"]);
@@ -6025,10 +6422,14 @@ mod tests {
                 &mut acks,
             );
         }
-        old.complete(Ok(()));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { old.complete(Ok(())) };
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert!(acks.is_empty());
-        new.complete(Ok(()));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { new.complete(Ok(())) };
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["new ok"]);
     }
@@ -6048,7 +6449,9 @@ mod tests {
                 }),
                 &mut acks,
             );
-            receipt.complete(result);
+            // SAFETY: This is the close result from its originating writer, or an isolated receipt
+            // owned by the fixture.
+            unsafe { receipt.complete(result) };
             let expected = if result.is_ok() {
                 "old ok"
             } else {
@@ -6097,7 +6500,9 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        receipt.complete(Ok(()));
+        // SAFETY: This is the close result from its originating writer, or an isolated receipt
+        // owned by the fixture.
+        unsafe { receipt.complete(Ok(())) };
         poll_history_reply(&mut requests, Some("new retake campaign"), None, &mut acks);
         assert_eq!(acks, ["new ok"]);
         assert!(requests.pending.is_none());
@@ -6610,7 +7015,10 @@ mod tests {
 
     fn sizing_fixture() -> (Shared, SizingThread) {
         let sizing = collector_capture::country_scale::Sizing::for_slots(0);
-        let shared = Shared::with_sizing(0, 0, 1, &sizing).unwrap();
+        let shared =
+        // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
+        // boundary or detach.
+        unsafe { Shared::with_sizing(0, 0, 1, &sizing) }.unwrap();
         let capacities = BufferCapacities {
             core: sizing.core,
             map: sizing.map,
@@ -6647,7 +7055,9 @@ mod tests {
     fn the_spool_records_sizing_observations_once_and_ends_on_a_sizing_failure() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-handoff-{}", std::process::id()));
-        let mut processor = collector_spool::spooling::spool_failure_fixture(&directory).unwrap();
+        let mut processor =
+        // SAFETY: The isolated test owns the spool's failure state.
+        unsafe { collector_spool::spooling::spool_failure_fixture(&directory) }.unwrap();
         let (shared, sizing) = sizing_fixture();
         sizing.sizing.error("first sizing refusal");
         sizing.sizing.error("second sizing refusal");
@@ -6672,7 +7082,9 @@ mod tests {
     fn only_a_spool_pass_that_received_an_hour_requests_sizing() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-request-{}", std::process::id()));
-        let mut processor = collector_spool::spooling::spool_failure_fixture(&directory).unwrap();
+        let mut processor =
+        // SAFETY: The isolated test owns the spool's failure state.
+        unsafe { collector_spool::spooling::spool_failure_fixture(&directory) }.unwrap();
         let (shared, mut sizing) = sizing_fixture();
         sizing.thread = Some(std::thread::spawn(std::thread::park));
         sizing.spool_pass(&shared, &mut processor, false).unwrap();
@@ -6706,13 +7118,24 @@ mod tests {
         let capacities = *sizing.capacities.lock();
         assert!(capacities.extended.naval_result_sources >= 64);
         assert!(capacities.extended.equipment_destruction >= 64);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
     }
 
     fn assert_idle_war_and_faction_capacities(shared: &Shared, sizing: &SizingShared) {
         let capacities = *sizing.capacities.lock();
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
-        for slot in shared.frames.slots() {
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
+        for slot in
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.slots()
+        {
             let frame = unsafe { slot.captured() };
             assert!(frame.wars.len() >= capacities.core[5]);
             assert!(frame.factions.len() >= capacities.core[6]);
@@ -6790,11 +7213,16 @@ mod tests {
         let _demand = collector_equipment_destruction::equipment_destruction::tests::fresh_demand();
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let returning = shared.take_frame(&mut 0).unwrap();
+        let returning =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let factions = initial.core[6] + 8;
-        let frame = unsafe { shared.frames[returning].captured_mut() };
+        let frame = unsafe {
+            // SAFETY: This is the runtime's frame pool for the current session.
+            shared.frames()[returning].captured_mut()
+        };
         frame.wars_result = engine_native::walk::Outcome::Truncated {
             len: 0,
             unread_rows: wars as u32,
@@ -6807,8 +7235,15 @@ mod tests {
         let check_seen = Arc::clone(&checked);
         *lock(&sizing.before_recycle_publish) = Some(Box::new(move |sizing, shared| {
             assert!(sizing.capacities.try_lock().is_some());
-            assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
-            let frame = unsafe { shared.frames[returning].captured() };
+            assert_eq!(
+                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                unsafe { shared.frames() }.len(),
+                sampling::BUFFERS - 1
+            );
+            let frame = unsafe {
+                // SAFETY: This is the runtime's frame pool for the current session.
+                shared.frames()[returning].captured()
+            };
             assert!(frame.wars.len() >= wars);
             let grown_wars = frame.wars.len();
             std::thread::scope(|scope| {
@@ -6832,17 +7267,24 @@ mod tests {
         assert!(capacities.core[5] > wars);
         assert!(capacities.core[6] >= factions);
         assert_eq!(capacities.extended.equipment_destruction, 24);
-        let free: [_; sampling::BUFFERS] = std::array::from_fn(|_| shared.frames.pop().unwrap());
+        let free: [_; sampling::BUFFERS] = std::array::from_fn(|_|
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe {  shared.frames() .pop() }.unwrap());
         assert!(free.contains(&returning));
         for index in free {
-            let frame = unsafe { shared.frames[index].captured() };
+            let frame = unsafe {
+                // SAFETY: This is the runtime's frame pool for the current session.
+                shared.frames()[index].captured()
+            };
             if index == returning {
                 assert!(frame.wars.len() >= capacities.core[5]);
                 assert!(frame.factions.len() >= capacities.core[6]);
             } else {
                 assert!(frame.wars.len() < wars);
             }
-            shared.recycle_frame(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame(index) };
         }
         sizing.grow_idle(&shared);
         assert_idle_war_and_faction_capacities(&shared, sizing);
@@ -6853,11 +7295,17 @@ mod tests {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let held: [_; sampling::BUFFERS - collector_capture::frame_pool::AHEAD] =
-            std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+            std::array::from_fn(|_|
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.take_frame(&mut 0) }.unwrap());
         let idle: Vec<_> = (0..sampling::BUFFERS)
             .filter(|index| !held.contains(index))
             .collect();
-        let frame = |index: usize| unsafe { shared.frames[index].captured() };
+        let frame = |index: usize| unsafe {
+            // SAFETY: This is the runtime's frame pool for the current session.
+            shared.frames()[index].captured()
+        };
         let bytes = || {
             idle.iter()
                 .map(|&index| frame(index).allocated_bytes())
@@ -6870,15 +7318,26 @@ mod tests {
             panic!("sizing leased the game's next frame or its spare for growth");
         }));
         let pool_before = shared.pool_owned();
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            collector_capture::frame_pool::AHEAD
+        );
         sizing.grow_idle(&shared);
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            collector_capture::frame_pool::AHEAD
+        );
         assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(bytes(), before);
         let mut taken: Vec<_> = (0..collector_capture::frame_pool::AHEAD)
             .map(|_| {
                 let mut wait = u64::MAX;
-                let index = shared.take_frame(&mut wait).unwrap();
+                let index =
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.take_frame(&mut wait) }.unwrap();
                 assert_eq!(wait, 0);
                 index
             })
@@ -6890,9 +7349,15 @@ mod tests {
             assert!(frame(index).wars.len() >= wars);
         }
         for index in held {
-            shared.recycle_frame_prepared(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame_prepared(index) };
         }
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
     }
 
     #[test]
@@ -6911,7 +7376,9 @@ mod tests {
         }));
         let (built, spare) = mpsc::channel::<()>();
         let built = Mutex::new(built);
-        let installed = shared.build_ahead_seam.set(Box::new(move |at| {
+        let installed =
+            // SAFETY: This is the test's fixture and its builder has not started.
+            unsafe { shared.build_ahead_seam_for_test() }.set(Box::new(move |at| {
             if at == sampling::BuildAhead::Free {
                 let _ = built.lock().unwrap().send(());
             }
@@ -6919,7 +7386,13 @@ mod tests {
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || {
+                format!(
+                    "{:?}",
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { watching.0.frames() }.gauge()
+                )
+            },
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &*thread.sizing;
@@ -6952,13 +7425,26 @@ mod tests {
                 pass_entered
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("the pass never leased an idle frame"));
-                assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
+                assert_eq!(
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { shared.frames() }.len(),
+                    sampling::BUFFERS - 1
+                );
                 let held: Vec<_> = (0..sampling::BUFFERS - 2)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut grow_ns = u64::MAX;
-                        let index = shared.take_frame(&mut grow_ns).unwrap();
-                        assert_eq!(grow_ns, 0, "hour {hour}: {:?}", shared.frames.gauge());
+                        let index =
+                        // SAFETY: This fixture owns its frame and worker state and runs without a
+                        // live attachment.
+                        unsafe { shared.take_frame(&mut grow_ns) }.unwrap();
+                        assert_eq!(
+                            grow_ns,
+                            0,
+                            "hour {hour}: {:?}",
+                            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                            unsafe { shared.frames() }.gauge()
+                        );
                         index
                     })
                     .collect();
@@ -6966,13 +7452,19 @@ mod tests {
                 spare
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| {
-                        panic!("the spare waited for the pass: {:?}", shared.frames.gauge())
+                        panic!(
+                            "the spare waited for the pass: {:?}",
+                            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                            unsafe { shared.frames() }.gauge()
+                        )
                     });
                 assert!(
                     !pass.is_finished(),
                     "the pass ended before the spare was built"
                 );
-                let gauge = shared.frames.gauge();
+                let gauge =
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.gauge();
                 assert_eq!((gauge.grown, gauge.built_ahead), (0, 1), "{gauge:?}");
                 drop(end);
                 steps.at("the pass, released, and the builder, stopped");
@@ -6980,9 +7472,13 @@ mod tests {
                 builder.end(|| "the frame builder, stopped,".into());
                 assert!(thread.sizing.failure.get().is_none());
                 for index in held {
-                    shared.recycle_frame_prepared(index);
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { shared.recycle_frame_prepared(index) };
                 }
-                let gauge = shared.frames.gauge();
+                let gauge =
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
                     (sampling::BUFFERS, sampling::BUFFERS, 0, 1),
@@ -6997,20 +7493,32 @@ mod tests {
         let fixture = Arc::new(sizing_fixture());
         let (shared, thread) = &*fixture;
         let sizing = &thread.sizing;
-        let returning = shared.take_frame(&mut 0).unwrap();
+        let returning =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let wars = sizing.capacities.lock().core[5] + 8;
         sizing.raise(shared, |capacities| capacities.core[5] = wars);
         let (leased, lease_seen) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel::<()>();
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(move |sizing, shared| {
             assert!(sizing.capacities.try_lock().is_some());
-            assert_eq!(shared.frames.len(), sampling::BUFFERS - 2);
+            assert_eq!(
+                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                unsafe { shared.frames() }.len(),
+                sampling::BUFFERS - 2
+            );
             leased.send(()).unwrap();
             let _ = resume.recv_timeout(collector_test_support::TEST_HANG_GUARD);
         }));
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || {
+                format!(
+                    "{:?}",
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { watching.0.frames() }.gauge()
+                )
+            },
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &thread.sizing;
@@ -7029,25 +7537,43 @@ mod tests {
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut wait = u64::MAX;
-                        let index = shared.take_frame(&mut wait).unwrap();
+                        let index =
+                        // SAFETY: This fixture owns its frame and worker state and runs without a
+                        // live attachment.
+                        unsafe { shared.take_frame(&mut wait) }.unwrap();
                         assert_eq!(wait, 0);
                         index
                     })
                     .collect();
-                assert_eq!(shared.frames.len(), 0);
+                assert_eq!(
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { shared.frames() }.len(),
+                    0
+                );
                 steps.at("the spool recycling while idle growth is held");
                 sizing.recycle_frame(shared, returning);
                 steps.at("the game reusing the recycled frame");
                 let mut wait = u64::MAX;
-                assert_eq!(shared.take_frame(&mut wait), Some(returning));
+                assert_eq!(
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { shared.take_frame(&mut wait) },
+                    Some(returning)
+                );
                 assert_eq!(wait, 0);
                 drop(release);
                 steps.at("idle growth, released");
                 worker.end(|| "idle growth, released,".into());
                 for index in others.into_iter().chain(Some(returning)) {
-                    shared.recycle_frame_prepared(index);
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { shared.recycle_frame_prepared(index) };
                 }
-                assert_eq!(shared.frames.len(), sampling::BUFFERS);
+                assert_eq!(
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { shared.frames() }.len(),
+                    sampling::BUFFERS
+                );
             },
         );
     }
@@ -7061,7 +7587,9 @@ mod tests {
         let (freeing, free_held) = mpsc::channel::<()>();
         let (release, released) = mpsc::channel::<()>();
         let released = Mutex::new(released);
-        let installed = fixture.0.surplus_free_seam.set(Box::new(move || {
+        let installed =
+            // SAFETY: This is the test's fixture and no fixture frame is being recycled.
+            unsafe { fixture.0.surplus_free_seam() }.set(Box::new(move || {
             let _ = freeing.send(());
             let _ = released
                 .lock()
@@ -7071,16 +7599,28 @@ mod tests {
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || {
+                format!(
+                    "{:?}",
+                    // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                    unsafe { watching.0.frames() }.gauge()
+                )
+            },
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let release = release;
                 let mut taken: Vec<_> = (0..=BUFFERS)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
-                        shared
-                            .take_frame(&mut 0)
-                            .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
+                        // SAFETY: This fixture owns its frame and worker state and runs without a
+                        // live attachment.
+                        unsafe { shared.take_frame(&mut 0) }.unwrap_or_else(|| {
+                            panic!(
+                                "hour {hour}: {:?}",
+                                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                                unsafe { shared.frames() }.gauge()
+                            )
+                        })
                     })
                     .collect();
                 for _ in 0..=AHEAD {
@@ -7088,7 +7628,9 @@ mod tests {
                     steps.at(format_args!("the spool returning frame {index}"));
                     thread.sizing.recycle_frame(shared, index);
                 }
-                let gauge = shared.frames.gauge();
+                let gauge =
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.grown),
                     (BUFFERS + 1, AHEAD + 1, 1),
@@ -7107,7 +7649,8 @@ mod tests {
                     .unwrap_or_else(|_| {
                         panic!(
                             "the spool never freed a surplus frame: {:?}",
-                            shared.frames.gauge()
+                            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                            unsafe { shared.frames() }.gauge()
                         )
                     });
                 let hours = AHEAD + 2;
@@ -7117,7 +7660,12 @@ mod tests {
                         (0..hours)
                             .map(|_| {
                                 let mut grow_ns = u64::MAX;
-                                (fixture.0.take_frame(&mut grow_ns), grow_ns)
+                                (
+                                    // SAFETY: This fixture owns its frame and worker state and runs
+                                    // without a live attachment.
+                                    unsafe { fixture.0.take_frame(&mut grow_ns) },
+                                    grow_ns,
+                                )
                             })
                             .collect::<Vec<_>>()
                     })
@@ -7126,7 +7674,8 @@ mod tests {
                 let hours_taken = game.end(|| {
                     format!(
                         "the hours, while the spool freed a surplus frame, ({:?})",
-                        shared.frames.gauge()
+                        // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                        unsafe { shared.frames() }.gauge()
                     )
                 });
                 assert!(
@@ -7134,7 +7683,12 @@ mod tests {
                     "the spool's free ended before the hours did"
                 );
                 for (hour, &(index, grow_ns)) in hours_taken.iter().enumerate() {
-                    assert!(index.is_some(), "hour {hour}: {:?}", shared.frames.gauge());
+                    assert!(
+                        index.is_some(),
+                        "hour {hour}: {:?}",
+                        // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                        unsafe { shared.frames() }.gauge()
+                    );
                     assert_eq!(
                         grow_ns > 0,
                         hour == hours - 1,
@@ -7146,9 +7700,13 @@ mod tests {
                 spool.end(|| "the spool's free, released,".into());
                 let hours_held = hours_taken.into_iter().flat_map(|(index, _)| index);
                 for index in taken.into_iter().chain(hours_held) {
-                    shared.recycle_frame(index);
+                    // SAFETY: This fixture owns its frame and worker state and runs without a live
+                    // attachment.
+                    unsafe { shared.recycle_frame(index) };
                 }
-                let gauge = shared.frames.gauge();
+                let gauge =
+                    // SAFETY: This is the runtime's frame pool for the current session.
+                    unsafe { shared.frames() }.gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
                     (BUFFERS, BUFFERS, 0, 2),
@@ -7163,18 +7721,27 @@ mod tests {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let allocated_bytes = || {
-            shared
-                .frames
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
-                + shared.country_intel.allocated_bytes()
+                +
+                    // SAFETY: Sizing and the test use only the home associated with these session frames.
+                    unsafe { shared.country_intel() }.allocated_bytes()
         };
         let allocated_before = allocated_bytes();
         let pool_before = shared.pool_owned();
-        let shared_before = shared.country_intel.allocated_bytes();
-        let returning = shared.take_frame(&mut 0).unwrap();
-        let frame = unsafe { shared.frames[returning].captured() };
+        let shared_before =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes();
+        let returning =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
+        let frame = unsafe {
+            // SAFETY: This is the runtime's frame pool for the current session.
+            shared.frames()[returning].captured()
+        };
         let before_frame_bytes = frame.allocated_bytes();
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
@@ -7185,9 +7752,15 @@ mod tests {
             capacities.extended.raise_for_country_intel(intel_rows);
         });
         sizing.grow_idle(&shared);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS - 1
+        );
         assert_eq!(frame.allocated_bytes(), before_frame_bytes);
-        let shared_after_idle = shared.country_intel.allocated_bytes();
+        let shared_after_idle =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes();
         assert!(shared_after_idle > shared_before);
         let allocated_after_idle = allocated_bytes();
         assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
@@ -7198,7 +7771,11 @@ mod tests {
         );
 
         sizing.recycle_frame(&shared, returning);
-        assert_eq!(shared.country_intel.allocated_bytes(), shared_after_idle);
+        assert_eq!(
+            // SAFETY: This fixture reads the home associated with its own frame pool.
+            unsafe { shared.country_intel() }.allocated_bytes(),
+            shared_after_idle
+        );
         let allocated_after_return = allocated_bytes();
         assert!(allocated_after_return > allocated_after_idle);
         let pool_after_return = shared.pool_owned();
@@ -7217,13 +7794,22 @@ mod tests {
     fn concurrent_frame_accounting_charges_shared_country_intel_growth_once() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        let held: [_; 2] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
-        let before = shared.country_intel.allocated_bytes();
+        let held: [_; 2] = std::array::from_fn(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap());
+        let before =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes();
         let pool_before = shared.pool_owned();
         let mut rows = sizing.capacities.lock().extended.intel.rows[15] + 8;
-        let mut loan = collector_intel::daily_intel::Loan::new(shared.country_intel.clone());
+        let mut loan = collector_intel::daily_intel::Loan::new(
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.clone(),
+        );
         loan.grow(&mut rows);
-        let added = shared.country_intel.allocated_bytes() - before;
+        let added =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes() - before;
         assert!(added > 0);
         std::thread::scope(|scope| {
             for _ in held {
@@ -7233,7 +7819,9 @@ mod tests {
         });
         assert_eq!(shared.pool_owned() - pool_before, added as u64);
         for index in held {
-            shared.recycle_frame_prepared(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame_prepared(index) };
         }
     }
 
@@ -7494,7 +8082,11 @@ mod tests {
         memory.1.set(2_500);
         watch.last_game_score = None;
         assert!(watch.poll_game_score(&memory, 0).is_some());
-        assert!(capacities.presize_live_inputs(&memory, 0).is_err());
+        assert!(
+            // SAFETY: The sizing owner prepares the session's live storage before callbacks or in its
+            // sizing pass.
+            unsafe { capacities.presize_live_inputs(&memory, 0) }.is_err()
+        );
         assert_eq!(capacities.air.scores.regions, 2_500);
     }
 
@@ -7654,7 +8246,10 @@ mod tests {
 
     #[test]
     fn combat_hints_skip_failed_reserves_without_latching_demand() {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let hints = CombatHints {
@@ -7712,14 +8307,24 @@ mod tests {
                 .all(|state| state.land.is_some() && state.naval.is_some())
         );
         assert!(shared.pool_owned() > before);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
     }
 
     #[test]
     fn combat_hints_keep_the_next_hour_s_frame_and_its_spare_for_the_game() {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let held: [_; sampling::BUFFERS - collector_capture::frame_pool::AHEAD] =
-            std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+            std::array::from_fn(|_|
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.take_frame(&mut 0) }.unwrap());
         let idle: Vec<_> = (0..sampling::BUFFERS)
             .filter(|index| !held.contains(index))
             .collect();
@@ -7738,19 +8343,33 @@ mod tests {
         };
         let bytes = || {
             idle.iter()
-                .map(|&index| unsafe { shared.frames[index].captured() }.allocated_bytes())
+                .map(|&index| {
+                    unsafe {
+                        // SAFETY: This is the runtime's frame pool for the current session.
+                        shared.frames()[index].captured()
+                    }
+                    .allocated_bytes()
+                })
                 .collect::<Vec<_>>()
         };
         let before = bytes();
         let pool_before = shared.pool_owned();
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            collector_capture::frame_pool::AHEAD
+        );
         assert!(!grow_combat_hints(
             &shared,
             &capacities,
             &hints,
             &mut applied
         ));
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            collector_capture::frame_pool::AHEAD
+        );
         assert!(
             applied
                 .iter()
@@ -7758,7 +8377,8 @@ mod tests {
         );
         assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(bytes(), before);
-        shared.recycle_frame_prepared(held[0]);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(held[0]) };
         assert!(!grow_combat_hints(
             &shared,
             &capacities,
@@ -7769,20 +8389,29 @@ mod tests {
             assert!(applied[index].land.is_some() && applied[index].naval.is_some());
         }
         for index in held.into_iter().skip(1) {
-            shared.recycle_frame_prepared(index);
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { shared.recycle_frame_prepared(index) };
         }
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
     }
 
     #[test]
     fn combat_hints_keep_applied_state_and_grow_directly_recycled_frames() {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let capacities = collector_capture::extended::Capacities::default();
         let mut applied = AppliedHints::default();
         let accounted = shared.pool_owned();
         let frame_bytes = || {
-            shared
-                .frames
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
@@ -7822,7 +8451,9 @@ mod tests {
         check_accounting();
         assert!(applied == grown);
 
-        let held = shared.frames.pop().unwrap();
+        let held =
+            // SAFETY: This consumer owns the queue removal for the named pool.
+            unsafe {  shared.frames() .pop() }.unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
         hints.naval.as_mut().unwrap().rows = 257;
@@ -7833,7 +8464,8 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        shared.recycle_frame(held);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(held) };
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied[held].land != previous.land);
@@ -7842,7 +8474,11 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(
+            // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+            unsafe { shared.frames() }.len(),
+            sampling::BUFFERS
+        );
     }
 
     #[test]
@@ -8066,7 +8702,9 @@ mod tests {
         let directory = std::env::temp_dir()
             .join(format!("hoi4-political-hint-status-{}", std::process::id(),));
         let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session.clone()) }.unwrap();
         let mut watch = RegistryWatch::default();
         assert!(
             processor
@@ -8086,8 +8724,13 @@ mod tests {
                 .is_none()
         );
 
-        let shared = Shared::new(0, 0, 1);
-        shared.recording.store(false, Ordering::Release);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
+
+        // SAFETY: The current runtime or its spool owns the session's terminal stop.
+        unsafe { shared.recording() }.store(false, Ordering::Release);
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
         let status = serde_json::to_value(
             spool_status(
@@ -8140,9 +8783,16 @@ mod tests {
             std::process::id()
         ));
         let processor =
-            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
-        let shared = Shared::new(0, 0, 1);
-        shared.recording.store(false, Ordering::Release);
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&directory, PreparedCampaigns::default(), session.clone()) }.unwrap();
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
+
+        // SAFETY: The current runtime or its spool owns the session's terminal stop.
+        unsafe { shared.recording() }.store(false, Ordering::Release);
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
         for (warning, error, installation_error, drain_complete) in [
             (None, None, None, true),

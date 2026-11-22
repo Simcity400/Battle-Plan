@@ -84,7 +84,8 @@ pub(crate) fn encode(
         let _span = HELPER.span(Phase::Encode);
         work();
     };
-    helpers.join_each(&job, work);
+    // SAFETY: The spool owns this conversion round and uses no helper in a competing round.
+    unsafe { helpers.join_each(&job, work) };
     segments.map(|segment| segment.into_inner().unwrap_or_else(PoisonError::into_inner))
 }
 
@@ -146,8 +147,10 @@ mod tests {
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
         let pool = [
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
         ];
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();

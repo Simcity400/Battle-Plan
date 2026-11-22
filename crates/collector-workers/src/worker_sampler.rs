@@ -65,10 +65,16 @@ static GAME_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_CREATION: AtomicU64 = AtomicU64::new(0);
 static GAME_JOB: AtomicU16 = AtomicU16::new(0);
 static GAME_GATE: GameGate = GameGate::new();
-pub fn job(role: crate::roles::Role) -> JobGuard {
-    worker_sampler_state::job(role as u16 + 1, || {
-        (unsafe { GetCurrentThreadId() } == GAME_ID.load(Ordering::Acquire)).then_some(&GAME_JOB)
-    })
+/// # Safety
+/// Only the live admitted callback or worker for this session may publish sampler observation
+/// state. Drop the guard before leaving the observation scope on the originating thread.
+pub unsafe fn job(role: crate::roles::Role) -> JobGuard {
+    // SAFETY: This is the live admitted worker recording the role for its own job.
+    unsafe {
+        worker_sampler_state::job(role as u16 + 1, || {
+            (GetCurrentThreadId() == GAME_ID.load(Ordering::Acquire)).then_some(&GAME_JOB)
+        })
+    }
 }
 
 struct GameGate {
@@ -129,7 +135,10 @@ pub struct CallbackGuard {
     entered: bool,
     _thread: std::marker::PhantomData<*mut ()>,
 }
-pub fn callback() -> CallbackGuard {
+/// # Safety
+/// Only the live admitted callback or worker for this session may publish sampler observation
+/// state. Drop the guard before leaving the observation scope on the originating thread.
+pub unsafe fn callback() -> CallbackGuard {
     let id = unsafe { GetCurrentThreadId() };
     if GAME_ID
         .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
@@ -322,11 +331,17 @@ fn record_stop_panic() {
 pub struct Sampler {
     control: Arc<Control>,
 }
-pub fn prepare() {
+/// # Safety
+/// Only the runtime attach sequence may prepare the sampler, before any callback or worker can
+/// publish sampler state.
+pub unsafe fn prepare() {
     EARLY_EXIT.store(false, Ordering::Release);
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
 }
-pub fn release() {
+/// # Safety
+/// Only the detaching runtime may release sampler state, after stopping the sampler and joining all
+/// its worker targets.
+pub unsafe fn release() {
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
     worker_sampler_state::clear_jobs();
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
@@ -334,7 +349,10 @@ pub fn release() {
 pub fn thread_id() -> u32 {
     SAMPLER_ID.load(Ordering::Acquire)
 }
-pub fn start(
+/// # Safety
+/// Only the runtime may start the sampler, once after preparation, and must stop and join it before
+/// releasing its targets or callback storage.
+pub unsafe fn start(
     config: Option<&str>,
     output_dir: &Path,
     acquisition_ids: Vec<u32>,
@@ -372,7 +390,8 @@ pub fn start(
         .name("worker-sampler".into())
         .spawn(move || {
             SAMPLER_ID.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            crate::thread_cpu::register(crate::thread_cpu::Role::Sampler);
+            // SAFETY: Only the current session's designated thread registers this role.
+            unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::Sampler) };
             unsafe {
                 SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }
@@ -402,7 +421,10 @@ pub fn start(
     Ok(Sampler { control })
 }
 impl Sampler {
-    pub fn activate(&self) -> Result<(), &'static str> {
+    /// # Safety
+    /// Only the runtime may activate this sampler, after the session's workers and callback state
+    /// are ready and before detach.
+    pub unsafe fn activate(&self) -> Result<(), &'static str> {
         if COUNTERS.enabled.load(Ordering::Relaxed) && EARLY_EXIT.load(Ordering::Acquire) {
             EMERGENCY_EXIT.store(true, Ordering::Release);
             self.control.stop_join();
@@ -411,14 +433,19 @@ impl Sampler {
         self.control.active.store(true, Ordering::Release);
         Ok(())
     }
-    pub fn stop(&mut self) -> u64 {
+    /// # Safety
+    /// Only the owning runtime may stop this sampler. Complete the join before releasing callback
+    /// storage or letting sampled workers exit.
+    pub unsafe fn stop(&mut self) -> u64 {
         self.control.stop_join();
         load(&COUNTERS.written)
     }
 }
 impl Drop for Sampler {
     fn drop(&mut self) {
-        self.stop();
+        // SAFETY: This is the owning runtime's shutdown, while the worker's shared state is still
+        // live.
+        unsafe { self.stop() };
     }
 }
 

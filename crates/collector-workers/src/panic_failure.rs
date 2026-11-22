@@ -75,7 +75,10 @@ type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 pub struct HookGuard(Option<Arc<Hook>>);
 
 impl HookGuard {
-    pub fn install() -> Self {
+    /// # Safety
+    /// Install once during runtime attach, or while an isolated fixture owns the process panic
+    /// hook. Retain the guard until every collector worker has stopped.
+    pub unsafe fn install() -> Self {
         let previous = Arc::new(std::panic::take_hook());
         let chained = previous.clone();
         std::panic::set_hook(Box::new(move |info| {
@@ -187,13 +190,19 @@ pub fn stage(stage: &'static str, part: Option<usize>) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn reset() {
+/// # Safety
+/// Only an isolated test with exclusive use of the collector's process-wide panic state may change
+/// this setting.
+pub unsafe fn reset() {
     *FIRST.lock().unwrap() = None;
     PANIC.set(None);
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn fail_at(stage: &'static str) {
+/// # Safety
+/// Only an isolated test with exclusive use of the collector's process-wide panic state may change
+/// this setting.
+pub unsafe fn fail_at(stage: &'static str) {
     FAIL_AT.set(Some(stage));
 }
 

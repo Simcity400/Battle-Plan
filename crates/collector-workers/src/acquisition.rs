@@ -85,15 +85,15 @@ type OnCompleted<J, R> = fn(&mut J, &Result<R, Failure>) -> Option<Arc<dyn Publi
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
     pub queued_qpc: i64,
-    pub claimed_qpc: i64,
-    pub runner_begin_qpc: i64,
-    pub runner_end_qpc: i64,
-    pub runner_thread_id: u32,
-    pub runner_thread_cycles: Option<u64>,
-    pub submit_lock_wait_ticks: u64,
-    pub finish_lock_wait_ticks: u64,
-    pub published_qpc: i64,
-    pub collected_qpc: i64,
+    pub(crate) claimed_qpc: i64,
+    pub(crate) runner_begin_qpc: i64,
+    pub(crate) runner_end_qpc: i64,
+    pub(crate) runner_thread_id: u32,
+    pub(crate) runner_thread_cycles: Option<u64>,
+    pub(crate) submit_lock_wait_ticks: u64,
+    pub(crate) finish_lock_wait_ticks: u64,
+    pub(crate) published_qpc: i64,
+    pub(crate) collected_qpc: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -141,18 +141,18 @@ pub struct Calibration {
     pub rejected: u64,
     pub caller_executed: u64,
     pub worker_executed: u64,
-    pub join_sleeps: u64,
-    pub join_help: bool,
-    pub help_executed: u64,
-    pub help_ns: u64,
+    pub(crate) join_sleeps: u64,
+    pub(crate) join_help: bool,
+    pub(crate) help_executed: u64,
+    pub(crate) help_ns: u64,
     pub callback_help: bool,
-    pub callback_help_executed: u64,
-    pub callback_help_ns: u64,
-    pub wake_boost_refusals: u64,
-    pub priority_refusals: u64,
+    pub(crate) callback_help_executed: u64,
+    pub(crate) callback_help_ns: u64,
+    pub(crate) wake_boost_refusals: u64,
+    pub(crate) priority_refusals: u64,
     pub joins: u64,
-    pub join_wall_ns: u64,
-    pub join_wall_max_ns: u64,
+    pub(crate) join_wall_ns: u64,
+    pub(crate) join_wall_max_ns: u64,
 }
 
 #[derive(Default)]
@@ -807,14 +807,20 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         assert!(self.shared.on_completed.set(completed).is_ok());
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn start(
+    /// # Safety
+    /// Start only session-owned acquisition workers or isolated fixture workers. Keep them in the
+    /// runtime's worker census and shut them down before freeing shared sampler or job storage.
+    pub unsafe fn start(
         worker_count: usize,
         capacity: usize,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
         Self::start_boosted(worker_count, capacity, false, run)
     }
-    pub fn start_with_class(
+    /// # Safety
+    /// Start only session-owned acquisition workers or isolated fixture workers. Keep them in the
+    /// runtime's worker census and shut them down before freeing shared sampler or job storage.
+    pub unsafe fn start_with_class(
         worker_count: usize,
         capacity: usize,
         classes: Option<Classes<J>>,
@@ -993,7 +999,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     .unwrap_or_else(|error| error.into_inner())
                     .push(thread),
                 Err(_) => {
-                    let _ = pool.shutdown();
+                    let _ =
+                    // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                    // storage at shutdown.
+                    unsafe { pool.shutdown() };
                     return Err("start native acquisition worker failed");
                 }
             }
@@ -1158,7 +1167,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
-                crate::cpu_sets::select_away(thread.as_handle(), None);
+                // SAFETY: This policy controls the target collector worker and its handle is live.
+                unsafe { crate::cpu_sets::select_away(thread.as_handle(), None) };
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
@@ -1653,7 +1663,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
+    /// # Safety
+    /// Install only on an isolated fixture's pool, before the join begins. The hook must release
+    /// any test barrier before the pool shuts down.
+    pub unsafe fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
         assert!(
             self.shared
                 .hooks
@@ -1664,7 +1677,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+    /// # Safety
+    /// Install only on an isolated fixture's pool. The hook must let the worker return before
+    /// shutdown joins it.
+    pub unsafe fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         assert!(
             self.shared
                 .hooks
@@ -1720,13 +1736,22 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     pub fn stopped(&self) -> bool {
         self.shared.lock().stop
     }
-    pub fn stop_for_contained_panic(&self) {
+    /// # Safety
+    /// Only the owner settling a contained panic may stop this pool before joining its requests and
+    /// workers.
+    pub unsafe fn stop_for_contained_panic(&self) {
         add(&self.shared.counters.panicked, 1);
         self.shared.stop();
     }
-    pub fn shutdown(&self) -> Result<(), &'static str> {
+    /// # Safety
+    /// Only the pool's owner may shut it down after admission closes and all requests settle, while
+    /// its sampler and payload storage are still live.
+    pub unsafe fn shutdown(&self) -> Result<(), &'static str> {
         #[cfg(feature = "worker_sampler")]
-        crate::worker_sampler_state::stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe {
+            crate::worker_sampler_state::stop_before_thread_exit()
+        };
         self.shared.stop();
         let mut threads = self
             .threads
@@ -1747,7 +1772,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
 }
 impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     fn drop(&mut self) {
-        let _ = self.shutdown();
+        let _ =
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { self.shutdown() };
     }
 }
 
@@ -1835,7 +1863,7 @@ pub fn recommended_worker_count() -> usize {
     worker_count_for_cpus(machine, allowed_cpus())
 }
 
-pub fn usable_cpus() -> usize {
+pub(crate) fn usable_cpus() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
     cpus(machine, allowed_cpus())
 }
@@ -1913,7 +1941,9 @@ mod tests {
 
     #[test]
     fn a_published_join_does_not_take_the_queue_lock() {
-        let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
         let ticket = submit(&pool, &mut Some(7));
         wait_until(|| pool.is_complete(ticket));
         let released = AtomicBool::new(false);
@@ -1957,14 +1987,17 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(2, 2, move |gated: &mut bool| {
-                let worker = unsafe { GetCurrentThreadId() };
-                if *gated {
-                    entered_tx.send(worker).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                }
-                (worker, unsafe { GetThreadPriority(GetCurrentThread()) })
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(2, 2, move |gated: &mut bool| {
+                    let worker = GetCurrentThreadId();
+                    if *gated {
+                        entered_tx.send(worker).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                    }
+                    (worker, GetThreadPriority(GetCurrentThread()))
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2010,12 +2043,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 1, move |job: &mut u8| {
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job += 1;
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(1, 1, move |job: &mut u8| {
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job += 1;
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2041,12 +2077,14 @@ mod tests {
         }
         for workers in [0, 1] {
             let (entered_tx, entered_rx) = mpsc::channel();
-            let pool = Pool::start(workers, 2, move |job: &mut Request| {
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, 2, move |job: &mut Request| {
                 let address = job as *mut Request as usize;
                 job.bytes[0] = 42;
                 entered_tx.send(address).unwrap();
                 address
-            })
+            }) }
             .unwrap();
             let ticket = submit(&pool, &mut Some(Request { bytes: [0; 4096] }));
             let cell_begin = pool.shared.cells[ticket.slot].pointer() as usize;
@@ -2075,7 +2113,9 @@ mod tests {
 
     #[test]
     fn published_collection_is_single_use_even_with_racing_collectors() {
-        let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
         let ticket = submit(&pool, &mut Some(42));
         wait_until(|| pool.is_complete(ticket));
         let gate = Barrier::new(3);
@@ -2101,11 +2141,14 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 1, move |job: &mut u64| {
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(1, 1, move |job: &mut u64| {
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         pool.reserve_worker_slots(1).unwrap();
@@ -2169,12 +2212,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 2, move |job: &mut u8| {
-                assert_eq!(*job, 1, "cancelled queued job ran");
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(1, 2, move |job: &mut u8| {
+                    assert_eq!(*job, 1, "cancelled queued job ran");
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2192,7 +2238,8 @@ mod tests {
                     pool.shared.awaited.load(Ordering::SeqCst) == queued.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
-                pool.stop_for_contained_panic();
+                // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+                unsafe { pool.stop_for_contained_panic() };
                 let woke = progressed(|| joined.load(Ordering::Acquire));
                 if !woke {
                     rescue_join(&pool, queued.slot, || joined.load(Ordering::Acquire));
@@ -2225,12 +2272,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 2, move |job: &mut u8| {
-                assert_eq!(*job, 1, "settle ran a queued job");
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(1, 2, move |job: &mut u8| {
+                    assert_eq!(*job, 1, "settle ran a queued job");
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2270,7 +2320,9 @@ mod tests {
 
     #[test]
     fn the_generation_word_bound_also_refuses_parking_without_taking_the_job() {
-        let pool = Pool::start(0, 1, |job: &mut u8| *job).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 1, |job: &mut u8| *job) }.unwrap();
         pool.shared.lock().generation = MAX_GENERATION - 1;
         let last = submit(&pool, &mut Some(1));
         assert_eq!(last.generation, MAX_GENERATION);
@@ -2291,11 +2343,15 @@ mod tests {
             let (entered_tx, entered_rx) = mpsc::channel();
             let pool = {
                 let release = Arc::clone(&release);
-                Pool::start(0, 1, move |job: &mut u8| {
-                    entered_tx.send(()).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                    *job
-                })
+                // SAFETY: The attaching runtime or isolated fixture owns this worker through
+                // shutdown.
+                unsafe {
+                    Pool::start(0, 1, move |job: &mut u8| {
+                        entered_tx.send(()).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                        *job
+                    })
+                }
                 .unwrap()
             };
             let release = Gate(release);
@@ -2307,7 +2363,9 @@ mod tests {
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap();
                 let stop = || {
-                    pool.shutdown().unwrap();
+                    // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                    // storage at shutdown.
+                    unsafe { pool.shutdown() }.unwrap();
                     stopped.fetch_add(1, Ordering::Release);
                 };
                 let first = scope.spawn(stop);
@@ -2345,15 +2403,19 @@ mod tests {
             let release = Arc::clone(&release);
             let classes: Option<Classes<(u8, u8)>> =
                 classified.then_some((2, |job: &(u8, u8)| usize::from(job.1)));
-            Pool::start_with_class(1, 3, classes, move |job: &mut (u8, u8)| {
-                if job.0 == 0 {
-                    entered_tx.send(()).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                } else {
-                    ran_tx.send(std::thread::current().id()).unwrap();
-                }
-                std::thread::current().id()
-            })
+            // SAFETY: This attaches the owned acquisition workers and they join before sampler
+            // teardown.
+            unsafe {
+                Pool::start_with_class(1, 3, classes, move |job: &mut (u8, u8)| {
+                    if job.0 == 0 {
+                        entered_tx.send(()).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                    } else {
+                        ran_tx.send(std::thread::current().id()).unwrap();
+                    }
+                    std::thread::current().id()
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2457,18 +2519,22 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                2,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    std::thread::current().id()
-                },
-            )
+            // SAFETY: This attaches the owned acquisition workers and they join before sampler
+            // teardown.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    2,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        std::thread::current().id()
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2511,20 +2577,24 @@ mod tests {
         let (ran_tx, ran_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                4,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    } else {
-                        ran_tx.send((*job, std::thread::current().id())).unwrap();
-                    }
-                    *job
-                },
-            )
+            // SAFETY: This attaches the owned acquisition workers and they join before sampler
+            // teardown.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    4,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        } else {
+                            ran_tx.send((*job, std::thread::current().id())).unwrap();
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2567,18 +2637,22 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                JOIN_HELP_ATTEMPTS + 3,
-                Some((2, |job: &usize| usize::from(*job != 0))),
-                move |job: &mut usize| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    *job
-                },
-            )
+            // SAFETY: This attaches the owned acquisition workers and they join before sampler
+            // teardown.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    JOIN_HELP_ATTEMPTS + 3,
+                    Some((2, |job: &usize| usize::from(*job != 0))),
+                    move |job: &mut usize| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2642,18 +2716,22 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                2,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    *job
-                },
-            )
+            // SAFETY: This attaches the owned acquisition workers and they join before sampler
+            // teardown.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    2,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2732,7 +2810,9 @@ mod tests {
         }
         let dropped = Arc::new(AtomicU64::new(0));
         {
-            let pool = Pool::start(0, 3, |_: &mut OwnedDrop| ()).unwrap();
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(0, 3, |_: &mut OwnedDrop| ()) }.unwrap();
             let first = submit(&pool, &mut Some(OwnedDrop(Arc::clone(&dropped))));
             let _second = submit(&pool, &mut Some(OwnedDrop(Arc::clone(&dropped))));
             let _parked = pool
@@ -2740,7 +2820,9 @@ mod tests {
                 .unwrap();
             drop(pool.finish(first).unwrap());
             assert_eq!(dropped.load(Ordering::Relaxed), 1);
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
         assert_eq!(dropped.load(Ordering::Relaxed), 3);
     }
@@ -2766,7 +2848,9 @@ mod tests {
             }
         }
         let dropped: [Arc<AtomicUsize>; 3] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
-        let pool = Pool::start(0, 3, |_: &mut Request| ()).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 3, |_: &mut Request| ()) }.unwrap();
         let parked = pool
             .park(
                 &mut Some(Request {
@@ -2814,7 +2898,9 @@ mod tests {
     fn executor_profile_orders_reached_stages_and_marks_canceled_work() {
         for workers in [0, 1] {
             let pool =
-                Pool::start(workers, 1, |_: &mut u8| unsafe { GetCurrentThreadId() }).unwrap();
+                // SAFETY: The attaching runtime or isolated fixture owns this worker through
+                // shutdown.
+                unsafe { Pool::start(workers, 1, |_: &mut u8|  GetCurrentThreadId() ) }.unwrap();
             let mut job = Some(7);
             let ticket = unsafe { pool.submit(&mut job) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
@@ -2832,10 +2918,14 @@ mod tests {
             assert!(stages[0] > 0);
             assert!(stages.windows(2).all(|pair| pair[0] <= pair[1]));
         }
-        let pool = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 1, |_: &mut u8| ()) }.unwrap();
         let mut job = Some(7);
         let ticket = unsafe { pool.submit(&mut job) }.unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
         let profile = completion.profile;
@@ -2860,7 +2950,9 @@ mod tests {
 
     #[test]
     fn reserved_worker_job_cannot_be_claimed_by_its_collector() {
-        let pool = Pool::start(1, 3, |_: &mut u8| std::thread::current().id()).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 3, |_: &mut u8| std::thread::current().id()) }.unwrap();
         assert!(pool.reserve_worker_slots(4).is_err());
         pool.reserve_worker_slots(2).unwrap();
         let ordinary = submit(&pool, &mut Some(1));
@@ -2895,16 +2987,22 @@ mod tests {
             std::thread::current().id()
         );
         assert!(pool.finish(ordinary).is_some());
-        let stopped = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        let stopped =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 1, |_: &mut u8| ()) }.unwrap();
         assert!(stopped.reserve_worker_slots(1).is_err());
     }
 
     #[test]
     fn a_parked_request_never_runs_and_returns_once_to_its_submitter() {
         for workers in [1, 2] {
-            let pool = Pool::start(workers, 3, |request: &mut u8| *request).unwrap();
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, 3, |request: &mut u8| *request) }.unwrap();
             pool.reserve_worker_slots(2).unwrap();
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
             let mut request = Some(7);
             assert_eq!(
                 unsafe { pool.submit_with_priority(&mut request, 0, true, true) },
@@ -2941,11 +3039,16 @@ mod tests {
             );
             assert_eq!(pool.shared.lock().parked, 0);
         }
-        let pool = Pool::start(1, 1, |request: &mut u8| *request + 1).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 1, |request: &mut u8| *request + 1) }.unwrap();
         let (idle_tx, idle) = mpsc::channel();
-        pool.set_work_wait_hook(move || {
-            let _ = idle_tx.send(());
-        });
+        // SAFETY: The test owns the pool and the hook sends a nonblocking notification.
+        unsafe {
+            pool.set_work_wait_hook(move || {
+                let _ = idle_tx.send(());
+            })
+        };
         let parked = pool.park(&mut Some(3), false).unwrap();
         assert_eq!(unsafe { pool.submit(&mut Some(4)) }, Err(SubmitError::Full));
         while idle.try_recv().is_ok() {}
@@ -2966,9 +3069,11 @@ mod tests {
 
     #[test]
     fn parked_rejection_completes_in_its_heap_cell_without_allocating_or_running() {
-        let pool = Pool::start(1, 1, |_: &mut Box<[u8; 4096]>| -> u8 {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 1, |_: &mut Box<[u8; 4096]>| -> u8 {
             panic!("rejected worker must never run")
-        })
+        }) }
         .unwrap();
         let owner = Box::new([7; 4096]);
         let allocation = owner.as_ptr();
@@ -3007,7 +3112,9 @@ mod tests {
 
     #[test]
     fn panicking_parked_rejection_keeps_the_job_owned_for_drain() {
-        let pool = Pool::start(1, 1, |request: &mut u8| *request).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 1, |request: &mut u8| *request) }.unwrap();
         let ticket = pool.park(&mut Some(7), true).unwrap();
         let mut out = None;
         assert!(
@@ -3034,7 +3141,9 @@ mod tests {
     #[test]
     fn owned_buffers_return_and_fixed_slots_reuse_without_replacement() {
         for workers in [0, 2, MAX_WORKERS] {
-            let pool = Pool::start(workers, 1, change_owned).unwrap();
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, 1, change_owned) }.unwrap();
             let mut ids = pool.thread_ids();
             assert_eq!(ids.len(), workers);
             assert!(ids.iter().all(|&id| id != 0));
@@ -3061,14 +3170,20 @@ mod tests {
             assert_eq!(calibration.accepted, 3);
             assert_eq!(calibration.completed, 3);
             assert_eq!(calibration.uncollected, 0);
-            pool.shutdown().unwrap();
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
     }
 
     #[test]
     fn caller_claims_awaited_ticket_and_keeps_other_slots_owned() {
-        let pool = Pool::start(0, 2, |request: &mut u8| *request + 1).unwrap();
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 2, |request: &mut u8| *request + 1) }.unwrap();
         let first = submit(&pool, &mut Some(1));
         let second = submit(&pool, &mut Some(2));
         assert_eq!(pool.finish(second).unwrap().report, Ok(3));
@@ -3087,7 +3202,9 @@ mod tests {
         assert_eq!(rejected, Some(9));
         assert_eq!(pool.finish(first).unwrap().report, Ok(2));
         assert_eq!(pool.finish(third).unwrap().report, Ok(4));
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!(
             unsafe { pool.submit(&mut rejected) },
             Err(SubmitError::Stopped)
@@ -3097,8 +3214,12 @@ mod tests {
 
     #[test]
     fn stale_foreign_and_exhausted_tickets_never_consume_another_request() {
-        let first_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
-        let other_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
+        let first_pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 1, |request: &mut u8| *request) }.unwrap();
+        let other_pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 1, |request: &mut u8| *request) }.unwrap();
         let old = submit(&first_pool, &mut Some(1));
         let other = submit(&other_pool, &mut Some(2));
         assert!(other_pool.finish(old).is_none());
@@ -3126,7 +3247,9 @@ mod tests {
 
         let calls = Arc::new(AtomicU64::new(0));
         let count = Arc::clone(&calls);
-        let pool = Pool::start(0, 2, move |request: &mut Owned| -> usize {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(0, 2, move |request: &mut Owned| -> usize {
             count.fetch_add(1, Ordering::Relaxed);
             let _reads = collector_memory::read_accounting::table(TableId::Divisions);
             let memory = CountedMemory::new(SliceMemory {
@@ -3136,7 +3259,7 @@ mod tests {
             assert!(memory.copy(0x1000, &mut [0]));
             request.payload[0] = 42;
             panic!("synthetic acquisition failure");
-        })
+        }) }
         .unwrap();
         let make = || Owned { payload: vec![7] };
         let first = submit(&pool, &mut Some(make()));
@@ -3175,9 +3298,12 @@ mod tests {
     fn shutdown_cancels_pending_without_running_and_returns_arc_leases() {
         let mut owner = Arc::new(vec![7]);
         let pool: Pool<Arc<Vec<u8>>, ()> =
-            Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")).unwrap();
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")) }.unwrap();
         let ticket = submit(&pool, &mut Some(Arc::clone(&owner)));
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert!(Arc::get_mut(&mut owner).is_none());
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
@@ -3200,12 +3326,14 @@ mod tests {
             }
         }
         for panics in [false, true] {
-            let pool = Pool::start(1, 1, move |live: &mut Arc<AtomicBool>| {
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(1, 1, move |live: &mut Arc<AtomicBool>| {
                 live.store(true, Ordering::Release);
                 let _lease = Lease(live);
                 assert!(!panics, "synthetic reader failure");
                 true
-            })
+            }) }
             .unwrap();
             let live = Arc::new(AtomicBool::new(false));
             let ticket = submit(&pool, &mut Some(Arc::clone(&live)));
@@ -3227,7 +3355,9 @@ mod tests {
         let gate = Arc::new(Barrier::new(2));
         let worker_gate = Arc::clone(&gate);
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(1, 3, move |request: &mut u8| {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(1, 3, move |request: &mut u8| {
             if *request == 1 {
                 entered_tx.send(()).unwrap();
                 worker_gate.wait();
@@ -3238,7 +3368,7 @@ mod tests {
                 *request = 20;
                 panic!("synthetic caller failure");
             }
-        })
+        }) }
         .unwrap();
         let running = submit(&pool, &mut Some(1));
         entered_rx.recv().unwrap();
@@ -3249,7 +3379,9 @@ mod tests {
         let active_after_panic = pool.calibration().active;
         gate.wait();
         let completed = pool.finish(running).unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!(failed.request, 20);
         assert_eq!(failed.report, Err(Failure::Panicked));
         assert_eq!(canceled.request, 3);
@@ -3271,7 +3403,9 @@ mod tests {
         let panic_gate = Arc::new(Barrier::new(2));
         let panic_release = Arc::clone(&panic_gate);
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 3, move |request: &mut u8| {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(2, 3, move |request: &mut u8| {
             entered_tx.send(*request).unwrap();
             match *request {
                 1 => {
@@ -3284,7 +3418,7 @@ mod tests {
                 }
                 _ => panic!("canceled queued job ran"),
             }
-        })
+        }) }
         .unwrap();
         let first = submit(&pool, &mut Some(1));
         let first_started = entered_rx.recv().unwrap();
@@ -3299,7 +3433,9 @@ mod tests {
         let active_after_panic = pool.calibration().active;
         successful_release.wait();
         let successful = pool.finish(first).unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!((first_started, second_started), (1, 2));
         assert_eq!(failed.request, 2);
         assert_eq!(failed.report, Err(Failure::Panicked));
@@ -3316,11 +3452,13 @@ mod tests {
     #[test]
     fn split_notifications_wake_work_and_release_idle_peer_on_panic_stop() {
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 1, move |request: &mut u8| -> u8 {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(2, 1, move |request: &mut u8| -> u8 {
             entered_tx.send(()).unwrap();
             *request = 9;
             panic!("synthetic split-notification failure");
-        })
+        }) }
         .unwrap();
         let ticket = submit(&pool, &mut Some(1));
         entered_rx.recv().unwrap();
@@ -3338,7 +3476,9 @@ mod tests {
             thread.join().unwrap();
         }
         drop(threads);
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         let calibration = pool.calibration();
         assert_eq!(calibration.panicked, 1);
         assert_eq!(calibration.worker_executed, 1);
@@ -3350,12 +3490,14 @@ mod tests {
     fn workers_and_callback_execute_disjoint_owned_jobs_together() {
         let meet = Arc::new(Barrier::new(3));
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 3, move |request: &mut u8| {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(2, 3, move |request: &mut u8| {
             entered_tx.send(*request).unwrap();
             meet.wait();
             *request += 1;
             *request
-        })
+        }) }
         .unwrap();
         let first = submit(&pool, &mut Some(1));
         assert_eq!(entered_rx.recv().unwrap(), 1);
@@ -3377,12 +3519,15 @@ mod tests {
         let release = Arc::clone(&gate);
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = Arc::new(
-            Pool::start(0, 1, move |request: &mut u8| {
-                entered_tx.send(()).unwrap();
-                gate.wait();
-                *request += 1;
-                *request
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(0, 1, move |request: &mut u8| {
+                    entered_tx.send(()).unwrap();
+                    gate.wait();
+                    *request += 1;
+                    *request
+                })
+            }
             .unwrap(),
         );
         let ticket = submit(&pool, &mut Some(7));
@@ -3394,7 +3539,9 @@ mod tests {
         let stop = std::thread::spawn(move || {
             shutdown_pool.shared.stop();
             stopped_tx.send(()).unwrap();
-            shutdown_pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { shutdown_pool.shutdown() }.unwrap();
         });
         stopped_rx.recv().unwrap();
         let active_before_release = pool.calibration().active;
@@ -3424,11 +3571,14 @@ mod tests {
         let (claimed_tx, claimed) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release.0);
-            Pool::start(1, 4, move |job: &mut u64| {
-                claimed_tx.send(*job).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(1, 4, move |job: &mut u64| {
+                    claimed_tx.send(*job).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         pool.reserve_worker_slots(4).unwrap();
@@ -3443,10 +3593,13 @@ mod tests {
         let (slept_tx, slept) = mpsc::channel();
         {
             let release = Arc::clone(&release.0);
-            pool.set_join_wait_hook(move |ticket| {
-                let _ = slept_tx.send(ticket);
-                release.store(true, Ordering::Release);
-            });
+            // SAFETY: This fixture owns the pool and the callback releases the join barrier.
+            unsafe {
+                pool.set_join_wait_hook(move |ticket| {
+                    let _ = slept_tx.send(ticket);
+                    release.store(true, Ordering::Release);
+                })
+            };
         }
         let joined = AtomicBool::new(false);
         let (report, woke) = std::thread::scope(|scope| {
@@ -3474,7 +3627,9 @@ mod tests {
         let panic_gate = Arc::new(AtomicBool::new(false));
         let slow_gate = Arc::new(AtomicBool::new(false));
         let (panic_now, slow_done) = (Arc::clone(&panic_gate), Arc::clone(&slow_gate));
-        let pool = Pool::start(2, 4, move |value: &mut u64| {
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { Pool::start(2, 4, move |value: &mut u64| {
             let gate = if *value == 99 { &panic_now } else { &slow_done };
             if *value == 99 || *value == 50 {
                 while !gate.load(Ordering::Acquire) {
@@ -3485,7 +3640,7 @@ mod tests {
                 panic!("synthetic acquisition panic");
             }
             *value
-        })
+        }) }
         .unwrap();
         pool.reserve_worker_slots(4).unwrap();
         let slow = unsafe { pool.submit_with_priority(&mut Some(50), 0, true, true) }.unwrap();
@@ -3536,7 +3691,10 @@ mod tests {
         assert_eq!(worker_count_for_topology(1), 1);
         assert_eq!(worker_count_for_topology(0), 1);
         assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
-        assert!(Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request).is_err());
+        assert!(
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request) }.is_err()
+        );
     }
 
     #[test]
@@ -3548,13 +3706,17 @@ mod tests {
                 let (entered, started) = mpsc::channel();
                 let pool = {
                     let (gate, ran) = (Arc::clone(&gate), Arc::clone(&ran));
-                    Pool::start(workers, 8, move |job: &mut usize| {
-                        ran.lock().unwrap().push(std::thread::current().id());
-                        if *job < workers {
-                            entered.send(()).unwrap();
-                            wait_until(|| gate.load(Ordering::Acquire));
-                        }
-                    })
+                    // SAFETY: The attaching runtime or isolated fixture owns this worker through
+                    // shutdown.
+                    unsafe {
+                        Pool::start(workers, 8, move |job: &mut usize| {
+                            ran.lock().unwrap().push(std::thread::current().id());
+                            if *job < workers {
+                                entered.send(()).unwrap();
+                                wait_until(|| gate.load(Ordering::Acquire));
+                            }
+                        })
+                    }
                     .unwrap()
                 };
                 let release = Gate(gate);
@@ -3590,7 +3752,9 @@ mod tests {
                     (calibration.caller_executed, calibration.worker_executed),
                     (0, jobs as u64)
                 );
-                pool.shutdown().unwrap();
+                // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                // storage at shutdown.
+                unsafe { pool.shutdown() }.unwrap();
             }
         }
     }
@@ -3602,13 +3766,16 @@ mod tests {
         let (entered, started) = mpsc::channel();
         let pool = {
             let gate = Arc::clone(&gate);
-            Pool::start(WORKERS, 8, move |job: &mut usize| {
-                if *job < WORKERS {
-                    entered.send(()).unwrap();
-                    wait_until(|| gate.load(Ordering::Acquire));
-                }
-                *job
-            })
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe {
+                Pool::start(WORKERS, 8, move |job: &mut usize| {
+                    if *job < WORKERS {
+                        entered.send(()).unwrap();
+                        wait_until(|| gate.load(Ordering::Acquire));
+                    }
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(gate);
@@ -3660,25 +3827,30 @@ mod worker_join_tests {
             let worker_binding = Arc::clone(&binding);
             let caller = unsafe { GetCurrentThreadId() };
             let pool = Arc::new(
-                Pool::start(2, 3, move |request: &mut u8| {
-                    let thread = unsafe { GetCurrentThreadId() };
-                    assert_ne!(thread, caller);
-                    if *request == 1 {
-                        assert!(!panic_child, "synthetic child acquisition failure");
-                        return thread;
-                    }
-                    let pool = worker_binding.get().unwrap().upgrade().unwrap();
-                    let mut child = Some(1);
-                    let ticket =
-                        unsafe { pool.submit_with_priority(&mut child, 0, true, true) }.unwrap();
-                    let mut completed = None;
-                    assert!(pool.finish_worker_into(ticket, &mut completed));
-                    match completed.unwrap().report {
-                        Ok(child) => assert_ne!(thread, child),
-                        Err(failure) => assert_eq!(failure, Failure::Panicked),
-                    }
-                    thread
-                })
+                // SAFETY: The attaching runtime or isolated fixture owns this worker through
+                // shutdown.
+                unsafe {
+                    Pool::start(2, 3, move |request: &mut u8| {
+                        let thread = GetCurrentThreadId();
+                        assert_ne!(thread, caller);
+                        if *request == 1 {
+                            assert!(!panic_child, "synthetic child acquisition failure");
+                            return thread;
+                        }
+                        let pool = worker_binding.get().unwrap().upgrade().unwrap();
+                        let mut child = Some(1);
+                        let ticket = pool
+                            .submit_with_priority(&mut child, 0, true, true)
+                            .unwrap();
+                        let mut completed = None;
+                        assert!(pool.finish_worker_into(ticket, &mut completed));
+                        match completed.unwrap().report {
+                            Ok(child) => assert_ne!(thread, child),
+                            Err(failure) => assert_eq!(failure, Failure::Panicked),
+                        }
+                        thread
+                    })
+                }
                 .unwrap(),
             );
             pool.reserve_worker_slots(2).unwrap();
@@ -3743,7 +3915,9 @@ pub fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
     );
     drop(threads);
     drop(state);
-    pool.shutdown().unwrap();
+    // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+    // shutdown.
+    unsafe { pool.shutdown() }.unwrap();
 }
 
 #[cfg(feature = "test-support")]
@@ -3859,7 +4033,9 @@ pub fn dispatch_and_release_bench<J, R, const JOB: usize>() {
             {
                 summarize(label, samples);
             }
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
         stop.store(true, Ordering::Relaxed);
         for spinner in spinners {

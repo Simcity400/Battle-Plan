@@ -67,7 +67,7 @@ unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
     }
 }
 pub struct Registration;
-pub fn attach() -> Registration {
+pub(crate) fn attach() -> Registration {
     design_changes::forwarder(Some(&RECEIVER));
     Registration
 }

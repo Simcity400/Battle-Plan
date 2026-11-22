@@ -2421,13 +2421,13 @@ pub(crate) struct FinalInputsReport {
     pub session: [u64; session::N],
     pub characters: [u64; characters::N],
     pub destruction: [u64; collector_equipment_destruction::extended::equipment_destruction::N],
-    pub naval_sources: [u64; collector_naval_results::extended::naval_result_sources::N],
+    pub(crate) naval_sources: [u64; collector_naval_results::extended::naval_result_sources::N],
     pub air_losses: [u64; super::air_losses::N],
     pub air_records: [u64; super::air_records::N],
     pub bombing: [u64; super::building_bombing::N],
     pub nuclear: [u64; super::nuclear_strikes::N],
     pub market: [u64; super::market::N],
-    pub intel_delegated: [u64; super::intel::N],
+    pub(crate) intel_delegated: [u64; super::intel::N],
 }
 
 pub(crate) struct FinalInputsRequest {

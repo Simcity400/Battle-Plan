@@ -10,7 +10,7 @@ pub(crate) use stitch::PresentationFanIn;
 
 pub(crate) struct RangeTicket {
     pub ticket: Ticket,
-    pub parked: bool,
+    pub(crate) parked: bool,
 }
 pub(crate) struct PresentationDispatch {
     executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
@@ -53,7 +53,7 @@ impl PresentationDispatch {
     pub(crate) fn dispatched(&self) -> bool {
         self.dispatched
     }
-    pub fn continuation(&self) -> Option<Arc<PresentationFanIn>> {
+    pub(crate) fn continuation(&self) -> Option<Arc<PresentationFanIn>> {
         self.dispatched.then(|| {
             if self.final_ranges {
                 self.stitch.as_ref().unwrap().clone()

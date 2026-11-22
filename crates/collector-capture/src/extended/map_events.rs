@@ -34,7 +34,7 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         [unavailable(ASSEMBLED)]
     }
-    pub fn seal(&mut self, hour: i32) -> u64 {
+    pub(crate) fn seal(&mut self, hour: i32) -> u64 {
         let started = collector_primitives::clock::qpc();
         self.interval = Some(map_events::interval::seal(
             hour,
@@ -55,20 +55,36 @@ impl Publication {
         self.0.allocated_bytes()
     }
 
-    pub fn admitted(&self) {
-        self.0.admitted();
+    /// # Safety
+    /// Acknowledge only the originating session's actual queue admission, while its observer
+    /// storage is live and before commit or reset.
+    pub unsafe fn admitted(&self) {
+        // SAFETY: This is the spool's actual queue admission while its originating observer
+        // remains live.
+        unsafe { self.0.admitted() };
     }
-    pub fn commit(self) {
-        self.0.commit();
+    /// # Safety
+    /// Acknowledge only after the originating session's writer confirms this publication, before
+    /// detaching or releasing its event lanes.
+    pub unsafe fn commit(self) {
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { self.0.commit() };
     }
 }
 
-pub fn reset_admitted() {
-    map_events::lanes::reset_admitted();
+/// # Safety
+/// Only the originating spool may reset its admitted frontier after discarding uncommitted output,
+/// while the event lanes are still live.
+pub unsafe fn reset_admitted() {
+    // SAFETY: The sole spool has invalidated pending writes and still owns its observer frontier.
+    unsafe { map_events::lanes::reset_admitted() };
 }
 
 impl Ledger {
-    pub fn assemble_owned(
+    /// # Safety
+    /// Only the spool owning this frame's event interval may assemble it. Retain the session's
+    /// event lanes until every publication is admitted and committed or discarded.
+    pub unsafe fn assemble_owned(
         &mut self,
         captured: &Captured,
         tables: &mut [TableInput],

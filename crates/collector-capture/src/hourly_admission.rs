@@ -21,11 +21,17 @@ impl CaptureAdmission {
         }
     }
 
-    pub fn open(&self) {
+    /// # Safety
+    /// Only the attaching runtime may open the live gate, once the capture state is published and
+    /// before the first admitted hour.
+    pub unsafe fn open(&self) {
         self.closed.store(false, Ordering::SeqCst);
     }
 
-    pub fn enter(&self) -> Option<CaptureLease<'_>> {
+    /// # Safety
+    /// Enter the live gate only for an actual hourly callback or its beside worker. Drop the lease
+    /// when that hour has completed and before detach waits for quiescence.
+    pub unsafe fn enter(&self) -> Option<CaptureLease<'_>> {
         self.active.fetch_add(1, Ordering::SeqCst);
         if self.closed.load(Ordering::SeqCst) {
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -35,7 +41,10 @@ impl CaptureAdmission {
         }
     }
 
-    pub fn close(&self) {
+    /// # Safety
+    /// Only the detaching runtime may close the live gate, before waiting for every admitted hour
+    /// to leave.
+    pub unsafe fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
     }
 
@@ -54,5 +63,7 @@ impl Drop for CaptureLease<'_> {
 pub static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
 
 pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {
-    HOURLY_ADMISSION.enter()
+    // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
+    // hourly exit.
+    unsafe { HOURLY_ADMISSION.enter() }
 }

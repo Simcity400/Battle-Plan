@@ -98,7 +98,9 @@ pub fn split(memory: &impl Memory, lens: [usize; 6]) -> (Split, DivisionsCopyRep
     let mut first = DivisionsJob::new();
     let report = super::copy_divisions_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut frame = Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Captured::new() };
     frame.divisions = vec![carmy::Row::default(); lens[0]];
     frame.extended.test_resize_division_buffers(lens);
     let mut ticks = [0u64; 6];

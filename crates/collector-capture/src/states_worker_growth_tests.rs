@@ -7,7 +7,9 @@ use engine_native::{cstate, walk::Outcome};
 
 #[test]
 fn worker_failure_before_supplement_keeps_visited_demand_for_core_growth() {
-    let mut frame = sampling::Captured::new();
+    let mut frame =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { sampling::Captured::new() };
     frame.states = vec![cstate::Row::default(); 1];
     frame.state_inputs = Inputs::with_capacity(1).unwrap();
     let mut request = frame.take_states_request(0, STATE);

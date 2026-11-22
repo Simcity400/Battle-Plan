@@ -141,17 +141,22 @@ pub(crate) fn batch_left() {
         }
         return;
     }
-    if !capture_gate::begin() {
+    if !
+    // SAFETY: The admitted producer owns this hour's gate and settles it on completion or refusal.
+    unsafe { capture_gate::begin() }
+    {
         unread(full);
         return;
     }
     if crate::command_batch::others_batching() {
-        capture_gate::end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { capture_gate::end() };
         unread(full);
         return;
     }
     if !BESIDE.load(Ordering::SeqCst) {
-        capture_gate::end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { capture_gate::end() };
         if held(full) != Held::Read {
             unread(full);
         }
@@ -167,11 +172,17 @@ pub(crate) fn batch_left() {
     unsafe { WakeByAddressAll(WORK.as_ptr().cast()) };
 }
 
-pub fn settle_next() {
+/// # Safety
+/// Only the active session's history recovery may request settlement, before a subsequent hour can
+/// consume the request and before detaching.
+pub unsafe fn settle_next() {
     SETTLE.store(true, Ordering::Release);
 }
 
-pub fn drain(deadline: Instant) -> bool {
+/// # Safety
+/// Only the runtime's detach sequence may drain the pending capture after closing hourly admission,
+/// before tearing down its capture thread and storage.
+pub unsafe fn drain(deadline: Instant) -> bool {
     DRAINING.store(true, Ordering::SeqCst);
     loop {
         let unread = PENDING.load(Ordering::SeqCst) && PENDING_WORLD.load(Ordering::SeqCst) != 0;
@@ -185,7 +196,10 @@ pub fn drain(deadline: Instant) -> bool {
     }
 }
 
-pub fn take_unread() -> u32 {
+/// # Safety
+/// Only the detaching runtime may consume the pending loss count, after draining the capture point
+/// and before flushing the spool.
+pub unsafe fn take_unread() -> u32 {
     let hours = HOURS.fetch_or(CLOSED, Ordering::SeqCst);
     if hours & CLOSED != 0 {
         return 0;
@@ -251,7 +265,10 @@ enum Held {
 }
 
 fn held(full: bool) -> Held {
-    if !capture_gate::begin() {
+    if !
+    // SAFETY: The admitted producer owns this hour's gate and settles it on completion or refusal.
+    unsafe { capture_gate::begin() }
+    {
         return Held::Refused;
     }
     let _gate = Gate;
@@ -276,23 +293,28 @@ fn hurry() {
     if HURRIED.swap(true, Ordering::SeqCst) {
         return;
     }
-    sampling::hurry();
+    // SAFETY: The capture point is acting for the current live hour.
+    unsafe { sampling::hurry() };
     let thread = THREAD.load(Ordering::SeqCst);
     if thread != 0 {
         // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
         let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
         unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
         if CONFINED.swap(false, Ordering::SeqCst) {
-            collector_workers::cpu_sets::select_away(thread, None);
+            // SAFETY: This policy controls the target collector worker and its handle is live.
+            unsafe { collector_workers::cpu_sets::select_away(thread, None) };
         }
     }
 }
 
-pub fn hurried() -> bool {
+pub(crate) fn hurried() -> bool {
     HURRIED.load(Ordering::SeqCst)
 }
 
-pub fn set_beside(beside: bool) {
+/// # Safety
+/// Only the attaching runtime may select beside capture, before installing the hourly hook and
+/// after starting its worker when needed.
+pub unsafe fn set_beside(beside: bool) {
     BESIDE.store(beside && !FAILED.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
@@ -302,7 +324,11 @@ pub struct Thread {
 }
 
 impl Thread {
-    pub fn start(stack_bytes: usize) -> io::Result<Self> {
+    /// # Safety
+    /// Only the attaching runtime may start the process-wide capture thread, once during attach.
+    /// Keep the returned handle through detach and stop it after closing hourly admission and
+    /// draining the capture point.
+    pub unsafe fn start(stack_bytes: usize) -> io::Result<Self> {
         capture_gate::on_wait(hurry);
         WORK.store(IDLE, Ordering::Release);
         let handle = std::thread::Builder::new()
@@ -312,10 +338,13 @@ impl Thread {
         let raw = handle.as_raw_handle();
         THREAD.store(raw as isize, Ordering::Release);
         let id = unsafe { GetThreadId(raw as _) };
-        collector_workers::thread_cpu::register_id(
-            collector_workers::thread_cpu::Role::Capture,
-            id,
-        );
+        // SAFETY: This updates the designated role of this runtime's owned worker.
+        unsafe {
+            collector_workers::thread_cpu::register_id(
+                collector_workers::thread_cpu::Role::Capture,
+                id,
+            )
+        };
         Ok(Self {
             handle: Some(handle),
             id,
@@ -326,7 +355,10 @@ impl Thread {
         self.id
     }
 
-    pub fn stop(&mut self) {
+    /// # Safety
+    /// Only the runtime may stop its capture thread. First close hourly admission and settle the
+    /// pending capture and keep shared state alive until the thread exits.
+    pub unsafe fn stop(&mut self) {
         BESIDE.store(false, Ordering::SeqCst);
         while capture_gate::running() {
             std::thread::yield_now();
@@ -348,14 +380,17 @@ impl Thread {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        self.stop();
+        // SAFETY: This is the owning runtime's shutdown, while the worker's shared state is still
+        // live.
+        unsafe { self.stop() };
     }
 }
 
 struct Gate;
 impl Drop for Gate {
     fn drop(&mut self) {
-        capture_gate::end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { capture_gate::end() };
     }
 }
 
@@ -579,7 +614,9 @@ pub mod tests {
         let _serial = serial();
         record(true, 3);
         hour_ended(Update::Uncounted);
-        settle_next();
+        // SAFETY: The current history fixture owns settlement, or the active history worker is
+        // requesting refresh before detach.
+        unsafe { settle_next() };
         assert_eq!(take_reads(), [(Placement::Held, false)]);
         hour_ended(Update::Uncounted);
         batch_left();
@@ -588,7 +625,9 @@ pub mod tests {
         assert_eq!(take_reads(), [(Placement::Held, true)]);
         hour_ended(Update::Uncounted);
         assert_eq!(take_reads(), [(Placement::Held, false)]);
-        settle_next();
+        // SAFETY: The current history fixture owns settlement, or the active history worker is
+        // requesting refresh before detach.
+        unsafe { settle_next() };
         hour_ended(Update::Uncounted);
         admit(false);
         update_entered();
@@ -696,7 +735,9 @@ pub mod tests {
         );
         assert_eq!(take_lost(), 1);
         assert_eq!(CAPTURED_WORLD.load(Ordering::SeqCst), 4);
-        settle_next();
+        // SAFETY: The current history fixture owns settlement, or the active history worker is
+        // requesting refresh before detach.
+        unsafe { settle_next() };
         hour_ended(update);
         DRAINING.store(true, Ordering::SeqCst);
         crate::command_batch::tests::observe(true);
@@ -719,8 +760,16 @@ pub mod tests {
         PENDING.store(false, Ordering::SeqCst);
         let inner = update_entered();
         assert_eq!((outer, inner), (Update::Counted, Update::Counted));
-        assert_eq!(take_unread(), 3);
-        assert_eq!(take_unread(), 0);
+        assert_eq!(
+            // SAFETY: Detach has drained capture and transfers the loss count to this session's spool.
+            unsafe { take_unread() },
+            3
+        );
+        assert_eq!(
+            // SAFETY: Detach has drained capture and transfers the loss count to this session's spool.
+            unsafe { take_unread() },
+            0
+        );
         let _ = take_reads();
         hour_ended(inner);
         hour_ended(outer);
@@ -742,7 +791,11 @@ pub mod tests {
             take_reads(),
             [(Placement::Held, false), (Placement::Held, false)]
         );
-        assert_eq!(take_unread(), 0);
+        assert_eq!(
+            // SAFETY: Detach has drained capture and transfers the loss count to this session's spool.
+            unsafe { take_unread() },
+            0
+        );
     }
 
     #[test]
@@ -751,7 +804,11 @@ pub mod tests {
         record(true, 3);
         BESIDE.store(true, Ordering::SeqCst);
         hour_ended(Update::Uncounted);
-        assert!(capture_gate::begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { capture_gate::begin() }
+        );
         serve(|_| {
             assert_eq!(account(), 0);
             panic!("synthetic capture failure")
@@ -760,12 +817,21 @@ pub mod tests {
         assert!(!BESIDE.load(Ordering::SeqCst));
         assert!(FAILED.load(Ordering::SeqCst));
         assert!(owed());
-        set_beside(true);
+        // SAFETY: Attach selects the capture mode before hourly hook publication.
+        unsafe { set_beside(true) };
         assert!(!BESIDE.load(Ordering::SeqCst));
-        assert!(capture_gate::begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { capture_gate::begin() }
+        );
         serve(|_| unreachable!("a failed capture thread reads no more"));
         assert!(!capture_gate::running());
         assert!(PENDING.load(Ordering::SeqCst));
-        assert_eq!(take_unread(), 1);
+        assert_eq!(
+            // SAFETY: Detach has drained capture and transfers the loss count to this session's spool.
+            unsafe { take_unread() },
+            1
+        );
     }
 }

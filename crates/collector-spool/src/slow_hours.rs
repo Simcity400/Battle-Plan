@@ -8,7 +8,7 @@ pub(crate) fn over_budget(callback_ns: u64, phases: &HourPhases) -> bool {
     callback_ns.saturating_add(phases.entry_ns) > BUDGET_NS
 }
 
-pub fn top_tables(
+pub(crate) fn top_tables(
     table_ns: &[u64; replay_data::rows::TABLE_COUNT],
 ) -> [(replay_data::rows::TableId, u64); TOP_TABLES] {
     let mut top = [(replay_data::rows::TableId::Clock, 0); TOP_TABLES];
@@ -36,11 +36,11 @@ const SPOOL_BUDGET_NS: u64 = 100_000_000;
 #[derive(Clone, Copy)]
 pub struct SpoolFrame {
     pub hour: Option<i32>,
-    pub wall_ns: u64,
-    pub cycles: Option<u64>,
+    pub(crate) wall_ns: u64,
+    pub(crate) cycles: Option<u64>,
     pub spool: [(&'static str, u64); 4],
     pub helper: [(&'static str, u64); 4],
-    pub conversion: Option<collector_capture::pack_conversion::HourTop>,
+    pub(crate) conversion: Option<collector_capture::pack_conversion::HourTop>,
 }
 
 pub struct SpoolWatch {
@@ -157,7 +157,7 @@ impl Recorder {
         Ok(())
     }
 
-    pub fn record_spool(&mut self, frame: SpoolFrame) -> std::io::Result<()> {
+    pub(crate) fn record_spool(&mut self, frame: SpoolFrame) -> std::io::Result<()> {
         engine_allocation::reserve(&mut self.spool, 1)?;
         self.spool.push(frame);
         Ok(())

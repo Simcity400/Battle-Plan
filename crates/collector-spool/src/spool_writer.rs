@@ -48,7 +48,10 @@ impl CloseReceipt {
     pub fn result(&self) -> Option<Result<(), io::ErrorKind>> {
         *self.result.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    pub fn complete(&self, result: Result<(), io::ErrorKind>) {
+    /// # Safety
+    /// Only the writer completing this receipt, or an isolated fixture holding its own receipt, may
+    /// publish the result. It must be the actual result for this receipt's close.
+    pub unsafe fn complete(&self, result: Result<(), io::ErrorKind>) {
         let mut outcome = self.result.lock().unwrap_or_else(PoisonError::into_inner);
         if outcome.is_none() {
             *outcome = Some(result);
@@ -564,7 +567,7 @@ pub struct Writer {
     thread: Option<JoinHandle<()>>,
 }
 impl Writer {
-    pub fn start(root: PathBuf) -> io::Result<Self> {
+    pub(crate) fn start(root: PathBuf) -> io::Result<Self> {
         let factory_bytes = root.capacity();
         let writer = Self::start_with(move |campaign| {
             let id = std::str::from_utf8(campaign).map_err(|_| io::ErrorKind::InvalidData)?;
@@ -801,7 +804,7 @@ impl Writer {
         }
     }
 
-    pub fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) {
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
         if let Some(thread) = self.thread.take() {
@@ -1094,7 +1097,9 @@ impl<B: SegmentBackend> Output<B> {
             Self::Direct(spool) => {
                 let receipt = CloseReceipt::default();
                 let result = spool.finish_segment();
-                receipt.complete(result.as_ref().map(|_| ()).map_err(io::Error::kind));
+                // SAFETY: This is the close result from its originating writer, or an isolated
+                // receipt owned by the fixture.
+                unsafe { receipt.complete(result.as_ref().map(|_| ()).map_err(io::Error::kind)) };
                 result.map(|_| receipt)
             }
             Self::Queued {
@@ -1290,7 +1295,9 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
             *watermark = spool.committed_watermark();
         }
         if let Some(receipt) = close {
-            receipt.complete(result.as_ref().map(|_| ()).map_err(io::Error::kind));
+            // SAFETY: This is the close result from its originating writer, or an isolated receipt
+            // owned by the fixture.
+            unsafe { receipt.complete(result.as_ref().map(|_| ()).map_err(io::Error::kind)) };
         }
         let failed = result.as_ref().err().map(io::Error::kind);
         if failed.is_some() {
@@ -1351,7 +1358,9 @@ fn cancel_queued(state: &mut State, kind: io::ErrorKind) {
         if let Command::FinishSegment(receipt) | Command::CloseContext { receipt, .. } =
             &job.command
         {
-            receipt.complete(Err(kind));
+            // SAFETY: This is the close result from its originating writer, or an isolated receipt
+            // owned by the fixture.
+            unsafe { receipt.complete(Err(kind)) };
         }
         state.payload_bytes -= job.payload_bytes;
         state.unfinished_jobs -= 1;

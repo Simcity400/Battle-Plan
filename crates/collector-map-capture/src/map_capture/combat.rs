@@ -29,7 +29,10 @@ pub struct CombatRequest {
 }
 
 impl CombatRequest {
-    pub fn capture(&mut self, memory: &impl Memory) -> CombatReport {
+    /// # Safety
+    /// Run only this admitted hour's unique combat job against the session image. Settle its daily-
+    /// observer loan into the originating frame before admission ends.
+    pub unsafe fn capture(&mut self, memory: &impl Memory) -> CombatReport {
         let mut report = CombatReport::default();
         let mut reads = collector_memory::read_accounting::table(TableId::LandCombats);
         let begin = qpc();
@@ -108,7 +111,10 @@ impl CombatRequest {
 }
 
 impl MapCaptured {
-    pub fn take_combat_request(
+    /// # Safety
+    /// Take the combat buffers once, from the frame exclusively owned by the admitted hour. Return
+    /// the request only to that frame, including on failure.
+    pub unsafe fn take_combat_request(
         &mut self,
         base: usize,
         state: usize,
@@ -137,7 +143,11 @@ impl MapCaptured {
         }
     }
 
-    pub fn restore_combat_request(
+    /// # Safety
+    /// Return this frame's own request exactly once. A successful report must come from executing
+    /// it in this hour. A failed restoration may clear the observer baseline, so only the admitted
+    /// combat owner may perform it.
+    pub unsafe fn restore_combat_request(
         &mut self,
         mut request: CombatRequest,
         report: CombatReport,

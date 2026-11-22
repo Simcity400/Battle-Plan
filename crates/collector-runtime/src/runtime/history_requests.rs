@@ -72,9 +72,14 @@ impl SpoolHistory {
         owned: impl IntoIterator<Item = &'a std::sync::atomic::AtomicU64>,
     ) {
         self.poll_fenced_with(Some((frames, owned)), |text| {
-            processor.try_history_request(text)
+            // SAFETY: The spool supplies the same session's fence and slots for the history
+            // request.
+            unsafe { processor.try_history_request(text) }
         });
-        self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
+        self.restore_with(|campaign, file|
+        // SAFETY: The originating spool has cleared this request through its capture and writer
+        // fence.
+        unsafe { processor.exchange_history_lease(campaign, file) });
     }
 
     pub(super) fn take_refresh_failure(&self) -> bool {
@@ -114,7 +119,9 @@ impl SpoolHistory {
         };
         if let Some((frames, owned)) = frames
             && matches!(text.split_whitespace().nth(1), Some("close" | "release"))
-            && frames.pending(*fence.get_or_insert_with(|| frames.snapshot()), owned)
+            &&
+            // SAFETY: The originating session supplies its own frame slots and fence.
+            unsafe { frames.pending(*fence.get_or_insert_with(|| frames.snapshot()), owned) }
         {
             return;
         }
@@ -223,7 +230,8 @@ impl HistoryWorker {
                 collector_workers::private_heap::off_hold_path();
                 let _phase =
                     collector_memory::terminal::enter(collector_memory::terminal::Phase::History);
-                collector_workers::priority::OwnPriority::new().follow(false);
+                // SAFETY: The owning worker adjusts only its own thread's priority.
+                unsafe { collector_workers::priority::OwnPriority::new().follow(false) };
                 worker_id.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                     Ordering::Release,
@@ -617,7 +625,10 @@ mod tests {
                 processor,
                 || now,
                 |processor, text| {
-                    let (reply, lease) = processor.try_history_request(text)?.unwrap();
+                    let (reply, lease) =
+                    // SAFETY: The spool supplies the same session's fence and slots for the
+                    // history request.
+                    unsafe { processor.try_history_request(text) }?.unwrap();
                     drop(lease);
                     Ok(reply)
                 },
@@ -632,7 +643,11 @@ mod tests {
                     let lease = path
                         .map(|path| collector_spool::history::lease(&path))
                         .transpose()?;
-                    drop(processor.exchange_history_lease(campaign, lease));
+                    drop(
+                        // SAFETY: The originating spool has cleared this request through its capture
+                        // and writer fence.
+                        unsafe { processor.exchange_history_lease(campaign, lease) },
+                    );
                     Ok(())
                 },
             )
@@ -772,7 +787,9 @@ mod tests {
         let mut began = 0;
         for finished in [false, false, true, true] {
             if finished {
-                receipt.complete(Ok(()));
+                // SAFETY: This is the close result from its originating writer, or an isolated
+                // receipt owned by the fixture.
+                unsafe { receipt.complete(Ok(())) };
             }
             requests
                 .poll_with(
@@ -839,22 +856,44 @@ mod tests {
             }
             assert_eq!(transitions, 1);
             assert!(!path.with_extension("ack").exists());
-            let shared = collector_capture::sampling::Shared::new(0, 0, 1);
+            let shared =
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
             let held: Vec<_> = (0..collector_capture::sampling::BUFFERS)
-                .map(|_| shared.frames.pop().unwrap())
+                .map(|_|
+                    // SAFETY: This consumer owns the queue removal for the named pool.
+                    unsafe {  shared.frames() .pop() }.unwrap())
                 .collect();
-            assert_eq!(shared.frames.len(), 0);
+            assert_eq!(
+                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                unsafe { shared.frames() }.len(),
+                0
+            );
             for &index in &held {
                 spool.poll_with(|_| panic!("worker is blocked outside the handoff"));
-                shared.recycle_frame(index);
+                // SAFETY: This is the last owner of the installed slot and all other uses have
+                // ended.
+                unsafe { shared.recycle_frame(index) };
                 let mut wait = u64::MAX;
-                assert_eq!(shared.take_frame(&mut wait), Some(index));
+                assert_eq!(
+                    // SAFETY: This is the admitted hour or isolated fixture taking exclusive ownership
+                    // of an installed slot.
+                    unsafe { shared.take_frame(&mut wait) },
+                    Some(index)
+                );
                 assert_eq!(wait, 0);
             }
             for index in held {
-                shared.recycle_frame(index);
+                // SAFETY: This is the last owner of the installed slot and all other uses have
+                // ended.
+                unsafe { shared.recycle_frame(index) };
             }
-            assert_eq!(shared.frames.len(), collector_capture::sampling::BUFFERS);
+            assert_eq!(
+                // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
+                unsafe { shared.frames() }.len(),
+                collector_capture::sampling::BUFFERS
+            );
             release.send(()).unwrap();
             worker.join().unwrap();
         });
@@ -1058,7 +1097,9 @@ mod tests {
             std::thread::yield_now();
         }
         let frames = collector_workers::frame_fence::Frames::default();
-        let acquiring = frames.capture();
+        let acquiring =
+        // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+        unsafe { frames.capture() };
         handoff.poll_fenced_with(Some((&frames, std::iter::empty())), |_| {
             panic!("capture has not drained")
         });
@@ -1197,23 +1238,31 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            Processor::new(&live, PreparedCampaigns::default(), session(1)).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&live, PreparedCampaigns::default(), session(1)) }.unwrap();
         for index in 0..2 {
-            let capture = frames.capture();
-            capture.frame(&owned[index]);
+            let capture =
+            // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+            unsafe { frames.capture() };
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { capture.frame(&owned[index]) };
         }
-        processor
-            .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
-            .unwrap();
-        frames.recycle(&owned[0]);
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10)) }.unwrap();
+        // SAFETY: The spool or refusing capture is the last owner of this frame slot.
+        unsafe { frames.recycle(&owned[0]) };
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0001 close {CAMPAIGN} 1234")));
         spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
-        processor
-            .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 11))
-            .unwrap();
-        frames.recycle(&owned[1]);
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 11)) }.unwrap();
+        // SAFETY: The spool or refusing capture is the last owner of this frame slot.
+        unsafe { frames.recycle(&owned[1]) };
         spool.poll(&mut processor, &frames, &owned);
         let Some(Response::Began(Ok((HistoryReply::Closing { receipt, .. }, None)))) =
             mailbox.lock().unwrap().response.take()
@@ -1234,7 +1283,9 @@ mod tests {
             settings: &settings,
             report: None,
         };
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         let ended = recorder_replay::replay_io::finalize_session_ahead(
             &live,
             &root.join("recordings"),
@@ -1267,35 +1318,51 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
         let mut processor =
-            Processor::new(&root, PreparedCampaigns::default(), session(1)).unwrap();
-        let capture = frames.capture();
-        capture.frame(&owned[0]);
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&root, PreparedCampaigns::default(), session(1)) }.unwrap();
+        let capture =
+        // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+        unsafe { frames.capture() };
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { capture.frame(&owned[0]) };
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
         spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
         drop(capture);
         spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
-        processor
-            .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
-            .unwrap();
-        frames.recycle(&owned[0]);
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10)) }.unwrap();
+        // SAFETY: The spool or refusing capture is the last owner of this frame slot.
+        unsafe { frames.recycle(&owned[0]) };
         spool.poll(&mut processor, &frames, &owned);
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0001 refused the campaign is recording"));
-        let capture = frames.capture();
-        capture.frame(&owned[1]);
+        let capture =
+        // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+        unsafe { frames.capture() };
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { capture.frame(&owned[1]) };
         drop(capture);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0002 close {CAMPAIGN} 1234")));
         spool.poll(&mut processor, &frames, &owned);
         assert!(mailbox.lock().unwrap().response.is_none());
-        processor
-            .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, 20))
-            .unwrap();
-        frames.recycle(&owned[1]);
-        let later_b = frames.capture();
-        later_b.frame(&owned[2]);
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, 20)) }.unwrap();
+        // SAFETY: The spool or refusing capture is the last owner of this frame slot.
+        unsafe { frames.recycle(&owned[1]) };
+        let later_b =
+        // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
+        unsafe { frames.capture() };
+        // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+        // consuming it.
+        unsafe { later_b.frame(&owned[2]) };
         spool.poll(&mut processor, &frames, &owned);
         assert!(matches!(mailbox.lock().unwrap().response.take(),
             Some(Response::Began(Ok((HistoryReply::Ready(ack), None)))) if ack == "0002 refused the campaign was loaded again"));
@@ -1333,21 +1400,28 @@ mod tests {
             ended.replays[0].clone()
         };
         let mut processor =
-            Processor::new(&earlier, PreparedCampaigns::default(), session(1)).unwrap();
+            // SAFETY: The caller owns the session or isolated fixture state required by this
+            // constructor.
+            unsafe { Processor::new(&earlier, PreparedCampaigns::default(), session(1)) }.unwrap();
         for hour in 10..=11 {
-            processor
-                .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, hour))
-                .unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, hour)) }.unwrap();
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         drop(processor);
         let recording = save(&earlier);
         let history = PreparedCampaigns::load(&output, &session(2), |_| Ok(())).unwrap();
-        let mut processor = Processor::new(&live, history, session(2)).unwrap();
+        let mut processor =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Processor::new(&live, history, session(2)) }.unwrap();
         for hour in 20..=21 {
-            processor
-                .frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, hour))
-                .unwrap();
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { processor.frame(&campaign_frame(CAMPAIGN.as_bytes(), 5678, hour)) }.unwrap();
         }
         fs::create_dir_all(live.join("history-requests")).unwrap();
         let mut requests = HistoryRequests::default();
@@ -1381,7 +1455,9 @@ mod tests {
                 );
             }
         }
-        processor.detach().unwrap();
+        // SAFETY: This spool's frame and command processing have finished before its processor is
+        // closed.
+        unsafe { processor.detach() }.unwrap();
         drop(processor);
         detached(&live).unwrap();
         assert!(live.join("history-requests/detached").exists());

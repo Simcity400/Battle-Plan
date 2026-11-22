@@ -135,7 +135,10 @@ fn assert_drained(pool: &Pool, jobs: &Jobs) {
     }
 }
 
-pub fn exercise(case: &str) {
+/// # Safety
+/// Run only in an isolated fixture process with no collector attached and no concurrent terminal-
+/// state readers or writers. This fixture resets and injects the process-wide terminal witness.
+pub unsafe fn exercise(case: &str) {
     collector_memory::terminal::reset();
     collector_memory::terminal::install_hooks();
     match case {

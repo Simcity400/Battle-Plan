@@ -52,7 +52,10 @@ type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 pub struct Guard(Option<Arc<Hook>>);
 
 impl Guard {
-    pub fn install(progress: &Path, opened: Instant) -> Self {
+    /// # Safety
+    /// Only attach may install the process-wide panic hook for its workers, or an isolated test may
+    /// install it with exclusive use of the process hook.
+    pub unsafe fn install(progress: &Path, opened: Instant) -> Self {
         let file = std::fs::OpenOptions::new().append(true).open(progress).ok();
         let previous = Arc::new(std::panic::take_hook());
         let chained = Arc::clone(&previous);

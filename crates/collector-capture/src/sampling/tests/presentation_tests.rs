@@ -74,7 +74,9 @@ fn unrelated(index: usize) -> acquisition::Job {
 
 #[test]
 fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let prepare = Arc::new(Gate::default());
     let last_range = Arc::new(Gate::default());
     let later_join = Arc::new(Gate::default());
@@ -190,7 +192,10 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
 #[test]
 fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_retry() {
     for fail_prepare in [true, false] {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let stitches = Arc::new(AtomicUsize::new(0));
         let pool = acquisition::Pool::with_test_runner(3, {
             let stitches = Arc::clone(&stitches);
@@ -250,9 +255,12 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
 
 #[test]
 fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let pool = acquisition::Pool::with_test_runner(1, |_| panic!("rejected presentation ran"));
-    pool.shutdown().unwrap();
+    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+    unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
     let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
@@ -281,7 +289,9 @@ fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
 
 #[test]
 fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leases() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let pool =
         acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
     let mut request = request();
@@ -310,7 +320,9 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
 
 #[test]
 fn presentation_second_preparation_yields_to_unrelated_dispatches() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let gate = Arc::new(Gate::default());
     let prepares = AtomicUsize::new(0);
     let (started, running) = mpsc::channel();
@@ -368,7 +380,9 @@ fn presentation_second_preparation_yields_to_unrelated_dispatches() {
 
 #[test]
 fn final_status_publication_dispatches_stitch_before_unrelated_join() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let last_preparation = Arc::new(Gate::default());
     let last = Arc::new(Gate::default());
     let stitched = Arc::new(Gate::default());
@@ -494,7 +508,10 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
 #[test]
 fn settle_worker_releases_status_without_callback_collection_and_drains_its_children() {
     for drain in [false, true] {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let (started, running) = mpsc::channel();
         let pool = acquisition::Pool::with_test_runner(3, move |job| {
             if matches!(job, acquisition::Job::PresentationStatus(request)
@@ -557,7 +574,10 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
 
     for (fail_parent, fail_child) in [(false, false), (true, false), (false, true)] {
         let reads = Capture::new();
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let children = Arc::new(Gate::default());
         let parent = Arc::new(Gate::default());
         let (started, running) = mpsc::channel();
@@ -671,7 +691,9 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
 
 #[test]
 fn presentation_continuations_reuse_pool_storage_without_callback_allocations() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let pool =
         acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
     for _ in 0..2 {
@@ -709,7 +731,10 @@ fn presentation_continuations_reuse_pool_storage_without_callback_allocations() 
 fn input_publishers_release_presentation_before_callback_collection_and_drain_on_exit() {
     use super::super::divisions_test_kit as kit;
     for (drain, collect_early) in [(false, false), (false, true), (true, false)] {
-        let shared = Shared::new(0, 0, 1);
+        let shared =
+        // SAFETY: The caller owns the session or isolated fixture state required by this
+        // constructor.
+        unsafe { Shared::new(0, 0, 1) };
         let mut bytes = kit::fixture();
         let roster = bytes.len();
         bytes.resize(roster + 1_024 * 8, 0);
@@ -926,7 +951,9 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
 #[test]
 fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing() {
     use super::super::divisions_test_kit as kit;
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let bytes = kit::fixture();
     let context = DivisionsCopyContext {
         base: kit::BASE,
@@ -1050,7 +1077,9 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
 
 #[test]
 fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry() {
-    let shared = Shared::new(0, 0, 1);
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
     let release = Arc::new(Gate::default());
     let stitches = Arc::new(AtomicUsize::new(0));
     let (started, running) = mpsc::channel();
