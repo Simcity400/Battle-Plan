@@ -9,6 +9,9 @@ use std::{
 
 const BITS: usize = u64::BITS as usize;
 
+#[repr(align(64))]
+struct Hot(AtomicUsize);
+
 struct Bits {
     words: Vec<AtomicU64>,
 }
@@ -43,7 +46,7 @@ pub struct DirtySet {
     capacity: AtomicUsize,
     requested: AtomicUsize,
     epoch: AtomicU64,
-    active: AtomicUsize,
+    active: Hot,
     enabled: AtomicBool,
     poisoned: AtomicBool,
     installs: AtomicU64,
@@ -74,7 +77,7 @@ impl DirtySet {
             capacity: AtomicUsize::new(0),
             requested: AtomicUsize::new(0),
             epoch: AtomicU64::new(1),
-            active: AtomicUsize::new(0),
+            active: Hot(AtomicUsize::new(0)),
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             installs: AtomicU64::new(0),
@@ -130,13 +133,13 @@ impl DirtySet {
 
     #[inline]
     pub fn notify(&self, id: usize) -> Dirty<'_> {
-        self.active.fetch_add(1, SeqCst);
+        self.active.0.fetch_add(1, SeqCst);
         let mark = self.mark(id);
         Dirty { set: self, mark }
     }
 
     pub fn notify_every(&self) -> Dirty<'_> {
-        self.active.fetch_add(1, SeqCst);
+        self.active.0.fetch_add(1, SeqCst);
         self.everies.fetch_add(1, Relaxed);
         self.new_epoch();
         Dirty {
@@ -149,7 +152,7 @@ impl DirtySet {
         if !self.observing() {
             return None;
         }
-        if self.active.load(SeqCst) != 0 {
+        if self.active.0.load(SeqCst) != 0 {
             self.refused.fetch_add(1, Relaxed);
             return None;
         }
@@ -168,7 +171,7 @@ impl DirtySet {
             }
         }
         self.taken.fetch_add(taken, Relaxed);
-        if self.epoch.load(SeqCst) == epoch && self.active.load(SeqCst) == 0 {
+        if self.epoch.load(SeqCst) == epoch && self.active.0.load(SeqCst) == 0 {
             Some(epoch)
         } else {
             self.refused.fetch_add(1, Relaxed);
@@ -185,12 +188,12 @@ impl DirtySet {
             if !self.offered.load(SeqCst).is_null() {
                 self.held.fetch_add(1, Relaxed);
             }
-            if self.active.load(SeqCst) == 0 {
+            if self.active.0.load(SeqCst) == 0 {
                 self.retire_drained();
             }
             return false;
         }
-        if self.active.load(SeqCst) != 0 {
+        if self.active.0.load(SeqCst) != 0 {
             if !self.offered.load(SeqCst).is_null() || !self.draining.load(SeqCst).is_null() {
                 self.deferred.fetch_add(1, Relaxed);
             }
@@ -214,7 +217,7 @@ impl DirtySet {
         }
         self.installs.fetch_add(1, Relaxed);
         self.draining.store(previous, SeqCst);
-        if self.active.load(SeqCst) == 0 {
+        if self.active.0.load(SeqCst) == 0 {
             self.retire_drained();
         }
         true
@@ -291,7 +294,7 @@ impl DirtySet {
     }
 
     pub fn active(&self) -> usize {
-        self.active.load(SeqCst)
+        self.active.0.load(SeqCst)
     }
 
 }
@@ -329,7 +332,7 @@ impl Drop for Dirty<'_> {
             }
             Mark::Every => self.set.new_epoch(),
         }
-        self.set.active.fetch_sub(1, SeqCst);
+        self.set.active.0.fetch_sub(1, SeqCst);
     }
 }
 

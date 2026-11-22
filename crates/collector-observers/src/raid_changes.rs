@@ -102,6 +102,7 @@ impl Watches {
         }
     }
 
+    #[inline]
     pub fn notify(&self, site: usize, target: Target) -> Option<Dirty<'_>> {
         if site == ORIGIN_ROUTE_SITE {
             self.origin_calls.fetch_add(1, Ordering::Relaxed);
@@ -267,6 +268,7 @@ impl Changes for Observer {
     }
 }
 
+#[inline(always)]
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     match receiver {
@@ -311,6 +313,7 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
     }
 }
 
+#[inline(always)]
 fn note_air_clear(site: usize) {
     if site == 21 || site == 22 {
         AIR_CLEARS.fetch_add(1, Ordering::SeqCst);

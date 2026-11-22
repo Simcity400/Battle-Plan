@@ -174,7 +174,35 @@ fn event(
     });
     Ok(())
 }
+fn record_registered(
+    store: &mut Store,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    handle: u64,
+) {
+    if !store.interests.organisations.contains_key(&handle) {
+        return;
+    }
+    let result = (|| {
+        store.interests.author_changed(handle);
+        let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
+            .ok_or("design organisation liveness identity mismatch")?;
+        if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64) {
+            return Err("design organisation liveness identity mismatch");
+        }
+        let resolved = engine_native::creference_registry::resolve(memory, base, handle)?;
+        store.interests.organisation(handle, resolved)?;
+        event(store, memory, base, handle, pointer, resolved.is_some())
+    })();
+    if let Err(reason) = result {
+        store.batch.failure = Some(reason);
+    }
+}
 pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
+    if !DEMANDED.load(Ordering::Acquire) {
+        return;
+    }
     let Some(store) = STORE.get() else {
         return;
     };
@@ -186,32 +214,12 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    let result = (|| {
-        if !store.interests.organisations.contains_key(&handle) {
-            return Ok(());
-        }
-        store.interests.author_changed(handle);
-        let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
-            .ok_or("design organisation liveness identity mismatch")?;
-        if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64) {
-            return Err("design organisation liveness identity mismatch");
-        }
-        let resolved = engine_native::creference_registry::resolve(memory, base, handle)?;
-        store.interests.organisation(handle, resolved)?;
-        event(
-            &mut store,
-            memory,
-            base,
-            handle,
-            pointer,
-            resolved.is_some(),
-        )
-    })();
-    if let Err(reason) = result {
-        store.batch.failure = Some(reason);
-    }
+    record_registered(&mut store, memory, base, pointer, handle);
 }
 pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
+    if !DEMANDED.load(Ordering::Acquire) {
+        return;
+    }
     let Some(store) = STORE.get() else {
         return;
     };
@@ -232,19 +240,35 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
     if !LIVENESS_BASELINE.load(Ordering::Acquire) || !DEMANDED.load(Ordering::Acquire) {
         return;
     }
+    let Some(store) = STORE.get() else {
+        return;
+    };
     let Some(array) = Array::read(memory, header, 8) else {
         unobserved!();
         return;
     };
+    if array.count == 0 {
+        return;
+    }
+    let mut store = callback_store(store);
+    if store.epoch != EPOCH.load(Ordering::Acquire) || store.interests.organisations.is_empty() {
+        return;
+    }
     for ordinal in 0..array.count {
         let pointer = array
             .element(ordinal, 8)
             .and_then(|at| engine_native::read::<u64>(memory, at));
-        if let Some(pointer) = pointer {
-            registered(memory, base, pointer as usize);
-        } else {
+        let Some(pointer) = pointer else {
             unobserved!();
-        }
+            continue;
+        };
+        let Some(handle) =
+            engine_native::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
+        else {
+            unobserved!();
+            continue;
+        };
+        record_registered(&mut store, memory, base, pointer as usize, handle);
     }
 }
 pub(super) fn refresh_context(

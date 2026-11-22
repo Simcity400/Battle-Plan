@@ -60,11 +60,18 @@ static SCRIPT_CAPACITY: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 static SPARE: Mutex<Option<Store>> = Mutex::new(None);
 static RETIRED: Mutex<Option<Store>> = Mutex::new(None);
 
+#[inline]
+fn raise_relaxed(slot: &AtomicUsize, value: usize) {
+    if value > slot.load(Ordering::Relaxed) {
+        slot.fetch_max(value, Ordering::Relaxed);
+    }
+}
+
 fn script_demands(store: &Store) {
-    DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
-    SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
-    SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
-    SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+    raise_relaxed(&DEMAND, store.capacity_demand());
+    raise_relaxed(&SCRIPT_TOKEN_DEMAND, store.token_demand);
+    raise_relaxed(&SCRIPT_SCOPE_DEMAND, store.scope_demand);
+    raise_relaxed(&SCRIPT_GRAPH_DEMAND, store.graph_demand);
 }
 fn script_capacities(store: &Store) {
     CAPACITY.store(store.capacity(), Ordering::Release);
@@ -866,7 +873,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
             ),
             _ => Err(store.reject("Event feed CALL owner differs")),
         };
-        DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+        raise_relaxed(&DEMAND, store.capacity_demand());
         let ticket = ticket?;
         frame.ticket.write(ticket);
         frame.generation = generation;
@@ -903,7 +910,7 @@ pub fn record(
                 store.reject(reason);
             }
         }
-        DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+        raise_relaxed(&DEMAND, store.capacity_demand());
     });
 }
 
@@ -935,10 +942,7 @@ pub fn record_script(
                 store.reject(reason);
             }
         }
-        DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
-        SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
-        SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
-        SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+        script_demands(store);
     });
 }
 
@@ -977,10 +981,7 @@ pub fn registered_script_instance(state: usize, event: usize, scope: usize, inst
             if let Err(reason) = result {
                 store.reject(reason);
             }
-            DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
-            SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
-            SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
-            SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+            script_demands(store);
         });
     }
 }

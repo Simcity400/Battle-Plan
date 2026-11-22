@@ -1,11 +1,33 @@
 
 use std::{
+    cell::Cell,
     ptr,
     sync::atomic::{
         AtomicBool, AtomicPtr, AtomicU64, AtomicUsize,
         Ordering::{Relaxed, SeqCst},
     },
 };
+
+thread_local! {
+    static QUIESCENT_GROWTH: Cell<bool> = const { Cell::new(false) };
+}
+
+struct QuiescentGrowth(bool);
+impl Drop for QuiescentGrowth {
+    fn drop(&mut self) {
+        QUIESCENT_GROWTH.set(self.0);
+    }
+}
+
+/// # Safety
+/// The caller holds the native world's quiescent acquisition lease and
+/// exclusively owns capture and registration for every registry bounded inside
+/// `f`. No certificate query, concurrent boundary, or release may run during
+/// `f`.
+pub unsafe fn with_quiescent_growth<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = QuiescentGrowth(QUIESCENT_GROWTH.replace(true));
+    f()
+}
 
 const RUNNING_BITS: u32 = 20;
 const RUNNING_LIMIT: u64 = 1 << (RUNNING_BITS - 1);
@@ -79,7 +101,8 @@ impl Table {
         let first = crate::table_hash::slot(address as u64, self.slots.len());
         for probe in 0..PROBES.min(self.slots.len()) {
             let index = (first + probe) & mask;
-            let slot = &self.slots[index];
+            // SAFETY: `self.slots.len()` is a non-zero power of two and `mask == len - 1`, so `index < len`.
+            let slot = unsafe { self.slots.get_unchecked(index) };
             let mut current = slot.address.load(SeqCst);
             if current == 0 && register {
                 match slot.address.compare_exchange(0, address, SeqCst, SeqCst) {
@@ -145,6 +168,7 @@ pub struct WatchRegistry {
     enabled: AtomicBool,
     poisoned: AtomicBool,
     refused: AtomicU64,
+    refused_at_offer: AtomicU64,
     clears: AtomicU64,
     installs: AtomicU64,
     deferred: AtomicU64,
@@ -205,6 +229,7 @@ impl WatchRegistry {
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             refused: AtomicU64::new(0),
+            refused_at_offer: AtomicU64::new(0),
             clears: AtomicU64::new(0),
             installs: AtomicU64::new(0),
             deferred: AtomicU64::new(0),
@@ -321,6 +346,45 @@ impl WatchRegistry {
 
     fn observing(&self) -> bool {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
+    }
+
+    #[inline]
+    fn bump_revision(&self) {
+        let current = self.state.0.load(Relaxed);
+        if current & UNTRUSTED == 0 && revision(current) < LAST_REVISION - (RUNNING_LIMIT / 2) {
+            let before = self.state.0.fetch_add(REVISION, SeqCst);
+            if before & UNTRUSTED == 0 && revision(before) < LAST_REVISION {
+                return;
+            }
+            self.admit_overflow(REVISION);
+            return;
+        }
+        let counted = self.enter();
+        self.leave(counted);
+    }
+
+    #[inline]
+    pub fn touch(&self, receiver: usize) {
+        self.bump_revision();
+        let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
+            Some(table) => match table.find(receiver, false) {
+                Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
+                _ => (None, None),
+            },
+            None => (None, None),
+        };
+        if let Some(sequence) = sequence {
+            self.increment(sequence);
+        }
+        if let Some((word, bit)) = mark {
+            mark_slot(word, bit);
+        }
+    }
+
+    #[inline]
+    pub fn touch_every(&self) {
+        self.bump_revision();
+        self.new_epoch();
     }
 
     #[inline]
@@ -527,11 +591,18 @@ impl WatchRegistry {
         let first = self.table.load(SeqCst).is_null();
         let restart = invalidate || first;
         if !restart {
-            if full || !self.offered.load(SeqCst).is_null() {
-                self.held.fetch_add(1, Relaxed);
-            }
             if self.quiet_now() {
                 self.retire_drained();
+            }
+            if QUIESCENT_GROWTH.get()
+                && !self.offered.load(SeqCst).is_null()
+                // SAFETY: `with_quiescent_growth` guarantees exclusive capture/registration ownership.
+                && unsafe { self.install_growth_quiescent_preserving() }
+            {
+                return Boundary::Installed;
+            }
+            if full || !self.offered.load(SeqCst).is_null() {
+                self.held.fetch_add(1, Relaxed);
             }
             return Boundary::Unchanged;
         }
@@ -587,8 +658,19 @@ impl WatchRegistry {
     /// certificate query, boundary or release may run during the call. Status
     /// readers, offers and collection of an earlier retired table may run.
     pub unsafe fn install_growth_quiescent(&self) -> bool {
-        if self.marking
-            || !self.observing()
+        if self.marking {
+            return false;
+        }
+        // SAFETY: caller upholds the quiescent acquisition lease and exclusive capture/registration ownership.
+        unsafe { self.install_growth_quiescent_preserving() }
+    }
+
+    /// # Safety
+    /// The caller holds the native world's quiescent acquisition lease and
+    /// exclusively owns this registry's capture/registration side. No
+    /// certificate query, boundary or release may run during the call.
+    unsafe fn install_growth_quiescent_preserving(&self) -> bool {
+        if !self.observing()
             || !self.draining.load(SeqCst).is_null()
             || !self.retired.load(SeqCst).is_null()
         {
@@ -606,15 +688,25 @@ impl WatchRegistry {
         let Some(next) = (unsafe { offered.as_ref() }) else {
             return false;
         };
+        let mut copied_count = 0usize;
         let copied = next.slots.len() > old.slots.len()
-            && old.slots.iter().all(|slot| {
+            && old.slots.iter().enumerate().all(|(old_index, slot)| {
                 let receiver = slot.address.load(SeqCst);
                 if receiver == 0 {
                     return true;
                 }
                 match next.find(receiver, true) {
-                    Lookup::Watched(_, sequence) | Lookup::Registered(_, sequence) => {
+                    Lookup::Watched(new_index, sequence)
+                    | Lookup::Registered(new_index, sequence) => {
                         sequence.store(slot.sequence.load(SeqCst), SeqCst);
+                        if self.marking
+                            && let Some((old_word, old_bit)) = old.mark_of(old_index)
+                            && old_word.load(SeqCst) & old_bit != 0
+                            && let Some((new_word, new_bit)) = next.mark_of(new_index)
+                        {
+                            mark_slot(new_word, new_bit);
+                        }
+                        copied_count += 1;
                         true
                     }
                     _ => false,
@@ -634,8 +726,17 @@ impl WatchRegistry {
         }
         self.table.store(offered, SeqCst);
         self.capacity.store(next.slots.len(), Relaxed);
+        self.registered.store(copied_count, Relaxed);
         self.installs.fetch_add(1, Relaxed);
-        self.retired.store(previous, SeqCst);
+        if self.quiet_state() == Some(state) {
+            self.retired.store(previous, SeqCst);
+        } else {
+            self.new_epoch();
+            self.draining.store(previous, SeqCst);
+            if self.quiet_now() {
+                self.retire_drained();
+            }
+        }
         true
     }
 
@@ -652,7 +753,7 @@ impl WatchRegistry {
     }
 
     pub fn offer(&self, watches: usize) {
-        let Some(len) = watches
+        let Some(mut len) = watches
             .checked_mul(SLOTS_PER_WATCH)
             .and_then(|slots| slots.max(MIN_SLOTS).checked_next_power_of_two())
         else {
@@ -660,7 +761,17 @@ impl WatchRegistry {
             self.failed_offers.fetch_add(1, Relaxed);
             return;
         };
-        self.offer_slots(len);
+        let refused = self.refused.load(Relaxed);
+        let cap = self.capacity.load(Relaxed);
+        if refused > self.refused_at_offer.load(Relaxed)
+            && cap != 0
+            && let Some(grown) = cap.checked_mul(2)
+        {
+            len = len.max(grown);
+        }
+        if self.offer_slots(len) {
+            self.refused_at_offer.fetch_max(refused, Relaxed);
+        }
     }
 
     pub fn growth_pending(&self) -> bool {
@@ -697,18 +808,19 @@ impl WatchRegistry {
         registry
     }
 
-    fn offer_slots(&self, len: usize) {
+    fn offer_slots(&self, len: usize) -> bool {
         if len <= self.requested.load(SeqCst) {
-            return;
+            return false;
         }
         let Some(table) = Table::new(len, self.marking) else {
             self.failed_offers.fetch_add(1, Relaxed);
-            return;
+            return false;
         };
         self.requested.store(len, SeqCst);
         let previous = self.offered.swap(Box::into_raw(table), SeqCst);
         // SAFETY: an offered table was never installed; the swap owns it.
         unsafe { free(previous) };
+        true
     }
 
     pub fn collect(&self) {
@@ -1748,5 +1860,49 @@ mod tests {
         unsafe {
             registry.release();
         }
+    }
+    #[test]
+    fn quiescent_growth_boundary_preserves_sequences_marks_and_self_heals_refusals() {
+        let marking = WatchRegistry::marking();
+        marking.offer_slots(64);
+        marking.boundary(false);
+        marking.set_enabled(true);
+        let a = marking.sequence(0x1000).unwrap();
+        let b = marking.sequence(0x2000).unwrap();
+        drop(marking.notify(0x2000));
+        let b_after = marking.sequence(0x2000).unwrap();
+        assert_ne!(b_after, b);
+        let quiet = marking.quiet().unwrap();
+        marking.offer(500);
+        assert_eq!(marking.boundary(false), Boundary::Unchanged);
+        collector_test_support::with_allocations_denied(|| {
+            assert_eq!(
+                unsafe { with_quiescent_growth(|| marking.boundary(false)) },
+                Boundary::Installed
+            );
+        });
+        assert_eq!(marking.quiet(), Some(quiet));
+        assert_eq!(marking.sequence(0x1000), Some(a));
+        assert_eq!(marking.sequence(0x2000), Some(b_after));
+        assert_eq!(take(&marking), (Some(a.0), vec![0x2000]));
+        assert_eq!(marking.registered(), 2);
+        marking.collect();
+        unsafe { marking.release() };
+
+        let small = registry(4);
+        for address in [8, 16, 24, 32] {
+            small.sequence(address).unwrap();
+        }
+        assert!(small.sequence(40).is_none());
+        assert_eq!(small.refused(), 1);
+        small.offer(1);
+        assert_eq!(
+            unsafe { with_quiescent_growth(|| small.boundary(false)) },
+            Boundary::Installed
+        );
+        assert!(small.capacity() >= 1024);
+        assert!(small.sequence(40).is_some());
+        small.collect();
+        unsafe { small.release() };
     }
 }

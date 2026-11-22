@@ -225,31 +225,29 @@ pub fn variant_availability(stamp: u64, validate: fn(u64) -> bool) {
     WATCHES.variants.set_enabled(validate(stamp));
 }
 
-pub fn variant_before(variant: usize) {
+pub fn variant_before(_variant: usize) {
     VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
-    drop(WATCHES.variants.notify(variant));
 }
 
 pub fn variant_after(variant: usize, unwound: bool) {
     if unwound {
         WATCHES.variants.poison();
     }
-    drop(WATCHES.variants.notify(variant));
+    WATCHES.variants.touch(variant);
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
 pub fn variants_before() {
     VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
-    drop(WATCHES.variants.notify_every());
 }
 
 pub fn variants_after(unwound: bool) {
     if unwound {
         WATCHES.variants.poison();
     }
-    drop(WATCHES.variants.notify_every());
+    WATCHES.variants.touch_every();
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 

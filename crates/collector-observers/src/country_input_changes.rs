@@ -866,6 +866,7 @@ fn raid_forward(site: usize) -> Option<Forward> {
     }
 }
 
+#[inline(always)]
 pub fn forwarded_raid(site: usize, first: usize, second: usize) -> Marks<'static> {
     match raid_forward(site) {
         Some(forward) => forwarded(forward, first, second),

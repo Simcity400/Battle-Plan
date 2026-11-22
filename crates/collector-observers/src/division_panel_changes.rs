@@ -41,28 +41,26 @@ pub fn variant_capability_is_current(stamp: u64) -> bool {
 }
 pub fn variant_invalidation_before() {
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
-    drop(VARIANTS.notify_every());
 }
 pub fn variant_invalidation_after(unwound: bool) {
     if unwound {
         VARIANTS.poison();
     }
-    drop(VARIANTS.notify_every());
+    VARIANTS.touch_every();
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 pub fn variant_retiring(receiver: usize) {
-    drop(LIFETIMES.notify(receiver));
+    LIFETIMES.touch(receiver);
 }
-pub fn variant_before(receiver: usize) {
+pub fn variant_before(_receiver: usize) {
     VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
-    drop(VARIANTS.notify(receiver));
 }
 pub fn variant_after(receiver: usize, unwound: bool) {
     if unwound {
         VARIANTS.poison();
         LIFETIMES.poison();
     }
-    drop(VARIANTS.notify(receiver));
+    VARIANTS.touch(receiver);
     VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 pub fn variant_sequence(receiver: usize) -> Option<(u64, u64)> {

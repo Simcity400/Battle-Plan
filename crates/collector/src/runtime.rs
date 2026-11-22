@@ -5058,7 +5058,7 @@ impl SizingThread {
             drop(retired);
             return;
         }
-        let wake = held.len() >= 16;
+        let wake = held.len() >= 64;
         drop(held);
         if wake {
             thread.thread().unpark();
@@ -5188,9 +5188,10 @@ fn sizing_pass(
         hint_demand,
     ) && once_a_second;
     let span = phases.span(Phase::Sizing);
-    if let Some(logistics_rows) = registry
-        .poll_logistics(&live, base)
-        .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
+    if (capacity_census || registry.last_logistics.is_none())
+        && let Some(logistics_rows) = registry
+            .poll_logistics(&live, base)
+            .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.logistics.raise(logistics_rows)
@@ -5346,20 +5347,26 @@ fn sizing_pass(
         crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
     }
     let span = span.switch(Phase::Sizing);
-    crate::naval_result_sources::prepare(&live, base);
-    let naval_result_capacity = crate::naval_result_sources::demand();
-    sizing.raise(shared, |capacities| {
-        let sources = &mut capacities.extended.naval_result_sources;
-        *sources = (*sources).max(naval_result_capacity);
-    });
-    if let Some(lines) = registry.poll_lines(&live, base) {
+    if once_a_second {
+        crate::naval_result_sources::prepare(&live, base);
+        let naval_result_capacity = crate::naval_result_sources::demand();
+        sizing.raise(shared, |capacities| {
+            let sources = &mut capacities.extended.naval_result_sources;
+            *sources = (*sources).max(naval_result_capacity);
+        });
+    }
+    if (capacity_census || registry.last_lines.is_none())
+        && let Some(lines) = registry.poll_lines(&live, base)
+    {
         crate::line_output::presize(lines);
         sizing.raise(shared, |capacities| {
             let entries = &mut capacities.extended.line_output.entries;
             *entries = (*entries).max(lines);
         });
     }
-    if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, base) {
+    if once_a_second
+        && let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, base)
+    {
         let changed = sizing.raise(shared, |capacities| {
             let display = &mut capacities.extended.weather.display_bytes;
             if bytes > *display {
@@ -5503,7 +5510,9 @@ fn sizing_pass(
             capacities.extended.railway_guns.raise_for_names(demand)
         });
     }
-    if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
+    if (capacity_census || registry.last_map.is_none())
+        && let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten()
+    {
         if let Ok(carrier) = demand.carrier
             && crate::country_scale::note_carrier_demand(carrier)
         {
@@ -5588,9 +5597,10 @@ fn sizing_pass(
             capacities.extended.raise_for_raid_arenas(demand)
         });
     }
-    if let Some(demand) = sizing
-        .demand(registry.poll_characters(&live, base))
-        .flatten()
+    if (capacity_census || registry.last_characters.is_none())
+        && let Some(demand) = sizing
+            .demand(registry.poll_characters(&live, base))
+            .flatten()
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.raise_for_characters(demand)
@@ -5605,7 +5615,9 @@ fn sizing_pass(
             capacities.extended.saved_event_targets.raise(demand)
         });
     }
-    if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
+    if (capacity_census || registry.last_politics.is_none())
+        && let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten()
+    {
         for reason in demand.failures() {
             sizing.error(reason);
         }

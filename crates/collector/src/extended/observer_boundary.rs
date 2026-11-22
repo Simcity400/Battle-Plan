@@ -42,50 +42,57 @@ impl ObserverBoundaryRequest {
     pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         let boundaries = qpc();
-        crate::market_changes::boundary(
-            self.market_clock,
-            !self.continuous || self.recovery || self.market_refresh,
-        );
-        crate::relation_changes::boundary(!self.continuous || self.recovery);
-        crate::history_changes::boundary(!self.continuous || self.recovery);
-        crate::flag_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::propaganda_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::network_auxiliary::boundary(!self.continuous || self.recovery);
-        collector_intel::source_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::intel::network_summary_boundary(!self.continuous || self.recovery);
-        crate::building_changes::boundary(!self.continuous || self.recovery);
-        crate::advisor_pool_changes::boundary(!self.continuous || self.recovery);
-        crate::party_leader_changes::boundary(!self.continuous || self.recovery);
-        crate::variable_changes::boundary(!self.continuous || self.recovery);
-        crate::party_changes::boundary(!self.continuous || self.recovery);
-        crate::roster_changes::boundary(!self.continuous || self.recovery);
-        crate::political_status_changes::boundary(!self.continuous || self.recovery);
-        crate::wing_changes::boundary(!self.continuous || self.recovery);
-        crate::mission_changes::boundary(!self.continuous || self.recovery);
-        crate::rail_changes::boundary(!self.continuous || self.recovery);
-        crate::territory_changes::boundary(!self.continuous || self.recovery);
-        crate::army_stat_changes::boundary(!self.continuous || self.recovery);
-        crate::country_input_changes::boundary(!self.continuous || self.recovery);
-        crate::raid_changes::boundary(!self.continuous || self.recovery);
-        crate::naval_tree_changes::boundary(!self.continuous || self.recovery);
-        crate::unit_leader_changes::boundary(!self.continuous || self.recovery);
-        collector_naval_management::changes::boundary(!self.continuous || self.recovery);
-        crate::census_changes::boundary(!self.continuous || self.recovery);
-        crate::orders_group_changes::boundary(!self.continuous || self.recovery);
-        crate::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
-        crate::world_input_changes::boundary(!self.continuous || self.recovery);
-        crate::retreat_ban_changes::boundary(!self.continuous || self.recovery);
-        crate::local_subunit_changes::boundary(!self.continuous || self.recovery);
-        crate::design_changes::boundary(!self.continuous || self.recovery);
-        crate::template_changes::boundary(!self.continuous || self.recovery);
-        crate::faction_goal_changes::boundary(!self.continuous || self.recovery);
-        crate::faction_companion_changes::boundary(!self.continuous || self.recovery);
-        crate::ship_model_changes::boundary(!self.continuous || self.recovery);
-        crate::province_unit_changes::boundary(!self.continuous || self.recovery);
-        crate::province_combat_changes::boundary(!self.continuous || self.recovery);
-        crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
-        crate::character_changes::boundary(!self.continuous || self.recovery);
-        crate::war_changes::boundary(!self.continuous || self.recovery);
+        let invalidate = !self.continuous || self.recovery;
+        // SAFETY: observer boundary runs first inside the quiescent capture lease before any
+        // acquisition worker starts, so no certificate query or concurrent boundary can run.
+        unsafe {
+            crate::watch_registry::with_quiescent_growth(|| {
+                crate::market_changes::boundary(
+                    self.market_clock,
+                    invalidate || self.market_refresh,
+                );
+                crate::relation_changes::boundary(invalidate);
+                crate::history_changes::boundary(invalidate);
+                crate::flag_changes::boundary(invalidate);
+                collector_intel::propaganda_changes::boundary(invalidate);
+                collector_intel::network_auxiliary::boundary(invalidate);
+                collector_intel::source_changes::boundary(invalidate);
+                collector_intel::intel::network_summary_boundary(invalidate);
+                crate::building_changes::boundary(invalidate);
+                crate::advisor_pool_changes::boundary(invalidate);
+                crate::party_leader_changes::boundary(invalidate);
+                crate::variable_changes::boundary(invalidate);
+                crate::party_changes::boundary(invalidate);
+                crate::roster_changes::boundary(invalidate);
+                crate::political_status_changes::boundary(invalidate);
+                crate::wing_changes::boundary(invalidate);
+                crate::mission_changes::boundary(invalidate);
+                crate::rail_changes::boundary(invalidate);
+                crate::territory_changes::boundary(invalidate);
+                crate::army_stat_changes::boundary(invalidate);
+                crate::country_input_changes::boundary(invalidate);
+                crate::raid_changes::boundary(invalidate);
+                crate::naval_tree_changes::boundary(invalidate);
+                crate::unit_leader_changes::boundary(invalidate);
+                collector_naval_management::changes::boundary(invalidate);
+                crate::census_changes::boundary(invalidate);
+                crate::orders_group_changes::boundary(invalidate);
+                crate::unit_leader_trait_changes::boundary(invalidate);
+                crate::world_input_changes::boundary(invalidate);
+                crate::retreat_ban_changes::boundary(invalidate);
+                crate::local_subunit_changes::boundary(invalidate);
+                crate::design_changes::boundary(invalidate);
+                crate::template_changes::boundary(invalidate);
+                crate::faction_goal_changes::boundary(invalidate);
+                crate::faction_companion_changes::boundary(invalidate);
+                crate::ship_model_changes::boundary(invalidate);
+                crate::province_unit_changes::boundary(invalidate);
+                crate::province_combat_changes::boundary(invalidate);
+                crate::air_base_carry_changes::boundary(invalidate);
+                crate::character_changes::boundary(invalidate);
+                crate::war_changes::boundary(invalidate);
+            });
+        }
         self.land.drain(self.hour, !self.continuous);
         self.finished[0] = true;
         report.ticks[0] = elapsed(boundaries);

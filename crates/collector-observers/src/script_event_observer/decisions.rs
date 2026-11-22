@@ -206,16 +206,29 @@ fn candidate_owner(memory: &impl Memory, header: usize) -> Result<(usize, u8), &
     Err("decision candidate append owner differs")
 }
 fn appended_candidates(header: usize, before: Result<u32, &'static str>) {
+    appended_candidates_for(header, before, None);
+}
+fn appended_candidates_for(
+    header: usize,
+    before: Result<u32, &'static str>,
+    owner: Option<(usize, u8)>,
+) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let result = (|| {
         let before = before?;
-        let (status, kind) = candidate_owner(&memory, header)?;
         let array =
             engine_native::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
                 .ok_or("decision candidate result header unreadable")?;
         if before > array.count {
             return Err("decision candidate append shrank its destination");
         }
+        if before == array.count {
+            return Ok(());
+        }
+        let (status, kind) = match owner {
+            Some(known) => known,
+            None => candidate_owner(&memory, header)?,
+        };
         for ordinal in before..array.count {
             let at = array
                 .element(ordinal, runtime::CANDIDATE_STRIDE)
@@ -326,8 +339,8 @@ unsafe extern "system-unwind" fn filter(status: usize) -> usize {
     type Original = unsafe extern "system-unwind" fn(usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[15].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(status) });
-    for (header, before) in headers.into_iter().zip(before) {
-        appended_candidates(header, before);
+    for ((header, kind), before) in headers.into_iter().zip([2u8, 3u8]).zip(before) {
+        appended_candidates_for(header, before, Some((status, kind)));
     }
     flight.returned();
     result
