@@ -1,11 +1,25 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::{Field, Kind, Mode, Shape, Slots, Token, lex, untraced};
 use crate::parser::Operator;
 
-const MAX_VISITED_STATES: usize = 65_536;
+const MAX_AMBIGUITY_WORK: usize = 65_536;
+const MAX_FRONTIER_STATES: usize = 65_536;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum NamePolicy {
+    FirstExact,
+    LastKeyword,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryShape<S> {
+    Exact(Shape<S>),
+    ObjectOrSkip(S),
+    OneOrSkip,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExploredNames {
@@ -292,6 +306,57 @@ impl<S> State<S> {
         }
     }
 
+    fn balanced(&mut self, tokens: &[SmallToken], texts: &[&[u8]]) -> bool {
+        let mut depth = 1_usize;
+        while depth > 0 {
+            let raw_token = self.peek(tokens, texts);
+            self.advance(tokens, texts);
+            if raw_token.kind == Kind::End {
+                self.current = self.resolve(raw_token, texts);
+                return !has_tokens_after_end(tokens, self.next, texts);
+            }
+            match raw_token.kind {
+                Kind::Close => {
+                    depth -= 1;
+                }
+                Kind::Open => {
+                    depth += 1;
+                }
+                _ => {
+                    let token = self.resolve(raw_token, texts);
+                    if matches!(token.kind, Kind::Open | Kind::Close) {
+                        return false;
+                    }
+                    if self.peek(tokens, texts).operator() {
+                        self.advance(tokens, texts);
+                        if self.peek(tokens, texts).kind == Kind::Close {
+                            return false;
+                        }
+                        self.advance(tokens, texts);
+                        let raw_value = self.current;
+                        let value = self.resolve(raw_value, texts);
+                        if raw_value.kind == Kind::End
+                            && has_tokens_after_end(tokens, self.next, texts)
+                        {
+                            return false;
+                        }
+                        if raw_value.kind != value.kind
+                            && matches!(value.kind, Kind::Open | Kind::Close)
+                        {
+                            return false;
+                        }
+                        if value.kind == Kind::Open {
+                            depth += 1;
+                        }
+                    } else {
+                        self.value = token;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn prune_dead_variables(&mut self, last_var_mention: &HashMap<u32, usize>, texts: &[&[u8]]) {
         let effective_pos = if self.pending {
             self.next.saturating_sub(1)
@@ -308,6 +373,12 @@ impl<S> State<S> {
                     .is_some_and(|&last| last >= effective_pos)
         });
     }
+}
+
+fn has_tokens_after_end(tokens: &[SmallToken], next: usize, texts: &[&[u8]]) -> bool {
+    tokens[next.min(tokens.len())..]
+        .iter()
+        .any(|token| token.kind != Kind::End || !texts[token.text as usize].is_empty())
 }
 
 struct HeapItem<S> {
@@ -353,12 +424,120 @@ fn is_meta_key(token: SmallToken, texts: &[&[u8]]) -> bool {
         )
 }
 
+fn apply_decl_name<S>(
+    policy: Option<NamePolicy>,
+    frame: &mut Frame<S>,
+    key: SmallToken,
+    scalar_id: u32,
+    is_scalar: bool,
+    texts: &[&[u8]],
+) {
+    let key_bytes = texts[key.text as usize];
+    match policy {
+        Some(NamePolicy::LastKeyword) => {
+            if is_scalar {
+                let c_key = crate::parser::c_string(key_bytes);
+                if crate::parser::looked_up(c_key, key.quoted) && c_key.eq_ignore_ascii_case(b"name")
+                {
+                    frame.decl_name = Some(scalar_id);
+                }
+            }
+        }
+        Some(NamePolicy::FirstExact) => {
+            if key_bytes == b"name" && frame.decl_name.is_none() {
+                frame.decl_name = Some(if is_scalar { scalar_id } else { 0 });
+            }
+        }
+        None => {}
+    }
+}
+
+struct Frontier<S> {
+    visited: BTreeMap<usize, HashSet<State<S>>>,
+    branch_visited: BTreeMap<usize, HashSet<State<S>>>,
+    heap: BinaryHeap<HeapItem<S>>,
+    frontier_states: usize,
+    ambiguity_work: usize,
+    seq: usize,
+    exhausted: bool,
+}
+
+impl<S: Copy + Eq + Hash> Frontier<S> {
+    fn new() -> Self {
+        Self {
+            visited: BTreeMap::new(),
+            branch_visited: BTreeMap::new(),
+            heap: BinaryHeap::new(),
+            frontier_states: 0,
+            ambiguity_work: 0,
+            seq: 0,
+            exhausted: false,
+        }
+    }
+
+    fn retire_before(&mut self, cursor: usize) {
+        while let Some((&next, _)) = self.visited.first_key_value() {
+            if next < cursor {
+                if let Some((_, bucket)) = self.visited.pop_first() {
+                    self.frontier_states -= bucket.len();
+                }
+            } else {
+                break;
+            }
+        }
+        while let Some((&next, _)) = self.branch_visited.first_key_value() {
+            if next < cursor {
+                self.branch_visited.pop_first();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn mark_branch(&mut self, state: &State<S>) -> bool {
+        self.branch_visited
+            .entry(state.next)
+            .or_default()
+            .insert(state.clone())
+    }
+
+    fn enqueue(
+        &mut self,
+        mut state: State<S>,
+        last_var_mention: &HashMap<u32, usize>,
+        texts: &[&[u8]],
+        charge_ambiguity: bool,
+    ) {
+        if self.exhausted {
+            return;
+        }
+        state.prune_dead_variables(last_var_mention, texts);
+        let next = state.next;
+        let bucket = self.visited.entry(next).or_default();
+        if !bucket.insert(state.clone()) {
+            return;
+        }
+        self.frontier_states += 1;
+        if charge_ambiguity {
+            self.ambiguity_work += 1;
+        }
+        if self.frontier_states >= MAX_FRONTIER_STATES || self.ambiguity_work >= MAX_AMBIGUITY_WORK
+        {
+            self.exhausted = true;
+            return;
+        }
+        let seq = self.seq;
+        self.seq += 1;
+        self.heap.push(HeapItem { next, seq, state });
+    }
+}
+
 pub(crate) fn recover_declared_names<S>(
     bytes: &[u8],
     mode: Mode,
     top: S,
-    is_declaration: impl Fn(S) -> bool,
-    dispatch: impl Fn(S, &Field<'_>) -> Shape<S>,
+    declaration_name: impl Fn(S) -> Option<NamePolicy>,
+    dispatch: impl Fn(S, &Field<'_>) -> RecoveryShape<S>,
 ) -> ExploredNames
 where
     S: Copy + Eq + Hash,
@@ -390,47 +569,28 @@ where
         });
     }
 
-    let mut visited: HashSet<State<S>> = HashSet::new();
-    let mut branch_visited: HashSet<State<S>> = HashSet::new();
-    let mut heap: BinaryHeap<HeapItem<S>> = BinaryHeap::new();
-    let mut seq = 0_usize;
+    let mut frontier = Frontier::new();
     let mut recovered_ids: BTreeSet<u32> = BTreeSet::new();
-    let mut exhausted = false;
 
-    let enqueue = |mut state: State<S>,
-                   visited: &mut HashSet<State<S>>,
-                   heap: &mut BinaryHeap<HeapItem<S>>,
-                   seq: &mut usize,
-                   exhausted: &mut bool| {
-        if *exhausted {
-            return;
-        }
-        state.prune_dead_variables(&last_var_mention, &texts);
-        if visited.contains(&state) {
-            return;
-        }
-        if visited.len() >= MAX_VISITED_STATES {
-            *exhausted = true;
-            return;
-        }
-        let next = state.next;
-        visited.insert(state.clone());
-        let id = *seq;
-        *seq += 1;
-        heap.push(HeapItem { next, seq: id, state });
-    };
+    frontier.enqueue(State::new(top), &last_var_mention, &texts, false);
 
-    enqueue(
-        State::new(top),
-        &mut visited,
-        &mut heap,
-        &mut seq,
-        &mut exhausted,
-    );
-
-    while let Some(HeapItem { mut state, .. }) = heap.pop() {
-        if exhausted {
+    while let Some(HeapItem {
+        next: cursor,
+        mut state,
+        ..
+    }) = frontier.heap.pop()
+    {
+        if frontier.exhausted {
             break;
+        }
+        frontier.retire_before(cursor);
+        let concurrent = !frontier.heap.is_empty();
+        if concurrent {
+            frontier.ambiguity_work += 1;
+            if frontier.ambiguity_work >= MAX_AMBIGUITY_WORK {
+                frontier.exhausted = true;
+                break;
+            }
         }
         let Some(&top_frame) = state.stack.last() else {
             continue;
@@ -445,20 +605,20 @@ where
             FrameKind::Object(node) => {
                 if state.at_loop_end(&tokens, &texts) {
                     let popped = state.stack.pop().expect("checked top frame");
-                    if is_declaration(node)
+                    if declaration_name(node).is_some()
                         && let Some(name_id) = popped.decl_name
                         && name_id != 0
                     {
                         recovered_ids.insert(name_id);
                     }
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                     continue;
                 }
             }
             FrameKind::KeyBlock { .. } => {
                 if state.at_loop_end(&tokens, &texts) {
                     state.stack.pop();
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                     continue;
                 }
             }
@@ -477,23 +637,25 @@ where
             current: &current_token,
             effect_scope: None,
         };
-        let is_name_field = match top_frame.kind {
-            FrameKind::Object(node) if is_declaration(node) => field.keyword_is("name"),
-            _ => false,
+        let decl_policy = match top_frame.kind {
+            FrameKind::Object(node) => declaration_name(node),
+            FrameKind::File(_) | FrameKind::KeyBlock { .. } => None,
         };
         let shape = match top_frame.kind {
             FrameKind::File(node) | FrameKind::Object(node) => dispatch(node, &field),
             FrameKind::KeyBlock { meta } => {
                 if meta && fresh && field.keyword_is("text") {
-                    Shape::Skip
+                    RecoveryShape::Exact(Shape::Skip)
                 } else {
-                    untraced(&field)
+                    RecoveryShape::Exact(untraced(&field))
                 }
             }
         };
         let shape = match shape {
-            Shape::ObjectAs(child, _) => Shape::Object(child),
-            Shape::Reported { read, .. } => *read,
+            RecoveryShape::Exact(Shape::ObjectAs(child, _)) => {
+                RecoveryShape::Exact(Shape::Object(child))
+            }
+            RecoveryShape::Exact(Shape::Reported { read, .. }) => RecoveryShape::Exact(*read),
             other => other,
         };
 
@@ -503,21 +665,36 @@ where
             !opens && is_tag(state.value, &texts) && state.peek_kind(&tokens) == Kind::Open;
 
         match shape {
-            Shape::Discard => {
+            RecoveryShape::Exact(Shape::Discard) => {
                 if current_open {
                     state.skip(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::One | Shape::Current => {
-                let scalar_id = if matches!(shape, Shape::Current) {
+            RecoveryShape::Exact(Shape::One | Shape::Current) => {
+                let is_current = matches!(shape, RecoveryShape::Exact(Shape::Current));
+                let scalar_id = if is_current {
                     state.current.text
                 } else {
                     state.value.text
                 };
+                let key = state.key;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    true,
+                    &texts,
+                );
+                frontier.enqueue(state, &last_var_mention, &texts, false);
+            }
+            RecoveryShape::OneOrSkip => {
+                let scalar_id = state.value.text;
+                let key = state.key;
                 if opens || tagged_open {
                     state.prune_dead_variables(&last_var_mention, &texts);
-                    if !branch_visited.insert(state.clone()) {
+                    if !frontier.mark_branch(&state) {
                         continue;
                     }
                     let mut skipped = state.clone();
@@ -527,51 +704,135 @@ where
                         skipped.advance(&tokens, &texts);
                         skipped.skip(&tokens, &texts);
                     }
-                    enqueue(skipped, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    apply_decl_name(
+                        decl_policy,
+                        skipped.stack.last_mut().expect("active frame"),
+                        key,
+                        0,
+                        false,
+                        &texts,
+                    );
+                    frontier.enqueue(skipped, &last_var_mention, &texts, true);
                 }
-                if is_name_field {
-                    state.stack.last_mut().expect("active frame").decl_name = Some(scalar_id);
-                }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    true,
+                    &texts,
+                );
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::Object(child) => {
-                if opens {
-                    state.stack.push(Frame {
-                        kind: FrameKind::Object(child),
-                        decl_name: None,
-                    });
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
-                } else {
-                    state.prune_dead_variables(&last_var_mention, &texts);
-                    if !branch_visited.insert(state.clone()) {
-                        continue;
-                    }
-                    let mut entered = state.clone();
-                    entered.stack.push(Frame {
-                        kind: FrameKind::Object(child),
-                        decl_name: None,
-                    });
-                    enqueue(entered, &mut visited, &mut heap, &mut seq, &mut exhausted);
+            RecoveryShape::Exact(Shape::Object(child)) => {
+                let key = state.key;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    0,
+                    false,
+                    &texts,
+                );
+                state.stack.push(Frame {
+                    kind: FrameKind::Object(child),
+                    decl_name: None,
+                });
+                frontier.enqueue(state, &last_var_mention, &texts, false);
+            }
+            RecoveryShape::ObjectOrSkip(child) => {
+                state.prune_dead_variables(&last_var_mention, &texts);
+                if !frontier.mark_branch(&state) {
+                    continue;
+                }
+                let key = state.key;
+                let mut entered = state.clone();
+                apply_decl_name(
+                    decl_policy,
+                    entered.stack.last_mut().expect("active frame"),
+                    key,
+                    0,
+                    false,
+                    &texts,
+                );
+                entered.stack.push(Frame {
+                    kind: FrameKind::Object(child),
+                    decl_name: None,
+                });
+                frontier.enqueue(entered, &last_var_mention, &texts, false);
 
+                if opens {
+                    let mut skipped = state.clone();
+                    skipped.skip(&tokens, &texts);
+                    apply_decl_name(
+                        decl_policy,
+                        skipped.stack.last_mut().expect("active frame"),
+                        key,
+                        0,
+                        false,
+                        &texts,
+                    );
+                    frontier.enqueue(skipped, &last_var_mention, &texts, true);
+
+                    state.skip_block(&tokens, &texts);
+                    apply_decl_name(
+                        decl_policy,
+                        state.stack.last_mut().expect("active frame"),
+                        key,
+                        0,
+                        false,
+                        &texts,
+                    );
+                    frontier.enqueue(state, &last_var_mention, &texts, true);
+                } else {
                     if tagged_open {
                         state.advance(&tokens, &texts);
                         state.skip(&tokens, &texts);
                     } else if current_open {
                         state.skip(&tokens, &texts);
                     }
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    let scalar_id = state.value.text;
+                    apply_decl_name(
+                        decl_policy,
+                        state.stack.last_mut().expect("active frame"),
+                        key,
+                        scalar_id,
+                        !tagged_open && !current_open,
+                        &texts,
+                    );
+                    frontier.enqueue(state, &last_var_mention, &texts, true);
                 }
             }
-            Shape::ObjectIfOpen(child) => {
+            RecoveryShape::Exact(Shape::ObjectIfOpen(child)) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !opens,
+                    &texts,
+                );
                 if opens {
                     state.stack.push(Frame {
                         kind: FrameKind::Object(child),
                         decl_name: None,
                     });
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::ObjectOrSkip(child) => {
+            RecoveryShape::Exact(Shape::ObjectOrSkip(child)) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !opens && !current_open,
+                    &texts,
+                );
                 if opens {
                     state.stack.push(Frame {
                         kind: FrameKind::Object(child),
@@ -580,148 +841,204 @@ where
                 } else if current_open {
                     state.skip(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::List => {
+            RecoveryShape::Exact(Shape::List) => {
+                let key = state.key;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    0,
+                    false,
+                    &texts,
+                );
                 state.list(&tokens, &texts);
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::ListIfOpen => {
+            RecoveryShape::Exact(Shape::ListIfOpen) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !opens,
+                    &texts,
+                );
                 if opens {
                     state.list(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::ListOrSkip => {
+            RecoveryShape::Exact(Shape::ListOrSkip) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !opens && !current_open,
+                    &texts,
+                );
                 if opens {
                     state.list(&tokens, &texts);
                 } else if current_open {
                     state.skip(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::Skip => {
+            RecoveryShape::Exact(Shape::Skip) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !current_open,
+                    &texts,
+                );
                 if current_open {
                     state.skip(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::SkipIfOpen => {
+            RecoveryShape::Exact(Shape::SkipIfOpen) => {
+                let key = state.key;
+                let scalar_id = state.value.text;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    scalar_id,
+                    !opens,
+                    &texts,
+                );
                 if opens {
                     state.skip_block(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::RawSkip => {
+            RecoveryShape::Exact(Shape::RawSkip) => {
+                let key = state.key;
+                apply_decl_name(
+                    decl_policy,
+                    state.stack.last_mut().expect("active frame"),
+                    key,
+                    0,
+                    false,
+                    &texts,
+                );
                 state.skip_block(&tokens, &texts);
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
-            Shape::ByKey => {
+            RecoveryShape::Exact(Shape::ByKey) => {
                 state.prune_dead_variables(&last_var_mention, &texts);
-                if !branch_visited.insert(state.clone()) {
+                if !frontier.mark_branch(&state) {
                     continue;
                 }
+                let key = state.key;
                 if opens && current_open {
                     let meta = is_meta_key(state.key, &texts);
+                    apply_decl_name(
+                        decl_policy,
+                        state.stack.last_mut().expect("active frame"),
+                        key,
+                        0,
+                        false,
+                        &texts,
+                    );
                     let mut keyed = state.clone();
                     keyed.stack.push(Frame {
                         kind: FrameKind::KeyBlock { meta },
                         decl_name: None,
                     });
-                    enqueue(keyed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(keyed, &last_var_mention, &texts, false);
 
                     let mut skipped = state.clone();
                     skipped.skip(&tokens, &texts);
-                    enqueue(skipped, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(skipped, &last_var_mention, &texts, true);
 
                     let mut listed = state.clone();
                     listed.list(&tokens, &texts);
-                    enqueue(listed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(listed, &last_var_mention, &texts, true);
+
+                    if !meta {
+                        let mut balanced = state.clone();
+                        if balanced.balanced(&tokens, &texts) {
+                            frontier.enqueue(balanced, &last_var_mention, &texts, true);
+                        }
+                    }
 
                     let mut raw_skipped = state.clone();
                     raw_skipped.skip_block(&tokens, &texts);
-                    enqueue(
-                        raw_skipped,
-                        &mut visited,
-                        &mut heap,
-                        &mut seq,
-                        &mut exhausted,
-                    );
+                    frontier.enqueue(raw_skipped, &last_var_mention, &texts, true);
 
                     state.skip_past_embedded_end(&tokens, &texts);
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, true);
                 } else if opens {
                     let mut keyed = state.clone();
                     keyed.stack.push(Frame {
                         kind: FrameKind::KeyBlock { meta: false },
                         decl_name: None,
                     });
-                    enqueue(keyed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(keyed, &last_var_mention, &texts, true);
 
                     let mut listed = state.clone();
                     listed.list(&tokens, &texts);
-                    enqueue(listed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(listed, &last_var_mention, &texts, true);
 
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                 } else if current_open {
-                    enqueue(
-                        state.clone(),
-                        &mut visited,
-                        &mut heap,
-                        &mut seq,
-                        &mut exhausted,
-                    );
+                    frontier.enqueue(state.clone(), &last_var_mention, &texts, false);
 
                     state.skip(&tokens, &texts);
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, true);
                 } else {
                     if tagged_open {
                         let mut skipped = state.clone();
                         skipped.advance(&tokens, &texts);
                         skipped.skip(&tokens, &texts);
-                        enqueue(skipped, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                        frontier.enqueue(skipped, &last_var_mention, &texts, true);
                     }
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                 }
             }
-            Shape::Unsettled(_) => {
+            RecoveryShape::Exact(Shape::Unsettled(_)) => {
                 state.prune_dead_variables(&last_var_mention, &texts);
-                if !branch_visited.insert(state.clone()) {
+                if !frontier.mark_branch(&state) {
                     continue;
                 }
                 if current_open {
-                    enqueue(
-                        state.clone(),
-                        &mut visited,
-                        &mut heap,
-                        &mut seq,
-                        &mut exhausted,
-                    );
+                    frontier.enqueue(state.clone(), &last_var_mention, &texts, false);
 
                     state.skip(&tokens, &texts);
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, true);
                 } else if opens {
                     let mut keyed = state.clone();
                     keyed.stack.push(Frame {
                         kind: FrameKind::KeyBlock { meta: false },
                         decl_name: None,
                     });
-                    enqueue(keyed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(keyed, &last_var_mention, &texts, true);
 
                     let mut listed = state.clone();
                     listed.list(&tokens, &texts);
-                    enqueue(listed, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(listed, &last_var_mention, &texts, true);
 
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                 } else {
-                    enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                    frontier.enqueue(state, &last_var_mention, &texts, false);
                 }
             }
-            _ => {
+            RecoveryShape::Exact(_) => {
                 if current_open {
                     state.skip(&tokens, &texts);
                 }
-                enqueue(state, &mut visited, &mut heap, &mut seq, &mut exhausted);
+                frontier.enqueue(state, &last_var_mention, &texts, false);
             }
         }
     }
@@ -731,17 +1048,16 @@ where
         .map(|id| texts[id as usize].to_vec())
         .collect();
 
-    if exhausted {
+    if frontier.exhausted {
         for token in &lexed.tokens {
-            if token.text.is_empty() {
-                continue;
+            if !token.text.is_empty() {
+                names.insert(token.text.clone());
             }
-            if token.kind == Kind::End && matches!(token.text.as_slice(), b"!" | b"#" | b";") {
-                continue;
-            }
-            names.insert(token.text.clone());
         }
     }
 
-    ExploredNames { names, exhausted }
+    ExploredNames {
+        names,
+        exhausted: frontier.exhausted,
+    }
 }

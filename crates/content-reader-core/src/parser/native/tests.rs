@@ -1488,8 +1488,8 @@ fn recover_declared_names_explores_mixed_unknown_dispatch_and_merges_states() {
             bytes,
             Mode::KeepMark,
             Node::Top,
-            |node| matches!(node, Node::Decl),
-            dispatch,
+            |node| matches!(node, Node::Decl).then_some(NamePolicy::LastKeyword),
+            |node, field| RecoveryShape::Exact(dispatch(node, field)),
         )
     };
     let to_strings = |explored: ExploredNames| -> (std::collections::BTreeSet<String>, bool) {
@@ -1607,8 +1607,18 @@ fn recover_declared_names_explores_mixed_unknown_dispatch_and_merges_states() {
     for i in 0..24 {
         exploding.push_str(&format!("ref_{i} = @live_{i}\n"));
     }
-    exploding.push_str("}\n");
+    exploding.push_str("}\nentity = { name = ;tail");
     let (names, exhausted) = to_strings(recover(exploding.as_bytes()));
     assert!(exhausted, "exponential live variables should hit budget and fail closed");
     assert!(names.contains("overflow_target"));
+    assert!(names.contains(";"), "punctuation End token must be preserved on fallback: {names:?}");
+
+    let mut linear = String::from("entity = {\n");
+    for _ in 0..70_000 {
+        linear.push_str("x = 1\n");
+    }
+    linear.push_str("name = linear_tail\n}\n");
+    let (names, exhausted) = to_strings(recover(linear.as_bytes()));
+    assert!(!exhausted, "long deterministic file must not exhaust ambiguity budget");
+    assert_eq!(names, ["linear_tail".to_owned()].into_iter().collect());
 }

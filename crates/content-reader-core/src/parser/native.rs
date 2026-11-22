@@ -6,7 +6,7 @@ mod math;
 mod recover;
 #[cfg(test)]
 use recover::ExploredNames;
-pub(crate) use recover::recover_declared_names;
+pub(crate) use recover::{NamePolicy, RecoveryShape, recover_declared_names};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Kind {

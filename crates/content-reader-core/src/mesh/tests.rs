@@ -2661,3 +2661,154 @@ fn recovery_merges_identical_unknown_dispatch_states_without_exponential_blowup(
         Some("gfx/entities/pathological.asset")
     );
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn recovery_handles_astra_r1_edge_cases() {
+    use crate::content::{ResolveOptions, visual};
+    use std::sync::atomic::AtomicBool;
+
+    let s1_scalar_game_data =
+        b"entity = { state = { game_data = scalar } } name = recovered_after_scalar_game_data";
+    let s2_balanced_retained = br#"
+        entity = { locator = { position = { kept_from_balanced k = 1 } } name trailing }
+        entity = { game_data = { atlas_size = { @u = 1 } } }
+    "#;
+    let s4_animation_first = br#"
+        animation = { name = first_anim name = second_anim file = "a.anim" }
+        entity = { game_data = { atlas_size = { @u = 1 } } }
+    "#;
+    let s4_mesh_first = br#"
+        objectTypes = { pdxmesh = { name = first_mesh name = second_mesh file = "m.mesh" } }
+        entity = { state = scalar }
+    "#;
+    let s5_known_one_block = br#"
+        entity = { game_data = { atlas_size = { @u = 1 } } }
+        entity = { name = unrelated_s5_mesh pdxmesh = { name = real_s5_entity } }
+    "#;
+
+    let roster = roster_of(
+        "astra-r1-recovery",
+        &[
+            (
+                "gfx/models/m.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+            ),
+            ("gfx/models/s4_mesh.gfx", s4_mesh_first),
+            ("gfx/entities/s1.asset", s1_scalar_game_data),
+            ("gfx/entities/s2.asset", s2_balanced_retained),
+            ("gfx/entities/s4_anim.asset", s4_animation_first),
+            ("gfx/entities/s5.asset", s5_known_one_block),
+        ],
+        &[],
+    );
+
+    for (name, file) in [
+        ("recovered_after_scalar_game_data", "gfx/entities/s1.asset"),
+        ("kept_from_balanced", "gfx/entities/s2.asset"),
+        ("first_anim", "gfx/entities/s4_anim.asset"),
+        ("first_mesh", "gfx/models/s4_mesh.gfx"),
+        ("real_s5_entity", "gfx/entities/s5.asset"),
+    ] {
+        assert_eq!(
+            roster.unreadable_names.get(name).map(String::as_str),
+            Some(file),
+            "expected {name} from {file}; refused={:?}",
+            roster.unreadable_names
+        );
+    }
+
+    for absent in ["second_anim", "second_mesh", "unrelated_s5_mesh"] {
+        assert_eq!(
+            roster.unreadable_names.get(absent),
+            None,
+            "did not expect {absent} to be refused; refused={:?}",
+            roster.unreadable_names
+        );
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "content-reader-astra-r1-overlay-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    };
+    let game_dir = root.join("game");
+    let user_dir = root.join("user");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("mod")).unwrap();
+    write(
+        "base/gfx/models/m.gfx",
+        b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+    );
+    write(
+        "base/gfx/entities/s6.asset",
+        br#"entity = { name = "base_only" pdxmesh = "target_in_other_file" }"#,
+    );
+    write(
+        "base/gfx/entities/other.asset",
+        br#"entity = { name = "target_in_other_file" pdxmesh = "m" }"#,
+    );
+    write(
+        "base/gfx/entities/s4_rec.asset",
+        br#"animation = { name = "recorded_first" name = "recorded_second" file = "a.anim" }"#,
+    );
+    let overlay_dir = root.join("overlay");
+    write(
+        "overlay/gfx/entities/s6.asset",
+        br#"entity = { name = "target_in_other_file" pdxmesh = "m" } }{ = ="#,
+    );
+    write(
+        "overlay/gfx/entities/s4_rec.asset",
+        br#"
+            animation = { name = "recorded_second" file = "a.anim" }
+            entity = { game_data = { atlas_size = { @u = 1 } } }
+        "#,
+    );
+    let descriptor = format!(
+        "name=\"VisualOverride\"\npath=\"{}\"\n",
+        overlay_dir.display().to_string().replace('\\', "/")
+    );
+    write("user/mod/visual_override.mod", descriptor.as_bytes());
+    let base = root.join("base");
+    let mut layers = crate::ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: root.join("cache"),
+    };
+    visual::apply(
+        &mut layers,
+        &options,
+        &[visual::Choice {
+            id: "mod/visual_override.mod".into(),
+            name: "VisualOverride".into(),
+        }],
+        &[],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let overlay_roster = Roster::read(layers.presentation()).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("target_in_other_file")
+            .map(String::as_str),
+        Some("gfx/entities/s6.asset")
+    );
+    assert_eq!(overlay_roster.unreadable_names.get("base_only"), None);
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("recorded_second")
+            .map(String::as_str),
+        Some("gfx/entities/s4_rec.asset")
+    );
+    assert_eq!(overlay_roster.unreadable_names.get("recorded_first"), None);
+}

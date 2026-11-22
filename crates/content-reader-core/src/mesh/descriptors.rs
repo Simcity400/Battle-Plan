@@ -693,8 +693,12 @@ fn recover_object_names(bytes: &[u8]) -> BTreeSet<String> {
         bytes,
         parser::native::Mode::SkipMark,
         ObjectNode::Top,
-        |node| matches!(node, ObjectNode::Mesh | ObjectNode::NamedObject),
-        object_dispatch,
+        |node| match node {
+            ObjectNode::Mesh => Some(parser::native::NamePolicy::FirstExact),
+            ObjectNode::NamedObject => Some(parser::native::NamePolicy::LastKeyword),
+            _ => None,
+        },
+        |node, field| parser::native::RecoveryShape::Exact(object_dispatch(node, field)),
     );
     recovered_utf8_names(explored.names)
 }
@@ -818,11 +822,29 @@ fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>,
 fn entity_recovery_dispatch(
     node: EntityNode,
     field: &parser::native::Field<'_>,
-) -> parser::native::Shape<EntityNode> {
-    if matches!(node, EntityNode::State) && field.keyword_is("game_data") {
-        return parser::native::Shape::ByKey;
+) -> parser::native::RecoveryShape<EntityNode> {
+    use parser::native::{RecoveryShape, Shape};
+    match node {
+        EntityNode::Entity => match field.keyword().as_deref() {
+            Some(b"state") if !field.opens() => RecoveryShape::ObjectOrSkip(EntityNode::State),
+            Some(b"cull_radius") => RecoveryShape::OneOrSkip,
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::State => match field.keyword().as_deref() {
+            Some(b"name" | b"animation") => RecoveryShape::OneOrSkip,
+            Some(b"game_data") => RecoveryShape::ObjectOrSkip(EntityNode::StateGameData),
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::StateGameData => match field.keyword().as_deref() {
+            Some(b"hitmiss_effect") => RecoveryShape::ObjectOrSkip(EntityNode::HitMissEffect),
+            _ => RecoveryShape::Exact(entity_dispatch(node, field)),
+        },
+        EntityNode::HitMissEffect => match field.keyword().as_deref() {
+            Some(b"time" | b"type") => RecoveryShape::OneOrSkip,
+            _ => RecoveryShape::Exact(Shape::Skip),
+        },
+        _ => RecoveryShape::Exact(entity_dispatch(node, field)),
     }
-    entity_dispatch(node, field)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -831,25 +853,32 @@ enum NamedBlockNode {
     Body,
 }
 
-fn recover_named_block(bytes: &[u8], block_key: &str, with_file: bool) -> BTreeSet<String> {
+fn recover_named_block(
+    bytes: &[u8],
+    block_key: &str,
+    with_file: bool,
+    policy: parser::native::NamePolicy,
+) -> BTreeSet<String> {
     let explored = parser::native::recover_declared_names(
         bytes,
         parser::native::Mode::SkipMark,
         NamedBlockNode::Top,
-        |node| matches!(node, NamedBlockNode::Body),
+        |node| matches!(node, NamedBlockNode::Body).then_some(policy),
         |node, field| match node {
             NamedBlockNode::Top => {
                 if field.keyword_is(block_key) {
-                    parser::native::Shape::Object(NamedBlockNode::Body)
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::Object(
+                        NamedBlockNode::Body,
+                    ))
                 } else {
-                    parser::native::Shape::Skip
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::Skip)
                 }
             }
             NamedBlockNode::Body => {
                 if field.keyword_is("name") || (with_file && field.keyword_is("file")) {
-                    parser::native::Shape::One
+                    parser::native::RecoveryShape::Exact(parser::native::Shape::One)
                 } else {
-                    parser::native::untraced(field)
+                    parser::native::RecoveryShape::Exact(parser::native::untraced(field))
                 }
             }
         },
@@ -862,12 +891,24 @@ fn recover_asset_names(bytes: &[u8]) -> BTreeSet<String> {
         bytes,
         parser::native::Mode::SkipMark,
         EntityNode::Top,
-        |node| matches!(node, EntityNode::Entity),
+        |node| {
+            matches!(node, EntityNode::Entity).then_some(parser::native::NamePolicy::LastKeyword)
+        },
         entity_recovery_dispatch,
     );
     let mut names = recovered_utf8_names(entities.names);
-    names.extend(recover_named_block(bytes, "animation", true));
-    names.extend(recover_named_block(bytes, "light", false));
+    names.extend(recover_named_block(
+        bytes,
+        "animation",
+        true,
+        parser::native::NamePolicy::FirstExact,
+    ));
+    names.extend(recover_named_block(
+        bytes,
+        "light",
+        false,
+        parser::native::NamePolicy::LastKeyword,
+    ));
     names
 }
 
@@ -1115,17 +1156,13 @@ impl Roster {
             && let Ok((items, misreads)) = validate(&recorded_bytes, &document)
         {
             layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
-            let (overlay_names, recorded_names) = match &parsed {
-                Some(_) => (
-                    recover(&bytes),
-                    declared_names_from(&items, &document, words),
-                ),
+            let recorded_names = declared_names_from(&items, &document, words);
+            let overlay_names = match &parsed {
+                Some(_) => recover(&bytes),
                 None => {
                     let mut overlay_names = lexical_names(&bytes);
                     overlay_names.extend(recover(&bytes));
-                    let mut recorded_names = lexical_names(&recorded_bytes);
-                    recorded_names.extend(declared_names_from(&items, &document, words));
-                    (overlay_names, recorded_names)
+                    overlay_names
                 }
             };
             for name in overlay_names {
@@ -1438,11 +1475,18 @@ fn declared_names_in(
             names.insert(name);
         }
     };
-    let mut record = |item: &parser::Item| {
+    let mut record = |item: &parser::Item, first_exact: bool| {
         let Some(fields) = item.value.items() else {
             return;
         };
-        let Some(field) = fields.iter().rev().find(|field| field.keyword_is("name")) else {
+        let field = if first_exact {
+            fields
+                .iter()
+                .find(|field| field.key.as_deref() == Some(b"name"))
+        } else {
+            fields.iter().rev().find(|field| field.keyword_is("name"))
+        };
+        let Some(field) = field else {
             return;
         };
         let Some(raw) = field.value.scalar() else {
@@ -1454,11 +1498,11 @@ fn declared_names_in(
         if item.keyword_is("objectTypes") {
             for block in item.value.items().unwrap_or(&[]) {
                 if words.iter().any(|word| block.keyword_is(word)) {
-                    record(block);
+                    record(block, block.keyword_is("pdxmesh"));
                 }
             }
         } else if words.iter().any(|word| item.keyword_is(word)) {
-            record(item);
+            record(item, item.keyword_is("animation"));
         }
     }
     names
