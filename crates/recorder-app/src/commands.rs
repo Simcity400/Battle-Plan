@@ -4,9 +4,9 @@ use crate::{
     recordings::{Library, Live, Recordings},
     snapshot::Snapshot,
     startup,
-    worker::{Recorder, recordings_changed, save_folder},
+    worker::{Acting, Recorder, recordings_changed, save_folder},
 };
-use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
+use replay::recorder_settings::{Held, NextLoad, RecorderSettings};
 use replay_data::identity::is_campaign_uuid;
 use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
@@ -46,11 +46,61 @@ fn view(settings: RecorderSettings) -> Result<SettingsView, String> {
 }
 
 fn update(
-    change: impl FnOnce(&mut RecorderSettings) + Send + 'static,
+    app: &AppHandle,
+    change: impl FnOnce(&mut RecorderSettings),
 ) -> Result<SettingsView, String> {
-    RecorderSettings::update(change)
-        .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
-        .and_then(|(settings, ())| view(settings))
+    change_settings(app, None, change)
+}
+
+fn change_settings(
+    app: &AppHandle,
+    start_with_windows: Option<bool>,
+    change: impl FnOnce(&mut RecorderSettings),
+) -> Result<SettingsView, String> {
+    let recorder = app.state::<Arc<Recorder>>();
+    RecorderSettings::hold_at(&RecorderSettings::path(), |held| {
+        patched(held, recorder.acting(), start_with_windows, &Windows, change)
+    })
+    .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
+    .and_then(view)
+}
+
+trait Startup {
+    fn starts(&self) -> Result<bool, String>;
+    fn set(&self, enabled: bool) -> Result<(), String>;
+}
+
+struct Windows;
+
+impl Startup for Windows {
+    fn starts(&self) -> Result<bool, String> {
+        startup::starts_with_windows()
+    }
+
+    fn set(&self, enabled: bool) -> Result<(), String> {
+        startup::set_start_with_windows(enabled)
+    }
+}
+
+fn patched(
+    held: &Held<'_>,
+    admitted: Result<Acting, String>,
+    start_with_windows: Option<bool>,
+    startup: &dyn Startup,
+    change: impl FnOnce(&mut RecorderSettings),
+) -> std::io::Result<RecorderSettings> {
+    let _acting = admitted.map_err(std::io::Error::other)?;
+    let before = start_with_windows.map(|_| startup.starts()).transpose().map_err(std::io::Error::other)?;
+    if let Some(enabled) = start_with_windows {
+        startup.set(enabled).map_err(std::io::Error::other)?;
+    }
+    held.update(change).map(|(settings, ())| settings).inspect_err(|_| {
+        if let Some(before) = before
+            && let Err(error) = startup.set(before)
+        {
+            eprintln!("Start with Windows couldn’t be put back after the settings failed to save: {error}");
+        }
+    })
 }
 
 #[tauri::command]
@@ -169,11 +219,9 @@ pub async fn update_recorder_settings(
             CaptureMode::from_name(name).ok_or_else(|| format!("Unknown capture mode {name:?}"))
         })
         .transpose()?;
+    let changing = app.clone();
     let view = blocking(move || {
-        if let Some(enabled) = patch.start_with_windows {
-            startup::set_start_with_windows(enabled)?;
-        }
-        update(move |settings| {
+        change_settings(&changing, patch.start_with_windows, move |settings| {
             let set = |field: &mut bool, value: Option<bool>| {
                 if let Some(value) = value {
                     *field = value;
@@ -209,8 +257,9 @@ pub async fn set_campaign_choice(
     if !replay_data::identity::is_campaign_uuid(campaign.as_bytes()) {
         return Err("Unknown campaign".into());
     }
+    let changing = app.clone();
     let view = blocking(move || {
-        update(move |settings| {
+        update(&changing, move |settings| {
             let choice = settings.campaigns.entry(campaign).or_default();
             if let Some(record) = record {
                 choice.record = Some(record);
@@ -254,7 +303,7 @@ pub async fn choose_save_folder(
         else {
             return Ok(None);
         };
-        update(move |settings| settings.choose_save_folder(folder)).map(Some)
+        update(&app, move |settings| settings.choose_save_folder(folder)).map(Some)
     })
     .await
 }
@@ -267,7 +316,7 @@ pub async fn set_user_folder(
 ) -> Result<Option<SettingsView>, String> {
     blocking(move || {
         if !choose {
-            return update(|settings| settings.user_folder = None).map(Some);
+            return update(&app, |settings| settings.user_folder = None).map(Some);
         }
         let current = RecorderSettings::load()
             .ok()
@@ -282,7 +331,7 @@ pub async fn set_user_folder(
         ) else {
             return Ok(None);
         };
-        update(move |settings| settings.user_folder = Some(folder)).map(Some)
+        update(&app, move |settings| settings.user_folder = Some(folder)).map(Some)
     })
     .await
 }
@@ -352,8 +401,13 @@ pub async fn recordings(
 
 #[tauri::command]
 pub async fn compress_recording(app: AppHandle, path: String) -> Result<(), String> {
+    let acting = app.state::<Arc<Recorder>>().acting()?;
     let jobs = Arc::clone(app.state::<Arc<Jobs>>().inner());
-    blocking(move || jobs.request(Path::new(&path))).await?;
+    blocking(move || {
+        let _acting = acting;
+        jobs.request(Path::new(&path))
+    })
+    .await?;
     recordings_changed(&app);
     Ok(())
 }
@@ -517,8 +571,47 @@ pub async fn open_replay(path: Option<String>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::plain_path;
-    use std::path::PathBuf;
+    use super::{Startup, patched, plain_path};
+    use replay::recorder_settings::RecorderSettings;
+    use std::{cell::RefCell, path::PathBuf, sync::Arc};
+
+    struct Registry(RefCell<Vec<bool>>);
+
+    impl Startup for Registry {
+        fn starts(&self) -> Result<bool, String> {
+            Ok(self.0.borrow().last().copied().unwrap_or(false))
+        }
+
+        fn set(&self, enabled: bool) -> Result<(), String> {
+            self.0.borrow_mut().push(enabled);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_settings_change_and_its_windows_startup_value_are_one_admission_so_a_quit_refuses_both_or_neither() {
+        let folder = std::env::temp_dir().join(format!("battleplan-recorder-patch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let path = folder.join("recorder.json");
+        let writes = replay::writes::Writes::new();
+        let recorder = Arc::new(crate::worker::Recorder::default());
+        let registry = Registry(RefCell::new(Vec::new()));
+        let saved = RecorderSettings::hold_under(&writes, &path, |held| {
+            patched(held, recorder.acting(), Some(true), &registry, |settings| settings.auto_save = true)
+        })
+        .unwrap();
+        assert!(saved.auto_save);
+        assert_eq!(*registry.0.borrow(), [true]);
+
+        recorder.commit_exit();
+        let refused = RecorderSettings::hold_under(&writes, &path, |held| {
+            patched(held, recorder.acting(), Some(false), &registry, |settings| settings.auto_save = false)
+        });
+        assert!(refused.is_err(), "a patch asked for once Quit commits is refused whole");
+        assert_eq!(*registry.0.borrow(), [true], "With Windows isn’t changed by a patch whose settings were refused");
+        assert!(RecorderSettings::load_from(&path).unwrap().auto_save);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn plain_paths_keep_the_network_root() {

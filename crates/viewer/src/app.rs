@@ -3252,7 +3252,10 @@ impl Viewer {
             if !unverified.is_empty() {
                 render::render_banner(scene, &state.device, &state.queue, &unverified)?;
             }
-            render::write_png(scene, &state.device, &state.queue, &output)
+            match capture.request {
+                Some(_) => render::write_png_under(&replay::writes::WRITES.admitted(), scene, &state.device, &state.queue, &output),
+                None => render::write_png(scene, &state.device, &state.queue, &output),
+            }
         })();
         if written.is_ok() {
             for warning in warnings {

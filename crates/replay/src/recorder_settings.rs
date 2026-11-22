@@ -195,7 +195,7 @@ impl RecorderSettings {
     pub fn hold_at<T>(path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
         Self::hold_under(&crate::writes::WRITES, path, work)
     }
-    fn hold_under<T>(writes: &crate::writes::Writes, path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
+    pub fn hold_under<T>(writes: &crate::writes::Writes, path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
         writes.under_lock(Path::new(&lock_path), |writing| work(&Held { path, writing }))

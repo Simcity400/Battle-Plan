@@ -15,4 +15,8 @@ impl app_update::Host for Host {
     fn close_for_update(&self) -> Result<(), String> {
         self.0.leave(Leave::Exit)
     }
+
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        replay::writes::WRITES.begin()?.replace(path, |out| std::io::Write::write_all(out, bytes))
+    }
 }

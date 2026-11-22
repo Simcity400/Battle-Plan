@@ -1031,11 +1031,3 @@ pub fn finish(page: Option<bool>) {
         let _ = log.summarize(Some(epoch_ms()), false, page);
     }
 }
-
-pub fn close() {
-    if let Some(log) = LOG.get().and_then(Option::as_ref)
-        && !log.summarized.swap(true, Ordering::AcqRel)
-    {
-        let _ = log.summarize(Some(epoch_ms()), false, None);
-    }
-}

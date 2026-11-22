@@ -28,4 +28,8 @@ impl app_update::Host for Host {
         self.leaving().exit();
         self.0.exit(0);
     }
+
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        replay::writes::WRITES.begin()?.replace(path, |out| std::io::Write::write_all(out, bytes))
+    }
 }

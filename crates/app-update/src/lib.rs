@@ -3,6 +3,7 @@ pub mod commands;
 mod control;
 mod feed;
 mod install;
+pub mod saving;
 
 pub use channel::Channel;
 
@@ -71,6 +72,7 @@ pub trait Host: Send + Sync + 'static {
     fn install(&self, launch: Launch) -> Result<(), String>;
     fn close_for_update(&self) -> Result<(), String>;
     fn closed_for_update(&self) {}
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -656,7 +658,7 @@ impl Updates {
                 return Err("Wait for the update to finish before changing the channel.".into());
             }
             Self::available(inner)?;
-            channel::save(channel)?;
+            channel::save(channel, |path, bytes| self.host.write_preference(path, bytes))?;
             if inner.state.channel != channel {
                 inner.state.channel = channel;
                 Self::forget_offer(inner);

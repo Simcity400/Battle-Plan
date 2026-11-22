@@ -542,10 +542,14 @@ mod tests {
     }
 
     fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        asked_under(inner, path, Box::leak(Box::new(replay::writes::Writes::new())))
+    }
+
+    fn asked_under(inner: &mut Inner, path: &str, writes: &'static replay::writes::Writes) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
         inner.export_requests += 1;
         let request = inner.export_requests;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer });
+        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer, _writing: writes.begin().unwrap() });
         inner.pending.actions.push_back(dashboard::protocol::MapAction::Export { path: path.into(), view_id: None, request });
         answered
     }
@@ -564,6 +568,21 @@ mod tests {
         assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none());
         assert_eq!(first.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 12".into())));
         assert!(inner.exports.is_empty());
+    }
+
+    #[test]
+    fn an_accepted_export_keeps_battleplan_open_until_its_map_answers_it_even_once_the_exit_closes_admission() {
+        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
+        let mut inner = showing("A");
+        let (mut saved, mut refused) = (asked_under(&mut inner, "saved.png", writes), asked_under(&mut inner, "refused.png", writes));
+        assert!(writes.close_admission(), "the exit waits for both exports, though neither map has read its picture back yet");
+        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
+        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
+        assert!(!writes.drained_within(std::time::Duration::ZERO), "the second is still owed its picture");
+        inner.shutting_down = true;
+        assert!(!inner.map_ended(Ending::Closed));
+        assert!(refused.try_recv().is_ok());
+        assert!(writes.drained_within(std::time::Duration::ZERO), "an export the map ended without is answered, and holds the exit no longer");
     }
 
     #[test]

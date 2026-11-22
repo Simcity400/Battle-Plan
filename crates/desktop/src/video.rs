@@ -132,15 +132,20 @@ type Stored = Mutex<Result<VideoSettings, String>>;
 fn stored(state: &Stored) -> Result<std::sync::MutexGuard<'_, Result<VideoSettings, String>>, String> {
     state.lock().map_err(|e| e.to_string())
 }
-fn commit(path: &Path, state: &Stored, change: impl Fn(&mut VideoSettings)) -> Result<(), String> {
+fn commit(
+    path: &Path,
+    state: &Stored,
+    change: impl FnOnce(&mut VideoSettings),
+    take: impl FnOnce(&mut VideoSettings, &VideoSettings),
+) -> Result<VideoSettings, String> {
     let fallback = stored(state)?.as_ref().ok().cloned();
-    let saved = update(path, fallback.as_ref(), &change)?;
+    let saved = update(path, fallback.as_ref(), change)?;
     let mut current = stored(state)?;
     match &mut *current {
-        Ok(current) => change(current),
-        Err(_) => *current = Ok(saved),
+        Ok(current) => take(current, &saved),
+        Err(_) => *current = Ok(saved.clone()),
     }
-    Ok(())
+    Ok(saved)
 }
 fn with_display(saved: &mut VideoSettings, form: &VideoSettings) {
     *saved = VideoSettings {
@@ -424,18 +429,24 @@ fn diagnostics_switch(state: &VideoState) -> MapSwitch {
     })
 }
 
+fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<bool, String> {
+    let requested = state.1.swap(false, Ordering::AcqRel);
+    let saved = commit(
+        path,
+        &state.0,
+        |settings| settings.map_diagnostics = enabled.unwrap_or(!(requested || settings.map_diagnostics)),
+        |current, saved| current.map_diagnostics = saved.map_diagnostics,
+    );
+    if saved.is_err() && requested {
+        state.1.store(true, Ordering::Release);
+    }
+    saved.map(|saved| saved.map_diagnostics)
+}
+
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
-    let (enabled, muted) = {
-        let current = stored(&state.0)?;
-        let enabled = enabled
-            .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &current));
-        (enabled, muted_in(&current))
-    };
-    commit(&path()?, &state.0, |settings| {
-        settings.map_diagnostics = enabled
-    })?;
-    state.1.store(false, Ordering::Release);
+    let muted = muted_in(&*stored(&state.0)?);
+    let enabled = set_diagnostics(&path()?, &state, enabled)?;
     let changed = announce_diagnostics(app, &state, enabled);
     let now_muted = muted_in(&*stored(&state.0)?);
     let muted = (now_muted != muted).then(|| announce_muted(app, &state, !muted));
@@ -481,7 +492,7 @@ fn muted_switch(state: &VideoState) -> MapSwitch {
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
-    commit(&path()?, &state.0, |settings| settings.map_muted = muted)?;
+    commit(&path()?, &state.0, |settings| settings.map_muted = muted, |current, saved| current.map_muted = saved.map_muted)?;
     let changed = announce_muted(app, &state, muted);
     let now = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
     let diagnostics = (now != diagnostics).then(|| announce_diagnostics(app, &state, !diagnostics));
@@ -602,11 +613,8 @@ mod tests {
         let path = folder.join("video.json");
         let first = Mutex::new(Ok(VideoSettings::default()));
         let second = Mutex::new(Ok(VideoSettings::default()));
-        commit(&path, &first, |settings| settings.map_muted = true).unwrap();
-        commit(&path, &second, |settings| {
-            settings.map_diagnostics = true
-        })
-        .unwrap();
+        commit(&path, &first, |settings| settings.map_muted = true, |current, saved| current.map_muted = saved.map_muted).unwrap();
+        commit(&path, &second, |settings| settings.map_diagnostics = true, |current, saved| current.map_diagnostics = saved.map_diagnostics).unwrap();
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.map_diagnostics);
         let second = second.into_inner().unwrap().unwrap();
@@ -622,21 +630,37 @@ mod tests {
         assert!(saved.map_muted && saved.map_diagnostics && saved.ui_scale == 110.0);
         assert_eq!(saved.map_frame_limit, Some(60.0));
         let lost = Mutex::new(Err("zoom failed".to_owned()));
-        commit(&path, &lost, |settings| settings.map_muted = false).unwrap();
+        commit(&path, &lost, |settings| settings.map_muted = false, |current, saved| current.map_muted = saved.map_muted).unwrap();
         let lost = lost.into_inner().unwrap().unwrap();
         assert!(lost.map_diagnostics && !lost.map_muted && lost.ui_scale == 110.0);
         fs::write(&path, b"not json").unwrap();
-        assert!(commit(&path, &Mutex::new(Err("unreadable".into())), |_| ()).is_err());
-        commit(&path, &Mutex::new(Ok(game_like(90.0))), |settings| {
-            settings.map_muted = true
-        })
-        .unwrap();
+        assert!(commit(&path, &Mutex::new(Err("unreadable".into())), |_| (), |_, _| ()).is_err());
+        commit(&path, &Mutex::new(Ok(game_like(90.0))), |settings| settings.map_muted = true, |current, saved| current.map_muted = saved.map_muted).unwrap();
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.ui_scale == 90.0);
         fs::remove_dir_all(&folder).unwrap();
     }
 
 
+
+    #[test]
+    fn a_diagnostics_toggle_is_decided_under_the_lock_that_saves_it_so_two_toggles_never_collapse() {
+        let folder = std::env::temp_dir().join(format!("hoi4-video-toggle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        let path = folder.join("video.json");
+        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(false), AtomicU64::new(0));
+        update(&path, None, |saved| saved.map_diagnostics = true).unwrap();
+        assert!(!set_diagnostics(&path, &state, None).unwrap(), "a toggle that waited on another writer flips what that writer saved, not what this window last read");
+        assert!(!load_from(&path).unwrap().map_diagnostics);
+        assert!(set_diagnostics(&path, &state, None).unwrap(), "so a second toggle undoes the first");
+        assert!(state.0.lock().unwrap().as_ref().unwrap().map_diagnostics);
+        assert!(load_from(&path).unwrap().map_diagnostics);
+
+        let requested = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0));
+        assert!(!set_diagnostics(&path, &requested, None).unwrap(), "--diagnostics shows them, so the first toggle hides them");
+        assert!(set_diagnostics(&path, &requested, None).unwrap());
+        fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn the_mute_choice_is_off_by_default_and_survives_game_settings() {

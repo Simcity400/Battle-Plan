@@ -58,6 +58,7 @@ struct Export {
     request: u64,
     generation: u64,
     answer: tokio::sync::oneshot::Sender<Result<String, String>>,
+    _writing: replay::writes::Writing<'static>,
 }
 
 pub type StatusChanged = Arc<dyn Fn() + Send + Sync>;
@@ -105,9 +106,10 @@ impl Inner {
         let request = self.export_requests + 1;
         let action = dashboard::protocol::MapAction::Export { path, view_id, request };
         action.validate().map_err(str::to_owned)?;
+        let writing = replay::writes::WRITES.begin().map_err(|error| error.to_string())?;
         self.export_requests = request;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        self.exports.push(Export { request, generation: self.generation, answer });
+        self.exports.push(Export { request, generation: self.generation, answer, _writing: writing });
         self.pending.actions.push_back(action);
         self.flush();
         Ok(answered)

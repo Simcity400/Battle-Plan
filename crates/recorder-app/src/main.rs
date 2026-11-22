@@ -13,6 +13,7 @@ mod updates;
 mod worker;
 
 use std::sync::Arc;
+use tauri::Manager;
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
@@ -85,10 +86,13 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("Could not start BattlePlan Recorder");
-    app.run(|_, event| match event {
+    app.run(|app, event| match event {
         tauri::RunEvent::ExitRequested {
             code: None, api, ..
         } => api.prevent_exit(),
+        tauri::RunEvent::ExitRequested { api, .. } if app.state::<Arc<worker::Recorder>>().exit_requested(app) => {
+            api.prevent_exit();
+        }
         tauri::RunEvent::Exit => replay::writes::WRITES.close(),
         _ => {}
     });

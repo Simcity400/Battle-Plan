@@ -1,6 +1,8 @@
+use replay::writes::Writes;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -131,6 +133,8 @@ struct State {
     offering: bool,
     hung: bool,
     launching: usize,
+    exiting: bool,
+    writes: &'static Writes,
     stop: Option<Stop>,
     lock: Option<Lock>,
 }
@@ -147,19 +151,16 @@ impl State {
     }
 
     fn exiting(&self) -> bool {
-        self.holds.iter().any(|hold| hold.about == About::Close)
+        self.exiting
     }
 
     fn hold(&mut self, ask: Ask) {
-        let exiting = self.exiting();
+        if ask.about == About::Close {
+            self.exit_as(ask.id);
+            return;
+        }
         self.holds.push(ask);
         self.launching += usize::from(ask.about == About::Install);
-        if ask.about == About::Close
-            && !exiting
-            && let Some(lock) = &self.lock
-        {
-            self.outbox.push(Out::Lock(Arc::clone(lock)));
-        }
     }
 
     fn askable(&self) -> bool {
@@ -200,15 +201,25 @@ impl State {
     }
 
     fn exit(&mut self) {
-        if self.exiting() {
+        if !self.exiting {
+            let id = self.fresh();
+            self.exit_as(id);
+        }
+    }
+
+    fn exit_as(&mut self, id: u64) {
+        self.holds.push(Ask { id, about: About::Close });
+        if std::mem::replace(&mut self.exiting, true) {
             return;
         }
-        let id = self.fresh();
-        self.hold(Ask { id, about: About::Close });
+        self.writes.close_admission();
         for question in &mut self.questions {
             if question.about == About::Install && question.verdict.is_none() {
                 question.verdict = Some(Verdict::Closing);
             }
+        }
+        if let Some(lock) = &self.lock {
+            self.outbox.push(Out::Lock(Arc::clone(lock)));
         }
         if !self.navigations.is_empty()
             && let Some(stop) = &self.stop
@@ -240,6 +251,12 @@ pub struct Leaving {
 
 impl Default for Leaving {
     fn default() -> Self {
+        Self::gated(&replay::writes::WRITES)
+    }
+}
+
+impl Leaving {
+    pub fn gated(writes: &'static Writes) -> Self {
         Self {
             state: Mutex::new(State {
                 page: Page::Loading,
@@ -254,6 +271,8 @@ impl Default for Leaving {
                 offering: false,
                 hung: false,
                 launching: 0,
+                exiting: false,
+                writes,
                 stop: None,
                 lock: None,
             }),
@@ -395,14 +414,17 @@ impl Leaving {
                 state.send();
                 return Answered::Unknown;
             }
-            if leaves {
-                state.hold(Ask { id, about });
-            }
             if about == About::Close {
                 state.questions.remove(at);
+                if leaves {
+                    state.hold(Ask { id, about });
+                }
                 return if stays { Answered::Heard } else { Answered::Leave };
             }
             state.questions[at].verdict = Some(if stays { Verdict::Staying } else { Verdict::Leaving });
+            if leaves {
+                state.hold(Ask { id, about });
+            }
             Answered::Heard
         })
     }
@@ -601,11 +623,10 @@ impl Leaving {
         launched
     }
 
-    pub fn until_launched(&self) {
-        let mut state = self.lock();
-        while state.launching > 0 {
-            state = self.answered.wait(state).unwrap_or_else(PoisonError::into_inner);
-        }
+    pub fn launched_within(&self, limit: Duration) -> bool {
+        let state = self.lock();
+        let (state, _) = self.answered.wait_timeout_while(state, limit, |state| state.launching > 0).unwrap_or_else(PoisonError::into_inner);
+        state.launching == 0
     }
 
     pub fn install(&self, launch: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -624,10 +645,16 @@ impl Leaving {
 #[cfg(test)]
 mod tests {
     use super::{About, Answered, Ask, Batch, Closing, Leaving, RELOADING, REPLACED, Reach, UNWATCHED, Unanswered, Verdict};
+    use replay::writes::Writes;
     use std::sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender, channel},
     };
+    use std::time::Duration;
+
+    fn gate() -> &'static Writes {
+        Box::leak(Box::new(Writes::new()))
+    }
 
     struct Page {
         sent: Sender<(u32, Batch)>,
@@ -705,7 +732,7 @@ mod tests {
     #[test]
     fn a_registration_sent_again_after_a_lost_reply_keeps_the_subscription_it_made() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let document = leaving.document();
         assert_eq!(leaving.watch(document, 1, || unreachable!("a registration sent again replaces nothing")), Ok(()));
@@ -718,7 +745,7 @@ mod tests {
     #[test]
     fn a_registration_from_the_page_a_reload_replaced_is_refused_so_the_new_page_subscribes() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         assert!(!leaving.content_loading(1));
         let outgoing = leaving.document();
         assert!(!leaving.content_loading(2));
@@ -736,7 +763,7 @@ mod tests {
     #[test]
     fn a_superseded_registrations_late_answer_does_not_settle_the_question_it_was_asked() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
         let (_, first, _) = heard(&leaving, &page);
@@ -753,7 +780,7 @@ mod tests {
     #[test]
     fn a_leave_answer_sent_again_after_a_lost_reply_stands_until_the_host_says_stay() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, id, _) = heard(&leaving, &page);
@@ -777,7 +804,7 @@ mod tests {
     #[test]
     fn a_question_the_page_never_runs_is_refused_by_name_and_wakes_setup() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         std::thread::scope(|scope| {
             let setup = scope.spawn(|| leaving.close_for_update());
@@ -802,7 +829,7 @@ mod tests {
     #[test]
     fn a_receipt_for_a_question_asked_again_settles_nothing() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
         let (_, stale) = page.dispatched();
@@ -817,7 +844,7 @@ mod tests {
     #[test]
     fn a_later_batch_carries_every_question_an_earlier_one_asked_so_the_order_they_run_in_loses_nothing() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
         let (_, earlier) = page.dispatched();
@@ -834,7 +861,7 @@ mod tests {
 
     #[test]
     fn a_dispatch_refused_at_once_drops_its_receipt_without_the_broker_lock() {
-        let leaving = Arc::new(Leaving::default());
+        let leaving = Arc::new(Leaving::gated(gate()));
         let reports = Arc::new(Mutex::new(Vec::new()));
         let weak = Arc::downgrade(&leaving);
         let reported = Arc::clone(&reports);
@@ -854,7 +881,7 @@ mod tests {
     #[test]
     fn a_close_held_while_the_page_starts_offers_the_choice_when_its_registration_cant_be_reached() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         assert_eq!(leaving.close_requested(), Closing::Held, "a page that hasn’t subscribed yet may still hold work");
         assert_eq!(leaving.watch(leaving.document(), 1, page.reach(7)), Ok(()));
         let (batch, offer) = page.misses(&leaving);
@@ -865,7 +892,7 @@ mod tests {
     #[test]
     fn every_batch_says_which_leaves_still_stand_so_a_stay_that_never_ran_is_carried_by_the_next() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, id, _) = heard(&leaving, &page);
@@ -884,7 +911,7 @@ mod tests {
     #[test]
     fn a_stay_tells_the_page_and_no_answer_judged_under_the_leave_closes() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -909,7 +936,7 @@ mod tests {
     #[test]
     fn a_leave_judged_under_a_commitment_the_host_has_since_refused_is_asked_again() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -931,7 +958,7 @@ mod tests {
     #[test]
     fn a_leave_resting_on_a_question_the_host_only_waits_on_is_asked_again() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let restart = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -962,7 +989,7 @@ mod tests {
     #[test]
     fn a_close_is_asked_of_the_page_and_only_its_leave_answer_closes() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert_eq!(leaving.close_requested(), Closing::Held);
         let (_, unsaved, _) = heard(&leaving, &page);
@@ -977,7 +1004,7 @@ mod tests {
     #[test]
     fn a_page_that_started_but_has_not_subscribed_holds_closes_and_refuses_update_questions_by_name() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         assert!(!leaving.content_loading(1));
         assert_eq!(leaving.close_for_update(), Err(Verdict::UNHEARD.to_owned()));
         assert_eq!(leaving.busy(), Some(Verdict::UNHEARD.to_owned()));
@@ -994,7 +1021,7 @@ mod tests {
     #[test]
     fn a_close_the_page_leaves_unanswered_offers_the_choice_at_the_next_close() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert_eq!(leaving.close_requested(), Closing::Held);
         let (_, close, _) = heard(&leaving, &page);
@@ -1010,7 +1037,7 @@ mod tests {
     #[test]
     fn an_unresponsive_page_refuses_the_questions_waiting_on_it_by_name_and_offers_one_choice() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let leave = leaving.pose(About::Install);
         let query = leaving.pose(About::Query);
@@ -1027,9 +1054,10 @@ mod tests {
         assert!(!leaving.page_unresponsive(), "No keeps waiting through this hang, however often WebView2 reports it");
         assert_eq!(leaving.answer(install, false, &[]), Answered::Unknown, "a refused update can’t be agreed to later");
         assert_eq!(leaving.answer(close, false, &[]), Answered::Leave, "the close stays for a page that recovers");
+        assert!(matches!(page.hears(&leaving).1.holds[..], [Ask { about: About::Close, .. }]), "the page hears that BattlePlan leaves");
         assert!(leaving.page_unresponsive(), "a page that answered has responded, so a new hang offers the choice again");
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert!(leaving.page_unresponsive());
         leaving.chosen();
@@ -1040,7 +1068,7 @@ mod tests {
     #[test]
     fn an_install_the_page_agreed_to_stands_until_it_starts_or_fails() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, id, about) = heard(&leaving, &page);
@@ -1068,7 +1096,7 @@ mod tests {
         assert!(!leaving.navigation_starting(4), "nor while BattlePlan exits");
         assert_eq!(leaving.close_requested(), Closing::Through);
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, id, _) = heard(&leaving, &page);
@@ -1079,7 +1107,7 @@ mod tests {
     #[test]
     fn a_close_the_page_agrees_to_while_its_installer_starts_leaves_only_once_the_launch_ends() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, id, _) = heard(&leaving, &page);
@@ -1102,25 +1130,25 @@ mod tests {
             assert!(install.join().unwrap().is_err());
         });
         assert_eq!(leaving.lock().launching, 0, "a launch that fails ends the wait too");
-        leaving.until_launched();
+        assert!(leaving.launched_within(Duration::ZERO));
     }
 
     #[test]
     fn an_install_asked_for_once_battleplan_closes_never_launches() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         leaving.exit();
         page.hears(&leaving);
         assert_eq!(leaving.install(|| unreachable!("no installer starts once BattlePlan closes")), Err(Verdict::CLOSING.to_owned()));
         assert_eq!(leaving.lock().launching, 0, "and nothing is reserved, so the exit waits for nothing");
-        leaving.until_launched();
+        assert!(leaving.launched_within(Duration::ZERO));
     }
 
     #[test]
     fn closing_while_the_page_judges_an_install_refuses_it_by_name_and_launches_nothing() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -1131,7 +1159,7 @@ mod tests {
         assert_eq!(leaving.leave_after(asking, || unreachable!("an install agreed to after the exit launches nothing")), Err(Verdict::CLOSING.to_owned()));
         assert_eq!(leaving.lock().launching, 0);
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -1146,7 +1174,7 @@ mod tests {
     #[test]
     fn an_install_the_host_accepts_is_reserved_at_once_so_an_exit_before_its_launch_waits_for_it() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Install);
         let (_, install, _) = heard(&leaving, &page);
@@ -1155,17 +1183,74 @@ mod tests {
         leaving.exit();
         assert_eq!(leaving.lock().launching, 1, "an exit committed before the launch began still waits for it");
         std::thread::scope(|scope| {
-            let exit = scope.spawn(|| leaving.until_launched());
+            let exit = scope.spawn(|| leaving.launched_within(Duration::MAX));
             assert_eq!(leaving.leave_after(asking, || Ok(())), Ok(()));
-            exit.join().unwrap();
+            assert!(exit.join().unwrap());
         });
         assert_eq!(leaving.lock().launching, 0);
+    }
+
+    fn committed(leaving: &Leaving, writes: &Writes, how: &str) {
+        assert!(leaving.lock().exiting, "{how}: BattlePlan committed to exit");
+        assert_eq!(writes.begin().err().map(|error| error.to_string()), Some(replay::writes::CLOSED.to_owned()), "{how}: no write is admitted once it has");
+        assert_eq!(leaving.install(|| unreachable!("{how}: no installer starts once BattlePlan exits")), Err(Verdict::CLOSING.to_owned()), "{how}");
+        assert_eq!(leaving.close_requested(), Closing::Through, "{how}");
+    }
+
+    #[test]
+    fn every_way_battleplan_leaves_commits_once_closing_writes_and_refusing_the_install_it_was_judging() {
+        type Path = fn(&Leaving, &Page) -> bool;
+        let paths: [(&str, Path); 5] = [
+            ("the page agrees to close", |leaving, page| {
+                assert_eq!(leaving.close_requested(), Closing::Held);
+                let (_, batch) = page.hears(leaving);
+                leaving.answer(waiting(&batch, About::Close), false, &[]) == Answered::Leave
+            }),
+            ("Discard and close, the native choice or setup’s close", |leaving, _| {
+                leaving.exit();
+                true
+            }),
+            ("Alt+F4 once the page has gone", |leaving, _| {
+                assert!(!leaving.page_gone());
+                leaving.close_requested() == Closing::Through
+            }),
+            ("the page ends while a close waits", |leaving, page| {
+                assert_eq!(leaving.close_requested(), Closing::Held);
+                page.hears(leaving);
+                leaving.page_gone()
+            }),
+            ("an installer starts", |leaving, _| {
+                leaving.act(|state| {
+                    state.launching += 1;
+                    Leaving::launched(state, true, None);
+                });
+                true
+            }),
+        ];
+        for (how, leave) in paths {
+            let page = Page::default();
+            let writes = gate();
+            let leaving = Leaving::gated(writes);
+            watched(&leaving, &page, 7);
+            let asking = leaving.pose(About::Install);
+            let (_, install, _) = heard(&leaving, &page);
+            assert!(leave(&leaving, &page), "{how}");
+            committed(&leaving, writes, how);
+            let gone = matches!(leaving.lock().page, super::Page::Gone);
+            if gone {
+                assert_eq!(leaving.wait(asking).0, Verdict::Leaving, "{how}: the install a dead page held was agreed to before the exit, so the exit waits for it");
+                continue;
+            }
+            assert_eq!(leaving.answer(install, false, &[]), Answered::Unknown, "{how}: the page’s late agreement takes nothing");
+            assert_eq!(leaving.leave_after(asking, || unreachable!("{how}: the install being judged never launches")), Err(Verdict::CLOSING.to_owned()), "{how}");
+            assert_eq!(leaving.lock().launching, 0, "{how}: and the exit waits for no launch");
+        }
     }
 
     #[test]
     fn leaving_by_choice_refuses_reloads_while_the_maps_shut_down() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         leaving.exit();
         let (_, batch) = page.hears(&leaving);
@@ -1179,7 +1264,7 @@ mod tests {
     #[test]
     fn a_reload_already_past_its_veto_when_battleplan_leaves_is_stopped_so_the_page_it_leaves_hears_the_hold() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         let stops = Arc::new(Mutex::new(0));
         let stopped = Arc::clone(&stops);
         leaving.follow(Arc::new(move || *stopped.lock().unwrap() += 1), Arc::new(|| {}));
@@ -1196,7 +1281,7 @@ mod tests {
         assert!(matches!(batch.holds[..], [Ask { about: About::Close, .. }]), "the page the reload would have replaced is locked: {batch:?}");
         assert_eq!(leaving.close_requested(), Closing::Through);
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         leaving.follow(Arc::new(|| {}), Arc::new(|| {}));
         watched(&leaving, &page, 7);
         assert!(leaving.navigation_starting(2));
@@ -1211,7 +1296,7 @@ mod tests {
     #[test]
     fn committing_to_exit_takes_the_window_out_of_input_at_once_however_the_page_hears_of_it() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         let locks = Arc::new(Mutex::new(0));
         let locked = Arc::clone(&locks);
         leaving.follow(Arc::new(|| {}), Arc::new(move || *locked.lock().unwrap() += 1));
@@ -1227,7 +1312,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Through);
         assert_eq!(*locks.lock().unwrap(), 1, "once");
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         let locks = Arc::new(Mutex::new(0));
         let locked = Arc::clone(&locks);
         leaving.follow(Arc::new(|| {}), Arc::new(move || *locked.lock().unwrap() += 1));
@@ -1246,7 +1331,7 @@ mod tests {
     #[test]
     fn a_page_asking_again_hears_what_stands_now_so_a_close_its_receipt_retired_is_asked_with_a_fresh_id() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let document = leaving.document();
         assert_eq!(leaving.close_requested(), Closing::Held);
@@ -1270,7 +1355,7 @@ mod tests {
     #[test]
     fn a_reload_refuses_update_questions_by_name_holds_closes_and_an_abandoned_one_keeps_the_page_it_left() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let document = leaving.document();
         let asking = leaving.pose(About::Install);
@@ -1309,7 +1394,7 @@ mod tests {
     #[test]
     fn a_refresh_during_a_reload_says_so_and_the_page_an_abandoned_reload_leaves_hears_what_stands_even_when_nothing_does() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let document = leaving.document();
         let asking = leaving.pose(About::Install);
@@ -1329,7 +1414,7 @@ mod tests {
     #[test]
     fn navigations_are_followed_by_identity_so_one_loading_never_settles_another() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert!(leaving.navigation_starting(9));
         assert!(leaving.navigation_starting(3), "WebView2 gives navigation ids no order");
@@ -1348,7 +1433,7 @@ mod tests {
     #[test]
     fn a_page_the_host_cant_follow_refuses_updates_by_name_and_offers_the_choice_at_each_close() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
         page.hears(&leaving);
@@ -1362,7 +1447,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Blind));
         assert!(page.quiet());
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         leaving.blind();
         assert!(!leaving.page_gone(), "a crash the host sees while blind to reloads closes nothing");
@@ -1377,7 +1462,7 @@ mod tests {
     #[test]
     fn a_dead_page_holds_nothing_that_can_be_saved() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
         assert_eq!(leaving.close_requested(), Closing::Held);
@@ -1391,7 +1476,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Through);
         assert!(!leaving.navigation_starting(1), "nothing reloads while BattlePlan closes");
 
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert!(!leaving.page_gone(), "a page that ends with no close asked doesn’t close BattlePlan");
         assert_eq!(leaving.close_requested(), Closing::Through, "the next close goes through");
@@ -1400,7 +1485,7 @@ mod tests {
     #[test]
     fn a_page_process_that_ends_during_a_reload_takes_its_reload_with_it() {
         let page = Page::default();
-        let leaving = Leaving::default();
+        let leaving = Leaving::gated(gate());
         watched(&leaving, &page, 7);
         assert!(leaving.navigation_starting(3));
         assert!(!leaving.page_gone());
@@ -1455,6 +1540,7 @@ mod tests {
             refreshing: BTreeSet<u64>,
             refreshes: usize,
             recheck_after: Option<u64>,
+            unresolved: bool,
             shown: Option<Option<bool>>,
         }
 
@@ -1495,7 +1581,7 @@ mod tests {
         }
 
         enum Pending {
-            Install(Restart),
+            Install(Restart, bool),
             Pipe,
             Query,
         }
@@ -1565,7 +1651,7 @@ mod tests {
             (Step::Choose, 3),
         ];
 
-        const AFTER_EXIT: [Step; 14] = [
+        const AFTER_EXIT: [Step; 16] = [
             Step::Edit,
             Step::CloseWindow,
             Step::RunBatch,
@@ -1580,6 +1666,8 @@ mod tests {
             Step::ReloadLoads,
             Step::ReloadStops,
             Step::PageExits,
+            Step::Settle,
+            Step::Launch,
         ];
 
         const DRAIN: [Step; 12] = [
@@ -1631,6 +1719,7 @@ mod tests {
             consents: BTreeSet<u64>,
             draining: bool,
             exited: bool,
+            reserved: Option<BTreeSet<u64>>,
             trace: Vec<Value>,
             shapes: BTreeSet<String>,
             guards: usize,
@@ -1679,7 +1768,7 @@ mod tests {
         impl World {
             fn new(seed: u64) -> Self {
                 let mut world = Self {
-                    leaving: Arc::default(),
+                    leaving: Arc::new(Leaving::gated(super::gate())),
                     seed,
                     rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
                     log: Vec::new(),
@@ -1703,6 +1792,7 @@ mod tests {
                     consents: BTreeSet::new(),
                     draining: false,
                     exited: false,
+                    reserved: None,
                     trace: Vec::new(),
                     shapes: BTreeSet::new(),
                     guards: 0,
@@ -1815,13 +1905,9 @@ mod tests {
                 doc.alive && !doc.locked && !doc.confirmed && !self.disabled
             }
 
-            fn show(&mut self, doc: usize, guard: usize) {
-                let doc = &mut self.docs[doc];
+            fn show(&mut self, at: usize, guard: usize) {
+                let doc = &mut self.docs[at];
                 let state = &mut doc.guards[guard];
-                if state.committed.is_empty() {
-                    state.recheck_after = None;
-                    state.failures.remove("recheck");
-                }
                 let now = if state.committed.values().any(|&(update, _)| update) {
                     Some(true)
                 } else if state.by_choice || !state.committed.is_empty() {
@@ -1829,11 +1915,23 @@ mod tests {
                 } else {
                     None
                 };
+                if !state.ended && state.shown == Some(Some(true)) && now != Some(true) {
+                    state.unresolved = false;
+                }
+                if state.committed.is_empty() {
+                    if !state.unresolved {
+                        state.recheck_after = None;
+                    }
+                    state.failures.remove("recheck");
+                }
                 if state.ended || state.shown == Some(now) {
                     return;
                 }
                 state.shown = Some(now);
                 doc.locked = now.is_some();
+                if now == Some(true) && state.unresolved && !state.failures.contains_key("recheck") {
+                    self.recheck_now(at, guard);
+                }
             }
 
             fn send(&mut self, doc: usize, guard: usize, id: u64, about: About, stays: bool, basis: Vec<u64>) {
@@ -1933,14 +2031,17 @@ mod tests {
                 for hold in &batch.holds {
                     state.committed.entry(hold.id).and_modify(|(_, accepted)| *accepted = true).or_insert((hold.about != About::Close, true));
                 }
-                if rechecked && !state.committed.values().any(|&(update, _)| update) {
-                    state.recheck_after = None;
-                    state.failures.remove("recheck");
-                }
                 self.show(doc, guard);
                 self.resend_due(doc, guard);
                 let waiting = self.docs[doc].guards[guard].waiting.clone();
-                self.judge(doc, guard, waiting, true)
+                let handled = self.judge(doc, guard, waiting, true);
+                let state = &mut self.docs[doc].guards[guard];
+                if !state.ended && rechecked && !state.committed.values().any(|&(update, _)| update) {
+                    state.recheck_after = None;
+                    state.unresolved = false;
+                    state.failures.remove("recheck");
+                }
+                handled
             }
 
             fn resend_due(&mut self, doc: usize, guard: usize) {
@@ -1973,14 +2074,19 @@ mod tests {
                 self.refreshes.push(Asking { doc, guard, key, bound, ordinal });
             }
 
+            fn recheck_now(&mut self, doc: usize, guard: usize) {
+                let state = &mut self.docs[doc].guards[guard];
+                if !state.failures.contains_key("recheck") && !state.committed.is_empty() {
+                    state.fail("recheck".into(), Failure::Recheck);
+                }
+                self.ask_again(doc, guard, "recheck".into());
+            }
+
             fn recheck(&mut self, doc: usize, guard: usize) {
                 self.begin();
-                let state = &mut self.docs[doc].guards[guard];
-                if !state.ended && !state.committed.is_empty() {
-                    if !state.failures.contains_key("recheck") {
-                        state.fail("recheck".into(), Failure::Recheck);
-                    }
-                    self.ask_again(doc, guard, "recheck".into());
+                if !self.docs[doc].guards[guard].ended {
+                    self.docs[doc].guards[guard].unresolved = true;
+                    self.recheck_now(doc, guard);
                 }
                 let trace = self.docs[doc].guards[guard].trace;
                 let out = self.out(doc, guard);
@@ -2008,10 +2114,13 @@ mod tests {
                 if asking.key == "recheck" {
                     if state.applied.is_some_and(|applied| applied >= after) && !state.committed.values().any(|&(update, _)| update) {
                         state.recheck_after = None;
+                        state.unresolved = false;
                         state.failures.remove("recheck");
                     } else {
                         state.recheck_after = Some(after);
-                        state.fail("recheck".into(), Failure::Recheck);
+                        if !state.committed.is_empty() {
+                            state.fail("recheck".into(), Failure::Recheck);
+                        }
                     }
                 }
                 if let (Some(id), Some(bound)) = (asking.key.strip_prefix("answer:").and_then(|id| id.parse().ok()), asking.bound) {
@@ -2066,6 +2175,11 @@ mod tests {
                 );
                 assert!(!self.leaving.navigation_starting(u64::MAX), "{}", self.fail("a page could reload while BattlePlan exits"));
                 self.exited = true;
+                self.reserved = Some(self.installs_held());
+            }
+
+            fn installs_held(&self) -> BTreeSet<u64> {
+                self.leaving.lock().holds.iter().filter(|hold| hold.about == About::Install).map(|hold| hold.id).collect()
             }
 
             fn offered(&mut self, offer: bool) {
@@ -2087,7 +2201,7 @@ mod tests {
                             "{}",
                             self.fail("setup heard that a page whose process ended had reloaded")
                         );
-                        if let Pending::Install(restart) = pending {
+                        if let Pending::Install(restart, _) = pending {
                             assert_ne!(verdict, Verdict::Leaving, "{}", self.fail("an install went ahead without its page"));
                             self.restarts.push_back(restart);
                         }
@@ -2096,7 +2210,7 @@ mod tests {
             }
 
             fn installing(&self) -> bool {
-                !self.launching.is_empty() || self.posed.iter().any(|(pending, _)| matches!(pending, Pending::Install(_)))
+                !self.launching.is_empty() || self.posed.iter().any(|(pending, _)| matches!(pending, Pending::Install(..)))
             }
 
             fn chance(&mut self, one_in: usize) -> bool {
@@ -2125,7 +2239,13 @@ mod tests {
                     Step::Restart if alive && !self.docs[live].locked && !self.docs[live].confirmed && !self.installing() => {
                         let confirmed = self.docs[live].dirty;
                         self.docs[live].confirmed = confirmed;
-                        self.pose(Pending::Install(Restart { doc: live, confirmed }), About::Install);
+                        let restart = Restart { doc: live, confirmed };
+                        let early = self.chance(4);
+                        let posed = self.posed.len();
+                        self.pose(Pending::Install(restart, early), About::Install);
+                        if early && self.posed.len() > posed {
+                            self.restarts.push_back(restart);
+                        }
                     }
                     Step::CancelRestart if self.docs[live].confirmed && !self.docs[live].locked => self.docs[live].confirmed = false,
                     Step::DiscardAndClose if self.editable() && self.docs[live].dirty => {
@@ -2345,14 +2465,18 @@ mod tests {
                             self.log.push(format!("  settled {verdict:?} {id:?}"));
                             settled = true;
                             match self.posed.remove(at).0 {
-                                Pending::Install(restart) if verdict == Verdict::Leaving => {
-                                    let lost = self.chance(3);
-                                    if lost {
+                                Pending::Install(restart, early) if verdict == Verdict::Leaving => {
+                                    let lost = early || self.chance(3);
+                                    if lost && !early {
                                         self.restarts.push_back(restart);
                                     }
                                     self.launching.push((restart, id, lost));
                                 }
-                                Pending::Install(restart) => self.restarts.push_back(restart),
+                                Pending::Install(restart, early) => {
+                                    if !early {
+                                        self.restarts.push_back(restart);
+                                    }
+                                }
                                 Pending::Pipe if verdict == Verdict::Leaving => {
                                     self.leaving.exit();
                                     self.exit(false, "setup closed it");
@@ -2462,6 +2586,10 @@ mod tests {
             }
 
             fn check(&self) {
+                if let Some(reserved) = &self.reserved {
+                    let late: Vec<u64> = self.installs_held().difference(reserved).copied().collect();
+                    assert!(late.is_empty(), "{}", self.fail(&format!("BattlePlan accepted installs {late:?} after it committed to exit")));
+                }
                 let doc = &self.docs[self.live];
                 assert!(
                     !doc.alive || doc.locked || self.disabled || self.leaving.lock().holds.is_empty(),

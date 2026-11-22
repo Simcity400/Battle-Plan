@@ -117,6 +117,26 @@ test('a close between a layout edit and the dashboard’s report of it asks abou
   assert.equal(drawn.length, 1, 'the guard read the edit itself, not a render or a report of it');
 });
 
+test('a restart whose reply is lost before its install question reaches the page keeps Try again on the lock that question takes', async () => {
+  const { host, start, ask, retire, batch, deliver, shown, locked } = desktop();
+  const guard = start();
+  await flush();
+  guard.recheck();
+  await flush();
+  assert.deepEqual([locked(), shown()], [null, []], 'a clean page stays editable and shows nothing while the install is still on its way');
+  ask(7, 'install');
+  await flush();
+  assert.deepEqual([locked(), host.answers.at(-1)], ['update', [7, false]]);
+  assert.equal(shown().find(failure => failure.key === 'recheck')?.message, UNRECHECKED, 'the lock the late question takes still offers Try again');
+  retire(7);
+  batch();
+  shown().find(failure => failure.key === 'recheck')!.retry();
+  await flush();
+  deliver(batch());
+  await flush();
+  assert.deepEqual([locked(), shown()], [null, []], 'so a launch that failed and whose stay was lost never strands Restarting…');
+});
+
 test('a question the host asks is answered from the page’s work at that moment, by its id, and a busy query locks nothing', async () => {
   const { host, start, ask, locked } = desktop();
   start();
@@ -503,7 +523,8 @@ test('an install that couldn’t start asks the host what stands, so a lost stay
   send();
   assert.deepEqual([locked(), shown()], [null, []], 'the batch the request brought unlocks the page');
   guard.recheck();
-  assert.equal(host.refreshes, 2, 'a page that holds nothing has nothing to ask');
+  await flush();
+  assert.deepEqual([host.refreshes, locked(), shown()], [3, null, []], 'a page that holds nothing still asks, since the install it asked for may be on its way, and shows nothing while it is editable');
 });
 
 test('a recheck the host dispatched keeps its Try again until the page runs a batch at least as new as the one it named', async () => {

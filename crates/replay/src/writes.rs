@@ -56,6 +56,11 @@ impl Writes {
         Ok(Writing(self))
     }
 
+    pub fn admitted(&self) -> Writing<'_> {
+        self.lock().running += 1;
+        Writing(self)
+    }
+
     pub fn under_lock<T>(&self, lock: &Path, work: impl FnOnce(&Writing<'_>) -> io::Result<T>) -> io::Result<T> {
         if let Some(folder) = lock.parent() {
             fs::create_dir_all(folder)?;
@@ -89,8 +94,9 @@ impl Writes {
 
 impl Writing<'_> {
     pub fn replace(&self, path: &Path, write: impl FnOnce(&mut BufWriter<&File>) -> io::Result<()>) -> io::Result<()> {
-        let folder = path.parent().filter(|folder| !folder.as_os_str().is_empty()).ok_or_else(|| io::Error::other(format!("{} has no folder", path.display())))?;
-        fs::create_dir_all(folder)?;
+        if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+            fs::create_dir_all(folder)?;
+        }
         let mut name = path.as_os_str().to_owned();
         name.push(format!(".{}.{}.tmp", std::process::id(), STAGED.fetch_add(1, Ordering::Relaxed)));
         let staged = PathBuf::from(name);
@@ -181,6 +187,34 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"the new image");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1, "no staged file is left beside it");
         drop(writing);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_file_named_without_a_folder_is_written_in_the_current_one() {
+        let name = PathBuf::from(format!("battleplan-writes-here-{}-{}.png", std::process::id(), STAGED.fetch_add(1, Ordering::Relaxed)));
+        let writes = Writes::new();
+        let written = writes.begin().unwrap().replace(&name, |out| out.write_all(b"frame"));
+        let read = fs::read(&name);
+        let _ = fs::remove_file(&name);
+        written.unwrap();
+        assert_eq!(read.unwrap(), b"frame", "viewer --dump --out frame.png writes beside the shell, as it did before files were staged");
+    }
+
+    #[test]
+    fn a_write_another_permit_admitted_goes_ahead_after_the_close_and_the_exit_waits_for_it() {
+        let writes = Writes::new();
+        let accepted = writes.begin().unwrap();
+        assert!(writes.close_admission());
+        let folder = scratch("admitted");
+        let path = folder.join("campaign-map.png");
+        let writing = writes.admitted();
+        drop(accepted);
+        assert!(!writes.drained_within(std::time::Duration::ZERO), "the export the host accepted is still being written");
+        writing.replace(&path, |out| out.write_all(b"the image")).unwrap();
+        drop(writing);
+        assert!(writes.drained_within(std::time::Duration::ZERO));
+        assert_eq!(fs::read(&path).unwrap(), b"the image");
         fs::remove_dir_all(folder).unwrap();
     }
 }

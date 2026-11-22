@@ -9,12 +9,12 @@ mod perf;
 mod popout;
 mod recorder;
 mod replay_library;
-mod saving;
 #[cfg(feature = "served-ui")]
 mod served_ui;
 mod updates;
 mod video;
 
+use app_update::saving::{Saving, Wait, drained};
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
@@ -389,10 +389,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let main = MainWindow { window: window.clone(), hwnd: window.hwnd()?.0 as isize };
     app.state::<Leaving>().follow(
         stop_page(window.clone()),
-        Arc::new(move || {
-            replay::writes::WRITES.close_admission();
-            shut(&main);
-        }),
+        Arc::new(move || shut(&main)),
     );
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -651,17 +648,13 @@ fn main() {
             }
         },
         tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            shutdown(app);
-            perf::close();
-            replay::writes::WRITES.close();
-        }
         _ => {}
     });
 }
 
 const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
-const SAVING_UNSEEN: std::time::Duration = std::time::Duration::from_millis(300);
+const STARTING_UPDATE: &str = "Starting the update before BattlePlan closes…";
+const SAVING_CHANGES: &str = "Saving your changes before BattlePlan closes…";
 
 fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (done, finished) = std::sync::mpsc::channel();
@@ -684,37 +677,30 @@ fn ordered<P: Send + 'static>(
     let deadline = std::time::Instant::now().checked_add(limit);
     let ended = within(limit, steps);
     let left = deadline.map_or(limit, |deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-    let _ = within(left, move || summary(page));
-    ended
+    let summarized = within(left, move || summary(page));
+    ended.filter(|_| summarized.is_some())
 }
 
-fn saved_before_exit(writes: &replay::writes::Writes, show: impl FnOnce() -> Result<saving::Saving, String>) {
-    if !writes.close_admission() || writes.drained_within(SAVING_UNSEEN) {
-        return;
-    }
-    let shown = show();
-    if let Err(error) = &shown {
-        eprintln!("BattlePlan couldn’t show that it is saving before it closes: {error}");
-    }
-    writes.close();
-    drop(shown);
+fn drain_admitted(leaving: &Leaving, show: impl FnOnce(&'static str) -> Result<Saving, String>) {
+    let launched = |limit: std::time::Duration| leaving.launched_within(limit);
+    let written = |limit: std::time::Duration| replay::writes::WRITES.drained_within(limit);
+    drained(&[Wait { what: STARTING_UPDATE, done_within: &launched }, Wait { what: SAVING_CHANGES, done_within: &written }], show);
 }
 
 fn end_now() -> ! {
-    replay::writes::WRITES.close();
     std::process::exit(0);
 }
 
 fn exit_after_maps(app: &tauri::AppHandle) -> bool {
     static EXIT: ExitOrder = ExitOrder::new();
     EXIT.begin(
+        || app.state::<Leaving>().exit(),
         || {
             let handle = app.clone();
             std::thread::Builder::new()
                 .name("ordered exit".into())
                 .spawn(move || {
-                    handle.state::<Leaving>().until_launched();
-                    saved_before_exit(&replay::writes::WRITES, saving::Saving::show);
+                    drain_admitted(handle.state::<Leaving>().inner(), |what| Saving::show("BattlePlan", what));
                     let ordered_steps = handle.clone();
                     let ended = ordered(|| perf::finish_page(&handle), move || shutdown(&ordered_steps), perf::finish, EXIT_BOUND);
                     EXIT.done();
@@ -730,7 +716,7 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
                 .map(drop)
         },
         || {
-            app.state::<Leaving>().until_launched();
+            drain_admitted(app.state::<Leaving>().inner(), |_| Err("its exit thread didn’t start".into()));
             end_now();
         },
     )
@@ -746,8 +732,9 @@ impl ExitOrder {
         Self(std::sync::atomic::AtomicU8::new(0))
     }
 
-    fn begin(&self, start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
+    fn begin(&self, commit: impl FnOnce(), start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
         use std::sync::atomic::Ordering;
+        commit();
         match self.0.compare_exchange(0, Self::RUNNING, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => {}
             Err(Self::RUNNING) => return true,
@@ -777,7 +764,8 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, Shut, ordered, saved_before_exit, shut, within};
+    use super::{ExitOrder, Shut, ordered, shut, within};
+    use crate::leaving::Leaving;
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -795,29 +783,23 @@ mod tests {
         assert_eq!(written.recv(), Ok(Some(true)), "a page that took its whole wait still has its summary written, though the steps after it overran");
 
         let (_never, stalled) = std::sync::mpsc::channel::<()>();
-        ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::ZERO);
+        let ended = ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::from_millis(100));
+        assert_eq!(ended, None, "a measurement summary that stalls ends the process from the exit thread, never on the UI thread after it");
     }
 
     #[test]
-    fn an_exit_drains_the_writes_admitted_before_it_behind_a_window_that_says_so_and_admits_none_after() {
-        let writes = replay::writes::Writes::new();
-        saved_before_exit(&writes, || unreachable!("nothing is being written, so nothing is shown"));
-        assert!(writes.begin().is_err(), "the exit closed admission");
-
-        let writes = replay::writes::Writes::new();
-        let writing = writes.begin().unwrap();
-        std::thread::scope(|scope| {
-            let (showing, shown) = std::sync::mpsc::channel();
-            let exit = scope.spawn(|| saved_before_exit(&writes, move || {
-                showing.send(()).unwrap();
-                Err("no window in a test".into())
-            }));
-            shown.recv().unwrap();
-            assert!(writes.begin().is_err(), "a write asked for while the exit drains is refused");
-            assert!(!exit.is_finished(), "the exit waits for the write under way");
-            drop(writing);
-            exit.join().unwrap();
-        });
+    fn the_ordered_exit_commits_to_exit_before_it_starts_anything_and_on_every_call() {
+        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
+        let leaving = Leaving::gated(writes);
+        let exit = ExitOrder::new();
+        assert!(exit.begin(|| leaving.exit(), || {
+            assert!(writes.begin().is_err(), "an exit setup or Tauri asked for closes admission before the maps begin to shut");
+            Ok(())
+        }, || unreachable!()));
+        assert_eq!(leaving.close_requested(), crate::leaving::Closing::Through);
+        let mut committed = 0;
+        assert!(exit.begin(|| committed += 1, || unreachable!(), || unreachable!()));
+        assert_eq!(committed, 1, "a second exit request commits too, and then waits on the first");
     }
 
     struct Window {
@@ -867,15 +849,15 @@ mod tests {
     fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {
         let exit = ExitOrder::new();
         let mut fell_back = 0;
-        let held = exit.begin(|| Err(std::io::Error::other("no thread")), || fell_back += 1);
+        let held = exit.begin(|| {}, || Err(std::io::Error::other("no thread")), || fell_back += 1);
         assert!(held, "the window must outlive the map's surface");
         assert_eq!(fell_back, 1);
-        assert!(exit.begin(|| unreachable!(), || unreachable!()), "a later close is held too");
+        assert!(exit.begin(|| {}, || unreachable!(), || unreachable!()), "a later close is held too");
 
         let exit = ExitOrder::new();
-        assert!(exit.begin(|| Ok(()), || unreachable!()));
-        assert!(exit.begin(|| unreachable!(), || unreachable!()));
+        assert!(exit.begin(|| {}, || Ok(()), || unreachable!()));
+        assert!(exit.begin(|| {}, || unreachable!(), || unreachable!()));
         exit.done();
-        assert!(!exit.begin(|| unreachable!(), || unreachable!()), "once the maps end, closes go through");
+        assert!(!exit.begin(|| {}, || unreachable!(), || unreachable!()), "once the maps end, closes go through");
     }
 }

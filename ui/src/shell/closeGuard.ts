@@ -45,7 +45,7 @@ const unanswered = (about: CloseAbout, stays: boolean) =>
 const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1;
+  let ended = false, watching = false, watched = false, leavingByChoice = false, unresolved = false, applied = -1;
   let recheckAfter: number | undefined;
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
@@ -80,21 +80,28 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   const rejudge = () => refresh('judge', UNJUDGED, rejudge);
   const updating = () => [...committed.values()].some(commitment => commitment.leaving === 'update');
   const recheck = () => {
-    if (!failures.has('recheck')) fail('recheck', UNRECHECKED, AWAITED, recheck);
+    if (!failures.has('recheck') && committed.size > 0) fail('recheck', UNRECHECKED, AWAITED, recheck);
     refresh('recheck', UNRECHECKED, recheck, seq => {
-      if (applied < seq || updating()) { recheckAfter = seq; fail('recheck', UNRECHECKED, AWAITED, recheck); return; }
+      if (applied < seq || updating()) {
+        recheckAfter = seq;
+        if (committed.size > 0) fail('recheck', UNRECHECKED, AWAITED, recheck);
+        return;
+      }
       recheckAfter = undefined;
+      unresolved = false;
       clear('recheck');
     }, () => committed.size > 0);
   };
 
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
-    if (committed.size === 0) { recheckAfter = undefined; clear('recheck'); }
     const now = [...committed.values()].some(commitment => commitment.leaving === 'update') ? 'update' : leaving() ? 'close' : null;
+    if (!ended && shown === 'update' && now !== 'update') unresolved = false;
+    if (committed.size === 0) { if (!unresolved) recheckAfter = undefined; clear('recheck'); }
     if (ended || now === shown) return;
     shown = now;
     page.leaving(now);
+    if (now === 'update' && unresolved && !failures.has('recheck')) recheck();
   };
 
   const send = (id: number, about: CloseAbout, stays: boolean, basis: readonly number[]) => {
@@ -180,15 +187,17 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       if (commitment) commitment.accepted = true;
       else committed.set(hold.id, { leaving: leavingFor(hold.about), accepted: true });
     }
-    if (rechecked && !updating()) {
-      recheckAfter = undefined;
-      if (failures.has('recheck')) settled.push('recheck');
-    }
     for (const key of settled) failures.delete(key);
     if (settled.length) publish();
     show();
     resendDue();
-    return judge(waiting, true);
+    const handled = judge(waiting, true);
+    if (!ended && rechecked && !updating()) {
+      recheckAfter = undefined;
+      unresolved = false;
+      clear('recheck');
+    }
+    return handled;
   });
   const watch = () => {
     if (ended || watching || watched) return;
@@ -203,5 +212,5 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     });
   };
   watch();
-  return { leave, recheck() { if (!ended && committed.size > 0) recheck(); }, end() { ended = true; } };
+  return { leave, recheck() { if (!ended) { unresolved = true; recheck(); } }, end() { ended = true; } };
 }
