@@ -321,7 +321,6 @@ struct Reads<'r, 'q> {
 
 impl Reads<'_, '_> {
     fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
-        let from = self.hour.saturating_sub(STAGGER_PERIOD - 1);
         let recording = self.query.replay.recording();
         let run = recording.run(self.run).map_err(|e| e.to_string())?;
         let block = run.ordinal(self.hour).ok_or_else(|| format!("{what}: hour not recorded"))? / replay_columnar::unit::BLOCK;
@@ -335,12 +334,12 @@ impl Reads<'_, '_> {
         }
         let spans = &cache[&key].reads;
         let at = spans.partition_point(|s| s.0 <= self.hour);
-        let read = at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| h >= from).ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
+        let read = at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| super::current(h, self.hour)).ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
         self.supplies(read).then_some(read).ok_or_else(|| format!("{what} were last read before this country held the tag"))
     }
 
     fn supplies(&self, read: i32) -> bool {
-        read <= self.hour && self.hour - read < STAGGER_PERIOD && held_since(self.query, self.tag, self.holder, read, self.hour)
+        super::current(read, self.hour) && held_since(self.query, self.tag, self.holder, read, self.hour)
     }
 
     fn owned(&self, owner: u32, read: i32) -> Result<(), String> {

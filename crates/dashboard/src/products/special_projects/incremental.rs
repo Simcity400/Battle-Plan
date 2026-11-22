@@ -70,7 +70,7 @@ struct Current {
     history: Track,
     reads: Track,
     scientists: Option<Track>,
-    observable: bool,
+    proven: (BTreeMap<u32, i32>, BTreeMap<u32, i32>),
 }
 
 fn read_of(known: &BTreeSet<u32>, key: u128) -> bool {
@@ -78,8 +78,15 @@ fn read_of(known: &BTreeSet<u32>, key: u128) -> bool {
 }
 
 impl Current {
-    fn supplies(&self, table: TableId, raw: u32) -> bool {
-        supplied(&self.owners, raw, sample(self.reads.rows.get(&read_key(table, raw)).map(AsRef::as_ref)))
+    fn supplies(&self, table: TableId, raw: u32, hour: i32) -> Option<i32> {
+        supplied(&self.owners, raw, sample(self.reads.rows.get(&read_key(table, raw)).map(AsRef::as_ref)), hour)
+    }
+
+    fn proven(&self, linked: &BTreeSet<u32>, hour: i32) -> (BTreeMap<u32, i32>, BTreeMap<u32, i32>) {
+        let reads = |table| linked.iter().filter_map(|&raw| Some((raw, self.supplies(table, raw, hour)?))).collect::<BTreeMap<_, _>>();
+        let projects = if self.projects.reader.status() == Status::Complete { reads(TableId::Projects) } else { BTreeMap::new() };
+        let histories = if self.history.reader.status() == Status::Complete { reads(TableId::ProjectHistory) } else { BTreeMap::new() };
+        (projects, histories)
     }
 }
 
@@ -117,14 +124,17 @@ impl Episodes {
             let programs: BTreeSet<_> = read.projects.iter().flat_map(|h| &h.keys).flat_map(|(_, s)| s).filter_map(|s| program(s.cells.as_deref()?)).collect();
             let r = q.replay.recording();
             let owners = owner_ids(links, piece.slot, piece.first, q.timeline.at(piece.last).unwrap().last);
-            Some(Current {
+            let linked: BTreeSet<u32> = owners.iter().filter(|(_, runs)| within(runs, piece.last)).map(|(&raw, _)| raw).collect();
+            let mut current = Current {
                 projects: Track::new(r, &piece, TableId::Projects, &PROJECT_COLUMNS, |k| known.contains(&((k >> 32) as u32)), count)?,
                 history: Track::new(r, &piece, TableId::ProjectHistory, &HISTORY_COLUMNS, |k| known.contains(&((k >> 64) as u32)), count)?,
                 reads: Track::new(r, &piece, TableId::SliceReads, &read_columns()?, |k| read_of(&known, k), count)?,
                 scientists: open_programs(&programs, || Track::new(r, &piece, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| programs.contains(&k), count))?,
-                observable: self.observed.last().is_some_and(|span| span.1 == piece.last),
+                proven: Default::default(),
                 piece, owners, known, programs,
-            })
+            };
+            current.proven = current.proven(&linked, current.piece.last);
+            Some(current)
         } else { None };
         Ok(())
     }
@@ -153,18 +163,17 @@ impl Episodes {
             boundary |= c.reads.step(r, |k| read_of(&c.known, k), count)?;
             if let Some(track) = &mut c.scientists { boundary |= track.step(r, |k| c.programs.contains(&k), count)?; }
             let linked: BTreeSet<u32> = c.owners.iter().filter(|(_, runs)| within(runs, next)).map(|(&raw, _)| raw).collect();
-            let status = c.projects.reader.status();
-            if matches!(status, Status::Truncated { .. }) {
+            if matches!(c.projects.reader.status(), Status::Truncated { .. }) {
                 extend(&mut self.partial, next, next);
             }
-            let observable = status == Status::Complete && linked.iter().all(|&raw| c.supplies(TableId::Projects, raw));
-            boundary |= observable != c.observable;
-            c.observable = observable;
+            let proven = c.proven(&linked, next);
+            let observable = c.projects.reader.status() == Status::Complete && proven.0.len() == linked.len();
+            boundary |= proven != c.proven;
+            c.proven = proven;
             observed_change |= boundary;
             if observable {
                 if boundary {
-                    let histories: BTreeSet<u32> = linked.iter().copied().filter(|&raw| c.supplies(TableId::ProjectHistory, raw)).collect();
-                    let read = &linked;
+                    let (reads, histories) = c.proven.clone();
                     let mut history: BTreeMap<u128, Vec<Entry>> = BTreeMap::new();
                     for (&key, cells) in &c.history.rows {
                         if let Some(entry) = history_entry(key as u32, cells) { history.entry(key >> 32).or_default().push(entry); }
@@ -178,12 +187,12 @@ impl Episodes {
                                 c.scientists = Some(Track::new(r, &at, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| c.programs.contains(&k), count)?);
                             }
                         }
-                        if read.contains(&((key >> 32) as u32)) && let Some(row) = project_row((key >> 32) as u32, key as u32, cells) {
+                        if reads.contains_key(&((key >> 32) as u32)) && let Some(row) = project_row((key >> 32) as u32, key as u32, cells) {
                             rows.push((key, row));
                         }
                     }
                     let shown: Vec<_> = rows.iter().map(|(key, row)| Observed {
-                        row, history: (c.history.reader.status() == Status::Complete && histories.contains(&row.owner)).then(|| history.get(key).map_or(&[][..], Vec::as_slice)),
+                        row, read: reads[&row.owner], history: histories.get(&row.owner).map(|&read| (read, history.get(key).map_or(&[][..], Vec::as_slice))),
                         person: person(row.program, (row.program as u32 == PROGRAM_REFERENCE).then(|| c.scientists.as_ref().and_then(|t| t.rows.get(&u128::from(row.program >> 32))).map(AsRef::as_ref))),
                     }).collect();
                     self.fold.observe((piece.slot, piece.id), next, next, &shown);

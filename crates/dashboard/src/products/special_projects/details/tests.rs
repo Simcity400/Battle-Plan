@@ -347,3 +347,37 @@ fn a_project_read_while_its_raw_owner_belonged_to_another_country_is_not_this_co
     let iteration = asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "ordinal": 0, "hour": MOVED_ITERATION })).unwrap();
     assert_eq!(iteration["unavailable"], json!(other), "the choice was next read after the owner left this country: {iteration}");
 }
+
+#[test]
+fn an_iteration_is_found_at_the_first_complete_read_after_a_read_in_part() {
+    const CHOICE: i32 = 30;
+    const IN_PART: i32 = 31;
+    const COMPLETE: i32 = 35;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        let stamp = |table: TableId, sample_hour| SliceReadRow { table: table.index() as u32, owner: 9001, sample_hour };
+        let read = hour >= CHOICE;
+        set(&mut frame, TableId::Projects, TableRows::Projects(if read { vec![ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }] } else { Vec::new() }));
+        let choice = ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() };
+        *frame.tables[TableId::ProjectHistory.index()] = match hour {
+            IN_PART => TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice.clone()]), missing: 1 },
+            COMPLETE.. => TableView::Complete(TableRows::ProjectHistory(vec![choice])),
+            _ => TableView::Complete(TableRows::empty(TableId::ProjectHistory)),
+        };
+        let mut slices = if read { vec![stamp(TableId::Projects, CHOICE)] } else { Vec::new() };
+        slices.extend(match hour {
+            IN_PART => Some(IN_PART),
+            COMPLETE.. => Some(COMPLETE),
+            _ => None,
+        }
+        .map(|read| stamp(TableId::ProjectHistory, read)));
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-project-iteration-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    match asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "hour": CHOICE })) {
+        Err(dashboard_core::QueryError::Refused { text }) => assert!(text.contains("content"), "the complete read after the one in part proves the choice and goes on to the content: {text}"),
+        other => panic!("the choice was not found past the read in part: {other:?}"),
+    }
+}

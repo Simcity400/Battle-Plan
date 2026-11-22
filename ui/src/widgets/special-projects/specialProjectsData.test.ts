@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -372,10 +372,19 @@ test('Current renders again only when a section, order, name, scientist, state o
   const overtaking = projects();
   overtaking.projects[2].runs[2] = { ...overtaking.projects[2].runs[2], progress: 60 };
   assert.notEqual(currentKey(overtaking, 172), currentKey(overtaking, 173));
-  assert.equal(currentKey(data, 200), 'unobserved', 'an hour not recorded shows no cards');
+  assert.equal(currentProjects(data, 200).running.length, 0, 'an hour not recorded shows no cards');
+  const inPart = { ...projects(), partial: [{ firstHour: 200, lastHour: 200 }] };
+  assert.notEqual(currentKey(inPart, 200), currentKey(inPart, 201), 'an hour read in part and a following unrecorded hour name different reasons');
   const bounded = projects();
   bounded.projects[0].runs[1] = { ...bounded.projects[0].runs[1], completion: { hour: 160, exact: false } };
   assert.notEqual(currentKey(bounded, 170), currentKey(data, 170), 'an exact completion date replaces its bound');
+});
+
+test('History names an interval read only in part or not at all, never as no projects, though a later read is complete', () => {
+  const later = { ...fixture(), projects: [], available: [{ firstHour: 220, lastHour: 300 }], partial: [{ firstHour: 150, lastHour: 150 }] };
+  assert.equal(historyUnrecorded([later], 140, 160), 'Projects were read only in part over this time.');
+  assert.equal(historyUnrecorded([later], 100, 140), 'Projects were not recorded over this time.');
+  assert.equal(historyUnrecorded([later], 140, 230), null, 'a complete read in the interval proves no projects');
 });
 
 test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no run', () => {

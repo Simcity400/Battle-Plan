@@ -61,6 +61,15 @@ fn air_losses_are_named_at_the_read_and_a_range_starts_at_the_events_own_hour() 
 }
 
 #[test]
+fn a_read_in_part_counts_its_events_but_certifies_no_complete_total() {
+    let in_part = |hour, events| (Span { first: hour, last: hour, held: Held::InPart }, vec![(hour, events)]);
+    let hours = [hour(11, Some(vec![air(1, 11, 7, false, 300_000, None)])), in_part(12, vec![]), hour(13, Some(vec![]))];
+    let fold = fold(MilitaryAirFamily::AirLosses, &hours).unwrap();
+    assert_eq!(fold.observed, vec![HourSpan { first_hour: 11, last_hour: 13 }]);
+    assert_eq!(fold.incomplete, vec![HourSpan { first_hour: 12, last_hour: 12 }], "an empty read in part is no evidence of zero losses");
+}
+
+#[test]
 fn bombing_counts_only_air_callers_once_on_each_side() {
     let bombing = |id, cause| Event::Bombing { id, game_hour: 11, attacker: Some(1), victim: 2, state: 0, building: 9, cause, amount: 2_500_000 };
     let hours = [hour(11, Some(vec![bombing(1, BuildingBombingDamageCause::AirMission), bombing(2, BuildingBombingDamageCause::LandCombat), bombing(3, BuildingBombingDamageCause::Unknown)]))];
@@ -100,7 +109,7 @@ fn observed_hours_are_those_both_tables_were_available() {
             span(17, 19, Held::Observed),
             span(20, 24, Held::Unread),
             span(25, 29, Held::Unjoined),
-            span(30, 40, Held::Observed),
+            span(30, 40, Held::InPart),
             span(41, 42, Held::Unread),
         ]
     );

@@ -18,11 +18,14 @@ use content_reader_core::special_projects::{Catalog, Project};
 use content_reader_localisation::localisation::Argument;
 use replay::lanes::{self, Cell, History, Keys, Step};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{TableId, tables};
+use replay_data::{
+    cadence::STAGGER_PERIOD,
+    rows::{TableId, tables},
+};
 use replay_frame::frame::{DecodedFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -550,12 +553,15 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
     })
 }
 
-fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i32)]]) -> Vec<i32> {
+fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i32)]], stamps: &History) -> Vec<i32> {
     let mut hours = vec![first];
-    for history in histories {
+    for history in histories.iter().chain([&stamps]) {
         for (_, steps) in &history.keys {
             hours.extend(steps.iter().map(|step| step.hour));
         }
+    }
+    for (_, steps) in &stamps.keys {
+        hours.extend(steps.iter().filter_map(|step| sample(step.cells.as_deref())?.checked_add(STAGGER_PERIOD)));
     }
     for spans in spans {
         for &(a, b) in *spans {
@@ -577,8 +583,12 @@ pub(super) fn read_key(table: TableId, raw: u32) -> u128 {
     (table.index() as u128) << 32 | u128::from(raw)
 }
 
-pub(super) fn supplied(owners: &BTreeMap<u32, Vec<(i32, i32)>>, raw: u32, read: Option<i32>) -> bool {
-    read.is_some_and(|read| owners.get(&raw).is_some_and(|spans| within(spans, read)))
+pub(super) fn current(read: i32, hour: i32) -> bool {
+    read <= hour && hour - read < STAGGER_PERIOD
+}
+
+pub(super) fn supplied(owners: &BTreeMap<u32, Vec<(i32, i32)>>, raw: u32, read: Option<i32>, hour: i32) -> Option<i32> {
+    read.filter(|&read| current(read, hour) && owners.get(&raw).is_some_and(|spans| within(spans, read)))
 }
 
 pub(super) fn sample(cells: Option<&[Cell]>) -> Option<i32> {
@@ -590,10 +600,10 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         extend(partial, first, last);
     }
     let mut histories: Vec<&History> = read.projects.iter().chain(&read.histories).collect();
-    histories.extend([&read.programs, &read.reads]);
+    histories.push(&read.programs);
     let mut spans: Vec<&[(i32, i32)]> = read.owners.values().map(Vec::as_slice).collect();
     spans.extend([read.projects_available.as_slice(), read.history_available.as_slice()]);
-    let hours = boundaries(piece.first, piece.last, &histories, &spans);
+    let hours = boundaries(piece.first, piece.last, &histories, &spans, &read.reads);
     let mut projects: Vec<(u32, u32, Cursor<'_>)> = Vec::new();
     for (history, &raw) in read.projects.iter().zip(read.owners.keys()) {
         projects.extend(history.keys.iter().map(|(key, steps)| (raw, *key as u32, Cursor::new(steps))));
@@ -614,17 +624,16 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         }
         let history_known = within(&read.history_available, first);
         let linked: Vec<u32> = read.owners.iter().filter(|(_, spans)| within(spans, first)).map(|(&raw, _)| raw).collect();
-        let mut supplies = |table: TableId, raw: u32| supplied(&read.owners, raw, sample(reads.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(first))));
-        let projects_read: HashSet<u32> = linked.iter().copied().filter(|&raw| supplies(TableId::Projects, raw)).collect();
+        let mut supplies = |table: TableId, raw: u32| supplied(&read.owners, raw, sample(reads.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(first))), first);
+        let projects_read: HashMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, supplies(TableId::Projects, raw)?))).collect();
         if projects_read.len() != linked.len() {
             continue;
         }
-        let histories: HashSet<u32> = linked.iter().copied().filter(|&raw| supplies(TableId::ProjectHistory, raw)).collect();
+        let histories: HashMap<u32, i32> = if history_known { linked.iter().filter_map(|&raw| Some((raw, supplies(TableId::ProjectHistory, raw)?))).collect() } else { HashMap::new() };
         let mut history: HashMap<(u32, u32), Vec<Entry>> = HashMap::new();
         for (owner, project, ordinal, cursor) in &mut entries {
             if let Some(entry) = cursor.at(first).and_then(|cells| history_entry(*ordinal, cells))
-                && history_known
-                && histories.contains(owner)
+                && histories.contains_key(owner)
             {
                 history.entry((*owner, *project)).or_default().push(entry);
             }
@@ -633,7 +642,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         for (raw, local, cursor) in &mut projects {
             let (raw, local) = (*raw, *local);
             if let Some(row) = cursor.at(first).and_then(|cells| project_row(raw, local, cells))
-                && projects_read.contains(&raw)
+                && projects_read.contains_key(&raw)
             {
                 let program = (row.program as u32 == PROGRAM_REFERENCE).then(|| (row.program >> 32) as u32);
                 let scientist = program.map(|id| programs.get_mut(&id).and_then(|cursor| cursor.at(first)));
@@ -644,7 +653,8 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             .iter()
             .map(|(raw, row, scientist)| Observed {
                 row,
-                history: (history_known && histories.contains(raw)).then(|| history.get(&(*raw, row.local)).map_or(&[][..], Vec::as_slice)),
+                read: projects_read[raw],
+                history: histories.get(raw).map(|&read| (read, history.get(&(*raw, row.local)).map_or(&[][..], Vec::as_slice))),
                 person: person(row.program, *scientist),
             })
             .collect();

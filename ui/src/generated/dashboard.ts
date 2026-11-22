@@ -916,7 +916,7 @@ export type MilitaryAirReply = { family: MilitaryAirFamily, window: number, firs
  */
 countedFrom: number | null, available: boolean, observed: Array<HourSpan>,
 /**
- * Reads holding a caller whose membership in aircraft bombing is unknown.
+ * Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown.
  */
 incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
 export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMode,
@@ -1354,11 +1354,11 @@ export type EspionageEndedParams = { branchId: string,
 from: number | null, to: number, };
 export type EndedOperation = { id: string, owner: Country, target: Country, operation: string | null, firstSeen: number, lastSeen: number,
 /**
- * The first read that no longer held it.
+ * The first complete read that no longer held it.
  */
 byHour: number,
 /**
- * Whether completions were recorded every hour of its life: where not, a completion may have
+ * Whether completions were read whole every hour of its life: where not, a completion may have
  * gone unseen and its end is not known to be a cancellation.
  */
 completionsRecorded: boolean,

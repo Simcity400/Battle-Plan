@@ -64,6 +64,12 @@ export const observedAt = (data: SpecialProjectsReply, hour: number) => runAt(da
 export const unobservedReason = (data: SpecialProjectsReply, hour: number) =>
   runAt(data.partial, hour) !== null ? 'Projects were read only in part at this time.' : 'Projects were not recorded at this time.';
 
+export function historyUnrecorded(data: readonly SpecialProjectsReply[], first: number, last: number): string | null {
+  const meets = (spans: readonly HourSpan[]) => spans.some(span => span.firstHour <= last && first <= span.lastHour);
+  if (data.some(reply => meets(reply.available))) return null;
+  return data.some(reply => meets(reply.partial)) ? 'Projects were read only in part over this time.' : 'Projects were not recorded over this time.';
+}
+
 export function projectCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, first: number, last: number) {
   const requested = worldRequestTags(selection, fallback, groups, last);
   const match = countryMatch(selection, fallback, groups, last);
@@ -205,7 +211,7 @@ export function currentProjects(data: SpecialProjectsReply, hour: number): Curre
 }
 
 export function currentKey(data: SpecialProjectsReply, hour: number): string {
-  if (!observedAt(data, hour)) return 'unobserved';
+  if (!observedAt(data, hour)) return `unobserved${unobservedReason(data, hour)}`;
   const { running, completed, earlier } = currentProjects(data, hour);
   const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
     JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));

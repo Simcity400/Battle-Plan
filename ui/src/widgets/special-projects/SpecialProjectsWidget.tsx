@@ -35,7 +35,7 @@ import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip,
   observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
@@ -267,9 +267,11 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
         open={(card, event) => setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
         : <><WidgetState kind="unavailable" message={unobservedReason(reply, at)} />{details}{popup}</>;
     }
-  } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
-    ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
-    : <WidgetState kind="empty" message="No special projects yet." />;
+  } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) {
+    const unrecorded = historyUnrecorded(data, from, at);
+    body = historyMembershipUnknown ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
+      : unrecorded ? <WidgetState kind="unavailable" message={unrecorded} /> : <WidgetState kind="empty" message="No special projects yet." />;
+  }
   else body = <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Special project history" extent={extent} playhead={playhead}
     liveHead={liveHead} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu

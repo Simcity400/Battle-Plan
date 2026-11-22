@@ -2044,6 +2044,15 @@ pub mod tests {
         assert_eq!(routed("bare_only|1").unwrap(), ("bare_only".to_owned(), 0));
         assert!(routed("mod_alias|0").unwrap_err().to_string().contains("names no frame"));
         assert!(routed("missing|2").is_err(), "an undeclared stem is refused by name");
+        let colours = [[200, 20, 20, 255], [20, 200, 20, 255], [20, 20, 200, 255], [200, 200, 20, 255]];
+        let strip = Rgba8Image { width: 4, height: 1, pixels: colours.concat() };
+        let drawn = |name: &str| {
+            let (sprite, frame) = text_icon(&sprites, name).unwrap();
+            let SpriteKind::Plain(plain) = &sprite.facts.kind else { unreachable!("a plain sprite") };
+            native_frame(&strip, plain, frame, 96).unwrap().pixels
+        };
+        assert_eq!(drawn("mod_alias"), colours[0], "no suffix draws the first frame's colour");
+        assert_eq!(drawn("mod_alias|3"), colours[2], "the suffix draws its own frame's colour, never the first");
     }
 
     #[test]

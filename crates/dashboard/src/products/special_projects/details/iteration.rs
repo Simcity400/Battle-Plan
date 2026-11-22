@@ -85,19 +85,27 @@ fn later_history(reads: &Reads<'_, '_>, params: &SpecialProjectIterationParams) 
     let key = slice_read(TableId::ProjectHistory, params.owner);
     let columns = super::super::read_columns().map_err(|why| why.to_string())?;
     let stamps = cost::storage(|| lanes::history(recording, reads.run, TableId::SliceReads, &columns, Keys::These(&[key]), reads.hour + 1, until)).map_err(|why| why.to_string())?;
-    let mut later = stamps.keys.iter().flat_map(|(_, steps)| steps).filter_map(|step| Some((step.hour, super::super::sample(step.cells.as_deref())?))).filter(|&(_, read)| read > reads.hour);
-    let Some((shown, read)) = later.next() else { return Err(unread.into()) };
-    if !reads.follows(read, until) {
-        return Err("This iteration's choice was next read after this country stopped holding the tag".into());
+    let later = stamps.keys.iter().flat_map(|(_, steps)| steps).filter_map(|step| Some((step.hour, super::super::sample(step.cells.as_deref())?))).filter(|&(_, read)| read > reads.hour);
+    let mut refused = unread.to_owned();
+    for (shown, read) in later {
+        if !reads.follows(read, until) {
+            return Err("This iteration's choice was next read after this country stopped holding the tag".into());
+        }
+        if let Err(why) = reads.owned(params.owner, read) {
+            refused = why;
+            continue;
+        }
+        let frame = dashboard_base::products::at_hour::frame(reads.query, shown, &[history_read(params), Read::these(TableId::SliceReads, [key])], SpecialProjectIterationAt::TITLE)
+            .map_err(|why| why.to_string())?;
+        if owner_read(&frame, TableId::ProjectHistory, params.owner)? != read {
+            continue;
+        }
+        let Ok(rows) = frame.complete::<tables::ProjectHistory>() else { continue };
+        if let Some(row) = history_row(rows, history_key(params)).filter(|row| row.date == reads.hour) {
+            return Ok(row.clone());
+        }
     }
-    reads.owned(params.owner, read)?;
-    let frame = dashboard_base::products::at_hour::frame(reads.query, shown, &[history_read(params), Read::these(TableId::SliceReads, [key])], SpecialProjectIterationAt::TITLE)
-        .map_err(|why| why.to_string())?;
-    if owner_read(&frame, TableId::ProjectHistory, params.owner)? != read {
-        return Err(unread.into());
-    }
-    let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
-    history_row(rows, history_key(params)).cloned().ok_or_else(|| unread.into())
+    Err(refused)
 }
 
 fn chosen<'c>(content: &'c ProjectContent, frame: &DecodedFrame, project: &str, row: &ProjectHistoryRow) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -187,7 +195,7 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
             if let Err(why) = reads.owned(params.owner, read) {
                 return Ok(Err(why));
             }
-            history_row(frame.complete::<tables::ProjectHistory>()?, history_key(params)).cloned()
+            frame.complete::<tables::ProjectHistory>().ok().and_then(|rows| history_row(rows, history_key(params)).cloned())
         }
         None => None,
     };

@@ -9,7 +9,7 @@ use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
 use content_reader_core::province_graph::ProvinceGraph;
 use content_reader_localisation::localisation::Argument;
-use replay_columnar::{manifest::Status, summary};
+use replay_columnar::summary;
 use replay_data::{
     rows::{Recorded, TableId, WeatherProvinceRow, WeatherRegionRow, tables},
     temperature::{Content, Memo, Plan, Planned, State},
@@ -347,10 +347,6 @@ pub(crate) fn mean(members: &[u32], states: &[State]) -> Option<i128> {
     Some(sum / members.len() as i128)
 }
 
-fn available(status: Status) -> bool {
-    matches!(status, Status::Complete | Status::Truncated { .. })
-}
-
 fn states<'m>(memo: &'m mut Memo, weather: &Weather, branch: u64, hour: i32, rows: &[WeatherProvinceRow]) -> Result<&'m [State], String> {
     let (pass, plan) = weather.pass.as_ref().map_err(Clone::clone)?;
     let states = memo.states_changed(branch, hour, rows, Ok(&Planned::new(pass, plan)), None)?;
@@ -417,7 +413,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut rows: BTreeSet<u32> = BTreeSet::new();
     for stretch in query.timeline.within(first, last) {
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
-        known.extend(read::statuses(recording, stretch.run, TableId::WeatherRegions, from, to)?.into_iter().filter(|run| available(run.status)).map(|run| (stretch.run, run.first, run.last)));
+        known.extend(read::statuses(recording, stretch.run, TableId::WeatherRegions, from, to)?.into_iter().filter(|run| replay::columnar_frames::complete(run.status)).map(|run| (stretch.run, run.first, run.last)));
         reads.extend(dashboard_query::cost::storage(|| replay::lanes::reads(recording, stretch.run, TableId::WeatherRegions, from, to))?);
     }
     let days = days(first, last, &known, &reads);

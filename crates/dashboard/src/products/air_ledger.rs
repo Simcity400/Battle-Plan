@@ -7,7 +7,10 @@ use dashboard_query::{
     log::{self, Cell, Row},
     read,
 };
-use replay::{columnar_frames::Recording, lanes::StatusRun};
+use replay::{
+    columnar_frames::{Recording, available, complete},
+    lanes::StatusRun,
+};
 use replay_columnar::{manifest::Status, summary};
 use replay_data::rows::{AirLossTotalRow, BombingTotalRow, BuildingBombingDamageCause, TableId};
 use serde::{Deserialize, Serialize};
@@ -153,7 +156,7 @@ pub struct MilitaryAirReply {
     pub counted_from: Option<i32>,
     pub available: bool,
     pub observed: Vec<HourSpan>,
-    #[doc = " Reads holding a caller whose membership in aircraft bombing is unknown."]
+    #[doc = " Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown."]
     pub incomplete: Vec<HourSpan>,
     pub countries: Vec<MilitaryAirCountry>,
     pub openings: Vec<MilitaryAirOpening>,
@@ -189,7 +192,14 @@ pub(crate) enum Event {
 pub(crate) enum Held {
     Unread,
     Unjoined,
+    InPart,
     Observed,
+}
+
+impl Held {
+    fn read(self) -> bool {
+        matches!(self, Self::InPart | Self::Observed)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,10 +219,10 @@ pub(crate) struct Fold {
     unread_since: Option<i32>,
 }
 
-fn append_hour(spans: &mut Vec<HourSpan>, hour: i32) {
+fn append_hours(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
     match spans.last_mut() {
-        Some(last) if last.last_hour.checked_add(1) == Some(hour) => last.last_hour = hour,
-        _ => spans.push(HourSpan { first_hour: hour, last_hour: hour }),
+        Some(held) if held.last_hour.saturating_add(1) >= first => held.last_hour = held.last_hour.max(last),
+        _ => spans.push(HourSpan { first_hour: first, last_hour: last }),
     }
 }
 
@@ -256,6 +266,7 @@ impl Fold {
                 return Ok(());
             }
             Held::Unjoined => return Ok(()),
+            Held::InPart => append_hours(&mut self.incomplete, span.first, span.last),
             Held::Observed => {}
         }
         match self.observed.last_mut() {
@@ -302,7 +313,7 @@ impl Fold {
             MilitaryAirFamily::Bombing => {
                 self.begin_read("bombing", first, earliest)?;
                 if events.iter().any(|event| matches!(event, Event::Bombing { cause: BuildingBombingDamageCause::Unknown, .. })) {
-                    append_hour(&mut self.incomplete, hour);
+                    append_hours(&mut self.incomplete, hour, hour);
                 }
                 for event in events {
                     let Event::Bombing { id, game_hour, attacker, victim, state, building, cause, amount } = *event else { continue };
@@ -404,9 +415,6 @@ fn event(family: MilitaryAirFamily, row: &Row, columns: &Columns) -> Option<Even
 const AIR_COLUMNS: [&str; 7] = ["game_hour", "country", "region", "native_cause", "credited_enemy", "amount_raw", "opponent"];
 const BOMBING_COLUMNS: [&str; 7] = ["game_hour", "attacker", "victim", "state", "building_type", "cause", "amount_raw"];
 
-fn available(status: Status) -> bool {
-    matches!(status, Status::Complete | Status::Truncated { .. })
-}
 
 pub(crate) fn spans(first: i32, last: i32, events: &[StatusRun], links: &[StatusRun]) -> Vec<Span> {
     let status_at = |runs: &[StatusRun], at: &mut usize, hour: i32| -> (Status, i32) {
@@ -429,6 +437,7 @@ pub(crate) fn spans(first: i32, last: i32, events: &[StatusRun], links: &[Status
         let held = match (available(event), available(link)) {
             (false, _) => Held::Unread,
             (true, false) => Held::Unjoined,
+            (true, true) if !complete(event) => Held::InPart,
             (true, true) => Held::Observed,
         };
         match out.last_mut() {
@@ -461,7 +470,7 @@ fn scan(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, l
         crate::metadata::check_cancel(cancelled)?;
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
         let spans = spans(from, to, &read::statuses(recording, stretch.run, log.table, from, to)?, &read::statuses(recording, stretch.run, TableId::CountryLinks, from, to)?);
-        let observed: Vec<(i32, i32)> = spans.iter().filter(|span| span.held == Held::Observed).map(|span| (span.first, span.last)).collect();
+        let observed: Vec<(i32, i32)> = spans.iter().filter(|span| span.held.read()).map(|span| (span.first, span.last)).collect();
         let mut reads: Vec<(i32, Vec<Event>)> = Vec::new();
         for row in reader.inserted(stretch.run, &observed)? {
             let event = event(family, &row, &columns).ok_or_else(|| dashboard_core::invalid(format!("{} holds an event whose cells are not recorded", log.name)))?;
@@ -858,7 +867,7 @@ fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: 
     } else {
         spans(first, last, &read::statuses(recording, run, log.table, first, last)?, &read::statuses(recording, run, TableId::CountryLinks, first, last)?)
             .into_iter()
-            .filter(|span| span.held == Held::Observed)
+            .filter(|span| span.held.read())
             .map(|span| (span.first, span.last))
             .collect()
     };
@@ -941,6 +950,16 @@ fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Op
     Ok(latest)
 }
 
+fn latest_in_part(query: &Query<'_>, family: MilitaryAirFamily, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
+    let log = dashboard_declare::log(family.log()).ok_or_else(|| dashboard_core::invalid(format!("No declared log {}", family.log())))?;
+    let mut latest = None;
+    for stretch in query.timeline.within(from, to) {
+        let runs = read::statuses(query.replay.recording(), stretch.run, log.table, stretch.first, stretch.last)?;
+        latest = latest.max(runs.iter().filter(|run| available(run.status) && !complete(run.status)).map(|run| run.last).max());
+    }
+    Ok(latest)
+}
+
 fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fold: &mut Fold, first: i32, counted: Option<i32>) -> io::Result<()> {
     let (Some(counted), Some(span)) = (counted, fold.observed.first()) else { return Ok(()) };
     if span.first_hour != first || counted >= first {
@@ -951,9 +970,8 @@ fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fol
         return Ok(());
     }
     fold.observed[0].first_hour = since;
-    if family == MilitaryAirFamily::Bombing
-        && let Some(read) = latest_incomplete(query, (since, first - 1))?
-    {
+    let unknown = if family == MilitaryAirFamily::Bombing { latest_incomplete(query, (since, first - 1))? } else { None };
+    if let Some(read) = unknown.max(latest_in_part(query, family, (since, first - 1))?) {
         fold.incomplete.insert(0, HourSpan { first_hour: read, last_hour: read });
         if fold.incomplete.get(1).is_some_and(|next| next.first_hour == read + 1) {
             let next = fold.incomplete.remove(1);

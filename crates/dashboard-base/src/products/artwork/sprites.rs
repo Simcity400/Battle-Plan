@@ -259,7 +259,7 @@ mod tests {
         )]);
         let (_, addon) = folder_catalogue(&[(
             "interface/mod.gfx",
-            "spriteTypes={spriteType={name=GFX_Mixed_Mod textureFile=gfx/mod.png} spriteType={name=GFX_Missing textureFile=gfx/absent.png}}",
+            "spriteTypes={spriteType={name=GFX_Mixed_Mod textureFile=gfx/mod.png} spriteType={name=GFX_Missing textureFile=gfx/absent.png} spriteType={name=GFX_Strip textureFile=gfx/strip.png noOfFrames=3}}",
         )]);
         let image = Rgba8Image {
             width: 2,
@@ -268,6 +268,9 @@ mod tests {
         };
         std::fs::create_dir_all(addon.0.join("gfx")).unwrap();
         std::fs::write(addon.0.join("gfx/mod.png"), png_bytes(&image)).unwrap();
+        let colours = [[200, 20, 20, 255], [20, 200, 20, 255], [20, 20, 200, 255]];
+        let strip = Rgba8Image { width: 3, height: 1, pixels: colours.concat() };
+        std::fs::write(addon.0.join("gfx/strip.png"), png_bytes(&strip)).unwrap();
         let layers = content_reader_core::ResolvedLayers::from_folders(&[
             (&base.0, &[]),
             (&addon.0, &["interface"]),
@@ -290,15 +293,16 @@ mod tests {
             .into_iter()
             .map(|key| frame(key, 0))
             .chain([frame("GFX_Mixed_Mod", 1)])
-            .chain(["Mixed_Mod", "Mixed_Mod|2", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
+            .chain(["Mixed_Mod", "Strip", "Strip|3", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
             .collect(),
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
-        assert_eq!(reply.items.len(), 7);
+        assert_eq!(reply.items.len(), 8);
         let text = |key: &str| reply.items.iter().find(|art| art.key == key).unwrap().icon.as_deref();
         assert_eq!(from_url(text("Mixed_Mod").unwrap()).pixels, image.pixels, "a text icon is drawn from the sprite its name declares");
         assert_eq!(text("Absent_Icon"), None, "an undeclared text icon is refused by name");
-        assert_eq!(from_url(text("Mixed_Mod|2").unwrap()).pixels, image.pixels, "a frame suffix draws that frame of the sprite its stem declares");
+        assert_eq!(from_url(text("Strip").unwrap()).pixels, colours[0], "a text icon without a suffix draws the first frame");
+        assert_eq!(from_url(text("Strip|3").unwrap()).pixels, colours[2], "a frame suffix draws that frame of the sprite its stem declares");
         let art = reply
             .items
             .iter()

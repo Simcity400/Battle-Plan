@@ -34,6 +34,11 @@ test('a folded column sizes its stripes by days, keeps clear days and never take
   const tip = columnTooltip(data, data.regions[0], 0, 'conditions', null, 'date', hour => `h${hour}`);
   assert.deepEqual(tip.rows.slice(0, 2), [{ label: 'h0 to h167' }, { label: 'Recorded days', value: '6 of 7' }]);
   assert.ok(tip.rows.some(row => row.label === 'Conditions not recorded' && row.value === '1 day'));
+  const omitted = validateWeather({ ...data, columns: { ...week, regions: [{ ...week.regions[0], observed: [4], clear: [1] }, week.regions[1]] } });
+  assert.deepEqual(columnTooltip(omitted, omitted.regions[0], 0, 'conditions', null, 'date', hour => `h${hour}`).rows[1], { label: 'Recorded days', value: '4 of 7' },
+    'a region left out of a day counts only the days it was recorded, never the table’s');
+  const unread = columnTooltip(omitted, omitted.regions[0], 0, 'temperature', null, 'date', hour => `h${hour}`);
+  assert.deepEqual(unread.rows.slice(1), [{ label: 'Recorded days', value: '0 of 7' }, { label: 'Not recorded' }], 'a measure the region never had is not recorded');
 });
 
 test('a modifier is its sampled value; a day without one is unknown, never zero; temperature without an average is blank', () => {

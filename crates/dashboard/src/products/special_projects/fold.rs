@@ -70,7 +70,8 @@ pub fn completion_date(history: &[Entry], observed: i32, campaign_start: i32) ->
 
 pub struct Observed<'a> {
     pub row: &'a Row,
-    pub history: Option<&'a [Entry]>,
+    pub read: i32,
+    pub history: Option<(i32, &'a [Entry])>,
     pub person: Person,
 }
 
@@ -83,6 +84,7 @@ pub struct Fold {
     open: BTreeMap<(u32, u32, u32), usize>,
     holder: Option<(u32, u32)>,
     last_iterations: HashMap<usize, i32>,
+    since: HashMap<usize, i32>,
     pub warnings: BTreeMap<String, usize>,
 }
 
@@ -125,15 +127,19 @@ impl Fold {
                 continue;
             }
             let done = state == ProjectState::Completed;
-            let iterations = observed.history.map(|entries| entries.len() as i32 - i32::from(done));
-            let ended = self.open.get(&key).is_some_and(|&index| {
-                let restarted = self.episodes[index].runs.last().is_some_and(|run| {
+            let restarted = self.open.get(&key).is_some_and(|&index| {
+                self.episodes[index].runs.last().is_some_and(|run| {
                     matches!(run.state, ProjectState::Completed | ProjectState::Cancelled) && matches!(state, ProjectState::Running | ProjectState::Paused)
-                });
-                let fell = self.last_iterations.get(&index).copied().zip(iterations).is_some_and(|(old, new)| old > new);
-                restarted || fell
+                })
             });
-            if ended {
+            if restarted {
+                self.open.remove(&key);
+            }
+            let held = self.open.get(&key).map(|index| (*index, self.since[index]));
+            let since = held.map_or(observed.read, |(_, since)| since);
+            let history = observed.history.filter(|&(read, _)| read >= since);
+            let iterations = history.map(|(_, entries)| entries.len() as i32 - i32::from(done));
+            if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
                 self.open.remove(&key);
             }
             let index = match self.open.get(&key) {
@@ -141,15 +147,15 @@ impl Fold {
                 None => {
                     let index = self.episodes.len();
                     self.episodes.push(ProjectEpisode { id: format!("{}:{first}:{index}", row.local), owner: row.owner, local: row.local, start: ProjectDate { hour: first, exact: false }, runs: Vec::new() });
+                    self.since.insert(index, history.map_or(observed.read, |(read, _)| read.min(observed.read)));
                     index
                 }
             };
             next.insert(key, index);
             let previous = self.episodes[index].runs.last().cloned();
             let completion = done.then(|| {
-                observed
-                    .history
-                    .and_then(|entries| completion_date(entries, first, self.campaign_start))
+                history
+                    .and_then(|(_, entries)| completion_date(entries, first, self.campaign_start))
                     .or_else(|| previous.as_ref().and_then(|run| run.completion.clone()))
                     .unwrap_or(ProjectDate { hour: first, exact: false })
             });
