@@ -53,12 +53,25 @@ macro_rules! keyed_pair {
 }
 
 pub fn takes_keyed_updates(table: TableId) -> bool {
-    let empty = TableRows::empty(table);
-    sliced_pair!(@arms (&empty, &empty), _old, _new, _wrap, true, false;
-        Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
-        DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
-        RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-        AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
+    matches!(
+        table,
+        TableId::Divisions
+            | TableId::DivisionStatus
+            | TableId::DivisionMovement
+            | TableId::DivisionPanelStats
+            | TableId::DivisionLandInputs
+            | TableId::DivisionRetreatBans
+            | TableId::MovementStateTerms
+            | TableId::CoreSupplyAccess
+            | TableId::CountryUnitSpeedEntries
+            | TableId::RiverRelations
+            | TableId::DivisionTransportSpeeds
+            | TableId::WeatherProvinces
+            | TableId::DivisionTemplateIcons
+            | TableId::AirBaseRegistrations
+            | TableId::CharacterRoleTraits
+            | TableId::ScriptVariables
+    )
 }
 
 fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
@@ -96,24 +109,29 @@ fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<us
 fn merge_owners<R: SlicedRow>(
     previous: &[R],
     fresh: &[R],
+    fresh_owners: usize,
     keep: impl Fn(u32) -> bool,
 ) -> io::Result<Vec<u32>> {
-    let count = allocation::add(owner_ranges(previous).count(), owner_ranges(fresh).count())?;
-    let mut owners = allocation::vec(count)?;
+    let mut owners = allocation::vec(fresh_owners)?;
     let mut old = owner_ranges(previous)
         .map(|(owner, _)| owner)
         .filter(|&owner| keep(owner))
         .peekable();
     for (owner, _) in owner_ranges(fresh) {
         while let Some(kept) = old.next_if(|&kept| kept < owner) {
+            allocation::reserve_push_batch(&mut owners, 1)?;
             owners.push(kept);
         }
         if old.peek() == Some(&owner) {
             old.next();
         }
+        allocation::reserve_push_batch(&mut owners, 1)?;
         owners.push(owner);
     }
-    owners.extend(old);
+    for kept in old {
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(kept);
+    }
     Ok(owners)
 }
 
@@ -154,14 +172,31 @@ impl SliceUpdate {
             read: impl Fn(u32) -> bool,
             live: impl Fn(u32) -> bool,
         ) -> io::Result<Vec<u32>> {
-            if fresh.windows(2).any(|pair| pair[0].key() >= pair[1].key())
-                || owner_ranges(fresh).any(|(owner, _)| !read(owner))
-            {
-                return Err(invalid(
-                    "sliced read holds an unread owner's row or is not in key order",
-                ));
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = 0_usize;
+            for row in fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    fresh_owners += 1;
+                }
             }
-            merge_owners(previous, fresh, |owner| read(owner) || !live(owner))
+            merge_owners(previous, fresh, fresh_owners, |owner| {
+                read(owner) || !live(owner)
+            })
         }
         let owners = sliced_pair!(
             previous,

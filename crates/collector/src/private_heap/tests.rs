@@ -459,30 +459,30 @@ fn region(pointer: *const u8) -> MEMORY_BASIC_INFORMATION {
 fn a_large_block_grows_and_shrinks_in_place_and_its_reservation_is_reused_zeroed() {
     let heap = Heap::new();
     let layout = |size| Layout::from_size_align(size, 16).unwrap();
-    let pointer = unsafe { heap.0.alloc(layout(40_000)) };
+    let pointer = unsafe { heap.0.alloc(layout(70_000)) };
     assert!(!pointer.is_null());
-    unsafe { pointer.write_bytes(0x3c, 40_000) };
-    assert_eq!(unsafe { heap.0.realloc(pointer, layout(40_000), 60_000) }, pointer);
+    unsafe { pointer.write_bytes(0x3c, 70_000) };
+    assert_eq!(unsafe { heap.0.realloc(pointer, layout(70_000), 120_000) }, pointer);
     let bytes = |size| unsafe { std::slice::from_raw_parts(pointer, size) };
-    assert!(bytes(40_000).iter().all(|&byte| byte == 0x3c));
-    unsafe { pointer.add(40_000).write_bytes(0x3c, 20_000) };
+    assert!(bytes(70_000).iter().all(|&byte| byte == 0x3c));
+    unsafe { pointer.add(70_000).write_bytes(0x3c, 50_000) };
     let pages_before_shrink = heap.0.hold().pages.calls;
-    assert_eq!(unsafe { heap.0.realloc(pointer, layout(60_000), 33_000) }, pointer);
+    assert_eq!(unsafe { heap.0.realloc(pointer, layout(120_000), 66_000) }, pointer);
     assert_eq!(heap.0.hold().pages.calls, pages_before_shrink);
-    assert!(bytes(33_000).iter().all(|&byte| byte == 0x3c));
-    unsafe { heap.0.dealloc(pointer, layout(33_000)) };
-    let reused = unsafe { heap.0.alloc_zeroed(layout(50_000)) };
+    assert!(bytes(66_000).iter().all(|&byte| byte == 0x3c));
+    unsafe { heap.0.dealloc(pointer, layout(66_000)) };
+    let reused = unsafe { heap.0.alloc_zeroed(layout(100_000)) };
     assert_eq!(reused, pointer);
-    assert!(bytes(50_000).iter().all(|&byte| byte == 0));
-    let moved = unsafe { heap.0.realloc(reused, layout(50_000), 70_000) };
+    assert!(bytes(100_000).iter().all(|&byte| byte == 0));
+    let moved = unsafe { heap.0.realloc(reused, layout(100_000), 140_000) };
     assert!(!moved.is_null());
     assert_ne!(moved, reused);
     assert!(
-        unsafe { std::slice::from_raw_parts(moved, 50_000) }
+        unsafe { std::slice::from_raw_parts(moved, 100_000) }
             .iter()
             .all(|&byte| byte == 0)
     );
-    unsafe { heap.0.dealloc(moved, layout(70_000)) };
+    unsafe { heap.0.dealloc(moved, layout(140_000)) };
     assert!(!crate::allocation::failed());
 }
 
@@ -495,36 +495,36 @@ fn every_refused_page_call_returns_null_and_keeps_what_it_had() {
     let refused = || heap.page_refusal.load(Ordering::Relaxed) == 0;
     for ahead in [1, 2] {
         refuse(ahead);
-        assert!(unsafe { heap.alloc(layout(40_000)) }.is_null());
+        assert!(unsafe { heap.alloc(layout(70_000)) }.is_null());
         assert!(refused());
         assert!(heap.pages.made.load(Ordering::Relaxed).is_null());
         assert_eq!(heap.pages.kept.load(Ordering::Relaxed), 0);
     }
-    let pointer = unsafe { heap.alloc(layout(40_000)) };
+    let pointer = unsafe { heap.alloc(layout(70_000)) };
     assert!(!pointer.is_null());
-    unsafe { pointer.write_bytes(0x6d, 40_000) };
+    unsafe { pointer.write_bytes(0x6d, 70_000) };
     let record = PrivateHeap::record(pointer);
     let committed = unsafe { (*record).committed };
     refuse(1);
-    assert!(unsafe { heap.realloc(pointer, layout(40_000), 60_000) }.is_null());
+    assert!(unsafe { heap.realloc(pointer, layout(70_000), 120_000) }.is_null());
     assert!(refused());
     assert_eq!(unsafe { (*record).committed }, committed);
     assert!(
-        unsafe { std::slice::from_raw_parts(pointer, 40_000) }
+        unsafe { std::slice::from_raw_parts(pointer, 70_000) }
             .iter()
             .all(|&byte| byte == 0x6d)
     );
-    unsafe { heap.dealloc(pointer, layout(40_000)) };
+    unsafe { heap.dealloc(pointer, layout(70_000)) };
     let kept = heap.pages.kept.load(Ordering::Relaxed);
     assert_ne!(kept, 0);
     refuse(1);
-    assert!(unsafe { heap.alloc(layout(60_000)) }.is_null());
+    assert!(unsafe { heap.alloc(layout(120_000)) }.is_null());
     assert!(refused());
     assert_eq!(heap.pages.kept.load(Ordering::Relaxed), kept);
-    let reused = unsafe { heap.alloc(layout(60_000)) };
+    let reused = unsafe { heap.alloc(layout(120_000)) };
     assert_eq!(reused, pointer);
     assert_eq!(heap.pages.kept.load(Ordering::Relaxed), 0);
-    unsafe { heap.dealloc(reused, layout(60_000)) };
+    unsafe { heap.dealloc(reused, layout(120_000)) };
     assert!(!crate::allocation::failed());
 }
 

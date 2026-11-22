@@ -109,19 +109,21 @@ impl DirtySet {
     }
 
     #[inline]
-    fn mark(&self, id: usize) {
+    fn mark(&self, id: usize) -> Mark<'_> {
         match self.installed().and_then(|bits| bits.words.get(id / BITS)) {
             Some(word) => {
                 let bit = 1 << (id % BITS);
                 if word.load(SeqCst) & bit == 0 {
                     word.fetch_or(bit, SeqCst);
                 }
+                Mark::Word(word, bit)
             }
             None => {
                 self.overflows.fetch_add(1, Relaxed);
                 self.demand.fetch_max(id.saturating_add(1), SeqCst);
                 self.outgrown.store(true, SeqCst);
                 self.new_epoch();
+                Mark::Overflow(id)
             }
         }
     }
@@ -129,11 +131,8 @@ impl DirtySet {
     #[inline]
     pub fn notify(&self, id: usize) -> Dirty<'_> {
         self.active.fetch_add(1, SeqCst);
-        self.mark(id);
-        Dirty {
-            set: self,
-            id: Some(id),
-        }
+        let mark = self.mark(id);
+        Dirty { set: self, mark }
     }
 
     pub fn notify_every(&self) -> Dirty<'_> {
@@ -142,7 +141,7 @@ impl DirtySet {
         self.new_epoch();
         Dirty {
             set: self,
-            id: None,
+            mark: Mark::Every,
         }
     }
 
@@ -304,18 +303,31 @@ impl Drop for DirtySet {
     }
 }
 
+enum Mark<'a> {
+    Word(&'a AtomicU64, u64),
+    Overflow(usize),
+    Every,
+}
+
 #[must_use]
 pub struct Dirty<'a> {
     set: &'a DirtySet,
-    id: Option<usize>,
+    mark: Mark<'a>,
 }
 
 impl Drop for Dirty<'_> {
     #[inline]
     fn drop(&mut self) {
-        match self.id {
-            Some(id) => self.set.mark(id),
-            None => self.set.new_epoch(),
+        match self.mark {
+            Mark::Word(word, bit) => {
+                if word.load(SeqCst) & bit == 0 {
+                    word.fetch_or(bit, SeqCst);
+                }
+            }
+            Mark::Overflow(id) => {
+                let _ = self.set.mark(id);
+            }
+            Mark::Every => self.set.new_epoch(),
         }
         self.set.active.fetch_sub(1, SeqCst);
     }

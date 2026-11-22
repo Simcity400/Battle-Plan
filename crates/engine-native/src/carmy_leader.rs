@@ -1723,6 +1723,17 @@ pub fn attack_stats(
     base: usize,
     leader: usize,
 ) -> Result<AttackStats, &'static str> {
+    let mut stats = AttackStats::default();
+    attack_stats_into(memory, base, leader, &mut stats)?;
+    Ok(stats)
+}
+
+pub fn attack_stats_into(
+    memory: &impl crate::Memory,
+    base: usize,
+    leader: usize,
+    out: &mut AttackStats,
+) -> Result<(), &'static str> {
     let handle = crate::cunit_leader::handle(memory, base, leader)?;
     let word = |offset: usize| -> Result<i64, &'static str> {
         leader
@@ -1758,12 +1769,16 @@ pub fn attack_stats(
     } else {
         usize::try_from(count).unwrap_or(0).max(1)
     };
-    let mut terrain = Vec::new();
-    crate::allocation::reserve_exact(&mut terrain, records)
-        .map_err(|_| "commander terrain allocation failed")?;
-    let mut movement_terrain = Vec::new();
-    crate::allocation::reserve_exact(&mut movement_terrain, records)
-        .map_err(|_| "commander terrain allocation failed")?;
+    out.terrain.clear();
+    if out.terrain.capacity() < records {
+        crate::allocation::reserve_exact(&mut out.terrain, records)
+            .map_err(|_| "commander terrain allocation failed")?;
+    }
+    out.movement_terrain.clear();
+    if out.movement_terrain.capacity() < records {
+        crate::allocation::reserve_exact(&mut out.movement_terrain, records)
+            .map_err(|_| "commander terrain allocation failed")?;
+    }
     const BATCH: usize = 32;
     let mut entries = [0_u8; BATCH * MOVEMENT_TERRAIN_STRIDE];
     let mut first = 0;
@@ -1782,12 +1797,12 @@ pub fn attack_stats(
         }
         for entry in entries[..len * MOVEMENT_TERRAIN_STRIDE].chunks_exact(MOVEMENT_TERRAIN_STRIDE)
         {
-            terrain.push(i64::from_le_bytes(
+            out.terrain.push(i64::from_le_bytes(
                 entry[crate::csub_unit_definition::UNIT_ADJUSTER_ATTACK..][..8]
                     .try_into()
                     .unwrap(),
             ));
-            movement_terrain.push(i64::from_le_bytes(
+            out.movement_terrain.push(i64::from_le_bytes(
                 entry[crate::csub_unit_definition::UNIT_ADJUSTER_MOVEMENT..][..8]
                     .try_into()
                     .unwrap(),
@@ -1795,13 +1810,10 @@ pub fn attack_stats(
         }
         first += len;
     }
-    Ok(AttackStats {
-        leader: handle,
-        terrain,
-        fort: scalar(ATTACK_FORT),
-        river: scalar(ATTACK_RIVER),
-        snow: scalar(ATTACK_SNOW),
-        night: word(ATTACK_NIGHT)?,
-        movement_terrain,
-    })
+    out.leader = handle;
+    out.fort = scalar(ATTACK_FORT);
+    out.river = scalar(ATTACK_RIVER);
+    out.snow = scalar(ATTACK_SNOW);
+    out.night = word(ATTACK_NIGHT)?;
+    Ok(())
 }

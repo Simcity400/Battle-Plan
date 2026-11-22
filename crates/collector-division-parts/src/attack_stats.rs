@@ -41,11 +41,23 @@ impl Scalars {
     }
 }
 
+static NEXT_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_stamp() -> u64 {
+    let stamp = NEXT_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if stamp == 0 || stamp > i64::MAX as u64 {
+        0
+    } else {
+        stamp
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Row {
     division: u64,
     start: usize,
     len: usize,
+    stamp: u64,
     scalars: Option<Scalars>,
     experience: Option<i64>,
     officer_experience: Option<i64>,
@@ -60,6 +72,7 @@ struct Held {
     stat_block: usize,
     start: usize,
     len: usize,
+    stamp: u64,
     scalars: Scalars,
     maxima: Option<DivisionMaxima>,
 }
@@ -1049,6 +1062,7 @@ impl Captured {
                     division: seed.division,
                     start,
                     len: held.len,
+                    stamp: held.stamp,
                     scalars: Some(held.scalars),
                     experience,
                     officer_experience,
@@ -1097,10 +1111,16 @@ impl Captured {
                     self.terrain.extend_from_slice(&fresh.terrain);
                     self.movement.extend_from_slice(&fresh.movement_terrain);
                     let scalars = Scalars::of(fresh);
+                    let stamp = if store.is_some() && registered {
+                        next_stamp()
+                    } else {
+                        0
+                    };
                     self.rows.push(Row {
                         division: seed.division,
                         start,
                         len: fresh.terrain.len(),
+                        stamp,
                         scalars: Some(scalars),
                         experience,
                         officer_experience,
@@ -1126,6 +1146,7 @@ impl Captured {
                             stat_block,
                             start: next,
                             len: fresh.terrain.len(),
+                            stamp,
                             scalars,
                             maxima: maxima(index),
                         });
@@ -1382,9 +1403,14 @@ impl RowView<'_> {
 
     pub fn record(&self, record: &mut collector_projection::projection::Record<'_>) {
         let Some((row, scalars)) = self.row.and_then(|row| Some((row, row.scalars?))) else {
-            record.words(None);
+            record.word(-1);
             return;
         };
+        if row.stamp != 0 {
+            record.word(row.stamp as i64);
+            return;
+        }
+        record.word(0);
         let movement = scalars.movement.unwrap_or_default();
         let words = [
             scalars.river[0],
@@ -1504,6 +1530,7 @@ mod tests {
                 stat_block: 0x2000,
                 start: 0,
                 len: terrain.len(),
+                stamp: 0,
                 scalars: Scalars::default(),
                 maxima: None,
             },

@@ -12,6 +12,7 @@ pub(crate) fn pool_size() -> usize {
     crate::acquisition::usable_cpus()
         .saturating_sub(1)
         .min(crate::pack_conversion::MAX_HELPERS)
+        .min(4)
 }
 
 const ENCODING_HELPERS: usize = 2;

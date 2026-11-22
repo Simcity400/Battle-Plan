@@ -2,15 +2,6 @@
 use super::{RawLog, Span, is_canonical_range};
 use engine_native::Memory;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static INDEX_REUSES: AtomicU64 = AtomicU64::new(0);
-static INDEX_REBUILDS: AtomicU64 = AtomicU64::new(0);
-static INDEX_REUSE_NS: AtomicU64 = AtomicU64::new(0);
-static INDEX_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
-static INDEX_REUSED_SPANS: AtomicU64 = AtomicU64::new(0);
-static INDEX_REBUILT_SPANS: AtomicU64 = AtomicU64::new(0);
-
 
 pub struct Recorded<'a> {
     pub(super) index: RecordedIndex,
@@ -145,6 +136,15 @@ impl RecordedIndex {
         if has_bulk {
             crate::allocation::reserve_raw(&mut self.bulk, spans.len(), "raw index bulk")?;
         }
+        let target = spans
+            .len()
+            .saturating_mul(2)
+            .checked_next_power_of_two()
+            .unwrap_or(self.slots.len())
+            .max(8);
+        if self.slots.len() > target {
+            self.slots.truncate(target);
+        }
         self.slots.fill(std::cell::Cell::new(usize::MAX));
         self.distinct = 0;
         self.has_bulk = has_bulk;
@@ -154,6 +154,7 @@ impl RecordedIndex {
         self.repeated.clear();
         self.bulk.clear();
         self.shape.clear();
+        let mut grew_after_repeat = false;
         for (index, span) in spans.iter().enumerate() {
             self.shape.push((span.addr, span.len, span.ok, span.bulk));
             self.mark_exact_length(span.len);
@@ -167,6 +168,9 @@ impl RecordedIndex {
             if previous == usize::MAX {
                 if self.distinct == self.slots.len() / 2 {
                     self.grow_slots(spans)?;
+                    if !self.repeated.is_empty() {
+                        grew_after_repeat = true;
+                    }
                     slot = self
                         .slot(spans, span.addr, span.len)
                         .expect("grown raw index must have an empty bucket");
@@ -175,7 +179,7 @@ impl RecordedIndex {
                 self.distinct += 1;
             } else {
                 if self.next[previous] == usize::MAX {
-                    self.repeated.push((usize::MAX, previous));
+                    self.repeated.push((slot, previous));
                 }
                 self.next[previous] = index;
                 self.next[index] = index;
@@ -186,14 +190,20 @@ impl RecordedIndex {
                     .push((span.addr, span.addr + span.len as usize, index, 0));
             }
         }
-        for root in 0..self.repeated.len() {
-            let first = self.repeated[root].1;
-            let span = &spans[first];
-            let slot = self
-                .slot(spans, span.addr, span.len)
-                .expect("raw index must retain every repeated key");
-            self.repeated[root].0 = slot;
-            self.slots[slot].set(first);
+        if grew_after_repeat {
+            for root in 0..self.repeated.len() {
+                let first = self.repeated[root].1;
+                let span = &spans[first];
+                let slot = self
+                    .slot(spans, span.addr, span.len)
+                    .expect("raw index must retain every repeated key");
+                self.repeated[root].0 = slot;
+                self.slots[slot].set(first);
+            }
+        } else {
+            for &(slot, first) in &self.repeated {
+                self.slots[slot].set(first);
+            }
         }
         if !self.bulk.is_empty() {
             self.bulk.sort_unstable();
@@ -235,7 +245,6 @@ impl<'a> Recorded<'a> {
     ) -> Result<Self, &'static str> {
         let source_spans = log.spans.get(range).ok_or("recorded span range invalid")?;
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
-        let started = std::time::Instant::now();
         let mut index = recycle
             .borrow_mut()
             .take()
@@ -252,21 +261,9 @@ impl<'a> Recorded<'a> {
             index.update_capacity_charge();
         }
         let has_bulk = log.has_bulk && source_spans.iter().any(|span| span.bulk);
-        let reused = match index.prepare(source_spans, has_bulk) {
-            Ok(reused) => reused,
-            Err(_) => {
-                return Err("recorded span index allocation failed");
-            }
-        };
-        let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let (count, ticks, spans) = if reused {
-            (&INDEX_REUSES, &INDEX_REUSE_NS, &INDEX_REUSED_SPANS)
-        } else {
-            (&INDEX_REBUILDS, &INDEX_REBUILD_NS, &INDEX_REBUILT_SPANS)
-        };
-        ticks.fetch_add(ns, Ordering::Relaxed);
-        spans.fetch_add(source_spans.len() as u64, Ordering::Relaxed);
-        count.fetch_add(1, Ordering::Relaxed);
+        if index.prepare(source_spans, has_bulk).is_err() {
+            return Err("recorded span index allocation failed");
+        }
         Ok(Self {
             index,
             recycle,

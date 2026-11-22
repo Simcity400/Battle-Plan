@@ -3619,7 +3619,7 @@ struct RegistryWatch {
 
 impl RegistryWatch {
     const INTERVAL: Duration = Duration::from_millis(250);
-    const INTEL_INTERVAL: Duration = Duration::from_secs(4);
+    const INTEL_INTERVAL: Duration = Duration::from_secs(8);
 
     fn poll_reserved_visibility(
         &mut self,
@@ -4757,6 +4757,7 @@ type SizingCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 
 struct SizingShared {
     capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
+    capacities_version: AtomicU64,
     idle_growth_requested: AtomicBool,
     country_intel_accounted: AtomicUsize,
     template_home_accounted: AtomicUsize,
@@ -4781,6 +4782,7 @@ impl SizingShared {
         *shared.frame_capacities.lock() = capacities;
         Self {
             capacities: shared.frame_capacities.clone(),
+            capacities_version: AtomicU64::new(0),
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
             template_home_accounted: AtomicUsize::new(0),
@@ -4815,6 +4817,7 @@ impl SizingShared {
         let before = *capacities;
         capacities.merge_max(proposal);
         if *capacities != before {
+            self.capacities_version.fetch_add(1, Ordering::Release);
             self.idle_growth_requested.store(true, Ordering::Release);
         }
     }
@@ -5009,7 +5012,12 @@ impl SizingThread {
         match &self.thread {
             Some(thread) if received || crate::world_lifetime::invalidating() => {
                 self.sizing.pass_requested.store(true, Ordering::Release);
-                thread.thread().unpark();
+                if crate::world_lifetime::invalidating()
+                    || self.sizing.hint_demand.load(Ordering::Relaxed)
+                    || self.sizing.idle_growth_requested.load(Ordering::Relaxed)
+                {
+                    thread.thread().unpark();
+                }
             }
             Some(_) => {}
             None => {
@@ -5050,8 +5058,11 @@ impl SizingThread {
             drop(retired);
             return;
         }
+        let wake = held.len() >= 16;
         drop(held);
-        thread.thread().unpark();
+        if wake {
+            thread.thread().unpark();
+        }
     }
 }
 
@@ -5104,6 +5115,8 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
     let mut next_pass = Instant::now();
     let mut last_pass = Instant::now() - SIZING_IDLE_WAIT;
+    let mut steady_wait = SIZING_IDLE_WAIT;
+    let mut seen_version = sizing.capacities_version.load(Ordering::Acquire);
     while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
         crate::allocation::set_context(*lock(&sizing.context));
@@ -5118,7 +5131,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             || sizing.hint_demand.load(Ordering::Acquire)
             || sizing.idle_growth_requested.load(Ordering::Acquire);
         let requested = sizing.pass_requested.load(Ordering::Acquire)
-            && (urgent || last_pass.elapsed() >= SIZING_IDLE_WAIT);
+            && (urgent || last_pass.elapsed() >= steady_wait);
         if due || urgent || requested {
             sizing.pass_requested.store(false, Ordering::Release);
             last_pass = now;
@@ -5127,11 +5140,23 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
                 shared.wake_spool();
                 return;
             }
+            let version = sizing.capacities_version.load(Ordering::Acquire);
+            let still_urgent = urgent
+                || version != seen_version
+                || crate::world_lifetime::invalidating()
+                || sizing.hint_demand.load(Ordering::Acquire)
+                || sizing.idle_growth_requested.load(Ordering::Acquire);
+            seen_version = version;
+            steady_wait = if still_urgent {
+                SIZING_IDLE_WAIT
+            } else {
+                (steady_wait * 2).min(SIZING_MAX_WAIT)
+            };
             next_pass = Instant::now()
                 + if crate::world_lifetime::invalidating() {
                     SPOOL_IDLE_WAIT
                 } else {
-                    SIZING_IDLE_WAIT
+                    steady_wait
                 };
         }
         let _span = phases.span(Phase::Wait);
@@ -5149,9 +5174,14 @@ fn sizing_pass(
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
-    let once_a_second = state.second.elapsed() >= Duration::from_secs(2);
     let loading = crate::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
+    let periodic_interval = if hint_demand {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(8)
+    };
+    let once_a_second = state.second.elapsed() >= periodic_interval;
     let capacity_census = state.capacity_census.due(
         Instant::now(),
         crate::world_lifetime::generation(),
@@ -5635,6 +5665,7 @@ fn sizing_pass(
 
 const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
+const SIZING_MAX_WAIT: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 struct RefreshRequests {

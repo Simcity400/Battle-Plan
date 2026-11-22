@@ -25,17 +25,17 @@ const HEAP_ALIGNMENT: usize = 16;
 const HEADER: usize = size_of::<*mut u8>();
 const DLL_PROCESS_DETACH: u32 = 0;
 const FINE_CLASSES: usize = 64;
-const SMALL_LIMIT: usize = 32 * 1024;
-const CLASSES: usize = FINE_CLASSES + 5;
-const CACHE_CLASS_BYTES: usize = 64 * 1024;
-const MAX_BATCH: usize = 128;
+const SMALL_LIMIT: usize = 64 * 1024;
+const CLASSES: usize = FINE_CLASSES + 6;
+const CACHE_CLASS_BYTES: usize = 128 * 1024;
+const MAX_BATCH: usize = 256;
 const _: () = assert!(SMALL_LIMIT <= CACHE_CLASS_BYTES / 2);
 const PAGE: usize = 4096;
 const GRANULARITY: usize = 64 * 1024;
 const RECORD_BYTES: usize = 64;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 512 * 1024 * 1024;
+const KEPT_BYTES: usize = 1024 * 1024 * 1024;
 
 fn class(size: usize) -> Option<usize> {
     if size <= FINE_CLASSES * 16 {
@@ -101,7 +101,7 @@ const fn page_end(bytes: usize) -> usize {
     bytes.div_ceil(PAGE) * PAGE
 }
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct Stack(UnsafeCell<SLIST_HEADER>);
 
 // SAFETY: the header is only touched by the interlocked list functions.
@@ -396,6 +396,7 @@ struct Domain {
 static DOMAINS: AtomicUsize = AtomicUsize::new(1);
 
 pub(super) struct PrivateHeap {
+    domain_id: AtomicUsize,
     heap: OnceLock<Domain>,
     depot: Depot,
     pages: Pages,
@@ -409,6 +410,7 @@ pub(super) struct PrivateHeap {
 impl PrivateHeap {
     pub(super) const fn new() -> Self {
         Self {
+            domain_id: AtomicUsize::new(0),
             heap: OnceLock::new(),
             depot: Depot::new(),
             pages: Pages::new(),
@@ -430,8 +432,12 @@ impl PrivateHeap {
                     id,
                 };
             }
+            let handle = unsafe { HeapCreate(0, 0, 0) } as usize;
+            if handle != 0 {
+                self.domain_id.store(id, Ordering::Release);
+            }
             Domain {
-                handle: AtomicUsize::new(unsafe { HeapCreate(0, 0, 0) } as usize),
+                handle: AtomicUsize::new(handle),
                 id,
             }
         })
@@ -481,6 +487,42 @@ impl PrivateHeap {
     /// The [`GlobalAlloc::alloc`] contract: `size` and `align` come from a valid layout of non-zero
     /// size.
     unsafe fn allocate(&self, size: usize, align: usize, zeroed: bool) -> *mut u8 {
+        if size <= SMALL_LIMIT && align <= HEAP_ALIGNMENT {
+            let id = self.domain_id.load(Ordering::Relaxed);
+            if id != 0 {
+                #[cfg(test)]
+                if self.refuse(tests::ALLOCATE) {
+                    return ptr::null_mut();
+                }
+                if let Some(class) = class(size) {
+                    if let Some(cache) = unsafe { (*thread()).cache(id) } {
+                        let kept = cache.take(class, &self.depot);
+                        if !kept.is_null() {
+                            if zeroed {
+                                unsafe { kept.write_bytes(0, size) };
+                            }
+                            return kept;
+                        }
+                        let single = self.depot.take_single(class);
+                        if !single.is_null() {
+                            if zeroed {
+                                unsafe { single.write_bytes(0, size) };
+                            }
+                            return single;
+                        }
+                        return unsafe { self.refill_slab(class, Some(cache)) };
+                    }
+                    let reused = self.take_closed(class);
+                    if !reused.is_null() {
+                        if zeroed {
+                            unsafe { reused.write_bytes(0, size) };
+                        }
+                        return reused;
+                    }
+                    return unsafe { self.refill_slab(class, None) };
+                }
+            }
+        }
         let bytes = if size > SMALL_LIMIT {
             let Some(reserved) = reservation(size, align) else {
                 return ptr::null_mut();
@@ -700,18 +742,8 @@ impl PrivateHeap {
     unsafe fn free_large(&self, body: *mut u8) {
         let record = Self::record(body);
         let committed = unsafe { (*record).committed };
-        let kept = if side() == OTHER {
-            self.pages
-                .kept
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |kept| {
-                    (kept + committed <= KEPT_BYTES).then_some(kept + committed)
-                })
-                .is_ok()
-        } else {
-            self.pages.kept.fetch_add(committed, Ordering::Relaxed);
-            true
-        };
-        if !kept {
+        let previous = self.pages.kept.fetch_add(committed, Ordering::Relaxed);
+        if side() == OTHER && previous + committed > KEPT_BYTES {
             let base = record.cast::<u8>();
             if committed > PAGE
                 && self.page_call(|| unsafe {
@@ -719,10 +751,10 @@ impl PrivateHeap {
                 }) != 0
             {
                 unsafe { (*record).committed = PAGE };
+                self.pages
+                    .kept
+                    .fetch_sub(committed - PAGE, Ordering::Relaxed);
             }
-            self.pages
-                .kept
-                .fetch_add(unsafe { (*record).committed }, Ordering::Relaxed);
         }
         let reserved = unsafe { (*record).reserved };
         self.pages.free[reservation_list(reserved)].push(record.cast());
@@ -805,6 +837,7 @@ impl PrivateHeap {
         let Some(domain) = self.heap.get() else {
             return false;
         };
+        self.domain_id.store(0, Ordering::Release);
         let heap = domain.handle.swap(0, Ordering::Relaxed) as HANDLE;
         self.depot.clear();
         self.pages.free.iter().for_each(Stack::clear);
@@ -854,18 +887,20 @@ unsafe impl GlobalAlloc for PrivateHeap {
         if layout.size() > SMALL_LIMIT {
             return unsafe { self.free_large(pointer) };
         }
-        let domain = self.domain();
         if layout.align() <= HEAP_ALIGNMENT
             && let Some(class) = class(layout.size())
         {
+            let id = self.domain_id.load(Ordering::Relaxed);
+            let id = if id != 0 { id } else { self.domain().id };
             let thread = unsafe { &mut *thread() };
-            if let Some(cache) = thread.cache(domain.id) {
+            if let Some(cache) = thread.cache(id) {
                 cache.keep(class, pointer, &self.depot);
             } else {
                 self.depot.keep_single(class, pointer);
             }
             return;
         }
+        let domain = self.domain();
         let heap = domain.handle.load(Ordering::Relaxed) as HANDLE;
         let raw = unsafe { pointer.cast::<*mut u8>().sub(1).read() };
         self.heap_call(|| unsafe { HeapFree(heap, 0, raw.cast()) });

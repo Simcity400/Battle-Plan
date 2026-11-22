@@ -272,12 +272,17 @@ impl Batch {
         }
         self.kinds.clear();
         extend(&mut self.kinds, kinds)?;
-        engine_allocation::reserve(&mut self.keys, rows)?;
+        if self.keys.capacity() < rows {
+            engine_allocation::reserve(&mut self.keys, rows)?;
+        }
         if rows > 0 {
+            let present_words = rows.div_ceil(64);
             for (cells, &kind) in self.columns.iter_mut().zip(kinds) {
-                engine_allocation::reserve(&mut cells.words, rows)?;
-                if optional(kind) {
-                    engine_allocation::reserve(&mut cells.present, rows.div_ceil(64))?;
+                if cells.words.capacity() < rows {
+                    engine_allocation::reserve(&mut cells.words, rows)?;
+                }
+                if optional(kind) && cells.present.capacity() < present_words {
+                    engine_allocation::reserve(&mut cells.present, present_words)?;
                 }
             }
         }
@@ -633,14 +638,20 @@ fn span(start: usize, len: usize) -> io::Result<(u32, u32)> {
     Ok((start as u32, (end - start) as u32))
 }
 
+#[inline]
 fn push<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
-    engine_allocation::reserve(values, 1)?;
+    if values.len() == values.capacity() {
+        engine_allocation::reserve(values, 1)?;
+    }
     values.push(value);
     Ok(())
 }
 
+#[inline]
 fn extend<T: Copy>(values: &mut Vec<T>, items: &[T]) -> io::Result<()> {
-    engine_allocation::reserve(values, items.len())?;
+    if values.capacity() - values.len() < items.len() {
+        engine_allocation::reserve(values, items.len())?;
+    }
     values.extend_from_slice(items);
     Ok(())
 }
@@ -778,7 +789,8 @@ thread_local! {
 
 #[derive(Default)]
 struct Matcher {
-    heads: Vec<u32>,
+    heads: Vec<(u32, u32)>,
+    generation: u32,
     next: Vec<u32>,
     edits: Vec<(u32, u32, u32)>,
 }
@@ -797,24 +809,44 @@ impl Matcher {
         let windows = (held_end - start + 1).saturating_sub(probe);
         let bits = windows.next_power_of_two().trailing_zeros().max(4);
         let bucket = |key: u64| (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - bits)) as usize;
-        self.heads.clear();
-        engine_allocation::resize(&mut self.heads, 1 << bits, NO_POSITION)?;
-        self.next.clear();
-        engine_allocation::resize(&mut self.next, windows, NO_POSITION)?;
+        let table_len = 1_usize << bits;
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.heads.fill((0, NO_POSITION));
+            self.generation = 1;
+        }
+        if self.heads.len() < table_len {
+            engine_allocation::resize(&mut self.heads, table_len, (0, NO_POSITION))?;
+        }
+        let generation = self.generation;
+        if self.next.len() < windows {
+            engine_allocation::resize(&mut self.next, windows, NO_POSITION)?;
+        }
         for at in (start..start + windows).rev() {
             let head = &mut self.heads[bucket(T::probe(&held[at..at + probe]))];
-            self.next[at - start] = *head;
-            *head = at as u32;
+            let previous = if head.0 == generation {
+                head.1
+            } else {
+                NO_POSITION
+            };
+            self.next[at - start] = previous;
+            *head = (generation, at as u32);
         }
         let (mut cursor, mut at, mut unmatched, mut kept, mut inserted) =
             (start, start, start, prefix, 0);
         while at + probe <= new_end {
             let head = &mut self.heads[bucket(T::probe(&new[at..at + probe]))];
-            let mut position = *head;
+            let mut position = if head.0 == generation {
+                head.1
+            } else {
+                NO_POSITION
+            };
             while position != NO_POSITION && (position as usize) < cursor {
                 position = self.next[position as usize - start];
             }
-            *head = position;
+            if head.0 == generation {
+                head.1 = position;
+            }
             let (mut from, mut length) = (0, 0);
             for _ in 0..MATCH_PROBES {
                 if position == NO_POSITION {
