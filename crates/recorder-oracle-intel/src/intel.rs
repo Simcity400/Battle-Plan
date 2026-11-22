@@ -631,10 +631,6 @@ fn compare_operative_memberships(
         );
     }
     report.limitation(
-        "operative experience omission is compared as zero from live recruitment shapes; the writer's omission rule for experience is unproved",
-        "OperativeMemberships.experience",
-    );
-    report.limitation(
         "the operative owner_country reference and the unmatched operative field have no proved save mapping beyond the joined identity; retained natively but not verified here",
         "OperativeMemberships.owner, fd0",
     );
@@ -3330,6 +3326,9 @@ fn compare_operation_assignments(
         }
     }
     let mut matched = 0;
+    let mut mission_slots = 0usize;
+    let mut empty_mission_slots = 0usize;
+    let mut mission_items = 0usize;
     for (owner, country) in report.canonical_countries(&save.countries) {
         let Some(operations) = &country.operations else {
             continue;
@@ -3340,6 +3339,14 @@ fn compare_operation_assignments(
         for expected in running {
             let slots = expected.operative_slots.as_deref().unwrap_or_default();
             for (ordinal, slot) in slots.iter().enumerate() {
+                if let Some(items) = &slot.mission {
+                    mission_slots += 1;
+                    if items.is_empty() {
+                        empty_mission_slots += 1;
+                    } else {
+                        mission_items += items.len();
+                    }
+                }
                 let ordinal = u32::try_from(ordinal)
                     .map_err(|_| invalid("saved operation slot ordinal exceeds u32"))?;
                 let label = format!(
@@ -3391,8 +3398,10 @@ fn compare_operation_assignments(
     }
     report.compared("OperationAssignments", matched);
     report.limitation(
-        "operation selection-vs-mission semantics are unproved: comparison verifies only slot presence, positional ordinal and operative handle; recorded selection words and saved mission contents are retained but not equated",
-        "OperationAssignments.selection",
+        "operation selection-vs-mission semantics are unproved: comparison verifies only slot presence, positional ordinal and operative handle; recorded selection words and saved literal mission payloads are retained but not equated",
+        format!(
+            "OperationAssignments.selection: {mission_slots} saved mission blocks ({empty_mission_slots} empty, {mission_items} retained items)"
+        ),
     );
     report.limitation(
         "a present operative_slots={} entry without operative certifies a null handle; an omitted operative_slots payload is distinct from a present null slot and cannot certify its position",
@@ -6186,6 +6195,67 @@ mod tests {
         assert!(compare_operation_assignments(&bad, &pack, &mut Report::default()).is_err());
     }
 
+    #[test]
+    fn operation_assignments_report_retained_mission_payloads_without_equating_selection() {
+        let pack = parsed(
+            br#"countries={
+                GER={operations={ running={
+                    operation_rescue_operative={
+                        id={ id=69023 type=4713 } target="SOV"
+                        operative_slots={
+                            { operative={ id=9831 type=4713 } mission={ mission=build_intel_network target_country="SOV" } }
+                            { mission={ mission=boost_ideology target_country="FRA" target_state=16 } }
+                            { mission={} }
+                            { }
+                        }
+                    }
+                } }}
+            }"#,
+        );
+        let rows = vec![
+            replay_data::rows::OperationAssignmentRow {
+                operation: (69023 << 32) | 4713,
+                ordinal: 0,
+                operative: (9831 << 32) | 4713,
+                selection: 7,
+            },
+            replay_data::rows::OperationAssignmentRow {
+                operation: (69023 << 32) | 4713,
+                ordinal: 1,
+                operative: 0,
+                selection: 19,
+            },
+            replay_data::rows::OperationAssignmentRow {
+                operation: (69023 << 32) | 4713,
+                ordinal: 2,
+                operative: 0,
+                selection: 0,
+            },
+            replay_data::rows::OperationAssignmentRow {
+                operation: (69023 << 32) | 4713,
+                ordinal: 3,
+                operative: 0,
+                selection: 3,
+            },
+        ];
+        let mut report = Report::default();
+        compare_operation_assignments(&assignment_frame(rows), &pack, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["OperationAssignments"], 4);
+        let subjects = report
+            .limitations
+            .iter()
+            .find(|(reason, _)| reason.contains("selection-vs-mission"))
+            .map(|(_, subjects)| subjects)
+            .expect("selection-vs-mission limitation");
+        assert!(
+            subjects
+                .iter()
+                .any(|subject| subject.contains("3 saved mission blocks (1 empty, 5 retained items)")),
+            "{subjects:?}"
+        );
+    }
+
     fn operative_links() -> (CountryRow, CountryRow, BTreeMap<u32, CountryRow>) {
         let ger = CountryRow {
             id: 101,
@@ -6361,6 +6431,98 @@ mod tests {
             compare_operative_memberships(&bad, &pack, &owned, &tokens, &mut Report::default())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn operative_experience_omission_proves_exact_zero_independently_of_explicit_zero() {
+        let (_, _, countries) = operative_links();
+        let owned: BTreeMap<u32, &CountryRow> =
+            countries.iter().map(|(id, row)| (*id, row)).collect();
+        let tokens = operative_tokens();
+        let run = |saved_experience: &str, recorded_experience: i64| {
+            let source = format!(
+                r#"countries={{ GER={{ intelligence_agency={{
+                    defense=0 max_operative_count=1 usable_operative_slots=1
+                    operative={{ name="" id={{ id=1043 type=4713 }} skill=1 {saved_experience} nationalities={{ ENG }} state=idle }}
+                }} }} ENG={{}} }}"#
+            );
+            let pack = parsed(source.as_bytes());
+            let mut row = operative_rows().remove(1);
+            row.roster_kind = 0;
+            row.assignment = 0;
+            row.experience_raw = recorded_experience;
+            let captured = frame(
+                TableId::OperativeMemberships,
+                TableRows::OperativeMemberships(vec![row]),
+            );
+            let mut report = Report::default();
+            compare_operative_memberships(&captured, &pack, &owned, &tokens, &mut report).unwrap();
+            report
+        };
+
+        let absent_zero = run("", 0);
+        assert!(
+            absent_zero.differences.is_empty(),
+            "{:?}",
+            absent_zero.differences
+        );
+        assert!(
+            !absent_zero
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("experience")),
+            "{:?}",
+            absent_zero.limitations
+        );
+        assert!(
+            !absent_zero
+                .limitations
+                .values()
+                .flatten()
+                .any(|subject| subject.contains("OperativeMemberships.experience")),
+            "{:?}",
+            absent_zero.limitations
+        );
+        for wrong in [1, -1] {
+            let report = run("", wrong);
+            assert_eq!(report.differences.len(), 1, "{wrong}: {:?}", report.differences);
+            assert!(
+                report.differences[0].contains("experience"),
+                "{wrong}: {:?}",
+                report.differences
+            );
+        }
+
+        let explicit_zero = run("experience=0", 0);
+        assert!(
+            explicit_zero.differences.is_empty(),
+            "{:?}",
+            explicit_zero.differences
+        );
+        for wrong in [1, -1] {
+            let report = run("experience=0", wrong);
+            assert_eq!(report.differences.len(), 1, "{wrong}: {:?}", report.differences);
+            assert!(
+                report.differences[0].contains("experience"),
+                "{wrong}: {:?}",
+                report.differences
+            );
+        }
+
+        let explicit_negative = run("experience=-0.00001", -1);
+        assert!(
+            explicit_negative.differences.is_empty(),
+            "{:?}",
+            explicit_negative.differences
+        );
+        let negative_mismatch = run("experience=-0.00001", 0);
+        assert_eq!(
+            negative_mismatch.differences.len(),
+            1,
+            "{:?}",
+            negative_mismatch.differences
+        );
+        assert!(negative_mismatch.differences[0].contains("experience"));
     }
 
     #[test]

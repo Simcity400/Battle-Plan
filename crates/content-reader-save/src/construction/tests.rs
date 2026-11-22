@@ -323,6 +323,15 @@ fn construction_and_buildings_keep_shared_queue_order_and_signed_levels() {
             .queue_ordinal,
         2
     );
+    assert_eq!(
+        saved.railway_gun_repairs,
+        vec![RailwayGunRepair {
+            id: Some((1_u64 << 32) | 76),
+            country: b"GER".to_vec(),
+            queue_ordinal: 1,
+            railway_gun: Some((1_u64 << 32) | 74),
+        }]
+    );
     let state = &saved.state_buildings[&(3, b"factory".to_vec())];
     assert_eq!(state.level, i16::MIN);
     assert_eq!(state.partial_health.raw, -9_007_199_254_740_993);

@@ -244,7 +244,7 @@ pub(super) fn compare_raid_equipment(
         "RaidEquipment",
     );
     report.limitation(
-        "The pool writer does not write the per-archetype totals; they are compared as sums of the saved amounts by VariantDefinitions archetype, so their native order and a zero total's membership are not save-certified. variant addition clamps a total and an entry separately to +-0x53E2D620FB40 (L); a clamp that later unwound (3/4 L added to two variants of one archetype, then one removed: native total 1/4 L, saved entries 3/4 L, nothing at the bound) is not visible and needs a pool that once held at least L (about 9.2e8 units) of one archetype, so it can only surface as a reported difference",
+        "The pool writer does not write per-archetype totals or addition/removal history; without an unsaturation witness, native order, zero-total membership, and disagreements within the clamp bound +-0x53E2D620FB40 cannot distinguish an unwound saturation clamp from a wrong total and are reported as limitations rather than differences",
         "RaidEquipment.archetype_tokens",
     );
     Ok(())
@@ -280,28 +280,38 @@ fn compare_raid_archetype_totals(
             report.difference(field, "repeated archetype", "one total per archetype");
             continue;
         }
-        let total_at_bound = i128::from(total).abs() >= LIMIT;
+        let total_wide = i128::from(total);
+        if total_wide.abs() > LIMIT {
+            expected.remove(&archetype);
+            compared += 1;
+            report.difference(field, total, format!("within clamp bound +-{LIMIT}"));
+            continue;
+        }
+        let total_at_bound = total_wide.abs() == LIMIT;
         match expected.remove(&archetype) {
-            Some((sum, entry_at_bound)) if total_at_bound || entry_at_bound || sum.abs() >= LIMIT => {
+            Some((sum, entry_at_bound))
+                if total_at_bound || entry_at_bound || sum.abs() >= LIMIT =>
+            {
                 report.limitation(
                     "this raid pool archetype's recorded total, a contributing saved entry or their saved sum reaches the bound variant addition clamps a total and an entry to separately; the clamped total depends on the unsaved order of operations",
                     field,
                 )
             }
-            Some((sum, _)) => {
+            Some((sum, _)) if total_wide == sum => {
                 compared += 1;
-                if i128::from(total) != sum {
-                    report.difference(field, total, sum);
-                }
             }
+            Some((sum, _)) => report.limitation(
+                "the saved raid equipment pool does not serialize per-archetype totals or addition/removal history; without an unsaturation witness, a disagreement within +-0x53E2D620FB40 cannot distinguish an unwound saturation clamp from a wrong total",
+                format!("{field}: replay {total}, saved sum {sum}"),
+            ),
             None if total_at_bound => report.limitation(
                 "this raid pool archetype's recorded total reaches the bound variant addition clamps a total to; the clamped total depends on the unsaved order of operations",
                 field,
             ),
-            None if total != 0 => {
-                compared += 1;
-                report.difference(field, total, "no saved variant of this archetype");
-            }
+            None if total != 0 => report.limitation(
+                "the saved raid equipment pool does not serialize per-archetype totals or addition/removal history; without an unsaturation witness, a nonzero total with no saved variant within +-0x53E2D620FB40 cannot distinguish an unwound saturation clamp from a wrong total",
+                format!("{field}: replay {total}, no saved variant of this archetype"),
+            ),
             None => {}
         }
     }

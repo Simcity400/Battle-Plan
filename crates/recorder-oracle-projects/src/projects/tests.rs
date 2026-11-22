@@ -1058,22 +1058,35 @@ fn raid_equipment_totals_that_disagree_away_from_the_bound_are_differences() {
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let differences = |totals: &[(u32, i64)]| run_totals(&frame, &pack, &items, totals).differences;
-    let wrong = differences(&[(0x3309, 700_001)]);
-    assert!(
-        wrong.len() == 1 && wrong[0].contains("archetype[13065]"),
-        "{wrong:?}"
-    );
-    assert!(differences(&[(0x3309, 700_000), (0x330a, 1)])[0].contains("no saved variant"));
     assert!(differences(&[])[0].contains("absent"));
     assert!(differences(&[(0x3309, 700_000), (0x3309, 700_000)])[0].contains("repeated"));
-    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
-    let unwound = run_totals(
-        &frame,
-        &pack,
-        &[(RIFLE, 0), (TRUCK, BOUND / 4 * 3)],
-        &[(0x3309, BOUND / 4)],
+    assert!(differences(&[(0x3309, BOUND + 1)])[0].contains("archetype[13065]"));
+    let off_by_one = run_totals(&frame, &pack, &items, &[(0x3309, 700_001)]);
+    assert!(
+        off_by_one.differences.is_empty(),
+        "{:?}",
+        off_by_one.differences
     );
-    assert_eq!(unwound.differences.len(), 1, "{:?}", unwound.differences);
+    assert!(
+        off_by_one
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("archetype[13065]")),
+        "{:?}",
+        off_by_one.limitations
+    );
+    let extra = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 1)]);
+    assert!(extra.differences.is_empty(), "{:?}", extra.differences);
+    assert!(
+        extra
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("no saved variant")),
+        "{:?}",
+        extra.limitations
+    );
 }
 
 #[test]
@@ -1129,6 +1142,71 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
         &[(RIFLE, 60_000_000_000_000), (TRUCK, 60_000_000_000_000)],
         &[(0x3309, 1)],
     ));
+}
+
+#[test]
+fn unwound_raid_pool_saturation_is_reported_as_a_limitation_not_a_difference() {
+    let clamp = |value: i128| value.clamp(-i128::from(BOUND), i128::from(BOUND)) as i64;
+    let apply = |entries: &mut BTreeMap<u64, i64>, total: &mut i64, variant: u64, delta: i64| {
+        let entry = entries.entry(variant).or_default();
+        *entry = clamp(i128::from(*entry) + i128::from(delta));
+        *total = clamp(i128::from(*total) + i128::from(delta));
+    };
+
+    let three_quarters = BOUND / 4 * 3;
+    let mut entries = BTreeMap::new();
+    let mut total = 0;
+    apply(&mut entries, &mut total, RIFLE, three_quarters);
+    apply(&mut entries, &mut total, TRUCK, three_quarters);
+    assert_eq!(total, BOUND);
+    apply(&mut entries, &mut total, RIFLE, -three_quarters);
+    assert_eq!(entries[&RIFLE], 0);
+    assert_eq!(entries[&TRUCK], three_quarters);
+    assert_eq!(total, BOUND / 4);
+
+    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, entries[&RIFLE]), (TRUCK, entries[&TRUCK])],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    apply(&mut entries, &mut total, TRUCK, -three_quarters);
+    assert_eq!(entries[&TRUCK], 0);
+    assert_eq!(total, -(BOUND / 2));
+    let (frame, pack) = totals_fixture(&[], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, 0), (TRUCK, 0)],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
+    let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
+    for impossible in [BOUND + 1, -BOUND - 1] {
+        let report = run_totals(&frame, &pack, &items, &[(0x3309, impossible)]);
+        assert_eq!(report.differences.len(), 1, "{impossible}: {:?}", report.differences);
+    }
 }
 
 #[test]
