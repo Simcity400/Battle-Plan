@@ -10,7 +10,13 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["viewer-foundation/test-support", "dashboard-text/test-support", "shader-pipeline/test-support"]
+test-support = [
+    "dashboard-text/test-support",
+    "shader-pipeline/test-support",
+    "viewer-foundation/test-support",
+    "viewer-map-text/test-support",
+    "viewer-weather-effects/test-support",
+]
 
 [dependencies]
 bytemuck = { workspace = true, features = ["derive"] }

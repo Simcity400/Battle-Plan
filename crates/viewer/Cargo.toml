@@ -134,4 +134,3 @@ viewer-map-modes = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }
-viewer-weather-effects = { workspace = true, features = ["test-support"] }

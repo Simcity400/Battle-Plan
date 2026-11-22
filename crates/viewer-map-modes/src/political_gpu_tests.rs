@@ -1146,9 +1146,16 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
 }
 
 #[test]
+fn political_fill_shader_validates() {
+    viewer_scene_base::shader_validation::validate(
+        "political_fill",
+        include_str!("political_fill.wgsl"),
+    );
+}
+
+#[test]
 #[ignore = "requires a compute adapter; runs the byte oracle through hardware"]
 fn political_gpu_synthetic() {
-    viewer_scene_base::shader_validation::validate("political_fill", include_str!("political_fill.wgsl"));
     for (width, height, high_ids) in [(514, 258, false), (130, 70, true), (6, 2, false)] {
         let ids = (0..width * height)
             .map(|i| {

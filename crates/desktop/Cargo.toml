@@ -59,10 +59,8 @@ unify-bitflags-1 = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 viewer-buildings = { workspace = true, features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
-viewer-models = { workspace = true, features = ["test-support"] }
 viewer-playback = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }
 viewer-unit-models = { workspace = true, features = ["test-support"] }
-viewer-weather-effects = { workspace = true, features = ["test-support"] }

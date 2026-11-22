@@ -68,5 +68,6 @@ unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
+viewer-map-text = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }

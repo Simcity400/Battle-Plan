@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = []
+test-support = ["viewer-models/test-support"]
 
 [dependencies]
 bytemuck = { workspace = true, features = ["derive"] }

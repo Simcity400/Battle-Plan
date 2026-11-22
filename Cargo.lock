@@ -3370,6 +3370,8 @@ dependencies = [
 name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -3390,6 +3392,7 @@ dependencies = [
  "replay-identity",
  "rmp-serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "winapi-util",
 ]
@@ -9425,13 +9428,11 @@ dependencies = [
  "viewer-buildings",
  "viewer-foundation",
  "viewer-map-modes",
- "viewer-models",
  "viewer-playback",
  "viewer-rail",
  "viewer-scene-base",
  "viewer-unit-history",
  "viewer-unit-models",
- "viewer-weather-effects",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
 ]
@@ -12089,6 +12090,7 @@ dependencies = [
  "uuid",
  "viewer-foundation",
  "viewer-map-modes",
+ "viewer-map-text",
  "viewer-models",
  "viewer-scene-base",
  "winapi-util",
