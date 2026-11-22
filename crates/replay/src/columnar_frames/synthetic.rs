@@ -100,6 +100,17 @@ impl Synthetic {
         Ok(())
     }
 
+    pub(crate) fn unavailable_unwritten(&mut self, tables: &[TableId], reason: &[u8]) -> io::Result<()> {
+        let status = Status::Unavailable { reason: self.strings.intern(reason)? };
+        for table in tables {
+            let index = table.index();
+            if !self.written[index] {
+                self.statuses[index] = status;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn end_encoded<T>(&mut self, visit: impl FnOnce(&[u8], &[u8]) -> T) -> io::Result<T> {
         self.sections.sort_by_key(|(section, _)| section.table);
         self.samples.sort_unstable_by_key(|&(table, _)| table);
