@@ -1,7 +1,7 @@
 
 use crate::{
     Memory, cpdx_array::Array, csupply_system, hub_motorization_entry, memory::Raw, read,
-    supply_node_record, walk::Outcome,
+    supply_node, supply_node_record, walk::Outcome,
 };
 use engine_sites::Rva;
 
@@ -271,13 +271,369 @@ pub struct TrainReport {
     pub runs: usize,
     pub required_runs: usize,
     pub vehicle_failures: [u32; 3],
+    pub required_trucks_withheld: Option<&'static str>,
 }
 pub const VEHICLE_READ_FAILURES: [&str; 3] = [
     "supply allocated trucks unreadable",
-    "supply required trucks unreadable",
+    "supply required trucks unverified or unreadable",
     "supply required trains unreadable",
 ];
 const ACCESS_CHUNK: usize = 16 * 1024;
+const MOTORIZATION_FACTOR_LEVEL_1: i64 = 50_000;
+const MOTORIZATION_FACTOR_LEVEL_2: i64 = 100_000;
+const FIXED_SCALE: i64 = 100_000;
+const FULL_FULFILLMENT_RATIO: i64 = 100_000;
+const FULFILLMENT_SCALE: i64 = 10_000_000_000;
+
+struct TruckDemandWitness<'a, M: Memory> {
+    memory: &'a M,
+    base: usize,
+    state: usize,
+    systems: &'a csupply_system::Reader<'a, M>,
+    init: Option<Result<TruckWitnessContext, &'static str>>,
+    province_controllers: Vec<Option<u32>>,
+}
+
+struct TruckWitnessContext {
+    truck_cost_raw: i64,
+    provinces: Array,
+    province_vtable: usize,
+    foreign_sources: Array,
+}
+
+impl<'a, M: Memory> TruckDemandWitness<'a, M> {
+    fn new(
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        systems: &'a csupply_system::Reader<'a, M>,
+    ) -> Self {
+        Self {
+            memory,
+            base,
+            state,
+            systems,
+            init: None,
+            province_controllers: Vec::new(),
+        }
+    }
+
+    fn context(&mut self) -> Result<&TruckWitnessContext, &'static str> {
+        if self.init.is_none() {
+            self.init = Some(self.load_context());
+        }
+        match self.init.as_ref().expect("initialized above") {
+            Ok(context) => Ok(context),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn load_context(&self) -> Result<TruckWitnessContext, &'static str> {
+        let define_at = engine_sites::resolve(
+            self.base,
+            crate::supply_companion::SUPPLY_HUB_FULL_MOTORIZATION_TRUCK_COST_RVA,
+        )
+        .ok()
+        .ok_or("supply truck cost define site unlocated")?;
+        let truck_cost_raw =
+            read::<i64>(self.memory, define_at).ok_or("supply truck cost define unreadable")?;
+        if truck_cost_raw < 0 {
+            return Err("supply truck cost define negative");
+        }
+        let province_vtable = engine_sites::resolve(self.base, crate::cprovince::VTABLE_RVA)
+            .ok()
+            .ok_or("supply truck witness province vtable unlocated")?;
+        let provinces = self
+            .state
+            .checked_add(crate::cgame_state::PROVINCES)
+            .and_then(|at| Array::read(self.memory, at, 8))
+            .ok_or("supply truck witness province array unreadable")?;
+        let foreign_sources = array(
+            self.memory,
+            self.systems.root(),
+            csupply_system::FOREIGN_SOURCE_DATA,
+            csupply_system::FOREIGN_SOURCE_STRIDE,
+        )
+        .map_err(|_| "supply truck witness foreign source array unreadable")?;
+        Ok(TruckWitnessContext {
+            truck_cost_raw,
+            provinces,
+            province_vtable,
+            foreign_sources,
+        })
+    }
+
+    fn province_controller(&mut self, province: i32) -> Result<u32, &'static str> {
+        let index =
+            usize::try_from(province).map_err(|_| "supply truck witness province id negative")?;
+        let (provinces, expected_vtable) = {
+            let ctx = self.context()?;
+            (ctx.provinces, ctx.province_vtable)
+        };
+        if index >= provinces.count as usize {
+            return Err("supply truck witness province outside census");
+        }
+        if index < self.province_controllers.len()
+            && let Some(controller) = self.province_controllers[index]
+        {
+            return Ok(controller);
+        }
+        let pointer = provinces
+            .element(index as u32, 8)
+            .and_then(|at| read::<u64>(self.memory, at))
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|&pointer| pointer != 0)
+            .ok_or("supply truck witness province pointer unreadable")?;
+        let vtable = read::<u64>(self.memory, pointer)
+            .ok_or("supply truck witness province vtable unreadable")?;
+        if vtable != expected_vtable as u64 {
+            return Err("supply truck witness province vtable mismatch");
+        }
+        let id = pointer
+            .checked_add(crate::cprovince::ID)
+            .and_then(|at| read::<u32>(self.memory, at))
+            .ok_or("supply truck witness province id unreadable")?;
+        if id != index as u32 {
+            return Err("supply truck witness province id mismatch");
+        }
+        let controller = pointer
+            .checked_add(crate::cprovince::CONTROLLER)
+            .and_then(|at| read::<u32>(self.memory, at))
+            .ok_or("supply truck witness province controller unreadable")?;
+        if index >= self.province_controllers.len() {
+            let grow = index + 1 - self.province_controllers.len();
+            if crate::allocation::reserve(&mut self.province_controllers, grow).is_ok() {
+                self.province_controllers.resize(index + 1, None);
+                self.province_controllers[index] = Some(controller);
+            }
+        } else {
+            self.province_controllers[index] = Some(controller);
+        }
+        Ok(controller)
+    }
+
+    fn hub_default_level(
+        &self,
+        settings: Array,
+        province: i32,
+        kind: i32,
+        my_slot: u32,
+    ) -> Result<u8, &'static str> {
+        let mut lo = 0_u32;
+        let mut hi = settings.count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let record = settings
+                .element(mid, supply_node_record::STRIDE)
+                .ok_or("supply hub settings address overflow")?;
+            let key = read::<[u8; 8]>(self.memory, record)
+                .ok_or("supply hub settings key unreadable")?;
+            let rec_province = i32::from_le_bytes(key[..4].try_into().unwrap());
+            let rec_kind = i32::from_le_bytes(key[4..].try_into().unwrap());
+            if (rec_province, rec_kind) < (province, kind) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == settings.count {
+            return Ok(0);
+        }
+        let record = settings
+            .element(lo, supply_node_record::STRIDE)
+            .ok_or("supply hub settings address overflow")?;
+        let key =
+            read::<[u8; 8]>(self.memory, record).ok_or("supply hub settings key unreadable")?;
+        let rec_province = i32::from_le_bytes(key[..4].try_into().unwrap());
+        let rec_kind = i32::from_le_bytes(key[4..].try_into().unwrap());
+        if (rec_province, rec_kind) != (province, kind) {
+            return Ok(0);
+        }
+        let actors = array(
+            self.memory,
+            record,
+            supply_node_record::MOTORIZATION_DATA,
+            hub_motorization_entry::STRIDE,
+        )
+        .map_err(|_| "supply hub motorization array unreadable")?;
+        let mut a_lo = 0_u32;
+        let mut a_hi = actors.count;
+        while a_lo < a_hi {
+            let mid = a_lo + (a_hi - a_lo) / 2;
+            let entry = actors
+                .element(mid, hub_motorization_entry::STRIDE)
+                .ok_or("supply hub motorization entry overflow")?;
+            let actor = read::<u32>(self.memory, entry)
+                .ok_or("supply hub motorization actor unreadable")?;
+            let actor_slot = self
+                .systems
+                .canonical_slot(actor)?
+                .ok_or("supply hub motorization actor unresolved")?;
+            if actor_slot < my_slot {
+                a_lo = mid + 1;
+            } else {
+                a_hi = mid;
+            }
+        }
+        if a_lo == actors.count {
+            return Ok(0);
+        }
+        let entry = actors
+            .element(a_lo, hub_motorization_entry::STRIDE)
+            .ok_or("supply hub motorization entry overflow")?;
+        let bytes = read::<[u8; 5]>(self.memory, entry)
+            .ok_or("supply hub motorization entry unreadable")?;
+        let actor = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let actor_slot = self
+            .systems
+            .canonical_slot(actor)?
+            .ok_or("supply hub motorization actor unresolved")?;
+        if actor_slot == my_slot {
+            Ok(bytes[hub_motorization_entry::LEVEL])
+        } else {
+            Ok(0)
+        }
+    }
+
+    fn node_motorization_level(
+        &self,
+        node: usize,
+        my_slot: u32,
+        default_level: u8,
+    ) -> Result<u8, &'static str> {
+        let overrides = array(self.memory, node, supply_node::MOTORIZATION_OVERRIDES, 8)
+            .map_err(|_| "supply node motorization override array unreadable")?;
+        for index in 0..overrides.count {
+            let entry = overrides
+                .element(index, 8)
+                .ok_or("supply node motorization override overflow")?;
+            let bytes = read::<[u8; 8]>(self.memory, entry)
+                .ok_or("supply node motorization override unreadable")?;
+            let actor_slot = i32::from_le_bytes(bytes[..4].try_into().unwrap());
+            if actor_slot == my_slot as i32 {
+                return Ok(bytes[4]);
+            }
+        }
+        Ok(default_level)
+    }
+
+    fn verify(
+        &mut self,
+        slot: u32,
+        companion: usize,
+        allocated_trucks: Option<i32>,
+    ) -> Result<i64, &'static str> {
+        let stored_required = companion
+            .checked_add(crate::supply_companion::REQUIRED_TRUCKS_RAW)
+            .and_then(|address| read::<i64>(self.memory, address))
+            .ok_or("supply required trucks unreadable")?;
+        let stored_ratio = companion
+            .checked_add(crate::supply_companion::TRUCK_FULFILLMENT_RATIO)
+            .and_then(|address| read::<i64>(self.memory, address))
+            .ok_or("supply truck fulfillment ratio unreadable")?;
+        let (truck_cost_raw, foreign_sources) = {
+            let ctx = self.context()?;
+            (ctx.truck_cost_raw, ctx.foreign_sources)
+        };
+        let entry = foreign_sources
+            .element(slot, csupply_system::FOREIGN_SOURCE_STRIDE)
+            .ok_or("supply truck witness foreign source slot missing")?;
+        let related = array(
+            self.memory,
+            entry,
+            csupply_system::FOREIGN_SOURCE_RELATED_COUNTRIES,
+            4,
+        )
+        .map_err(|_| "supply truck witness related countries unreadable")?;
+        let mut expected_required = 0_i64;
+        for rel_index in 0..related.count {
+            let rel_tag = related
+                .element(rel_index, 4)
+                .and_then(|at| read::<u32>(self.memory, at))
+                .ok_or("supply truck witness related country unreadable")?;
+            if rel_tag == 0 {
+                return Err("supply truck witness encountered null related country");
+            }
+            let rel_country = self
+                .systems
+                .resolve_country(rel_tag)
+                .map_err(|_| "supply truck witness related country unresolved")?;
+            let rel_system = self
+                .systems
+                .at(rel_country.canonical_slot)
+                .map_err(|_| "supply truck witness related supply system unreadable")?
+                .ok_or("supply truck witness related supply system absent")?;
+            let rel_nodes = array(
+                self.memory,
+                rel_system.companion,
+                crate::supply_companion::NODES,
+                supply_node::STRIDE,
+            )
+            .map_err(|_| "supply truck witness related nodes unreadable")?;
+            let rel_settings = array(
+                self.memory,
+                rel_system.pointer,
+                HUB_SETTINGS_DATA,
+                supply_node_record::STRIDE,
+            )
+            .map_err(|_| "supply truck witness related hub settings unreadable")?;
+            for node_index in 0..rel_nodes.count {
+                let node = rel_nodes
+                    .element(node_index, supply_node::STRIDE)
+                    .ok_or("supply truck witness node overflow")?;
+                let header_bytes = node
+                    .checked_add(supply_node::PROVINCE)
+                    .and_then(|at| read::<[u8; 8]>(self.memory, at))
+                    .ok_or("supply truck witness node header unreadable")?;
+                let province = i32::from_le_bytes(header_bytes[..4].try_into().unwrap());
+                let kind = u32::from_le_bytes(header_bytes[4..].try_into().unwrap());
+                if kind != supply_node::KIND_SUPPLY_HUB && kind != supply_node::KIND_NAVAL_BASE {
+                    continue;
+                }
+                let controller = self.province_controller(province)?;
+                if !self.systems.same_country(controller, rel_country.id)? {
+                    continue;
+                }
+                let default_level =
+                    self.hub_default_level(rel_settings, province, kind as i32, slot)?;
+                let level = self.node_motorization_level(node, slot, default_level)?;
+                let factor = match level {
+                    0 => 0,
+                    1 => MOTORIZATION_FACTOR_LEVEL_1,
+                    2 => MOTORIZATION_FACTOR_LEVEL_2,
+                    _ => return Err("supply hub motorization level unsupported"),
+                };
+                let cost = factor
+                    .checked_mul(truck_cost_raw)
+                    .ok_or("supply truck cost overflow")?
+                    / FIXED_SCALE;
+                expected_required = expected_required
+                    .checked_add(cost)
+                    .ok_or("supply required trucks overflow")?;
+            }
+        }
+        if stored_required != expected_required {
+            return Err("supply required trucks witness mismatch");
+        }
+        let expected_ratio = if expected_required == 0 {
+            FULL_FULFILLMENT_RATIO
+        } else {
+            let allocated =
+                allocated_trucks.ok_or("supply allocated trucks missing for truck witness")?;
+            let numerator = i64::from(allocated)
+                .checked_mul(FULFILLMENT_SCALE)
+                .ok_or("supply truck fulfillment ratio overflow")?;
+            numerator
+                .checked_div(expected_required)
+                .ok_or("supply truck fulfillment ratio division failed")?
+                .min(FULL_FULFILLMENT_RATIO)
+        };
+        if stored_ratio != expected_ratio {
+            return Err("supply truck fulfillment ratio witness mismatch");
+        }
+        Ok(stored_required)
+    }
+}
 
 struct SparseAccess {
     values: usize,
@@ -424,6 +780,7 @@ pub fn walk_trains_buffer(
     let mut used_runs = 0;
     let mut required_runs = 0_usize;
     let mut vehicle_failures = [0_u32; 3];
+    let mut required_trucks_withheld = None;
     let result = (|| {
         use crate::{
             memory::{RecordField, RecordLayout, RecordSources},
@@ -437,6 +794,7 @@ pub fn walk_trains_buffer(
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, 12).expect("valid train entry layout");
         let systems = csupply_system::Reader::new(memory, base, state)?;
+        let mut truck_witness = TruckDemandWitness::new(memory, base, state, &systems);
         let mut len = 0_usize;
         let mut total = 0;
         let mut bytes = [0; 64 * 12];
@@ -524,10 +882,14 @@ pub fn walk_trains_buffer(
                 .pointer
                 .checked_add(ALLOCATED_TRUCKS)
                 .and_then(|address| read::<i32>(memory, address));
-            let required_trucks_raw = system
-                .companion
-                .checked_add(supply_companion::REQUIRED_TRUCKS_RAW)
-                .and_then(|address| read::<i64>(memory, address));
+            let required_trucks_raw =
+                match truck_witness.verify(slot, system.companion, allocated_trucks) {
+                    Ok(value) => Some(value),
+                    Err(reason) => {
+                        required_trucks_withheld.get_or_insert(reason);
+                        None
+                    }
+                };
             let required_trains = system
                 .companion
                 .checked_add(supply_companion::REQUIRED_TRAINS)
@@ -576,6 +938,7 @@ pub fn walk_trains_buffer(
         runs: used_runs,
         required_runs,
         vehicle_failures,
+        required_trucks_withheld,
     }
 }
 

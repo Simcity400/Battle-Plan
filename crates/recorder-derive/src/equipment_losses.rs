@@ -6,7 +6,10 @@ use replay_columnar::{
     manifest::Status,
     store::{Dropped, Kept, TableView, Value as Held},
 };
-use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCoverage, EquipmentLossCoverageRow as Coverage, EquipmentLossTotalRow as Total, Recorded, RowCodec, ShipLossRow, SunkShipEntry, TableId};
+use replay_data::rows::{
+    EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCoverage, EquipmentLossCoverageRow as Coverage, EquipmentLossTotalRow as Total, Recorded, RowCodec, ShipLossRow, SunkShipEntry,
+    TableId, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -303,7 +306,24 @@ impl EquipmentLosses {
             _ => None,
         };
         let withheld_from = at(7);
-        let withheld = withheld_from.and_then(|_| view.text(4, slot)).and_then(|id| view.string(id)).map(|text| String::from_utf8_lossy(text).into_owned());
+        let drain_state = match view.value(15, slot) {
+            Held::Number(bits) => Some(bits as u8),
+            _ => None,
+        };
+        let withheld = withheld_from.and_then(|_| view.text(4, slot)).and_then(|id| view.string(id)).map(|text| {
+            let text = String::from_utf8_lossy(text).into_owned();
+            if drain_state.is_none_or(|state| state & Coverage::DRAIN_STATE_LOST != 0) {
+                if text == LOST {
+                    String::new()
+                } else if let Some(rest) = text.strip_prefix(LOST).and_then(|rest| rest.strip_prefix("; ")) {
+                    rest.to_owned()
+                } else {
+                    text
+                }
+            } else {
+                text
+            }
+        });
         self.run = Run { counted_from: at(6), withheld_from, withheld, incomplete_from: at(8), convoys_from: at(9), lend_from: at(10) };
     }
 
@@ -525,9 +545,9 @@ impl EquipmentLosses {
         Ok(())
     }
 
-    fn destruction(&mut self, hour: &Hour<'_>, out: &Rows<'_>, pending: &mut Pending) -> io::Result<String> {
+    fn destruction(&mut self, hour: &Hour<'_>, out: &Rows<'_>, pending: &mut Pending) -> io::Result<(u8, String)> {
         if let Some(reason) = &self.run.withheld {
-            return Ok(reason.clone());
+            return Ok((Coverage::DRAIN_STATE_WITHHELD, reason.clone()));
         }
         let view = hour.table(TableId::EquipmentDestruction);
         let at = hour.hour;
@@ -535,29 +555,42 @@ impl EquipmentLosses {
             Status::Complete if view.sampled_at() == Some(at) => {}
             Status::Complete => {
                 if self.run.counted_from.is_none() {
-                    return Ok(String::new());
+                    return Ok((Coverage::DRAIN_STATE_NOT_READ, String::new()));
                 }
                 earliest(&mut self.run.incomplete_from, at);
-                return Ok(NOT_READ.into());
+                return Ok((Coverage::DRAIN_STATE_NOT_READ, NOT_READ.into()));
             }
             Status::Unavailable { reason } => {
                 let text = view.string(reason).map(|text| String::from_utf8_lossy(text).into_owned()).unwrap_or_default();
-                if text == EQUIPMENT_DESTRUCTION_PARTIAL_REASON {
+                if hour.format < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT && text == EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON {
                     if self.run.counted_from.is_some() {
                         earliest(&mut self.run.incomplete_from, at);
                     }
-                    return Ok(text);
+                    return Ok((Coverage::DRAIN_STATE_PARTIAL_INTERVAL, text));
                 }
                 let detail = if text.starts_with(replay_frame::frame::TRUNCATED_KEYFRAME_REASON) { DESTRUCTION_TRUNCATED.to_owned() } else { text };
-                return Ok(self.withhold(at, out, detail, pending));
+                return Ok((Coverage::DRAIN_STATE_WITHHELD, self.withhold(at, out, detail, pending)));
             }
-            Status::Truncated { .. } => return Ok(self.withhold(at, out, DESTRUCTION_TRUNCATED.into(), pending)),
-            Status::NotRecorded => return Ok(self.withhold(at, out, NOT_RECORDED.into(), pending)),
+            Status::Truncated { .. } => return Ok((Coverage::DRAIN_STATE_WITHHELD, self.withhold(at, out, DESTRUCTION_TRUNCATED.into(), pending))),
+            Status::NotRecorded => return Ok((Coverage::DRAIN_STATE_WITHHELD, self.withhold(at, out, NOT_RECORDED.into(), pending))),
+        }
+        let rows = destruction(hour)?;
+        if rows.iter().any(|row| row.coverage == Recorded::Value(EquipmentDestructionCoverage::PartialInterval)) {
+            if rows.len() != 1 {
+                return Err(invalid("Equipment destruction partial interval marker cannot appear with loss rows"));
+            }
+            let text = match &rows[0].unavailable_reason {
+                Recorded::Value(reason) => reason.clone(),
+                Recorded::NotRecorded => EQUIPMENT_DESTRUCTION_PARTIAL_REASON.to_owned(),
+            };
+            if self.run.counted_from.is_some() {
+                earliest(&mut self.run.incomplete_from, at);
+            }
+            return Ok((Coverage::DRAIN_STATE_PARTIAL_INTERVAL, text));
         }
         if self.run.counted_from.is_none() {
             self.run.counted_from = Some(at);
         }
-        let rows = destruction(hour)?;
         let mut supplemental = None;
         let mut unresolved = false;
         let mut sums: HashMap<(u32, u8, u32), i128> = HashMap::new();
@@ -588,6 +621,13 @@ impl EquipmentLosses {
                 pending.add(leaf(slot, id, Total::DESTRUCTION + cause, Some(variant)), amount);
             }
         }
+        let mut state = Coverage::DRAIN_STATE_COMPLETE;
+        if unresolved {
+            state |= Coverage::DRAIN_STATE_OWNER_UNKNOWN;
+        }
+        if supplemental.is_some() {
+            state |= Coverage::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE;
+        }
         let reason = match (unresolved.then_some(OWNER_UNKNOWN), supplemental) {
             (Some(owner), Some(supplemental)) => format!("{owner}; {supplemental}"),
             (Some(owner), None) => owner.to_owned(),
@@ -597,7 +637,7 @@ impl EquipmentLosses {
         if !reason.is_empty() {
             earliest(&mut self.run.incomplete_from, at);
         }
-        Ok(reason)
+        Ok((state, reason))
     }
 
     fn withhold(&mut self, hour: i32, out: &Rows<'_>, reason: String, pending: &mut Pending) -> String {
@@ -889,7 +929,7 @@ impl EquipmentLosses {
         land_coverage(found, grouped, ungrouped, self.gate.prune_observed)
     }
 
-    fn write(&self, hour: &Hour<'_>, pending: Pending, drain: &str, out: &mut Rows<'_>) {
+    fn write(&self, hour: &Hour<'_>, pending: Pending, drain: &str, drain_state: u8, out: &mut Rows<'_>) {
         let mut keys: HashSet<u128> = pending.totals.keys().copied().collect();
         keys.extend(pending.incomplete.keys().copied());
         keys.extend(pending.freed.keys().copied());
@@ -945,7 +985,7 @@ impl EquipmentLosses {
             let ended_from = if ended == 0 { held(12).map(|from| from as i32) } else { pending.ended_from };
             let mut cells = vec![Value::U8(land), ungrouped.map_or(Value::Unrecorded, Value::U32), Value::U8(u8::from(resolved)), Value::U32(drops)];
             cells.resize(11, Value::Unrecorded);
-            cells.extend([Value::U32(held(11).map_or(0, |held| held as u32) + ended), Value::OptionalI32(ended_from), Value::Unrecorded, Value::Unrecorded]);
+            cells.extend([Value::U32(held(11).map_or(0, |held| held as u32) + ended), Value::OptionalI32(ended_from), Value::Unrecorded, Value::Unrecorded, Value::Unrecorded]);
             out.set(TableId::EquipmentLossCoverage, key, cells);
         }
         let mut unread = 0;
@@ -973,6 +1013,7 @@ impl EquipmentLosses {
             Value::Unrecorded,
             Value::U32(self.unresolved.len() as u32),
             Value::U32((self.unresolved.len() + self.unresolved_combat.len()) as u32),
+            Value::U8(drain_state),
         ]);
         out.set(TableId::EquipmentLossCoverage, RUN_KEY, cells);
     }
@@ -1024,7 +1065,7 @@ impl Writer for EquipmentLosses {
     }
 
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn tables(&self) -> &'static [Output] {
@@ -1070,15 +1111,20 @@ impl Writer for EquipmentLosses {
         }
         let turned = month_bucket(hour.hour) != month_bucket(hour.hour.saturating_sub(1));
         self.combat(hour, &recount, (whole, turned), &mut pending, out)?;
-        let mut drain = self.destruction(hour, out, &mut pending)?;
-        if lost && drain.is_empty() {
-            drain = LOST.to_owned();
+        let (mut drain_state, mut drain) = self.destruction(hour, out, &mut pending)?;
+        if lost {
+            drain_state |= Coverage::DRAIN_STATE_LOST;
+            if drain.is_empty() {
+                drain = LOST.to_owned();
+            } else {
+                drain = format!("{LOST}; {drain}");
+            }
         }
         self.ships(hour, &recount, out)?;
         self.convoys(hour, whole, &mut pending)?;
         self.lend(hour, whole, &mut pending)?;
         self.land(hour, identities, &mut pending);
-        self.write(hour, pending, &drain, out);
+        self.write(hour, pending, &drain, drain_state, out);
         self.rebuild = false;
         self.last = Some(hour.hour);
         Ok(())

@@ -29,7 +29,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, UnknownReason, UnknownSpan};
+pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, DestructionRun, UnknownReason, UnknownSpan};
 
 pub const AMOUNT_SCALE: i64 = 100_000;
 pub const SERIES: &str = "equipment-losses";
@@ -196,8 +196,10 @@ pub struct LossLeaf {
     pub design: Option<u32>,
     #[doc = " The totals row's key, the live cell `equipment-loss-head` names it by."]
     pub key: String,
-    #[doc = " The running total at the end of each bin it changed in, and at each exact hour."]
+    #[doc = " The running total at the end of each bin it changed in."]
     pub points: Vec<LossPoint>,
+    #[doc = " Exact running totals read at requested hours; null when absent or unrecorded."]
+    pub exact: Vec<ExactLossPoint>,
     pub lower_bound_from: Option<i32>,
 }
 
@@ -208,6 +210,15 @@ pub struct LossPoint {
     pub hour: i32,
     #[doc = " Exact decimal, in [`LossesReply::amount_scale`] units."]
     pub total_raw: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ExactLossPoint {
+    pub hour: i32,
+    #[doc = " Exact decimal, in [`LossesReply::amount_scale`] units, or null when absent or unrecorded."]
+    pub total_raw: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,7 +267,7 @@ pub struct LossesReply {
     #[doc = " Combat Log land coverage; empty in destruction mode."]
     pub coverage: Vec<CoverageSpan>,
     pub destruction_coverage: Vec<DestructionCoverageSpan>,
-    pub destruction_counted_from: Option<i32>,
+    pub destruction_runs: Vec<DestructionRun>,
     pub retained_months: Option<i32>,
     #[doc = " The window and bins the points were read on, and the hours read exactly."]
     pub from: i32,
@@ -319,11 +330,24 @@ fn identity(query: &Query<'_>, params: &LossesParams) -> io::Result<LossCountry>
 
 #[derive(Default)]
 struct Leaf {
-    points: BTreeMap<i32, Option<i64>>,
+    points: BTreeMap<i32, i64>,
+    exact: BTreeMap<i32, Option<i64>>,
     incomplete_from: Option<i32>,
 }
 
+fn has_exact_in(exact_hours: &[i32], low: i32, high: i32) -> bool {
+    if low > high {
+        return false;
+    }
+    let at = exact_hours.partition_point(|&hour| hour < low);
+    exact_hours.get(at).is_some_and(|&hour| hour <= high)
+}
+
 pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32) -> Vec<(i32, i64)> {
+    bin_points_for(bins, first_bin_hour, bin_hours, from, to, &[])
+}
+
+fn bin_points_for(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32, exact_hours: &[i32]) -> Vec<(i32, i64)> {
     let mut out: Vec<(i32, i64)> = Vec::new();
     for (at, bin) in bins.iter().enumerate() {
         if bin.hours == 0 {
@@ -331,10 +355,14 @@ pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i
         }
         let start = (first_bin_hour + at as i64 * bin_hours).max(i64::from(from)) as i32;
         let end = (first_bin_hour + (at as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
-        if out.last().is_none_or(|&(_, value)| value != bin.first) {
+        if start > end {
+            continue;
+        }
+        let crossed_exact = out.last().is_some_and(|&(prev, _)| has_exact_in(exact_hours, prev, start.saturating_sub(1)));
+        if out.last().is_none_or(|&(_, value)| value != bin.first) || crossed_exact {
             out.push((start, bin.first));
         }
-        if bin.last != bin.first && end > start {
+        if end > start && (bin.last != bin.first || has_exact_in(exact_hours, start, end - 1)) {
             out.push((end, bin.last));
         }
     }
@@ -418,32 +446,120 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             restarts.push(stretch.first);
         }
         let stretch = Stretch { last: stretch.last.min(highest), ..stretch };
+        let before_run = covered.run.len();
         covered.read(recording, stretch.run, coverage_key(who.slot, who.country_id), RUN_KEY, stretch.first, stretch.last)?;
+        let stretch_cells = &covered.run[before_run..];
+        let stretch_counted = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min();
+        let stretch_withheld = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.withheld_from).min();
+        let stretch_complete_through = |target: i32| -> bool {
+            let Some(counted) = stretch_counted else { return false };
+            if target < counted || stretch_withheld.is_some_and(|withheld| target >= withheld) {
+                return false;
+            }
+            let mut cursor = counted;
+            for (first, last, cells) in stretch_cells {
+                if *last < counted {
+                    continue;
+                }
+                if *first > target {
+                    break;
+                }
+                if *first > cursor {
+                    return false;
+                }
+                let Some(cells) = cells.as_ref() else { return false };
+                if !coverage::is_complete_drain(cells, covered.legacy_partial_text)
+                    || cells.incomplete_from.is_some_and(|incomplete| incomplete <= target)
+                    || cells.withheld_from.is_some_and(|withheld| withheld <= target)
+                {
+                    return false;
+                }
+                cursor = (*last).min(target).saturating_add(1);
+            }
+            cursor > target
+        };
         if stretch.last < lowest {
             continue;
         }
         let last = totals_at(query, stretch.last, (low, high))?.unwrap_or_default();
-        let keys: Vec<u128> = last.keys().copied().collect();
+        let mut stretch_keys: BTreeSet<u128> = last.keys().copied().collect();
+        let stretch_reads: Vec<i32> = reads.iter().copied().filter(|hour| (stretch.first..=stretch.last).contains(hour)).collect();
+        let mut stretch_found = Vec::with_capacity(stretch_reads.len());
+        for &hour in &stretch_reads {
+            crate::metadata::check_cancel(cancelled)?;
+            let found = totals_at(query, hour, (low, high))?;
+            if let Some(found) = &found {
+                for (&key, &(_, incomplete_from)) in found {
+                    stretch_keys.insert(key);
+                    leaves.entry(key).or_default().incomplete_from = incomplete_from;
+                }
+            }
+            stretch_found.push((hour, found));
+        }
         for (&key, &(_, incomplete_from)) in &last {
             leaves.entry(key).or_default().incomplete_from = incomplete_from;
         }
         let (first, end) = (stretch.first.max(from), stretch.last.min(to));
+        if first <= end {
+            let lives = dashboard_query::cost::lifetimes(recording, stretch.run, TableId::EquipmentLossTotals)?;
+            let start = lives.partition_point(|&(key, ..)| key < low);
+            for &(key, lived_first, lived_last) in lives[start..].iter().take_while(|&&(key, ..)| key <= high) {
+                if lived_last >= i64::from(first) && lived_first <= i64::from(end) {
+                    stretch_keys.insert(key);
+                }
+            }
+        }
+        let keys: Vec<u128> = stretch_keys.iter().copied().collect();
         if !keys.is_empty() && first <= end {
             let charts = dashboard_query::series::charts_within(recording, stretch.run, (TableId::EquipmentLossTotals, column), Some(&keys[..]), (first, end), level, bin_hours)?;
             for (chart, (first, end)) in charts {
                 for (at, &key) in chart.keys.iter().enumerate() {
+                    let is_destruction = matches!(leaf_of(key), Some((LossSource::Destruction(_), _)));
+                    let (leaf_first, leaf_end) = if is_destruction {
+                        let Some(counted) = stretch_counted else { continue };
+                        let clipped_end = stretch_withheld.map_or(end, |withheld| end.min(withheld.saturating_sub(1)));
+                        (first.max(counted), clipped_end)
+                    } else {
+                        (first, end)
+                    };
+                    if leaf_first > leaf_end {
+                        continue;
+                    }
+                    let points = bin_points_for(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end, &stretch_reads);
+                    if points.is_empty() {
+                        continue;
+                    }
                     let leaf = leaves.entry(key).or_default();
-                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, first, end) {
-                        leaf.points.insert(hour, Some(value));
+                    for (hour, value) in points {
+                        leaf.points.insert(hour, value);
                     }
                 }
             }
         }
-        for &hour in reads.iter().filter(|hour| (stretch.first..=stretch.last).contains(*hour)) {
-            crate::metadata::check_cancel(cancelled)?;
-            let Some(found) = totals_at(query, hour, (low, high))? else { continue };
+        for (hour, found) in stretch_found {
+            let Some(found) = found else {
+                for leaf in leaves.values_mut() {
+                    leaf.exact.insert(hour, None);
+                }
+                continue;
+            };
+            let destruction_complete = stretch_complete_through(hour);
             for (key, leaf) in leaves.iter_mut() {
-                leaf.points.insert(hour, found.get(key).map_or(Some(0), |&(total, _)| total));
+                let is_destruction = matches!(leaf_of(*key), Some((LossSource::Destruction(_), _)));
+                let value = if is_destruction {
+                    if stretch_counted.is_none_or(|counted| hour < counted) {
+                        None
+                    } else {
+                        match found.get(key) {
+                            Some(&(total, _)) => total,
+                            None if stretch_keys.contains(key) && destruction_complete => Some(0),
+                            None => None,
+                        }
+                    }
+                } else {
+                    found.get(key).map_or(Some(0), |&(total, _)| total)
+                };
+                leaf.exact.insert(hour, value);
             }
         }
     }
@@ -478,7 +594,12 @@ fn reply(
     let land_unknown = combat_log.then(|| content.retention_refusal()).flatten();
     let last_hour = to;
     let destruction_spans = covered.destruction_unknown(last_hour);
-    let destruction_lower = covered.incomplete_from().into_iter().chain(destruction_spans.iter().map(|span| span.first_hour)).min();
+    let active_start = covered.active_run_start();
+    let destruction_lower = covered
+        .incomplete_from()
+        .into_iter()
+        .chain(destruction_spans.iter().filter(|span| active_start.is_none_or(|start| span.last_hour >= start)).map(|span| span.first_hour))
+        .min();
     let mut by_source: BTreeMap<LossSource, Vec<(Option<u32>, u128, &Leaf)>> = BTreeMap::new();
     for (&key, leaf) in &leaves {
         if let Some((source, variant)) = leaf_of(key) {
@@ -497,10 +618,10 @@ fn reply(
                 let proven = domain == Some(LossDomain::Air) || domain == Some(if stockpile { LossDomain::Naval } else { LossDomain::Land });
                 if !proven {
                     if !(stockpile && domain == Some(LossDomain::Land))
-                        && let Some(first) = leaf.points.keys().next()
+                        && let Some(first) = leaf.points.keys().copied().chain(leaf.exact.iter().filter_map(|(&hour, total)| total.map(|_| hour))).min()
                     {
-                        let at = domain_from.entry(source).or_insert(*first);
-                        *at = (*at).min(*first);
+                        let at = domain_from.entry(source).or_insert(first);
+                        *at = (*at).min(first);
                     }
                     continue;
                 }
@@ -546,7 +667,8 @@ fn reply(
                     .map(|(variant, key, leaf)| LossLeaf {
                         design: variant.map(&mut design),
                         key: key.to_string(),
-                        points: leaf.points.iter().filter_map(|(&hour, total)| total.map(|total| LossPoint { hour, total_raw: total.to_string() })).collect(),
+                        points: leaf.points.iter().map(|(&hour, &total)| LossPoint { hour, total_raw: total.to_string() }).collect(),
+                        exact: leaf.exact.iter().map(|(&hour, &total)| ExactLossPoint { hour, total_raw: total.map(|total| total.to_string()) }).collect(),
                         lower_bound_from: lower_bound(leaf),
                     })
                     .collect(),
@@ -576,7 +698,7 @@ fn reply(
         ships,
         coverage: if combat_log { covered.land() } else { Vec::new() },
         destruction_coverage: covered.destruction_coverage(),
-        destruction_counted_from: covered.counted_from(),
+        destruction_runs: covered.destruction_runs(),
         retained_months: content.retained_months.filter(|_| combat_log),
         from,
         to,
@@ -608,6 +730,7 @@ impl Product for EquipmentLosses {
             UnknownReason::decl(),
             UnknownSpan::decl(),
             LossPoint::decl(),
+            ExactLossPoint::decl(),
             LossLeaf::decl(),
             LossCause::decl(),
             LossDesignName::decl(),
@@ -616,6 +739,7 @@ impl Product for EquipmentLosses {
             Coverage::decl(),
             CoverageSpan::decl(),
             DestructionCoverageSpan::decl(),
+            DestructionRun::decl(),
             LossesReply::decl(),
         ]
     }
