@@ -4,7 +4,7 @@ import { entityKind, validGameRuns } from './gameRuns.ts';
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateEntityStats(value: unknown): EntityStats {
-  if (!object(value) || !Number.isSafeInteger(value.hour) || !entityKind(value.kind) || typeof value.token !== 'string'
+  if (!object(value) || !entityKind(value.kind) || typeof value.token !== 'string'
     || !Array.isArray(value.stats) || !value.stats.every(stat => object(stat) && validGameRuns(stat.label) && validGameRuns(stat.value))
     || !object(value.refusals) || !Object.values(value.refusals).every(count => Number.isSafeInteger(count))
     || !(value.unavailable === null || typeof value.unavailable === 'string')

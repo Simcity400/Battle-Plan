@@ -19,7 +19,7 @@ import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { detailsStructure, detailTexts, effectsRead, effectsStructure, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { episodeThrough, projectDate, runtimeProject, scientistName } from './specialProjectsData';
+import { episodeBound, projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
 
@@ -86,7 +86,7 @@ function Runtime({ runtime, widget, tag, active, reply, card, hour, through, onW
   useEffect(() => {
     if (due !== null) return whenDue(due, current, runtime.clock.subscribeFrame, () => wake(n => n + 1));
   }, [due, current, runtime.clock]);
-  const match = data ? runtimeProject(data, card, current(), episodeThrough(reply, card.project, through())) : null;
+  const match = data ? runtimeProject(data, card, current(), episodeBound(reply, card.project, through())) : null;
   return <div className="dossier-body" ref={ref}>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>

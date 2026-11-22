@@ -43,7 +43,6 @@ pub struct EntityStat {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EntityStats {
-    pub hour: i32,
     pub kind: EntityKind,
     pub token: String,
     pub stats: Vec<EntityStat>,
@@ -199,6 +198,7 @@ impl AtHour for EntityStatsAt {
     }
 
     const CLOCK_DEPENDENT: bool = false;
+    const REPLY_NAMES_NO_HOUR: bool = true;
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         Vec::new()
@@ -213,7 +213,7 @@ impl AtHour for EntityStatsAt {
     }
 
     fn reply(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut out = EntityStats { hour: at.hour, kind: params.kind, token: params.token.clone(), stats: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
+        let mut out = EntityStats { kind: params.kind, token: params.token.clone(), stats: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() };
         let content = match &at.context.content {
             Ok(content) => content,
             Err(why) => {

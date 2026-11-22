@@ -24,7 +24,9 @@ const MOVED_OWNER: u32 = 9002;
 const MOVED_READS: [i32; 3] = [47, 50, 53];
 const MOVED_HELD: std::ops::Range<i32> = 49..53;
 const MOVED_ITERATION: i32 = 51;
-const HISTORY_UNSTAMPED: i32 = 35;
+const HISTORY_UNSTAMPED: [i32; 2] = [30, 35];
+const LATER_READ_ITERATION: u32 = 5;
+const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = 30..45;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -34,6 +36,9 @@ fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, None);
     if hour == UNHELD {
         *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+    }
+    for table in [TableId::Characters, TableId::CharacterPortraits, TableId::ModifierDefinitions] {
+        set(&mut frame, table, TableRows::empty(table));
     }
     set(&mut frame, TableId::Scientists, TableRows::Scientists(vec![
         ScientistRow { character: 7, country: 11, active: Recorded::Value(Some(1)), ..Default::default() },
@@ -70,6 +75,7 @@ fn frame(hour: i32) -> DecodedFrame {
             history(2, LATE_ITERATION, PROJECT_READS[2]),
             history(3, NEXT_DAY_ITERATION, PROJECT_READS[1]),
             history(4, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
+            history(LATER_READ_ITERATION, PROJECT_READS[0], PROJECT_READS[1]),
             moved.filter(|&read| read >= MOVED_READS[2]).map(|_| ProjectHistoryRow { owner: MOVED_OWNER, project: 5, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: MOVED_ITERATION, ..Default::default() }),
         ]
         .into_iter()
@@ -80,7 +86,11 @@ fn frame(hour: i32) -> DecodedFrame {
         .into_iter()
         .filter_map(|(owner, read)| read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
         .flatten()
-        .filter(|row| hour != HISTORY_UNSTAMPED || row.table != TableId::ProjectHistory.index() as u32)
+        .map(|row| match row.table == TableId::ProjectHistory.index() as u32 {
+            true if HISTORY_UNSTAMPED.contains(&hour) => SliceReadRow { sample_hour: FIRST - 1, ..row },
+            true if HISTORY_READ_AT_FIRST.contains(&hour) => SliceReadRow { sample_hour: FIRST, ..row },
+            _ => row,
+        })
         .collect();
     slices.sort_by_key(|row| (row.table, row.owner));
     set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -132,11 +142,33 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     let project = &reply["projects"][0];
     assert_eq!((project["readHour"].clone(), project["label"]["token"].clone(), project["label"]["name"].clone()), (json!(PROJECT_READS[1]), json!("77"), Value::Null));
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
-    assert_eq!(project["choices"].as_array().unwrap().len(), 2, "the completion marker is not a chosen option");
+    assert_eq!(project["choices"].as_array().unwrap().len(), 3, "the completion marker is not a chosen option");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
-    let unstamped = details(&source, HISTORY_UNSTAMPED);
+    let unstamped = details(&source, HISTORY_UNSTAMPED[1]);
     assert_eq!(unstamped["projects"][0]["choices"], Value::Null, "a complete history table with no proven read is not an empty one: {unstamped}");
     assert!(has(&unstamped, "Project choice history was not read"), "{unstamped}");
+}
+
+#[test]
+fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_returns() {
+    let source = recording();
+    let panel = crate::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    for hour in FIRST..=LAST {
+        let followed = (exact.advance)(hour, hour == FIRST, &cancelled, None);
+        match (exact.cold)(hour, &cancelled) {
+            Ok(direct) => assert_eq!(followed.value.as_ref().as_ref().ok(), Some(&direct), "hour {hour}"),
+            Err(_) => assert!(followed.value.is_err(), "hour {hour}"),
+        }
+    }
+    let at = |hour: i32| (exact.cold)(hour, &cancelled).unwrap();
+    assert_eq!(at(HISTORY_UNSTAMPED[1] - 1)["projects"][0]["choices"].as_array().map(Vec::len), Some(1));
+    assert_eq!(at(HISTORY_UNSTAMPED[1])["projects"][0]["choices"], Value::Null, "an unproven history read is not recorded, never the last one's choices");
+    let expired = FIRST + STAGGER_PERIOD;
+    assert!(at(expired - 1)["projects"][0]["choices"].is_array());
+    assert_eq!(at(expired)["projects"][0]["choices"], Value::Null, "a history read older than a day is not recorded, though no table changed");
+    assert!(has(&at(expired), "Project choice history was not read"));
 }
 
 #[test]
@@ -226,7 +258,11 @@ fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
     assert_eq!(unavailable(0, first + 1), "The asked hour is not this iteration's hour");
     assert_eq!(unavailable(1, first), "This history entry is the project's completion, not an iteration");
     assert_eq!(unavailable(9, NEXT_DAY_ITERATION), "This iteration's choice was not read within a day of its hour");
-    assert!(refused(iteration(0, first)).contains("content"), "an iteration read at its hour goes on to the recorded content");
+    assert!(refused(iteration(0, first)).contains("content"), "an iteration goes on to the recorded content");
+    assert!(
+        refused(iteration(LATER_READ_ITERATION, first)).contains("content"),
+        "an iteration whose hour has no proven history read is found at the first proven read after it, within its day"
+    );
     assert!(refused(iteration(3, NEXT_DAY_ITERATION)).contains("content"), "a choice first read later in its day, under the same holder, is found for its own hour");
     assert_eq!(
         unavailable(4, UNHELD_NEXT_ITERATION),

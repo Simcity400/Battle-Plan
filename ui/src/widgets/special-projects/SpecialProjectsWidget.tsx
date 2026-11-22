@@ -22,6 +22,7 @@ import { useIdentityHour } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { openedOn } from '../../dashboard/gameWindows';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -177,7 +178,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }) ?? [], [data, labelHour, resolved.memberships]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
-  const [opened, setOpened] = useState<{ tag: string; id: string; x: number; y: number } | null>(null);
+  const [opened, setOpened] = useState<{ on: string; id: string; x: number; y: number } | null>(null);
   const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
   const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
@@ -226,7 +227,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY); },
       onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Enter') {
-          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); setOpened({ tag: reply.tag, id: card.project.id, x: box.left + 48, y: box.bottom });
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); if (track) setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: box.left + 48, y: box.bottom });
         }
         else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
           event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(atNow(), box.left, box.bottom);
@@ -257,13 +258,13 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       const feed = panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime);
       const observed = observedAt(reply, at);
       const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
-      const shown = opened?.tag === reply.tag ? opened : null;
+      const shown = opened?.on === openedOn(track, reply.tag) ? opened : null;
       const popup = shown && <ProjectWindow key={shown.id} runtime={runtime} widget={widget} tag={reply.tag} active={active} reply={reply} feed={feed}
         card={observed ? shownCard(reply, at, shown.id) : null} hour={at} through={live.shownAt} anchor={shown}
         missing={observed ? 'This project is not in progress or completed at this time.' : 'Projects were not recorded at this time.'}
         onClose={() => setOpened(null)} onWarnings={reportWarnings} />;
       body = observed ? <><CurrentList clock={runtime.clock} feed={feed} reply={reply} at={at} item={item(reply)}
-        open={(card, event) => setOpened({ tag: reply.tag, id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
+        open={(card, event) => setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
         : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}{popup}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown

@@ -1,10 +1,12 @@
 import { researchNumber } from './researchBreakdown.ts';
 import { researchDate } from './researchLayout.ts';
+import { isUnjoinedResearch } from './researchData.ts';
 import type { ResearchSlotNow } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 
 export function slotsStructure(reply: ResearchSlotsReply): string {
   return JSON.stringify([reply.missing, reply.slots.map(slot => [slot.index, slot.state.token, slot.state.databaseIndex, slot.state.entryFirstObservedHour,
+    isUnjoinedResearch(slot.state) ? slot.state.firstHour : null,
     readFraction(slot) !== null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n])]);
 }
 

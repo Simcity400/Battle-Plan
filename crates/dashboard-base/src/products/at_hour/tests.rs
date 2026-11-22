@@ -315,6 +315,7 @@ impl AtHour for Static {
     const TITLE: &'static str = "Static";
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK_DEPENDENT: bool = false;
+    const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = ScopedParams;
     type Reply = ScopedReply;
     type Context = std::sync::atomic::AtomicUsize;

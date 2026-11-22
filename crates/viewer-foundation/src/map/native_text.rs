@@ -216,26 +216,7 @@ fn special_advance(
     })
 }
 
-pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
-    let (stem, suffix) = match name.split_once('|') {
-        Some((stem, suffix)) => (stem, Some(suffix)),
-        None => (name, None),
-    };
-    let frame = suffix.map(|suffix| {
-        let mut value: i32 = 0;
-        for byte in suffix.bytes() {
-            if !byte.is_ascii_digit() {
-                return 0;
-            }
-            value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
-        }
-        if value < 0 { 0 } else { value - 1 }
-    });
-    (
-        [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
-        frame,
-    )
-}
+pub use dashboard_text::catalogue::icon_lookup;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {

@@ -70,6 +70,7 @@ struct Current {
     history: Track,
     reads: Track,
     scientists: Option<Track>,
+    observable: bool,
 }
 
 fn read_of(known: &BTreeSet<u32>, key: u128) -> bool {
@@ -120,6 +121,7 @@ impl Episodes {
                 history: Track::new(r, &piece, TableId::ProjectHistory, &HISTORY_COLUMNS, |k| known.contains(&((k >> 64) as u32)), count)?,
                 reads: Track::new(r, &piece, TableId::SliceReads, &read_columns()?, |k| read_of(&known, k), count)?,
                 scientists: open_programs(&programs, || Track::new(r, &piece, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| programs.contains(&k), count))?,
+                observable: self.observed.last().is_some_and(|span| span.1 == piece.last),
                 piece, owners, known, programs,
             })
         } else { None };
@@ -149,11 +151,15 @@ impl Episodes {
             boundary |= c.history.step(r, |k| c.known.contains(&((k >> 64) as u32)), count)?;
             boundary |= c.reads.step(r, |k| read_of(&c.known, k), count)?;
             if let Some(track) = &mut c.scientists { boundary |= track.step(r, |k| c.programs.contains(&k), count)?; }
+            let linked: BTreeSet<u32> = c.owners.iter().filter(|(_, runs)| within(runs, next)).map(|(&raw, _)| raw).collect();
+            let observable = c.projects.reader.available() && linked.iter().all(|&raw| c.supplies(TableId::Projects, raw));
+            boundary |= observable != c.observable;
+            c.observable = observable;
             observed_change |= boundary;
-            if c.projects.reader.available() {
+            if observable {
                 if boundary {
-                    let histories: BTreeSet<u32> = c.known.iter().copied().filter(|&raw| c.supplies(TableId::ProjectHistory, raw)).collect();
-                    let read: BTreeSet<u32> = c.known.iter().copied().filter(|&raw| c.supplies(TableId::Projects, raw)).collect();
+                    let histories: BTreeSet<u32> = linked.iter().copied().filter(|&raw| c.supplies(TableId::ProjectHistory, raw)).collect();
+                    let read = &linked;
                     let mut history: BTreeMap<u128, Vec<Entry>> = BTreeMap::new();
                     for (&key, cells) in &c.history.rows {
                         if let Some(entry) = history_entry(key as u32, cells) { history.entry(key >> 32).or_default().push(entry); }

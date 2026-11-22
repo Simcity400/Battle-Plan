@@ -158,17 +158,26 @@ fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countr
     let samples = |hours: &[i32]| hours.iter().map(|&hour| Step { hour, cells: Some(Box::new([Cell::Number(i64::from(hour))])) }).collect::<Vec<_>>();
     let rows = |keys: Vec<(u128, Vec<Step>)>| History { keys, ..History::default() };
     let read = PieceRows {
-        projects: vec![rows(vec![((11_u128 << 32) | 3, steps(&[(47, [40, 0, 1, 0x18, 1, 17]), (50, [40, 0, 1, 0x18, 1, 20])]))])],
-        histories: vec![History::default()],
+        projects: vec![
+            rows(vec![((11_u128 << 32) | 3, steps(&[(47, [40, 0, 1, 0x18, 1, 17]), (50, [40, 0, 1, 0x18, 1, 20])]))]),
+            rows(vec![((12_u128 << 32) | 4, steps(&[(45, [41, 0, 1, 0x18, 1, 5])]))]),
+        ],
+        histories: vec![History::default(), History::default()],
         programs: History::default(),
-        reads: rows(vec![(read_key(TableId::Projects, 11), samples(&[47, 50]))]),
-        owners: BTreeMap::from([(11, vec![(49, 60)])]),
+        reads: rows(vec![(read_key(TableId::Projects, 11), samples(&[47, 50])), (read_key(TableId::Projects, 12), samples(&[45]))]),
+        owners: BTreeMap::from([(11, vec![(49, 60)]), (12, vec![(40, 55)])]),
         projects_available: vec![(40, 60)],
         history_available: Vec::new(),
     };
     let mut fold = Fold::new(0);
-    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut Vec::new(), &AtomicBool::new(false)).unwrap();
-    let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.start.hour, episode.runs.iter().map(|run| (run.first_hour, run.progress)).collect::<Vec<_>>())).collect();
-    assert_eq!(shown, [(50, vec![(50, 20)])], "the read at 47 was of another country's project, so the first of its own is at 50");
+    let mut observed = Vec::new();
+    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut observed, &AtomicBool::new(false)).unwrap();
+    let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.owner, episode.start.hour, episode.runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>())).collect();
+    assert_eq!(
+        shown,
+        [(12, 45, vec![(45, 48), (50, 55)]), (11, 50, vec![(50, 60)])],
+        "the read at 47 was of another country's project, so the first of its own is at 50; a raw owner that left keeps no project after it left"
+    );
+    assert_eq!(observed, [(45, 48), (50, 60)], "an hour whose linked owner has no proven read is not recorded, never an empty list");
     assert!(!supplied(&read.owners, 11, None), "a row whose read is not recorded is not admitted");
 }

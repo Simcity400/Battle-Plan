@@ -143,6 +143,8 @@ pub trait AtHour: 'static {
 
     const CLOCK_DEPENDENT: bool = true;
 
+    const REPLY_NAMES_NO_HOUR: bool = false;
+
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool { Self::CLOCK_DEPENDENT }
 
     fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
@@ -431,7 +433,8 @@ impl<P: AtHour> Panel for Followed<P> {
 
     fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
         let Some((owner, views)) = &self.answered else { return false };
-        !P::CLOCK_DEPENDENT
+        P::REPLY_NAMES_NO_HOUR
+            && !P::CLOCK_DEPENDENT
             && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
             && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
     }
@@ -453,7 +456,7 @@ impl<P: AtHour> Panel for Followed<P> {
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
         let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
-        if !P::CLOCK_DEPENDENT && let Some(owner) = held {
+        if P::REPLY_NAMES_NO_HOUR && !P::CLOCK_DEPENDENT && let Some(owner) = held {
             self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
         }
         Ok(data)

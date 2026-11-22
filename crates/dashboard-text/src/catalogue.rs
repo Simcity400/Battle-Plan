@@ -197,6 +197,37 @@ pub fn text_icon_sprite<'a>(
     sprites.lookup(alias).map_err(invalid)
 }
 
+pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
+    let (stem, suffix) = match name.split_once('|') {
+        Some((stem, suffix)) => (stem, Some(suffix)),
+        None => (name, None),
+    };
+    let frame = suffix.map(|suffix| {
+        let mut value: i32 = 0;
+        for byte in suffix.bytes() {
+            if !byte.is_ascii_digit() {
+                return 0;
+            }
+            value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
+        }
+        if value < 0 { 0 } else { value - 1 }
+    });
+    (
+        [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
+        frame,
+    )
+}
+
+pub fn text_icon<'a>(
+    sprites: &'a SpriteSet,
+    name: &str,
+) -> io::Result<(&'a content_reader_gfx::gfx::SpriteType, u32)> {
+    let stem = name.split_once('|').map_or(name, |(stem, _)| stem);
+    let frame = u32::try_from(icon_lookup(name).1.unwrap_or(0))
+        .map_err(|_| invalid(format!("Text icon {name} names no frame")))?;
+    Ok((text_icon_sprite(sprites, stem)?, frame))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Plain,
@@ -1994,6 +2025,10 @@ pub mod tests {
                 .contains("noOfFrames")
         );
         assert!(text_icon_sprite(&sprites, "missing").is_err());
+        let (sprite, frame) = text_icon(&sprites, "mod_alias|2").unwrap();
+        assert_eq!((sprite.name.as_str(), frame), ("GFX_mod_alias", 1), "a frame suffix draws that frame of the sprite its stem names");
+        assert_eq!(text_icon(&sprites, "bare_only").unwrap().1, 0);
+        assert!(text_icon(&sprites, "mod_alias|0").unwrap_err().to_string().contains("names no frame"));
     }
 
     #[test]

@@ -131,7 +131,7 @@ export function detailsStructure(details: SpecialProjectDetails): string {
     details.breakthroughs?.map(b => label(b.specialization)),
     details.programs?.map(p => [p.id, p.province, p.assignments?.map(a => [a.ordinal, a.reference, person(a.person), a.timed]),
       p.facility && [p.facility.unavailable, p.facility.sources.map(s => [s.kind, s.unit, label(s.label), label(s.modifier), s.assignment, s.scientistReference])]]),
-    details.projects?.map(p => [p.owner, p.id, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
+    details.projects?.map(p => [p.owner, p.id, p.readHour, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
       p.pending && [label(p.pending.label), p.pending.ordinal, p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
       p.choices?.map(c => [c.ordinal, c.date, label(c.reward), label(c.option), c.province, c.progress, c.characterReference, c.country, c.scientist, c.state])]),
   ]);

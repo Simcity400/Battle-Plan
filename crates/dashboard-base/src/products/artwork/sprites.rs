@@ -30,7 +30,7 @@ pub struct SpriteFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
-    #[doc = " True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite."]
+    #[doc = " True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite and its frame (`frame` is 0)."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub text: Option<bool>,
@@ -114,8 +114,8 @@ fn asked_png(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> io::Resul
     if asked.text != Some(true) {
         return frame_png(catalogue, key, asked.frame);
     }
-    let sprite = dashboard_text::catalogue::text_icon_sprite(&catalogue.sprites, key)?;
-    frame_png(catalogue, &sprite.name, asked.frame)
+    let (sprite, frame) = dashboard_text::catalogue::text_icon(&catalogue.sprites, key)?;
+    frame_png(catalogue, &sprite.name, frame)
 }
 
 impl Product for SpriteArtwork {
@@ -129,7 +129,7 @@ impl Product for SpriteArtwork {
         let invalid = |key: &str| key.is_empty() || key.contains('\0');
         if params.sprites.is_empty()
             || params.sprites.iter().any(|sprite| {
-                invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid) || sprite.text == Some(false)
+                invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid) || sprite.text == Some(false) || sprite.text == Some(true) && sprite.frame != 0
             })
         {
             return Err("Invalid sprite keys");
@@ -284,14 +284,16 @@ mod tests {
             .into_iter()
             .map(|key| frame(key, 0))
             .chain([frame("GFX_Mixed_Mod", 1)])
-            .chain(["Mixed_Mod", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
+            .chain(["Mixed_Mod", "Mixed_Mod|2", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
             .collect(),
         };
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![SpriteFrame { text: Some(true), ..frame("Mixed_Mod", 1) }] }).is_err(), "a text icon's frame is its name's");
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
-        assert_eq!(reply.items.len(), 6);
+        assert_eq!(reply.items.len(), 7);
         let text = |key: &str| reply.items.iter().find(|art| art.key == key).unwrap().icon.as_deref();
         assert_eq!(from_url(text("Mixed_Mod").unwrap()).pixels, image.pixels, "a text icon is drawn from the sprite its name declares");
         assert_eq!(text("Absent_Icon"), None, "an undeclared text icon is refused by name");
+        assert_eq!(from_url(text("Mixed_Mod|2").unwrap()).pixels, image.pixels, "a frame suffix draws that frame of the sprite its stem declares");
         let art = reply
             .items
             .iter()

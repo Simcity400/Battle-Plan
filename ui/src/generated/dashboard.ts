@@ -659,7 +659,7 @@ frame: number,
  */
 recorded?: string,
 /**
- * True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite.
+ * True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite and its frame (`frame` is 0).
  */
 text?: boolean, };
 export type SpriteImage = { key: string, frame: number,
@@ -5863,7 +5863,7 @@ export type GameRun = { "kind": "text", text: string, tone: string | null, } | {
 export type EntityKind = "equipment" | "module" | "subUnit" | "building" | "tactic" | "technology";
 export type TechnologyEffectsParamsAtHour = TechnologyEffectsParams & { hour: number };
 export type EntityStatsParams = { branchId: string, kind: EntityKind, token: string, };
-export type EntityStats = { hour: number, kind: EntityKind, token: string, stats: Array<EntityStat>,
+export type EntityStats = { kind: EntityKind, token: string, stats: Array<EntityStat>,
 /**
  * Why stats were withheld, with how often each was met.
  */

@@ -595,9 +595,13 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             continue;
         }
         let history_known = within(&read.history_available, first);
+        let linked: Vec<u32> = read.owners.iter().filter(|(_, spans)| within(spans, first)).map(|(&raw, _)| raw).collect();
         let mut supplies = |table: TableId, raw: u32| supplied(&read.owners, raw, sample(reads.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(first))));
-        let histories: HashSet<u32> = read.owners.keys().copied().filter(|&raw| supplies(TableId::ProjectHistory, raw)).collect();
-        let projects_read: HashSet<u32> = read.owners.keys().copied().filter(|&raw| supplies(TableId::Projects, raw)).collect();
+        let projects_read: HashSet<u32> = linked.iter().copied().filter(|&raw| supplies(TableId::Projects, raw)).collect();
+        if projects_read.len() != linked.len() {
+            continue;
+        }
+        let histories: HashSet<u32> = linked.iter().copied().filter(|&raw| supplies(TableId::ProjectHistory, raw)).collect();
         let mut history: HashMap<(u32, u32), Vec<Entry>> = HashMap::new();
         for (owner, project, ordinal, cursor) in &mut entries {
             if let Some(entry) = cursor.at(first).and_then(|cells| history_entry(*ordinal, cells))

@@ -45,7 +45,7 @@ test('effect and stat replies are validated whole', () => {
   const effects = { hour: 4, runs, refusals: { 'why': 1 }, unavailable: null, warnings: [] };
   assert.equal(validateTechnologyEffects(effects), effects);
   assert.throws(() => validateTechnologyEffects({ ...effects, runs: undefined, text: 'old' }));
-  const stats = { hour: 4, kind: 'tactic', token: 'mod_tactic', name: null, stats: [{ label: runs.slice(1, 2), value: runs.slice(4) }], refusals: {}, unavailable: 'Building stats are not read', warnings: [] };
+  const stats = { kind: 'tactic', token: 'mod_tactic', name: null, stats: [{ label: runs.slice(1, 2), value: runs.slice(4) }], refusals: {}, unavailable: 'Building stats are not read', warnings: [] };
   assert.equal(validateEntityStats(stats), stats);
   assert.throws(() => validateEntityStats({ ...stats, kind: 'planet' }));
   assert.throws(() => validateEntityStats({ ...stats, stats: [{ label: 'Soft', value: runs }] }));

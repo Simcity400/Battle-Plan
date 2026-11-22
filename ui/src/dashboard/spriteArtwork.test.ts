@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
+import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
 
 const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
@@ -44,4 +44,16 @@ test('a sprite reply answering frames it was not asked for is malformed', () => 
   assert.throws(() => spriteIcons({ items: [{ key: 'GFX_a', frame: 1, icon: png }], warnings: [] }, asked), /malformed/u);
   assert.throws(() => spriteIcons({ items: [{ key: 'GFX_a', frame: 0, icon: png }, { key: 'GFX_a', frame: 0, icon: png }], warnings: [] }, asked), /malformed/u);
   assert.throws(() => spriteIcons({ items: [] }, asked), /malformed/u);
+});
+
+test('each active recording and revision keeps its own icons, and a scope no one shows is dropped', () => {
+  const caches = new SpriteCaches();
+  const releaseA = caches.hold('a'), releaseB = caches.hold('b');
+  caches.icons('a').set('icon', png);
+  caches.icons('b').set('icon', null);
+  assert.equal(caches.icons('a').get('icon'), png, 'another recording shown at the same time never evicts these icons');
+  releaseA();
+  assert.equal(caches.icons('b').get('icon'), null);
+  assert.equal(caches.icons('a').has('icon'), false, 'a scope released by its last widget is not kept');
+  releaseB();
 });

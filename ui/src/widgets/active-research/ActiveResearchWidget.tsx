@@ -8,6 +8,7 @@ import ProgressMeter from '../../charts/meter/ProgressMeter';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { contentTitle } from '../../dashboard/contentTitles';
+import { openedOn } from '../../dashboard/gameWindows';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { researchArt, researchArtwork, researchLatestProgress, researchReadName, researchRecordedTemplates } from '../research/researchData';
@@ -40,7 +41,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
-  const [opened, setOpened] = useState<{ tag: string; research: OpenedResearch; x: number; y: number } | null>(null);
+  const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   const failure = history.error ?? now.error;
@@ -49,7 +50,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const describe = (research: OpenedResearch) => ({ icon: artwork.get(research.token)?.icon ?? undefined,
     name: contentTitle(research.firstObservedHour === null ? research.definition?.name : researchArt(artwork, research.token, research.databaseIndex)?.name,
       research.token, 'Technology name unavailable') });
-  const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ tag, research: openedResearch(item), x, y }); };
+  const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ on: openedOn(track, tag), research: openedResearch(item), x, y }); };
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
   const row = (item: ActiveSlot) => {
     const key = `slot:${item.slot.index}`;
@@ -86,7 +87,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
       <span className="active-row-days" data-paint="days">{numbers.days}</span>
     </div>;
   };
-  const shown = opened?.tag === tag ? opened : null;
+  const shown = opened?.on === openedOn(track, tag) ? opened : null;
   const popup = shown && <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
     shown={describe(shown.research)} feed={now.feed} active={active} anchor={shown} onClose={() => setOpened(null)} />;

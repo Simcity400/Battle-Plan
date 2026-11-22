@@ -124,20 +124,25 @@ export function shownCard(data: SpecialProjectsReply, hour: number, id: string):
   return running.find(card => card.project.id === id) ?? completed.find(card => card.project.id === id) ?? earlier.find(card => card.project.id === id) ?? null;
 }
 
-export function episodeThrough(reply: SpecialProjectsReply, project: ProjectEpisode, through: number | null): number {
+export interface EpisodeBound { through: number; open: boolean }
+
+export function episodeBound(reply: SpecialProjectsReply, project: ProjectEpisode, through: number | null): EpisodeBound {
   const last = project.runs[project.runs.length - 1].lastHour;
-  return through !== null && through > last && last === reply.available.at(-1)?.lastHour ? through : last;
+  const open = last === reply.available.at(-1)?.lastHour;
+  return { through: open && through !== null && through > last ? through : last, open };
 }
 
 export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number,
-  end = card.project.runs[card.project.runs.length - 1].lastHour): ProjectRuntimeDetails | string | null {
+  bound: EpisodeBound = { through: card.project.runs[card.project.runs.length - 1].lastHour, open: false }): ProjectRuntimeDetails | string | null {
   if (details.hour > hour) return null;
   if (!details.projects) return 'Project rewards and output were not read at this time.';
   const { owner, local, start } = card.project;
   const found = details.projects.find(project => project.owner === owner && project.id === local);
   if (!found) return 'Project rewards and output were not recorded for this project at this time.';
   if (found.readHour < start.hour) return 'Project rewards and output were last read before this project began.';
-  if (found.readHour > end) return 'Project rewards and output were read after this project ended.';
+  if (found.readHour > bound.through) return bound.open
+    ? `Project rewards were read ${dayLabel(found.readHour)}, after the project list is known current (${dayLabel(bound.through)}).`
+    : 'Project rewards and output were read after this project ended.';
   return found;
 }
 
@@ -180,7 +185,7 @@ export function currentKey(data: SpecialProjectsReply, hour: number): string {
   const { running, completed, earlier } = currentProjects(data, hour);
   const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
     JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));
-  return [part(running, card => card.run.state), part(completed, card => String(card.run.completion!.hour)), part(earlier, () => '')].join('\u0003');
+  return [part(running, card => card.run.state), part(completed, card => JSON.stringify(card.run.completion)), part(earlier, () => '')].join('\u0003');
 }
 
 export function projectStructure(reply: SpecialProjectsReply, hour: number) {

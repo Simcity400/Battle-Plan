@@ -33,3 +33,22 @@ export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<
   }
   return icons;
 }
+
+export class SpriteCaches {
+  private scopes = new Map<string, { users: number; icons: Map<string, string | null> }>();
+
+  private held(scope: string) {
+    let held = this.scopes.get(scope);
+    if (!held) { held = { users: 0, icons: new Map() }; this.scopes.set(scope, held); }
+    return held;
+  }
+
+  icons(scope: string): Map<string, string | null> { return this.held(scope).icons; }
+
+  hold(scope: string): () => void {
+    const held = this.held(scope);
+    held.users++;
+    for (const [other, cache] of this.scopes) if (cache.users === 0) this.scopes.delete(other);
+    return () => { if (--held.users === 0 && this.scopes.get(scope) === held) this.scopes.delete(scope); };
+  }
+}

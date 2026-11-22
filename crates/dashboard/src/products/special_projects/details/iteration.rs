@@ -175,13 +175,15 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
         Ok((project, _)) => project,
         Err(why) => return Ok(Err(why)),
     };
-    let Some(read) = owner_read(frame, TableId::ProjectHistory, params.owner).ok().filter(|&read| reads.supplies(read)) else {
-        return Ok(Err("Project choice history was not read in the day up to this hour while this country held the tag".into()));
+    let held = match owner_read(frame, TableId::ProjectHistory, params.owner).ok().filter(|&read| reads.supplies(read)) {
+        Some(read) => {
+            if let Err(why) = reads.owned(params.owner, read) {
+                return Ok(Err(why));
+            }
+            history_row(frame.complete::<tables::ProjectHistory>()?, history_key(params)).cloned()
+        }
+        None => None,
     };
-    if let Err(why) = reads.owned(params.owner, read) {
-        return Ok(Err(why));
-    }
-    let held = history_row(frame.complete::<tables::ProjectHistory>()?, history_key(params)).cloned();
     let row = match held.map_or_else(|| later_history(&reads, params), Ok) {
         Ok(row) => row,
         Err(why) => return Ok(Err(why)),

@@ -11,7 +11,6 @@ import { observeOnScreen, useFallbackHour, useFollow } from './follow/useFollow.
 import type { FollowedAnswer } from './follow/message';
 import type { FollowEntry } from './follow/store';
 import { canonical } from './follow/canonical.ts';
-import { followShape } from './follow/reads.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
@@ -108,7 +107,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     const { data, error } = panelReply(entry.panel, latest.current.validate);
     if (error) return `!${error.message}`;
     if (data === undefined) return '';
-    return latest.current.structure ? `=${followShape(data, latest.current.structure(data, entry.hour))}` : `#${entry.version}`;
+    return latest.current.structure ? `=${latest.current.structure(data, entry.hour)}` : `#${entry.version}`;
   }, []);
   const painting = useCallback((entry: FollowEntry) => {
     const { data } = panelReply(entry.panel, latest.current.validate);

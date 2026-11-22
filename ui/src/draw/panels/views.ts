@@ -7,7 +7,6 @@ import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { followShape, shapeWithin } from '../../dashboard/follow/reads.ts';
 import { detailTexts, detailsStructure, effectsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
@@ -50,7 +49,7 @@ const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
-  return panelViews[product]?.structure?.(raw, hour) ?? followShape(raw, tableStructures[product]?.(raw) ?? 'present');
+  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
 }
 
 export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {
@@ -87,15 +86,7 @@ export const raceViews = { 'nuclear-arsenal': ArsenalPicture };
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
 const extendInline = '.project-details [data-paint]:last-child';
 
-const readGuarded = (view: PanelView): PanelView => ({ ...view,
-  structure: (raw, hour) => followShape(raw, view.structure?.(raw, hour) ?? 'present'),
-  values(raw, live, hour, shape) {
-    const inner = shapeWithin(raw, shape);
-    return inner === null ? null : view.values(raw, live, hour, inner);
-  },
-});
-
-const views: Readonly<Record<string, PanelView>> = {
+export const panelViews: Readonly<Record<string, PanelView>> = {
   'nuclear-arsenal': {
     nextChange: (_reply, hour) => nextDay(hour),
     structure: raw => arsenalStructure(validateNuclearArsenal(raw)),
@@ -153,8 +144,6 @@ const views: Readonly<Record<string, PanelView>> = {
     },
   },
 };
-
-export const panelViews: Readonly<Record<string, PanelView>> = Object.fromEntries(Object.entries(views).map(([product, view]) => [product, readGuarded(view)]));
 
 const histories = new WeakMap<object, SpecialProjectsReply>();
 function projectHistory(raw: unknown) {

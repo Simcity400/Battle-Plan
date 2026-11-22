@@ -618,16 +618,32 @@ impl AtHour for SpecialProjectDetailsAt {
         let Ok(slices) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
         let Ok(owners) = owners_of(frame, holder.slot) else { return Ok(false) };
         let Ok(rows) = frame.complete::<tables::Projects>() else { return Ok(false) };
+        let mut read_of = BTreeMap::new();
         for &owner in &owners {
-            if (owner == holder.id || !prefixed(rows, owner, |r| r.owner).is_empty()) && !replay_data::sliced::read_hour(slices, TableId::Projects, owner).is_some_and(|read| reads.supplies(read)) {
+            let has_rows = !prefixed(rows, owner, |r| r.owner).is_empty();
+            match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| reads.supplies(read)) {
+                Some(read) if reads.owned(owner, read).is_ok() => {
+                    read_of.insert(owner, (read, has_rows.then(|| history_read(frame, &reads, owner, read))));
+                }
+                None if !has_rows && owner != holder.id => {}
+                _ => return Ok(false),
+            }
+        }
+        let unavailable: BTreeSet<&str> = data["unavailable"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
+        let Some(projects) = data["projects"].as_array() else { return Ok(false) };
+        for project in projects {
+            let Some((_, Some(history))) = project["owner"].as_u64().and_then(|owner| read_of.get(&(owner as u32))) else { return Ok(false) };
+            let kept = match history {
+                Ok(()) => !project["choices"].is_null(),
+                Err(why) => project["choices"].is_null() && unavailable.contains(why.as_str()),
+            };
+            if !kept {
                 return Ok(false);
             }
         }
         let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
         for project in projects {
-            let owner = project["owner"].as_u64().unwrap() as u32;
-            let Some(read) = replay_data::sliced::read_hour(slices, TableId::Projects, owner) else { return Ok(false) };
-            project["readHour"] = read.into();
+            project["readHour"] = read_of[&(project["owner"].as_u64().unwrap() as u32)].0.into();
         }
         data["hour"] = at.hour.into();
         Ok(true)

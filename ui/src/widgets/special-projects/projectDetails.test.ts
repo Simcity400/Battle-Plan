@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { detailsStructure, detailTexts, effectsRead, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
-import { panelStructure, panelViews } from '../../draw/panels/views.ts';
+import { panelViews } from '../../draw/panels/views.ts';
 import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
@@ -83,17 +83,16 @@ test('an iteration reply is the game\'s headed output read at that iteration\'s 
   assert.equal(validateProjectIteration(missing, 23), missing, 'not recorded is a named state, never an empty output');
 });
 
-test('a daily read moves only painted texts and the read it came from: its counts and values never change the structure that renders', () => {
+test('a daily read moves only painted texts: only the project read its rewards are joined on changes the structure that renders', () => {
   const next = { ...reply, hour: 48,
     scientists: [{ ...reply.scientists[0], active: 0, injuryDays: 6, injuryHour: 48, visibilityHour: 48, skills: [{ ...reply.scientists[0].skills[0], level: -2, experienceRaw: '100000' }] }],
     breakthroughs: [{ ...reply.breakthroughs[0], points: 20000, readHour: 48 }],
     programs: [{ ...reply.programs[0], readHour: 48, facility: { ...reply.programs[0].facility, speedRaw: '100000', sources: [{ ...reply.programs[0].facility.sources[0], valueRaw: '1' }] },
       assignments: [{ ...reply.programs[0].assignments[0], current: 3 }, reply.programs[0].assignments[1]] }],
     projects: [{ ...reply.projects[0], readHour: 48, variables: [{ name: 'mod_array^0', valueRaw: '5' }] }] } satisfies SpecialProjectDetails;
-  assert.equal(detailsStructure(next), detailsStructure(reply));
-  assert.notEqual(panelStructure('special-project-details', next, 48), panelStructure('special-project-details', reply, 24),
-    'the page is given each read its project rewards are joined on');
-  assert.equal(panelViews['special-project-details']!.values(next, null, 48, panelStructure('special-project-details', reply, 24)), null);
+  assert.equal(detailsStructure({ ...next, projects: [{ ...next.projects[0], readHour: 24 }] }), detailsStructure(reply));
+  assert.notEqual(detailsStructure(next), detailsStructure(reply), 'the page is given each read its project rewards are joined on');
+  assert.equal(panelViews['special-project-details']!.values(next, null, 48, detailsStructure(reply)), null, 'a later project read is never painted into the one shown');
   const reseeded = { ...next, projects: [{ ...next.projects[0], seed: 123 }] };
   assert.equal(detailsStructure(reseeded), detailsStructure(next));
   assert.equal(detailTexts(reseeded).get('j:5:1:seed'), '123');
