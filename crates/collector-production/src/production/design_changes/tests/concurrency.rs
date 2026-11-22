@@ -37,6 +37,7 @@ fn setup(population: usize) -> (Space, Vec<native::RegistryRow>, Variants) {
     }
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
     let variants = acquire(&space, &registry);
     begin_full();
     begin_read();
@@ -484,9 +485,10 @@ fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
     let space = space(1, 3);
     let mut registry = Vec::new();
     native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry);
-    let baseline = acquire(&space, &registry[..2]);
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
+    let baseline = acquire(&space, &registry[..2]);
     begin_full();
     begin_read();
     prepare(&registry[..2], &baseline);

@@ -755,6 +755,7 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
     assert_eq!(variants.definitions.outcome, Outcome::Rows { len: 2 });
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
     begin_read();
     prepare(&registry, &variants);
     assert!(baseline_admitted());
@@ -1462,6 +1463,7 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
             LIVENESS_BASELINE.store(false, Ordering::Release);
             RECOVER.store(true, Ordering::Release);
             ENABLED.store(true, Ordering::Release);
+            collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
             begin_read();
             if warm {
                 let mut work = cold_storage(&registry).unwrap();
