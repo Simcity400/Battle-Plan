@@ -3,7 +3,7 @@ use crate::invalid;
 use replay_data::Hour;
 use std::{collections::HashMap, io};
 
-pub const MAGIC: u32 = u32::from_le_bytes(*b"FOL2");
+pub const MAGIC: u32 = u32::from_le_bytes(*b"FOL3");
 
 pub const NO_REASON: u32 = u32::MAX;
 
@@ -13,6 +13,7 @@ pub(crate) const LOG: u8 = 2;
 pub(crate) const CHANGED: u8 = 3;
 
 const RESET: u32 = 1;
+pub(crate) const CANONICAL: u8 = 1;
 pub const ROUTES: u32 = u32::MAX >> 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +56,7 @@ pub struct Table {
     pub(crate) names: Vec<u32>,
     pub(crate) hours: Vec<Hour>,
     pub(crate) texts: Vec<String>,
+    pub(crate) window: u16,
     held: HashMap<String, u32>,
 }
 
@@ -69,6 +71,7 @@ impl Table {
         self.names.clear();
         self.hours.clear();
         self.texts.clear();
+        self.window = 0;
         self.held.clear();
     }
 
@@ -161,10 +164,15 @@ impl Table {
         self.keys.capacity() * 16 + self.values.capacity() * 8 + self.states.capacity() + (self.reasons.capacity() + self.names.capacity()) * 4 + self.hours.capacity() * 4 + self.texts.iter().map(|text| text.capacity() * 2).sum::<usize>() + self.held.capacity() * (size_of::<String>() + 4 + 1)
     }
 
+    pub(crate) fn canonical(&self) -> bool {
+        !self.log && self.keys.windows(2).all(|pair| pair[0] < pair[1])
+    }
+
     fn encode_kind(&self, kind: u8, out: &mut Vec<u8>) {
         let log = kind == LOG;
         let rows = self.keys.len();
-        head(out, kind, rows, self.columns, self.texts.len());
+        let flags = if kind != LOG && self.canonical() { CANONICAL } else { 0 };
+        head(out, kind, flags, self.window, rows, self.columns, self.texts.len());
         out.reserve(rows * (16 + 8) + self.values.len() * 9 + 40);
         self.keys.iter().for_each(|&key| out.extend_from_slice(&(key as u64).to_le_bytes()));
         self.keys.iter().for_each(|&key| out.extend_from_slice(&((key >> 64) as u64).to_le_bytes()));
@@ -183,8 +191,9 @@ impl Table {
     }
 }
 
-fn head(out: &mut Vec<u8>, kind: u8, rows: usize, columns: usize, texts: usize) {
-    out.extend_from_slice(&[kind, 0, 0, 0]);
+fn head(out: &mut Vec<u8>, kind: u8, flags: u8, window: u16, rows: usize, columns: usize, texts: usize) {
+    out.extend_from_slice(&[kind, flags]);
+    out.extend_from_slice(&window.to_le_bytes());
     out.extend_from_slice(&(rows as u32).to_le_bytes());
     out.extend_from_slice(&(columns as u32).to_le_bytes());
     out.extend_from_slice(&(texts as u32).to_le_bytes());
@@ -194,16 +203,26 @@ fn pad(out: &mut Vec<u8>) {
     out.resize(out.len().next_multiple_of(8), 0);
 }
 
-fn texts<'a>(out: &mut Vec<u8>, texts: impl Iterator<Item = &'a str>) {
+fn texts<'a>(out: &mut Vec<u8>, texts: impl Iterator<Item = &'a str> + Clone) {
+    let mut end = 0u32;
+    out.extend_from_slice(&end.to_le_bytes());
+    for text in texts.clone() {
+        end += u32::try_from(text.len()).expect("a followed text is shorter than 4 GiB");
+        out.extend_from_slice(&end.to_le_bytes());
+    }
+    pad(out);
     for text in texts {
-        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
         out.extend_from_slice(text.as_bytes());
     }
     pad(out);
 }
 
 pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
-    head(out, NOT_RECORDED, 0, 0, 1);
+    not_recorded_in(reason, 0, out);
+}
+
+pub fn not_recorded_in(reason: &str, window: u16, out: &mut Vec<u8>) {
+    head(out, NOT_RECORDED, 0, window, 0, 0, 1);
     texts(out, std::iter::once(reason));
 }
 
@@ -296,6 +315,8 @@ pub struct Answer {
     pub names: Vec<u32>,
     pub hours: Option<Vec<Hour>>,
     pub changed: bool,
+    pub canonical: bool,
+    pub window: u16,
     pub texts: Vec<String>,
     pub not_recorded: Option<String>,
 }
@@ -303,14 +324,15 @@ pub struct Answer {
 impl Answer {
     pub fn parse(body: &[u8]) -> io::Result<Self> {
         let mut reader = Reader { bytes: body, at: 0 };
-        let kind = reader.take(4)?[0];
+        let head = reader.take(4)?;
+        let (kind, flags, window) = (head[0], head[1], u16::from_le_bytes([head[2], head[3]]));
         let rows = reader.u32()? as usize;
         let columns = reader.u32()? as usize;
         let count = reader.u32()? as usize;
         let numbers = |reader: &mut Reader<'_>, count: usize| -> io::Result<Vec<u64>> {
             Ok(reader.take(count * 8)?.chunks_exact(8).map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes"))).collect())
         };
-        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, texts: Vec::new(), not_recorded: None };
+        let mut answer = Self { columns, keys: Vec::new(), values: Vec::new(), states: Vec::new(), reasons: Vec::new(), names: Vec::new(), hours: None, changed: kind == CHANGED, canonical: flags & CANONICAL != 0, window, texts: Vec::new(), not_recorded: None };
         if kind > CHANGED {
             return Err(invalid(format!("No followed answer kind {kind}")));
         }
@@ -331,9 +353,14 @@ impl Answer {
             answer.names = indexes(&mut reader)?;
             reader.align()?;
         }
-        for _ in 0..count {
-            let length = reader.u32()? as usize;
-            answer.texts.push(String::from_utf8(reader.take(length)?.to_vec()).map_err(|_| invalid("A followed text is not UTF-8"))?);
+        let ends = (0..=count).map(|_| reader.u32().map(|end| end as usize)).collect::<io::Result<Vec<usize>>>()?;
+        reader.align()?;
+        if ends[0] != 0 || ends.windows(2).any(|pair| pair[0] > pair[1]) {
+            return Err(invalid("A followed answer's text offsets do not ascend from zero"));
+        }
+        let bytes = reader.take(ends[count])?;
+        for pair in ends.windows(2) {
+            answer.texts.push(String::from_utf8(bytes[pair[0]..pair[1]].to_vec()).map_err(|_| invalid("A followed text is not UTF-8"))?);
         }
         reader.align()?;
         if reader.at != body.len() {
@@ -409,20 +436,25 @@ fn changed(earlier: &[u8], later: &[u8]) -> io::Result<Vec<u8>> {
         return Err(invalid("Rows changed are of another shape than the rows they change"));
     }
     let by_key: std::collections::HashMap<u128, usize> = b.keys.iter().enumerate().map(|(row, &key)| (key, row)).collect();
-    let mut table = Table::default();
-    table.clear(a.columns, false);
-    for row in 0..a.rows() {
-        match by_key.get(&a.keys[row]) {
-            Some(&later) => copy_row(&mut table, &b, later),
-            None => copy_row(&mut table, &a, row),
-        }
-    }
     let held: std::collections::HashSet<u128> = a.keys.iter().copied().collect();
     let new: Vec<usize> = (0..b.rows()).filter(|&row| !held.contains(&b.keys[row])).collect();
     if !a.changed && !new.is_empty() {
         return Err(invalid("Rows changed name a key the rows they change do not hold"));
     }
-    new.into_iter().for_each(|row| copy_row(&mut table, &b, row));
+    let mut rows: Vec<(u128, &Answer, usize)> = (0..a.rows()).map(|row| match by_key.get(&a.keys[row]) {
+        Some(&later) => (a.keys[row], &b, later),
+        None => (a.keys[row], &a, row),
+    }).collect();
+    rows.extend(new.into_iter().map(|row| (b.keys[row], &b, row)));
+    if a.canonical && b.canonical {
+        rows.sort_unstable_by_key(|&(key, ..)| key);
+    }
+    let mut table = Table::default();
+    table.clear(a.columns, false);
+    table.window = b.window;
+    for (_, answer, row) in rows {
+        copy_row(&mut table, answer, row);
+    }
     let mut out = Vec::new();
     if a.changed { table.encode_changed(&mut out) } else { table.encode(&mut out) }
     Ok(out)

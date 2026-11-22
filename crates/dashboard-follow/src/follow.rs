@@ -4,7 +4,7 @@ use crate::{
     head,
     evaluate::{self, Find, Reasons, Scratch},
     live_rows::{self, LiveRows},
-    query::{Query, Rows, TagRow, Tags, identity_until, tags_at},
+    query::{Query, RankWindow, Rows, TagRow, Tags, identity_until, tags_at},
     table_name,
 };
 use playhead::{
@@ -73,6 +73,7 @@ pub struct Held {
 enum Op {
     Follow(u32, Box<Query>),
     Unfollow(u32),
+    Window(u32, RankWindow),
 }
 
 struct Reads {
@@ -181,6 +182,15 @@ impl Follow {
         redeclare(&mut control, true)
     }
 
+    pub fn window(&self, id: u32, window: RankWindow) -> io::Result<()> {
+        let mut control = lock(&self.shared.control);
+        if !control.followed.contains_key(&id) {
+            return Err(crate::invalid(format!("No followed query {id} to window")));
+        }
+        control.ops.push(Op::Window(id, window));
+        Ok(())
+    }
+
     pub fn unfollow(&self, id: u32) -> io::Result<()> {
         let mut control = lock(&self.shared.control);
         if control.followed.remove(&id).is_some() {
@@ -266,6 +276,7 @@ struct Followed {
     queued: bool,
     live: LiveRows,
     ranking: evaluate::Ranking,
+    window: Option<RankWindow>,
     log: Table,
     standing: BTreeMap<Ordinal, Option<Listed>>,
     asked: Option<Asked>,
@@ -594,6 +605,11 @@ impl Engine {
                     self.add(id, *query);
                 }
                 Op::Unfollow(id) => self.remove(id),
+                Op::Window(id, window) => {
+                    let Some(&at) = self.ids.get(&id) else { continue };
+                    if let Some(followed) = &mut self.slab[at] { followed.window = Some(window); }
+                    mark(&mut self.slab, &mut self.marked, at);
+                }
             }
         }
         changed
@@ -636,6 +652,7 @@ impl Engine {
             queued: false,
             live: LiveRows::default(),
             ranking: evaluate::Ranking::default(),
+            window: None,
             log: Table::default(),
             standing: BTreeMap::new(),
             asked: None,
@@ -1035,7 +1052,7 @@ impl Engine {
                 }
                 continue;
             }
-            if let Some(rows) = followed.ranking.write(&followed.query, lane, step.table(followed.table), &followed.tags, &self.reasons, &mut self.scratch.table, &mut self.body) {
+            if let Some(rows) = followed.ranking.write(&followed.query, lane, step.table(followed.table), &followed.tags, followed.window.as_ref(), &self.reasons, &mut self.scratch.table, &mut self.body) {
                 stats.rows_read += rows;
             } else {
                 evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
@@ -1056,7 +1073,7 @@ impl Engine {
                 Query::Series { identity, .. } if identity.timeline.at(step.last()).is_none() => identity.timeline.reason(step.last()),
                 _ => GAP.to_owned(),
             };
-            answer::not_recorded(&reason, &mut self.body);
+            answer::not_recorded_in(&reason, followed.window.as_ref().map_or(0, |window| window.version), &mut self.body);
             followed.live.unrecorded();
             stats.touched += 1;
             stats.evaluated += 1;

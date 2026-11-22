@@ -31,8 +31,8 @@ pub trait Hosted: Send + Sync {
     fn follow(&self) -> &Follow;
     fn lacks(&self, table: usize) -> Option<String>;
     fn anchor(&self, anchor: Anchor);
-    fn panel(&self, id: u32, panel: Box<dyn Panel>) -> Result<(), String> {
-        let _ = (id, panel);
+    fn panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32) -> Result<(), String> {
+        let _ = (id, panel, lanes);
         Err("This playhead shows no panels".into())
     }
     fn unpanel(&self, _id: u32) {}
@@ -40,6 +40,7 @@ pub trait Hosted: Send + Sync {
 
 pub trait Playheads: Send + Sync {
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
+    fn credit(&self, _bytes: usize) {}
 }
 
 struct Followed {
@@ -82,7 +83,7 @@ pub fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| Registry::new(None))
 }
 
-pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-close"];
+pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-window", "follow-close"];
 
 fn unavailable(reason: impl Into<String>) -> Value {
     json!({ "available": false, "reason": reason.into() })
@@ -104,6 +105,7 @@ impl Registry {
                 let id = id(params)?;
                 let branch = branch(params)?;
                 let clock = clock(params)?;
+                let lanes = lanes(params, id)?;
                 let Some(playheads) = &self.playheads else {
                     return Ok(unavailable("Values at the head are followed only in the map viewer's process, which has no playhead here"));
                 };
@@ -119,7 +121,7 @@ impl Registry {
                         Some(Err(reason)) => return Ok(unavailable(reason)),
                         Some(Ok(shown)) => shown,
                     };
-                    if let Err(reason) = host.panel(id, shown) {
+                    if let Err(reason) = host.panel(id, shown, lanes) {
                         return Ok(unavailable(reason));
                     }
                 } else {
@@ -174,12 +176,32 @@ impl Registry {
                 host.anchor(anchor);
                 Ok(json!({"available":true}))
             }
+            "follow-window" => {
+                let id = id(params)?;
+                let count = |name: &str| params.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| crate::invalid(format!("A follow window names no {name}")));
+                let countries = match params.get("countries") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|_| crate::invalid("A follow window's countries are slots or tags"))?,
+                };
+                let version = params.get("version").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()).ok_or_else(|| crate::invalid("A follow window names no version"))?;
+                let window = crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version };
+                let host = lock(&self.followed).get(&id).filter(|held| !held.panel).map(|held| Arc::clone(&held.host));
+                let Some(host) = host else { return Ok(unavailable(format!("Follow {id} is no followed ranking"))); };
+                if let Err(error) = host.follow().window(id, window) {
+                    return Ok(unavailable(error.to_string()));
+                }
+                Ok(json!({"available":true}))
+            }
             "follow-close" => {
                 self.close(path);
                 Ok(json!({ "available": true }))
             }
             other => Err(crate::invalid(format!("Follow does not answer {other}"))),
         }
+    }
+
+    pub fn credit(&self, bytes: usize) {
+        if let Some(playheads) = &self.playheads { playheads.credit(bytes); }
     }
 
     pub fn close(&self, path: &Path) {
@@ -204,6 +226,17 @@ fn id(params: &Value) -> io::Result<u32> {
         return Err(crate::invalid("A follow request's id is a panel's live cells' (its high bit is the host's)"));
     }
     Ok(id)
+}
+
+fn lanes(params: &Value, id: u32) -> io::Result<u32> {
+    let lanes = match params.get("lanes") {
+        None | Some(Value::Null) => 1,
+        Some(lanes) => lanes.as_u64().and_then(|lanes| u32::try_from(lanes).ok()).filter(|&lanes| lanes >= 1).ok_or_else(|| crate::invalid("A follow request's lanes are one or more"))?,
+    };
+    match params.get("lane").and_then(Value::as_u64) {
+        Some(lane) if u64::from(id % lanes) != lane => Err(crate::invalid(format!("Follow {id} is not of lane {lane} among {lanes}"))),
+        _ => Ok(lanes),
+    }
 }
 
 fn clock(params: &Value) -> io::Result<i32> {

@@ -302,10 +302,17 @@ fn main() {
             if request.headers().get(header::ORIGIN).and_then(|origin| origin.to_str().ok()) != Some(&page_origin) {
                 return pull::refuse(responder, StatusCode::FORBIDDEN, "Only the dashboard may pull followed answers");
             }
-            if request.uri().path() != "/follow" {
-                return pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream");
+            match request.uri().path() {
+                "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
+                "/credit" => match pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<usize>().ok()) {
+                    Some(bytes) => {
+                        dashboard_follow::registry::registry().credit(bytes);
+                        pull::refuse(responder, StatusCode::NO_CONTENT, "");
+                    }
+                    None => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its bytes"),
+                },
+                _ => pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream"),
             }
-            context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
         })
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())

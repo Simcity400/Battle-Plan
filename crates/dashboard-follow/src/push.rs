@@ -77,6 +77,7 @@ pub struct PushCounters {
     pub unwritten: u64,
     pub most_queued: u64,
     pub bytes: u64,
+    pub credited: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -127,6 +128,9 @@ struct State {
     charge: playhead::Charge,
     queue: VecDeque<Queued>,
     bytes: usize,
+    in_flight: usize,
+    credit: usize,
+    heads: std::collections::HashMap<u32, i32>,
     next: u32,
     stopped: bool,
     failed: Option<String>,
@@ -149,7 +153,34 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, in_flight: 0, credit: budget.limit() / 2, heads: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+    }
+
+    fn passed(&self, stream: Stream) -> bool {
+        match stream {
+            Stream::Steps { route, due, .. } => self.heads.get(&route).is_some_and(|&head| due <= head),
+            Stream::Panels { .. } | Stream::Notice => false,
+        }
+    }
+
+    fn charged(&mut self) -> io::Result<()> {
+        self.charge.resize(self.bytes + self.in_flight)
+    }
+
+    fn sendable(&self) -> bool {
+        self.queue.front().is_some_and(|front| self.in_flight == 0 || self.in_flight + front.bytes.len() <= self.credit)
+    }
+
+    fn merge_passed(&mut self) {
+        let mut at = 0;
+        while at + 1 < self.queue.len() {
+            let (older, newer) = (&self.queue[at], &self.queue[at + 1]);
+            let same = older.kind == newer.kind && older.stream.version().is_some() && older.stream.version() == newer.stream.version();
+            if same && !older.kept && self.passed(older.stream) && self.passed(newer.stream) && self.merge(at, at + 1) {
+                continue;
+            }
+            at += 1;
+        }
     }
 
     fn merge(&mut self, at: usize, later: usize) -> bool {
@@ -188,10 +219,15 @@ impl State {
             && !self.queue[at].kept && self.queue[at].stream == stream {
             self.merge(at, last);
         }
-        while self.charge.resize(self.bytes).is_err() {
-            let mut ours = self.queue.iter().enumerate().filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version));
-            let (Some((at, first)), Some((later, _))) = (ours.next(), ours.next()) else { break };
-            if first.kept || !self.merge(at, later) { break; }
+        self.merge_passed();
+        while self.charged().is_err() {
+            let pair = {
+                let mut ours = self.queue.iter().enumerate()
+                    .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.passed(q.stream)).map(|(at, _)| at);
+                (ours.next(), ours.next())
+            };
+            let (Some(at), Some(later)) = pair else { break };
+            if !self.merge(at, later) { break; }
             self.counters.pressure_merges += 1;
             crate::lead::count_merge();
         }
@@ -231,9 +267,9 @@ impl Push {
         state.bytes += bytes.len();
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false });
         state.compact(stream);
-        let queued = state.bytes;
-        if let Err(error) = state.charge.resize(queued) {
+        if let Err(error) = state.charged() {
             let reason = error.to_string();
+            state.in_flight = 0;
             state.charge.resize(0).expect("releasing the failed queue");
             let bytes = failure(&reason);
             state.counters.unwritten += state.queue.len() as u64;
@@ -252,16 +288,47 @@ impl Push {
         self.take_kind().map(|(_, bytes, sequence, offered)| (bytes, sequence, offered))
     }
 
+    pub fn credit(&self, bytes: usize) {
+        let mut state = lock(&self.state);
+        state.in_flight = state.in_flight.saturating_sub(bytes);
+        state.charged().expect("returning credit releases bytes");
+        state.counters.credited += bytes as u64;
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    pub fn head(&self, route: u32, hour: i32) {
+        let mut state = lock(&self.state);
+        if state.heads.insert(route, hour) == Some(hour) { return; }
+        state.merge_passed();
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    pub fn in_flight(&self) -> usize {
+        lock(&self.state).in_flight
+    }
+
+    pub fn try_take(&self) -> Option<(u8, Vec<u8>, u32, Instant)> {
+        Self::send(&mut lock(&self.state))
+    }
+
+    fn send(state: &mut State) -> Option<(u8, Vec<u8>, u32, Instant)> {
+        if !state.sendable() { return None; }
+        let held = state.queue.pop_front()?;
+        state.bytes -= held.bytes.len();
+        if held.stream != Stream::Notice { state.in_flight += held.bytes.len(); }
+        state.charged().expect("a sent packet's credit was reserved while it was queued");
+        state.counters.written += 1;
+        state.counters.bytes += held.bytes.len() as u64;
+        Some((held.kind, held.bytes, held.sequence, held.offered))
+    }
+
     pub fn take_kind(&self) -> Option<(u8, Vec<u8>, u32, Instant)> {
         let mut state = lock(&self.state);
         loop {
-            if let Some(held) = state.queue.pop_front() {
-                state.bytes -= held.bytes.len();
-                let remaining = state.bytes;
-                state.charge.resize(remaining).expect("releasing a sent packet");
-                state.counters.written += 1;
-                state.counters.bytes += held.bytes.len() as u64;
-                return Some((held.kind, held.bytes, held.sequence, held.offered));
+            if let Some(sent) = Self::send(&mut state) {
+                return Some(sent);
             }
             if state.stopped {
                 return None;
@@ -273,7 +340,7 @@ impl Push {
     pub fn take_waiting(&self) -> Vec<Vec<u8>> {
         let mut state = lock(&self.state);
         state.bytes = 0;
-        state.charge.resize(0).expect("releasing queued packets");
+        state.charged().expect("releasing queued packets");
         state.queue.drain(..).map(|held| held.bytes).collect()
     }
 
@@ -301,6 +368,7 @@ impl Push {
                 state.counters.unwritten += 1 + state.queue.len() as u64;
                 state.queue.clear();
                 state.bytes = 0;
+                state.in_flight = 0;
                 state.charge.resize(0).expect("releasing queued packets");
                 return Err(error);
             }

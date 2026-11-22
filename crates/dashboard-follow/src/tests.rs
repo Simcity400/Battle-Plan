@@ -596,7 +596,7 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
         let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
         assert_eq!(names, wanted, "a holder with no row ranks at zero");
         let nnn = names.iter().position(|name| *name == "NNN").unwrap();
-        assert_eq!((answer.keys[nnn], answer.values[nnn], answer.states[nnn]), (999, 0, State::Value));
+        assert_eq!((answer.keys[nnn], answer.values[nnn * 2], answer.states[nnn * 2]), (999, 0, State::Value));
     }
 }
 
@@ -910,11 +910,12 @@ fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
     let first = Push::with_budget(budget.clone());
     let second = Push::with_budget(budget.clone());
     first.offer(packet.clone());
+    second.head(0, 100);
     second.offer(packet.clone());
     second.offer(packet);
     assert_eq!(second.counters().pressure_merges, 0);
     second.offer(one(7, 48, 2));
-    assert_eq!(second.counters().pressure_merges, 1);
+    assert_eq!((second.counters().pressure_merges, second.counters().merges), (0, 2), "hours the clock passed merge before any pressure");
     assert!(second.failed().is_none());
     first.take_waiting();
     drop(second);
@@ -1021,7 +1022,7 @@ fn the_message_bytes_are_the_ones_the_ui_reads() {
     assert_eq!(hex, GOLDEN);
 }
 
-const GOLDEN: &str = "464f4c3201000000d204000003000000000000000000000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000";
+const GOLDEN: &str = "464f4c3301000000d204000003000000000000000000000007000000b0040000d000000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff02000000040000000000000000000000010000000300000000000000000000000300000006000000160000001900000032000000474552534f56534f5620686173206e6f2076616c75654954414954412069732068656c64206279206e6f20636f756e74727900000000000008000000d20400004000000000000000000000000000000000000000010000000000000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f75720009000000d204000058000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff000000000000000000000000";
 
 #[test]
 fn a_table_never_recorded_in_the_files_is_not_held() {
@@ -1401,4 +1402,135 @@ fn completed_product_step_has_constant_size_when_every_product_stands() {
     let (merged, _) = dated::merge(&first, &next).unwrap();
     let rows = dated::records(&merged).unwrap();
     assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 10), (0, dated::COMPLETED, 34)]);
+}
+
+#[test]
+fn an_answer_says_when_its_rows_ascend_by_key_and_reads_any_text_by_its_offset() {
+    let mut table = crate::answer::Table::default();
+    table.clear(1, false);
+    for (key, name) in [(3, "Third"), (9, "Ninth"), (1u128 << 100, "Wide")] {
+        table.row(key);
+        table.cell(1, State::Value);
+        table.name(name);
+    }
+    table.explain("This country was not recorded at this hour");
+    let mut body = Vec::new();
+    table.encode(&mut body);
+    let answer = Answer::parse(&body).unwrap();
+    assert!(answer.canonical, "keys ascend: the reader may merge rows by walking keys");
+    assert_eq!((answer.name(1), answer.reason(2), answer.name(2)), (Some("Ninth"), Some("This country was not recorded at this hour"), Some("Wide")));
+    table.clear(1, false);
+    for key in [9, 3] {
+        table.row(key);
+        table.cell(1, State::Value);
+    }
+    body.clear();
+    table.encode(&mut body);
+    assert!(!Answer::parse(&body).unwrap().canonical, "rows in another order say so");
+}
+
+#[test]
+fn rows_changed_twice_merge_in_key_order() {
+    let merged = crate::answer::merge(&rows_message(10, true, &[(5, 1), (9, 1)]), &rows_message(11, true, &[(1, 2), (9, 2)])).unwrap().0;
+    let decoded = decode(&merged).unwrap();
+    let answer = Answer::parse(decoded.answers[0].2).unwrap();
+    assert_eq!((answer.keys.clone(), answer.values.clone(), answer.canonical, answer.changed), (vec![1, 5, 9], vec![2, 1, 2], true, true));
+}
+
+#[test]
+fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_flight() {
+    use crate::push::Push;
+    let packet = one(7, 24, 1);
+    let budget = playhead::ByteBudget::new(packet.len() * 4);
+    let push = Push::with_budget(budget.clone());
+    push.offer(packet.clone());
+    push.offer(one(7, 48, 2));
+    push.offer(one(7, 72, 3));
+    assert!(push.try_take().is_some());
+    assert!(push.try_take().is_some(), "two packets fit the credit of half the budget");
+    assert!(push.try_take().is_none(), "the third waits until the lanes release bytes");
+    assert_eq!((push.in_flight(), budget.used()), (packet.len() * 2, packet.len() * 3), "credit is reserved from send until release");
+    push.credit(packet.len());
+    assert!(push.try_take().is_some());
+    push.credit(packet.len() * 2);
+    assert_eq!(budget.used(), 0);
+    let large: Vec<u8> = vec![0; packet.len() * 3];
+    push.offer(large);
+    assert!(push.try_take().is_some(), "a message larger than the credit still goes alone");
+}
+
+#[test]
+fn only_hours_the_clock_has_passed_merge_into_one_answer() {
+    use crate::push::Push;
+    let push = Push::default();
+    push.offer(rows_message(20, false, &[(1, 1)]));
+    push.offer(rows_message(30, false, &[(1, 2)]));
+    push.head(0, 10);
+    assert_eq!(push.counters().merges, 0, "never merged ahead of the clock");
+    push.head(0, 35);
+    assert_eq!(push.counters().merges, 1, "both passed: one complete answer at the later hour");
+    let (_, bytes, ..) = push.try_take().unwrap();
+    let decoded = decode(&bytes).unwrap();
+    assert_eq!((decoded.hour, Answer::parse(decoded.answers[0].2).unwrap().values), (30, vec![2]));
+}
+
+#[test]
+fn pressure_never_merges_ahead_of_the_clock() {
+    use crate::push::Push;
+    let packet = rows_message(20, false, &[(1, 1)]);
+    let budget = playhead::ByteBudget::new(packet.len() * 2);
+    let push = Push::with_budget(budget);
+    push.head(0, 0);
+    push.offer(rows_message(20, false, &[(1, 1)]));
+    push.offer(rows_message(30, false, &[(1, 2)]));
+    push.offer(rows_message(40, false, &[(1, 3)]));
+    assert_eq!(push.counters().pressure_merges, 0);
+    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "past the budget ahead of the clock is a named failure, never a lost hour");
+}
+
+#[test]
+fn a_panel_cell_group_takes_an_id_of_its_owners_lane() {
+    for (lane, lanes) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+        for _ in 0..50 {
+            let id = crate::live::cells_id(lane, lanes);
+            assert_eq!((id & crate::live::CELLS, (id & !crate::live::CELLS) % lanes), (crate::live::CELLS, lane));
+        }
+    }
+}
+
+#[test]
+fn a_follow_names_lanes_its_id_belongs_to() {
+    let registry = crate::registry::Registry::new(None);
+    let ask = |params: serde_json::Value| registry.answer(std::path::Path::new("x"), "follow", &params, |_| Ok(nobody()), Box::new(|_| None));
+    let wrong = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 0, "lanes": 3 }));
+    assert!(wrong.unwrap_err().to_string().contains("not of lane 0 among 3"));
+    let right = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 1, "lanes": 3 })).unwrap();
+    assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
+}
+
+#[test]
+fn a_ranked_window_sends_its_ranks_its_version_and_the_selected_holders_outside_it() {
+    let pages = record(quiet);
+    let mut harness = harness(&pages);
+    let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
+    let mut holders = Holders::default();
+    holders.tags.insert("MMM".into(), held(1, 101));
+    holders.tags.insert("ZZZ".into(), held(2, 102));
+    holders.tags.insert("AAA".into(), held(3, 103));
+    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
+    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
+    let top = Query::series_top(&POWER, &POWER.measures[0], 3, identity);
+    harness.follow.follow(7, top).unwrap();
+    harness.seek(0);
+    let whole = harness.play(20);
+    let last = |played: &[Played]| played.iter().flat_map(Played::answers).filter(|(at, _, answer)| *at == 7 && answer.not_recorded.is_none()).last().expect("an answer").2;
+    let ranked = last(&whole);
+    let names: Vec<&str> = (0..ranked.keys.len()).filter_map(|row| ranked.name(row)).collect();
+    assert_eq!((names, ranked.columns, ranked.window), (vec!["MMM", "AAA", "ZZZ"], 2, 0));
+    assert_eq!((0..3).map(|row| ranked.values[row * 2 + 1]).collect::<Vec<_>>(), [0, 1, 2], "explicit ranks, so key order loses nothing");
+    harness.follow.window(7, crate::RankWindow { from: 1, count: 1, countries: vec!["MMM".into()], version: 4 }).unwrap();
+    let windowed = last(&harness.play(200));
+    let names: Vec<&str> = (0..windowed.keys.len()).filter_map(|row| windowed.name(row)).collect();
+    assert_eq!((names, windowed.window), (vec!["AAA", "MMM"], 4), "rank 1 alone, then the selected holder outside the window");
+    assert_eq!((windowed.values[1], windowed.values[3]), (1, 0), "each with its own rank");
 }
