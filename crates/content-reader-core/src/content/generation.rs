@@ -289,7 +289,9 @@ fn metadata_in(
         Err(error) => return Err(error),
     };
     let context = Sha256::digest(b"physical-content-source/v1").into();
-    if let Some(parent) = path.parent() { graph.changes.watch_root(parent, true); }
+    if let Some(parent) = path.parent() {
+        graph.watch_root(parent, true);
+    }
     let key = super::graph::Key {
         context,
         parser: "source bytes",
@@ -298,17 +300,21 @@ fn metadata_in(
     };
     let (product, _) = graph.product(key, parent, |_| {
         let (result, diagnostics) = super::diagnostics::capture(|| {
-            graph.witnesses.directory(&path)?;
             let mut file = match file {
                 Some(file) => file,
-                None => File::open(&path)?,
+                None => {
+                    graph.witnesses.directory(&path)?;
+                    File::open(&path)?
+                }
             };
-            graph.witnesses.file(&path, &file)?;
+            let before = graph.witnesses.record_file_stamp(&path, &file)?;
             #[cfg(test)]
             super::tests::LOADS.with(|loads| loads.set(loads.get() + 1));
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes)?;
-            graph.witnesses.file(&path, &file)?;
+            if Stamp::file(&file)? != before {
+                return Err(changed(&path));
+            }
             let bytes = super::Bytes::from(bytes);
             super::io_counts::external_digest(&path, bytes.digest(), bytes.len() as u64);
             io::Result::Ok(bytes)
@@ -660,6 +666,20 @@ impl Witnesses {
             .entry(path.to_owned())
             .or_insert(stamp);
         Ok(())
+    }
+
+    pub(super) fn record_file(&self, path: &Path, file: &File) -> io::Result<()> {
+        self.record_file_stamp(path, file).map(|_| ())
+    }
+
+    fn record_file_stamp(&self, path: &Path, file: &File) -> io::Result<Stamp> {
+        let stamp = Stamp::file(file)?;
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Some(stamp.clone()));
+        Ok(stamp)
     }
 
     pub(super) fn file(&self, path: &Path, file: &File) -> io::Result<()> {

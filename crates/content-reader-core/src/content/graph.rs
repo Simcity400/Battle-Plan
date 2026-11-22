@@ -176,6 +176,7 @@ pub(super) struct Graph {
     state: Arc<Mutex<State>>,
     pub witnesses: Arc<super::generation::Witnesses>,
     pub(super) changes: Arc<super::changes::Changes>,
+    pending_watches: Arc<Mutex<BTreeSet<(std::path::PathBuf, bool)>>>,
     pub(super) inventories: Arc<Mutex<Vec<std::sync::Weak<super::generation::Witnesses>>>>,
     loading: Arc<AtomicBool>,
     scoped: Arc<AtomicBool>,
@@ -190,6 +191,7 @@ impl Default for Graph {
             state: Arc::clone(&current.state),
             witnesses: Arc::clone(&current.witnesses),
             changes: Arc::clone(&current.changes),
+            pending_watches: Arc::clone(&current.pending_watches),
             inventories: Arc::clone(&current.inventories),
             loading: Arc::clone(&current.loading),
             scoped: Arc::clone(&current.scoped),
@@ -241,6 +243,7 @@ impl Graph {
             state: Arc::default(),
             witnesses: Arc::default(),
             changes: Arc::default(),
+            pending_watches: Arc::default(),
             inventories: Arc::default(),
             loading: Arc::new(AtomicBool::new(false)),
             scoped: Arc::new(AtomicBool::new(false)),
@@ -250,18 +253,58 @@ impl Graph {
         }
     }
 
-    pub(super) fn acquire(&self) {
-        let mut users = self.users.lock().unwrap_or_else(|error| error.into_inner());
-        if *users == 0 {
-            self.snapshots
+    pub(super) fn is_scoped(&self) -> bool {
+        self.scoped.load(Ordering::Acquire)
+    }
+
+    pub(super) fn watch_root(&self, root: &std::path::Path, subtree: bool) {
+        if !self.is_scoped() {
+            let mut pending = self
+                .pending_watches
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !self.is_scoped() {
+                pending.insert((root.to_path_buf(), subtree));
+                return;
+            }
+        }
+        self.changes.watch_root(root, subtree);
+    }
+
+    pub(super) fn has_unwatched_roots(&self) -> bool {
+        !self.is_scoped()
+            && !self
+                .pending_watches
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .clear();
-            self.prune();
+                .is_empty()
+    }
+
+    pub(super) fn acquire(&self) {
+        let pending = {
+            let mut users = self.users.lock().unwrap_or_else(|error| error.into_inner());
+            if *users == 0 {
+                self.snapshots
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clear();
+                self.prune();
+            }
+            *users += 1;
+            let pending = {
+                let mut pending = self
+                    .pending_watches
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                self.scoped.store(true, Ordering::Release);
+                std::mem::take(&mut *pending)
+            };
+            self.loading.store(true, Ordering::Release);
+            pending
+        };
+        for (root, subtree) in pending {
+            self.changes.watch_root(&root, subtree);
         }
-        *users += 1;
-        self.scoped.store(true, Ordering::Release);
-        self.loading.store(true, Ordering::Release);
     }
 
     pub(super) fn inventory(&self, inventory: &Arc<super::generation::Witnesses>) {
@@ -473,6 +516,97 @@ impl Graph {
             }
         };
         if !self.loading.load(Ordering::Acquire)
+            && let Some(entry) = node
+                .result
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+        {
+            entry.release();
+        }
+        Ok((product, built))
+    }
+
+    pub(super) fn product_shared_if<T: Send + Sync + 'static>(
+        &self,
+        key: Key,
+        parent: Option<&Arc<Node>>,
+        build: impl FnOnce(&Arc<Node>) -> (io::Result<T>, Vec<ContentRead>, diagnostics::Diagnostics),
+        shareable: impl FnOnce(&T, &[ContentRead]) -> bool,
+    ) -> io::Result<(Arc<Product>, bool)> {
+        let node = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let node = Arc::clone(state.nodes.entry(key.clone()).or_insert_with(|| {
+                Arc::new(Node {
+                    id: key.digest(),
+                    key,
+                    result: Mutex::new(None),
+                    confirmed: OnceLock::new(),
+                    refresh: Mutex::new(()),
+                    builds: AtomicU64::new(0),
+                    building: AtomicBool::new(false),
+                    requests: AtomicUsize::new(0),
+                    dependencies: Mutex::new(BTreeSet::new()),
+                })
+            }));
+            state
+                .by_id
+                .entry(node.request())
+                .or_insert_with(|| Arc::clone(&node));
+            node.requests.fetch_add(1, Ordering::Relaxed);
+            node
+        };
+        struct Request<'a>(&'a AtomicUsize);
+        impl Drop for Request<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Release);
+            }
+        }
+        let _request = Request(&node.requests);
+        if let Some(parent) = parent {
+            self.dependency(parent, &node)?;
+        }
+        let (product, built) = match node.ready(true) {
+            Some(product) => (product, false),
+            None => {
+                let _refresh = node
+                    .refresh
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                match node.ready(true) {
+                    Some(product) => (product, false),
+                    None => {
+                        let replacement = self.construct(&node, build);
+                        let product = replacement.view().expect("new product holds its value");
+                        let share = product
+                            .value::<T>()
+                            .is_ok_and(|value| shareable(&value, &product.reads));
+                        if share {
+                            if self.is_scoped()
+                                && *node.confirmed.get_or_init(|| product.content)
+                                    != product.content
+                            {
+                                self.stale.store(true, Ordering::Release);
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "content product changed within its generation: {} (schema {})",
+                                        node.key.parser, node.key.schema
+                                    ),
+                                ));
+                            }
+                            *node
+                                .result
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(replacement);
+                        }
+                        (product, true)
+                    }
+                }
+            }
+        };
+        if self.is_scoped()
+            && !self.loading.load(Ordering::Acquire)
             && let Some(entry) = node
                 .result
                 .lock()

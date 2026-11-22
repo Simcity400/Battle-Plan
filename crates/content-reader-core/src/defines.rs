@@ -94,12 +94,22 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
         defines.sealed = true;
         Ok(defines)
     };
-    let defines = if layers.reads_visual_defines() {
-        layers.retained_product("defines Lua 5.1", 1, &[], read)
+    let (defines, built) = if layers.reads_visual_defines() {
+        layers.retained_product_status("defines Lua 5.1", 1, &[], read)?
     } else {
-        layers.retained_recorded_product("defines Lua 5.1", 1, &[], read)
+        layers.retained_recorded_product_status("defines Lua 5.1", 1, &[], read)?
     };
-    defines.map(|defines| defines.as_ref().clone())
+    if !built && !layers.is_generation_scoped() {
+        let target = if layers.reads_visual_defines() {
+            layers.clone()
+        } else {
+            layers.without_overlays().unwrap_or_else(|| layers.clone())
+        };
+        for path in script_paths(&target)? {
+            path.read(&target)?;
+        }
+    }
+    Ok(defines.as_ref().clone())
 }
 
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath>> {
@@ -758,9 +768,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // quarantine: #144 content verification refuses files the test never changed
     #[test]
-    #[ignore = "quarantined under #144"]
     fn d16_shared_defines_repeat_main_verified_reads_before_reusing_the_state() {
         use std::fs;
         let root =

@@ -457,7 +457,7 @@ impl Facts {
 pub struct ResolvedLayer {
     content_digest: [u8; 32],
     inventory_witnesses: Arc<generation::Witnesses>,
-    inventory_paths: Arc<BTreeSet<LayerPath>>,
+    inventory_paths: Option<Arc<BTreeSet<LayerPath>>>,
     coverage: CoveragePolicy,
     pub role: LayerRole,
     facts: Option<Facts>,
@@ -1310,7 +1310,7 @@ fn walk_folder(
         }
     };
     if overlay && let Some(graph) = generation::current() {
-        graph.changes.watch_root(&start, true);
+        graph.watch_root(&start, true);
     }
     walk_below(root, directory, &mut vec![start], overlay, kind, visit)
 }
@@ -1363,7 +1363,7 @@ fn walk_below(
                     )));
                 }
                 if let Some(graph) = generation::current() {
-                    graph.changes.watch_root(&target, true);
+                    graph.watch_root(&target, true);
                 }
                 target
             }
@@ -1471,7 +1471,7 @@ impl ResolvedLayer {
         let _collection = generation::Collect::enter(Arc::clone(&self.inventory_witnesses));
         if let LayerSource::Folder(root) = &mut self.source {
             if let Some(graph) = generation::current() {
-                graph.changes.watch_root(root, true);
+                graph.watch_root(root, true);
                 graph.witnesses.directory(root)?;
             }
             *root = fs::canonicalize(&*root)?;
@@ -1485,6 +1485,7 @@ impl ResolvedLayer {
                     .roots()
                     .filter(|directory| !below(directory.as_bytes(), DESCRIPTOR_ROOT.as_bytes()))
                     .chain(std::iter::once(DESCRIPTOR_ROOT));
+                let mut paths = BTreeSet::new();
                 for directory in walked {
                     if let Some(path) = folded_path(root, directory)? {
                         collect_folder(
@@ -1493,10 +1494,11 @@ impl ResolvedLayer {
                             std::sync::Arc::make_mut(&mut self.files),
                             self.coverage,
                             listed_as_game,
-                            Arc::make_mut(&mut self.inventory_paths),
+                            &mut paths,
                         )?;
                     }
                 }
+                self.inventory_paths = Some(Arc::new(paths));
             }
             LayerSource::Archive(path) => {
                 self.inventory_witnesses.file(path, &File::open(path)?)?;
@@ -1634,6 +1636,38 @@ impl ResolvedLayer {
         layer_hash(&hashes)
     }
 
+    fn covered_folder_entry(&self, relative: &[u8]) -> Option<&LayerPath> {
+        let lower = relative.to_ascii_lowercase();
+        if let Some(path) = self.lookup.folders.get(&lower) {
+            return Some(path);
+        }
+        #[cfg(windows)]
+        if self.verifies() {
+            let text = std::str::from_utf8(relative).ok()?;
+            let trimmed: String = text
+                .split('/')
+                .map(|part| part.trim_end_matches(['.', ' ']))
+                .collect::<Vec<_>>()
+                .join("/");
+            if trimmed.as_bytes() != relative
+                && let Some(path) = self
+                    .lookup
+                    .folders
+                    .get(&trimmed.as_bytes().to_ascii_lowercase())
+            {
+                return Some(path);
+            }
+            if !trimmed.is_ascii() {
+                let folded = trimmed.to_lowercase();
+                return self.lookup.folders.values().find(|path| {
+                    std::str::from_utf8(path)
+                        .is_ok_and(|existing| existing.to_lowercase() == folded)
+                });
+            }
+        }
+        None
+    }
+
     fn folder_lookup(&self, relative: &[u8]) -> io::Result<Option<(LayerPath, File)>> {
         let LayerSource::Folder(root) = &self.source else {
             return Err(invalid(format!("layer {} is not a folder", self.id)));
@@ -1646,7 +1680,7 @@ impl ResolvedLayer {
         };
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return match self.lookup.folders.get(&relative.to_ascii_lowercase()) {
+                return match self.covered_folder_entry(relative) {
                     Some(path) if self.verifies() => Err(changed(path)),
                     _ => Ok(None),
                 };
@@ -1873,6 +1907,28 @@ impl ResolvedLayer {
                     && self.coverage.covered_path(&real)
                 {
                     return Err(changed(&real).into());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn verify_miss_probe(&self, relative: &[u8]) -> io::Result<()> {
+        if !self.verifies() {
+            return Ok(());
+        }
+        match &self.source {
+            LayerSource::Archive(_) => {
+                if self.archive_exists(relative)? {
+                    return Err(changed(relative));
+                }
+                Ok(())
+            }
+            LayerSource::Folder(_) => {
+                if let Some((real, _)) = self.folder_lookup(relative)?
+                    && self.coverage.covered_path(&real)
+                {
+                    return Err(changed(&real));
                 }
                 Ok(())
             }
@@ -2216,7 +2272,18 @@ impl ResolvedLayers {
         parameters: &[u8],
         build: impl FnOnce(&Self) -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
-        self.retained_product_with_errors(parser, schema, parameters, false, build)
+        self.retained_product_status(parser, schema, parameters, build)
+            .map(|(value, _)| value)
+    }
+
+    pub(crate) fn retained_product_status<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<(Arc<T>, bool)> {
+        self.retained_product_with_errors_status(parser, schema, parameters, false, build)
     }
 
     fn retained_product_with_errors<T: Send + Sync + 'static>(
@@ -2227,14 +2294,26 @@ impl ResolvedLayers {
         cache_errors: bool,
         build: impl FnOnce(&Self) -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
+        self.retained_product_with_errors_status(parser, schema, parameters, cache_errors, build)
+            .map(|(value, _)| value)
+    }
+
+    fn retained_product_with_errors_status<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        cache_errors: bool,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<(Arc<T>, bool)> {
         let cache = self.derived::<RetainedProducts>();
         let cell = Arc::clone(
             cache.values.lock().unwrap_or_else(|error| error.into_inner())
                 .entry((parser, schema, parameters.to_vec())).or_default(),
         );
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
-        let (product, built) = match kept.as_ref() {
-            Some(product) => (Arc::clone(product), false),
+        let (product, built, from_holder) = match kept.as_ref() {
+            Some(product) => (Arc::clone(product), false, true),
             None => {
                 let (product, built) = self.product_entry_with_retry(
                     graph::Key {
@@ -2250,26 +2329,30 @@ impl ResolvedLayers {
                 if cache_errors || product.successful() {
                     *kept = Some(Arc::clone(&product));
                 }
-                (product, built)
+                (product, built, false)
             }
         };
         drop(kept);
         if let Some(parent) = self.read_trace.as_ref().and_then(|trace| trace.product.as_ref()) {
             self.generation.depends(parent, &product)?;
         }
-        self.credit_product(&product, built, None);
-        product.value()
+        if from_holder {
+            product.diagnostics.credit_to(self);
+        } else {
+            self.credit_product(&product, built, None);
+        }
+        Ok((product.value()?, built))
     }
 
-    pub(crate) fn retained_recorded_product<T: Send + Sync + 'static>(
+    pub(crate) fn retained_recorded_product_status<T: Send + Sync + 'static>(
         &self,
         parser: &'static str,
         schema: u32,
         parameters: &[u8],
         build: impl FnOnce(&Self) -> io::Result<T>,
-    ) -> io::Result<Arc<T>> {
+    ) -> io::Result<(Arc<T>, bool)> {
         let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
-        reader.retained_product(parser, schema, parameters, build)
+        reader.retained_product_status(parser, schema, parameters, build)
     }
 
     pub fn recorded_product<T: Send + Sync + 'static>(
@@ -2318,14 +2401,14 @@ impl ResolvedLayers {
 
     pub fn with_file_witness<T>(&self, path: &Path, read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         if let Some(parent) = path.parent() {
-            self.generation.changes.watch_root(parent, false);
+            self.generation.watch_root(parent, false);
         }
         self.generation.witnesses.directory(path)?;
         let value = read()?;
         match path.canonicalize() {
             Ok(actual) => {
                 if let Some(parent) = actual.parent() {
-                    self.generation.changes.watch_root(parent, false);
+                    self.generation.watch_root(parent, false);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -2338,10 +2421,15 @@ impl ResolvedLayers {
         Ok(value)
     }
 
+    pub(crate) fn is_generation_scoped(&self) -> bool {
+        self.generation.is_scoped()
+    }
+
     fn validate_generation_in(&self, force: bool) -> io::Result<()> {
         if !self.generation_is_current() {
             return Err(invalid("content generation needs to be refreshed"));
         }
+        let force = force || self.generation.has_unwatched_roots();
         let result = self.generation.changes.validate(force, || {
             self.generation.witnesses.validate()?;
             let inventories: Vec<_> = self.generation.inventories
@@ -2427,13 +2515,17 @@ impl ResolvedLayers {
         for layer in &self.layers {
             self.generation.inventory(&layer.inventory_witnesses);
             match &layer.source {
-                LayerSource::Folder(root) => self.generation.changes.watch_root(root, true),
+                LayerSource::Folder(root) => self.generation.watch_root(root, true),
                 LayerSource::Archive(path) => {
-                    if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+                    if let Some(parent) = path.parent() {
+                        self.generation.watch_root(parent, true);
+                    }
                 }
             }
             if let Some(path) = &layer.descriptor {
-                if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+                if let Some(parent) = path.parent() {
+                    self.generation.watch_root(parent, true);
+                }
             }
         }
         fn field(hash: &mut Sha256, value: &[u8]) {
@@ -2449,6 +2541,7 @@ impl ResolvedLayers {
             hash.update(b"resolved-layer-content/v2");
             field(&mut hash, layer.id.as_bytes());
             field(&mut hash, format!("{:?}", layer.source).as_bytes());
+            hash.update([u8::from(layer.verifies())]);
             if let Some(facts) = &layer.facts {
                 hash.update(facts.layer().hash);
             }
@@ -2558,7 +2651,7 @@ impl ResolvedLayers {
                     std::sync::Arc::make_mut(&mut layer.files),
                     layer.coverage,
                     false,
-                    Arc::make_mut(&mut layer.inventory_paths),
+                    &mut BTreeSet::new(),
                 )?;
             }
             layer.finish_inventory()?;
@@ -2871,7 +2964,90 @@ impl ResolvedLayers {
     }
 
     pub fn key_names(&self) -> io::Result<Arc<crate::key_names::KeyNames>> {
-        self.retained_recorded_product("key names", 1, &[], crate::key_names::KeyNames::read)
+        let cache = self.derived::<RetainedProducts>();
+        let cell = Arc::clone(
+            cache
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(("key names", 1, Vec::new()))
+                .or_default(),
+        );
+        let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(product) = kept.as_ref() {
+            let product = Arc::clone(product);
+            drop(kept);
+            if let Some(parent) = self
+                .read_trace
+                .as_ref()
+                .and_then(|trace| trace.product.as_ref())
+            {
+                self.generation.depends(parent, &product)?;
+            }
+            product.diagnostics.credit_to(self);
+            return product.value();
+        }
+        let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
+        let mut roster = Vec::new();
+        for layer in &reader.layers {
+            roster.extend_from_slice(&(layer.id.len() as u64).to_le_bytes());
+            roster.extend_from_slice(layer.id.as_bytes());
+        }
+        let key = graph::Key {
+            context: reader.context,
+            parser: "key names",
+            schema: 1,
+            parameters: roster,
+        };
+        let parent = reader
+            .read_trace
+            .as_ref()
+            .and_then(|trace| trace.product.as_ref());
+        let (product, built) = reader.generation.product_shared_if(
+            key,
+            parent,
+            |node| {
+                let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let kept_reads = Arc::clone(&reads);
+                let original = reader.read_trace.clone();
+                let mut sub = reader.clone();
+                sub.derived = Default::default();
+                sub.read_trace = Some(ReadTrace {
+                    callback: Arc::new(move |read: ContentRead| {
+                        kept_reads
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push(read.clone());
+                        if let Some(trace) = &original {
+                            (trace.callback)(read);
+                        }
+                    }),
+                    purpose: reader
+                        .read_trace
+                        .as_ref()
+                        .map_or_else(String::new, |trace| trace.purpose.clone()),
+                    product: Some(Arc::clone(node)),
+                });
+                let (value, diagnostics) =
+                    diagnostics::capture(|| crate::key_names::KeyNames::read(&sub));
+                let reads = std::mem::take(
+                    &mut *reads.lock().unwrap_or_else(|error| error.into_inner()),
+                );
+                (value, reads, diagnostics)
+            },
+            |names, reads| {
+                !names.template_columns.as_ref().is_some_and(Result::is_err)
+                    && !reads
+                        .iter()
+                        .any(|read| matches!(read.outcome, ReadOutcome::Error { .. }))
+            },
+        )?;
+        if product.successful() {
+            *kept = Some(Arc::clone(&product));
+        }
+        drop(kept);
+        reader.credit_product(&product, built, None);
+        product.value()
     }
 
     pub fn faction_templates(&self) -> Result<Arc<crate::faction_templates::Catalog>, String> {
@@ -2941,9 +3117,18 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative.as_bytes()) else {
             return Ok(false);
         };
-        let hit = self.resolved_file(&relative, !self.covered_path(&relative))?;
-        observed.layer = hit.as_ref().as_ref().map(|hit| hit.layer);
-        if let Some(hit) = hit.as_ref()
+        let hit = if !self.covered_path(&relative) {
+            if self.recorded_fact(&relative) {
+                return Err(unproven(&relative, self.coverage).into());
+            }
+            self.scan_uncovered_probe(&relative)?
+        } else {
+            let hit = self.lookup_path(&relative)?;
+            self.verify_passed_probe(&relative, hit.as_ref().map(|hit| hit.layer))?;
+            hit
+        };
+        observed.layer = hit.as_ref().map(|hit| hit.layer);
+        if let Some(hit) = &hit
             && hit.fact.is_none()
             && self.layers[hit.layer].reaches_link(&hit.path)
         {
@@ -3026,6 +3211,15 @@ impl ResolvedLayers {
         let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
         let mut observed = self.observation();
         let result = (|| -> ObservedResult<ReadSuccess<Bytes>> {
+            struct ReleaseFolder<'a>(&'a std::sync::Mutex<Option<File>>);
+            impl Drop for ReleaseFolder<'_> {
+                fn drop(&mut self) {
+                    self.0
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                }
+            }
             let resolved;
             let file = match file {
                 Some(file) => file,
@@ -3037,6 +3231,7 @@ impl ResolvedLayers {
                     file
                 }
             };
+            let _release = ReleaseFolder(&file.folder);
             observed.at(file.layer);
             let layer = &self.layers[file.layer];
             let real = layer.record_name(&file.path);
@@ -3119,9 +3314,6 @@ impl ResolvedLayers {
                     _ => None,
                 }),
             })?;
-            if file.fact.is_none() && self.covered_path(real) {
-                layer.verify(real, &bytes.digest())?;
-            }
             self.note_overlay(file.layer, real);
             if uncovered
                 || (explicit_uncovered && !self.covered_path(&path) && layer.overlay.is_none())
@@ -3211,14 +3403,16 @@ impl ResolvedLayers {
                     Some(handle),
                     Some(node),
                 )?;
+                let result = observed.hashed(bytes.clone(), bytes.len() as u64, bytes.digest());
                 if self.covered_path(&file.path) {
-                    layer.verify(&file.path, &bytes.digest())?;
+                    result.verified(layer.verify(&file.path, &bytes.digest()))
+                } else {
+                    Ok(result)
                 }
-                Ok(observed.hashed(bytes.clone(), bytes.len() as u64, bytes.digest()))
             }
             LayerSource::Archive(path) => {
                 let archive = File::open(path)?;
-                self.generation.witnesses.file(path, &archive)?;
+                self.generation.witnesses.record_file(path, &archive)?;
                 layer
                     .archive_open_observed(&file.path, observed)?
                     .map(|bytes| bytes.map(Bytes::from))
@@ -3231,7 +3425,9 @@ impl ResolvedLayers {
         if let LayerSource::Folder(root) = &layer.source {
             let relative = std::str::from_utf8(path)
                 .map_err(|_| invalid("folder content path is not UTF-8"))?;
-            self.generation.witnesses.file(&root.join(relative), file)?;
+            self.generation
+                .witnesses
+                .record_file(&root.join(relative), file)?;
         }
         Ok(())
     }
@@ -3369,7 +3565,14 @@ impl ResolvedLayers {
         let layer = self
             .resolved_file(&relative, !self.covered_path(&relative))
             .ok()
-            .and_then(|hit| hit.as_ref().as_ref().map(|hit| hit.layer));
+            .and_then(|hit| {
+                let hit = hit.as_ref().as_ref()?;
+                hit.folder
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                Some(hit.layer)
+            });
         layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
     }
 
@@ -3664,11 +3867,74 @@ impl ResolvedLayers {
     }
 
     pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
-        Ok(self
-            .resolved_file(relative.as_bytes(), true)?
-            .as_ref()
-            .as_ref()
-            .is_some_and(|file| file.layer == 0))
+        let hit = self.resolved_file(relative.as_bytes(), true)?;
+        if let Some(file) = hit.as_ref() {
+            file.folder
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        }
+        Ok(hit.as_ref().as_ref().is_some_and(|file| file.layer == 0))
+    }
+
+    fn scan_uncovered_probe(&self, relative: &[u8]) -> io::Result<Option<RecordedHit>> {
+        let lower = relative.to_ascii_lowercase();
+        for (index, layer) in self.layers.iter().enumerate().rev() {
+            if self.hides(layer, &lower) {
+                continue;
+            }
+            match &layer.source {
+                LayerSource::Folder(_) => {
+                    self.watch_directory(layer, relative)?;
+                    if let Some((path, _)) = layer.folder_lookup(relative)? {
+                        return Ok(Some(RecordedHit {
+                            layer: index,
+                            path,
+                            folder: None,
+                            fact: None,
+                        }));
+                    }
+                }
+                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
+                    return Ok(Some(RecordedHit {
+                        layer: index,
+                        path: relative.to_vec(),
+                        folder: None,
+                        fact: None,
+                    }));
+                }
+                LayerSource::Archive(_) => {}
+            }
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    fn verify_passed_probe(&self, relative: &[u8], answered: Option<usize>) -> io::Result<()> {
+        let lower = relative.to_ascii_lowercase();
+        for (index, layer) in self.layers.iter().enumerate().rev() {
+            if Some(index) == answered {
+                break;
+            }
+            if self.hides(layer, &lower) {
+                continue;
+            }
+            layer.verify_miss_probe(relative)?;
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn verify_passed(
@@ -3855,8 +4121,10 @@ fn listed_files(
                 .roots()
                 .chain(std::iter::once(DESCRIPTOR_ROOT))
                 .any(|known| below(prefix, known.as_bytes()));
-            if covered_inventory {
-                for relative in layer.inventory_paths.iter() {
+            if covered_inventory
+                && let Some(inventory_paths) = &layer.inventory_paths
+            {
+                for relative in inventory_paths.iter() {
                     if !layer.fact_path(relative) {
                         admit(relative.clone())?;
                     }
@@ -4508,8 +4776,8 @@ pub fn playback(
     identity.validate()?;
     let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
     let graph = generation::current().expect("playback generation in scope");
-    graph.changes.watch_root(&options.game_dir, true);
-    graph.changes.watch_root(&options.user_dir, false);
+    graph.watch_root(&options.game_dir, true);
+    graph.watch_root(&options.user_dir, false);
     let game_dir = graph.witnesses.root(&options.game_dir);
     let user_dir = graph.witnesses.root(&options.user_dir);
     let missing = options.cache_dir.join("art-not-installed");
