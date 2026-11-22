@@ -2260,7 +2260,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
         }
         @redef = overlay_redef_two
         @redef_copy = @redef
-        entity = { name = @redef_copy pdxmesh = "m" }
+        entity = { name = "other_file_valid" name = @redef_copy pdxmesh = "m" }
+        entity = { name = "other_file_valid" name = "overwritten_final" pdxmesh = "m" }
         entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
         entity = { name = "second" pdxmesh = "m" scale = 9.0 }
         @after_extra = overlay_after
@@ -2268,8 +2269,18 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
+    let copy_revisit = br#"
+        entity = { game_data = { atlas_size = { @v = copy_wanted x = 1 } } pdxmesh = "m" }
+        @copy = @v
+        entity = { name = @copy pdxmesh = "m" }
+    "#;
+    assert!(parse_descriptors(copy_revisit, "gfx/entities/copy_revisit.asset").is_err());
+
     let embedded_end = b"@id = wanted entity = { game_data = { atlas_size = { loose k = 1\xff x = 1 } } name = @id pdxmesh = \"m\" }";
     assert!(parse_descriptors(embedded_end, "gfx/entities/embedded.asset").is_err());
+
+    let embedded_def_end = b"@id = wanted_after_def entity = { game_data = { atlas_size = { @x = 1 \xff } } name = @id pdxmesh = \"m\" }";
+    assert!(parse_descriptors(embedded_def_end, "gfx/entities/embedded_def.asset").is_err());
 
     let root = std::env::temp_dir().join(format!(
         "content-reader-unsettled-overlay-{}",
@@ -2305,9 +2316,15 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
             entity = { name = @broken_var pdxmesh = "m" }
         "#,
     );
+    write(
+        "base/gfx/entities/other.asset",
+        b"entity = { name = \"other_file_valid\" pdxmesh = \"m\" scale = 3.0 }",
+    );
     let overlay_dir = root.join("overlay");
     write("overlay/gfx/entities/a.asset", unsettled);
+    write("overlay/gfx/entities/copy_revisit.asset", copy_revisit);
     write("overlay/gfx/entities/embedded.asset", embedded_end);
+    write("overlay/gfx/entities/embedded_def.asset", embedded_def_end);
     let descriptor = format!(
         "name=\"VisualOverride\"\npath=\"{}\"\n",
         overlay_dir.display().to_string().replace('\\', "/")
@@ -2340,6 +2357,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.descriptors.resolve("second").unwrap().scale, 4.0);
     assert_eq!(roster.refused_declaration("first"), None);
     assert_eq!(roster.refused_declaration("second"), None);
+    assert_eq!(roster.refused_declaration("other_file_valid"), None);
+    assert_eq!(roster.unreadable_names.get("other_file_valid"), None);
     assert_eq!(roster.unreadable_names.get("m"), None);
     assert_eq!(roster.unreadable_names.get("@model"), None);
     assert_eq!(roster.unreadable_names.get("@extra"), None);
@@ -2348,11 +2367,15 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.unreadable_names.get("@redef"), None);
     assert_eq!(roster.unreadable_names.get("@redef_copy"), None);
     assert_eq!(roster.unreadable_names.get("@id"), None);
+    assert_eq!(roster.unreadable_names.get("@copy"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
     assert!(roster.refused_declaration("overlay_redef_one").is_some());
     assert!(roster.refused_declaration("overlay_redef_two").is_some());
+    assert!(roster.refused_declaration("overwritten_final").is_some());
     assert!(roster.refused_declaration("overlay_after").is_some());
+    assert!(roster.refused_declaration("copy_wanted").is_some());
     assert!(roster.refused_declaration("wanted").is_some());
+    assert!(roster.refused_declaration("wanted_after_def").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
@@ -2374,8 +2397,26 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
         Some("gfx/entities/a.asset")
     );
     assert_eq!(
+        roster
+            .unreadable_names
+            .get("overwritten_final")
+            .map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert_eq!(
+        roster.unreadable_names.get("copy_wanted").map(String::as_str),
+        Some("gfx/entities/copy_revisit.asset")
+    );
+    assert_eq!(
         roster.unreadable_names.get("wanted").map(String::as_str),
         Some("gfx/entities/embedded.asset")
+    );
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("wanted_after_def")
+            .map(String::as_str),
+        Some("gfx/entities/embedded_def.asset")
     );
     assert!(!roster.descriptors.entities.contains_key("broken_first"));
     assert!(!roster.descriptors.entities.contains_key("broken_second"));

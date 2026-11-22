@@ -1,4 +1,6 @@
 
+use std::collections::BTreeMap;
+
 use super::{Item, Operator, Value};
 use crate::key_names::KeyNames;
 
@@ -535,6 +537,18 @@ pub struct Read {
     pub unsettled: Option<Misread>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RecoveredRead {
+    pub read: Read,
+    pub candidates: BTreeMap<Vec<usize>, Vec<Vec<u8>>>,
+}
+
+impl RecoveredRead {
+    pub(crate) fn candidates_at(&self, path: &[usize]) -> &[Vec<u8>] {
+        self.candidates.get(path).map_or(&[], Vec::as_slice)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slots {
     Fresh,
@@ -572,6 +586,8 @@ pub struct Reader<'n> {
     operator: Operator,
     pub value: Token,
     value_candidates: Vec<Token>,
+    item_path: Vec<usize>,
+    recovered_candidates: BTreeMap<Vec<usize>, Vec<Vec<u8>>>,
     variables: Vec<Variable>,
     unknown_scopes: Vec<(usize, Vec<u8>)>,
     next_unknown_scope: usize,
@@ -600,7 +616,7 @@ pub fn read<S: Copy>(
     names: Option<&KeyNames>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, None, false, dispatch)
+    read_scoped(bytes, mode, top, names, None, false, dispatch).read
 }
 
 pub(crate) fn read_recovering<S: Copy>(
@@ -609,7 +625,7 @@ pub(crate) fn read_recovering<S: Copy>(
     top: Top<S>,
     names: Option<&KeyNames>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
-) -> Read {
+) -> RecoveredRead {
     read_scoped(bytes, mode, top, names, None, true, dispatch)
 }
 
@@ -621,7 +637,7 @@ pub fn read_in_effect_scope<S: Copy>(
     scope: u32,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, Some(scope), false, dispatch)
+    read_scoped(bytes, mode, top, names, Some(scope), false, dispatch).read
 }
 
 fn read_scoped<S: Copy>(
@@ -632,7 +648,7 @@ fn read_scoped<S: Copy>(
     scope: Option<u32>,
     recover_unsettled: bool,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
-) -> Read {
+) -> RecoveredRead {
     crate::content::io_counts::parse(std::any::type_name::<S>(), bytes);
     let mut reader = Reader::new(lex(bytes, mode));
     reader.names = names;
@@ -647,16 +663,19 @@ fn read_scoped<S: Copy>(
             cause.what.push_str(&format!("; {note}"));
         }
     }
-    Read {
-        items,
-        misreads: reader.misreads,
-        item_misreads: reader.item_misreads,
-        unattributed_misreads: reader
-            .unattributed_misreads
-            .into_iter()
-            .chain(reader.reading_notes)
-            .collect(),
-        unsettled: reader.unsettled,
+    RecoveredRead {
+        read: Read {
+            items,
+            misreads: reader.misreads,
+            item_misreads: reader.item_misreads,
+            unattributed_misreads: reader
+                .unattributed_misreads
+                .into_iter()
+                .chain(reader.reading_notes)
+                .collect(),
+            unsettled: reader.unsettled,
+        },
+        candidates: reader.recovered_candidates,
     }
 }
 
@@ -676,6 +695,8 @@ impl<'n> Reader<'n> {
             operator: Operator::Equals,
             value: Token::slot(),
             value_candidates: Vec::new(),
+            item_path: Vec::new(),
+            recovered_candidates: BTreeMap::new(),
             variables: Vec::new(),
             unknown_scopes: Vec::new(),
             next_unknown_scope: 0,
@@ -887,6 +908,16 @@ impl<'n> Reader<'n> {
                     }
                     return;
                 }
+                if self.peek().kind != Kind::Equals {
+                    self.variable_misread(
+                        name.line,
+                        format!(
+                            "variable {} is already taken, so its `=` and value are read as what follows",
+                            name.shown_reference()
+                        ),
+                    );
+                    return;
+                }
             } else {
                 self.variable_misread(
                     name.line,
@@ -1040,6 +1071,12 @@ impl<'n> Reader<'n> {
     pub fn key_operator_value(&mut self) -> Slots {
         self.value_candidates.clear();
         loop {
+            if self.recover_unsettled
+                && !self.unknown_scopes.is_empty()
+                && self.peek().kind == Kind::Close
+            {
+                return Slots::Ended;
+            }
             if !self.advance() {
                 if self.recover_unsettled
                     && !self.unknown_scopes.is_empty()
@@ -1138,11 +1175,15 @@ impl<'n> Reader<'n> {
     ) -> Vec<Item> {
         let mut items = Vec::new();
         while !self.stopped && self.unsettled.is_none() && self.peek().kind != Kind::End {
-            let (item, extra) = self.field_with_candidates(top, dispatch);
-            self.keep_item_with_notes(item, &mut items);
-            for candidate in extra {
-                self.keep_item_with_notes(Some(candidate), &mut items);
+            let index = items.len();
+            if self.recover_unsettled {
+                self.item_path.push(index);
             }
+            let item = self.field(top, dispatch);
+            if self.recover_unsettled {
+                self.item_path.pop();
+            }
+            self.keep_item_with_notes(item, &mut items);
             self.broken = false;
         }
         items
@@ -1177,7 +1218,14 @@ impl<'n> Reader<'n> {
             if self.at_loop_end() {
                 break;
             }
-            let (item, extra) = self.field_with_candidates(schema, dispatch);
+            let index = items.len();
+            if self.recover_unsettled {
+                self.item_path.push(index);
+            }
+            let item = self.field(schema, dispatch);
+            if self.recover_unsettled {
+                self.item_path.pop();
+            }
             let broken = std::mem::take(&mut self.broken);
             if broken {
                 let line = self.line();
@@ -1194,12 +1242,8 @@ impl<'n> Reader<'n> {
             }
             if attribute_items {
                 self.keep_item_with_notes(item, &mut items);
-                for candidate in extra {
-                    self.keep_item_with_notes(Some(candidate), &mut items);
-                }
             } else if let Some(item) = item {
                 items.push(item);
-                items.extend(extra);
             }
             if broken {
                 break;
@@ -1259,14 +1303,6 @@ impl<'n> Reader<'n> {
         schema: S,
         dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
     ) -> Option<Item> {
-        self.field_with_candidates(schema, dispatch).0
-    }
-
-    fn field_with_candidates<S: Copy>(
-        &mut self,
-        schema: S,
-        dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
-    ) -> (Option<Item>, Vec<Item>) {
         let slots = self.key_operator_value();
         let candidates = std::mem::take(&mut self.value_candidates);
         if self.unsettled.is_some()
@@ -1275,7 +1311,7 @@ impl<'n> Reader<'n> {
                 && self.pending
                 && self.current.kind == Kind::Close)
         {
-            return (None, Vec::new());
+            return None;
         }
         let fresh = slots == Slots::Fresh;
         let key = self.key.clone();
@@ -1322,7 +1358,7 @@ impl<'n> Reader<'n> {
             Shape::ObjectAs(schema, key) => (Shape::Object(schema), key),
             Shape::Discard => {
                 self.skip_reported();
-                return (None, Vec::new());
+                return None;
             }
             shape => (shape, key.text.clone()),
         };
@@ -1332,30 +1368,19 @@ impl<'n> Reader<'n> {
             _ => value.kind,
         };
         let value = self.apply(shape, &key, &value, dispatch);
-        let extra = if self.recover_unsettled && matches!(value, Value::Scalar(_)) {
-            candidates
-                .into_iter()
-                .map(|candidate| Item {
-                    key: Some(stored_key.clone()),
-                    key_quoted: key.kind == Kind::Quoted,
-                    operator,
-                    value: Value::Scalar(candidate.text),
-                    kind: candidate.kind,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        (
-            Some(Item {
-                key: Some(stored_key),
-                key_quoted: key.kind == Kind::Quoted,
-                operator,
-                value,
-                kind,
-            }),
-            extra,
-        )
+        if self.recover_unsettled && !candidates.is_empty() && matches!(value, Value::Scalar(_)) {
+            self.recovered_candidates.insert(
+                self.item_path.clone(),
+                candidates.into_iter().map(|token| token.text).collect(),
+            );
+        }
+        Some(Item {
+            key: Some(stored_key),
+            key_quoted: key.kind == Kind::Quoted,
+            operator,
+            value,
+            kind,
+        })
     }
 
     fn apply<S: Copy>(

@@ -1485,11 +1485,11 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
     let recovered = read_recovering(bytes, Mode::KeepMark, Top::File(()), None, &mut |s, f| {
         dispatch(s, f)
     });
-    assert!(recovered.unsettled.is_none(), "{recovered:?}");
+    assert!(recovered.read.unsettled.is_none(), "{recovered:?}");
     let names: Vec<(&str, Vec<u8>)> = ["a", "b", "c", "d", "e", "f", "g"]
         .into_iter()
         .map(|entry| {
-            let value = block(&recovered.items, entry)
+            let value = block(&recovered.read.items, entry)
                 .iter()
                 .find(|item| item.keyword_is("name"))
                 .and_then(|item| item.value.scalar())
@@ -1511,7 +1511,7 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         ]
     );
 
-    let redef_only = b"a = { opaque = { @v = one x = 1 } } @v = two b = { name = @v }";
+    let redef_only = b"a = { opaque = { @v = one x = 1 } } @v = two b = { name = old name = @v }";
     assert!(
         read(
             redef_only,
@@ -1530,13 +1530,26 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         None,
         &mut |s, f| dispatch(s, f),
     );
-    assert!(redef_recovered.unsettled.is_none(), "{redef_recovered:?}");
-    let redef_names: Vec<&[u8]> = block(&redef_recovered.items, "b")
+    assert!(
+        redef_recovered.read.unsettled.is_none(),
+        "{redef_recovered:?}"
+    );
+    let (b_index, b_item) = redef_recovered
+        .read
+        .items
         .iter()
-        .filter(|item| item.keyword_is("name"))
-        .filter_map(|item| item.value.scalar())
-        .collect();
-    assert_eq!(redef_names, vec![b"one".as_slice(), b"two".as_slice()]);
+        .enumerate()
+        .find(|(_, item)| item.keyword_is("b"))
+        .expect("b item");
+    let b_fields = b_item.value.items().expect("b block");
+    assert_eq!(b_fields.len(), 2);
+    assert_eq!(b_fields[0].value, Value::Scalar(b"old".to_vec()));
+    assert!(redef_recovered.candidates_at(&[b_index, 0]).is_empty());
+    assert_eq!(b_fields[1].value, Value::Scalar(b"one".to_vec()));
+    assert_eq!(
+        redef_recovered.candidates_at(&[b_index, 1]),
+        &[b"two".to_vec()]
+    );
 
     let multi_redef = b"a = { opaque = { @v = one x = 1 } } b = { opaque = { @v = two @v = ignored x = 1 } } @v = three @v = also_ignored @copy = @v c = { name = @copy }";
     assert!(
@@ -1557,15 +1570,22 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         None,
         &mut |s, f| dispatch(s, f),
     );
-    assert!(multi_recovered.unsettled.is_none(), "{multi_recovered:?}");
-    let multi_names: Vec<&[u8]> = block(&multi_recovered.items, "c")
+    assert!(
+        multi_recovered.read.unsettled.is_none(),
+        "{multi_recovered:?}"
+    );
+    let (c_index, c_item) = multi_recovered
+        .read
+        .items
         .iter()
-        .filter(|item| item.keyword_is("name"))
-        .filter_map(|item| item.value.scalar())
-        .collect();
+        .enumerate()
+        .find(|(_, item)| item.keyword_is("c"))
+        .expect("c item");
+    let c_fields = c_item.value.items().expect("c block");
+    assert_eq!(c_fields[0].value, Value::Scalar(b"one".to_vec()));
     assert_eq!(
-        multi_names,
-        vec![b"one".as_slice(), b"two".as_slice(), b"three".as_slice()]
+        multi_recovered.candidates_at(&[c_index, 0]),
+        &[b"two".to_vec(), b"three".to_vec()]
     );
 
     let embedded_dispatch = |(), field: &Field<'_>| match field.keyword().as_deref() {
@@ -1583,6 +1603,11 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
             b"@id = wanted_keyed entity = { game_data = { atlas_size = { a = 1 \xff x = 1 } } name = @id }"
                 .as_slice(),
             b"wanted_keyed".as_slice(),
+        ),
+        (
+            b"@id = wanted_after_def entity = { game_data = { atlas_size = { @x = 1 \xff } } name = @id }"
+                .as_slice(),
+            b"wanted_after_def".as_slice(),
         ),
     ] {
         assert!(
@@ -1603,14 +1628,49 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
             None,
             &mut |s, f| embedded_dispatch(s, f),
         );
-        assert!(recovered.unsettled.is_none(), "{recovered:?}");
-        let entity_name = block(&recovered.items, "entity")
+        assert!(recovered.read.unsettled.is_none(), "{recovered:?}");
+        let entity_name = block(&recovered.read.items, "entity")
             .iter()
             .find(|item| item.keyword_is("name"))
             .and_then(|item| item.value.scalar())
             .expect("entity name");
         assert_eq!(entity_name, expected);
     }
+
+    let copy_revisit = b"entity = { game_data = { atlas_size = { @v = wanted x = 1 } } } @copy = @v entity = { name = @copy }";
+    assert!(
+        read(
+            copy_revisit,
+            Mode::KeepMark,
+            Top::File(()),
+            None,
+            &mut |s, f| embedded_dispatch(s, f)
+        )
+        .unsettled
+        .is_some()
+    );
+    let copy_recovered = read_recovering(
+        copy_revisit,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |s, f| embedded_dispatch(s, f),
+    );
+    assert!(
+        copy_recovered.read.unsettled.is_none(),
+        "{copy_recovered:?}"
+    );
+    let copied_name = copy_recovered
+        .read
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("entity"))
+        .filter_map(|item| item.value.items())
+        .flatten()
+        .find(|item| item.keyword_is("name"))
+        .and_then(|item| item.value.scalar())
+        .expect("copied entity name");
+    assert_eq!(copied_name, b"wanted");
 
     let brace_value = b"@o = { a = { opaque = { loose k = @o } name = \"after_brace_var\" } }";
     assert!(
@@ -1631,8 +1691,11 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         None,
         &mut |s, f| dispatch(s, f),
     );
-    assert!(brace_recovered.unsettled.is_none(), "{brace_recovered:?}");
-    let a_name = block(&brace_recovered.items, "a")
+    assert!(
+        brace_recovered.read.unsettled.is_none(),
+        "{brace_recovered:?}"
+    );
+    let a_name = block(&brace_recovered.read.items, "a")
         .iter()
         .find(|item| item.keyword_is("name"))
         .and_then(|item| item.value.scalar())
