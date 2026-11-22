@@ -562,12 +562,16 @@ impl GatedProjectsRequest {
             let (base, game_state, hour, force_full) =
                 (self.base, self.game_state, self.hour, self.force_full);
             self.captured.reset();
-            let rest = self.captured.take_rest(game_state, hour, force_full);
+            let (rest_primary, rest_aux) = self
+                .captured
+                .take_rest(game_state, hour, force_full)
+                .into_parts();
             let workers = &self.workers;
             let (captured, fingerprints, ticks) =
                 (&mut self.captured, &mut self.fingerprints, &mut self.ticks);
-            let returned = workers.beside(
-                variant_workers::Work::ProjectsRest(Box::new(rest)),
+            let (returned_primary, returned_aux) = workers.beside_pair(
+                variant_workers::Work::ProjectsRestPrimary(Box::new(rest_primary)),
+                variant_workers::Work::ProjectsRestAux(Box::new(rest_aux)),
                 memory,
                 base,
                 crate::hour_stages::Part::ProjectsRestWait,
@@ -589,16 +593,21 @@ impl GatedProjectsRequest {
                     );
                 },
             );
-            match returned {
-                Some(variant_workers::Work::ProjectsRest(rest)) => {
-                    let rest = self.captured.restore_rest(*rest);
-                    for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
-                        *ticks += rest;
-                    }
-                }
-                _ => self
-                    .captured
-                    .fail_rest("project family rest acquisition stopped before reading"),
+            let primary = match returned_primary {
+                Some(variant_workers::Work::ProjectsRestPrimary(rest)) => Some(*rest),
+                _ => None,
+            };
+            let aux = match returned_aux {
+                Some(variant_workers::Work::ProjectsRestAux(rest)) => Some(*rest),
+                _ => None,
+            };
+            let rest = self.captured.restore_rest_split(
+                primary,
+                aux,
+                "project family rest acquisition stopped before reading",
+            );
+            for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
+                *ticks += rest;
             }
         } else {
             self.captured.fail_gated_capture(

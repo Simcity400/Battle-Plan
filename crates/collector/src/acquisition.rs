@@ -1137,10 +1137,25 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         {
             return;
         }
-        let state = self.shared.lock();
-        let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
+        let (prev_regulars, clear_away) = {
+            let state = self.shared.lock();
+            let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
+            let prev_regulars = self.shared.regulars.load(Ordering::Acquire);
+            self.pace(
+                state,
+                usize::MAX,
+                THREAD_PRIORITY_ABOVE_NORMAL,
+                true,
+                None,
+            );
+            (prev_regulars, clear_away)
+        };
         if let Ok(threads) = self.threads.try_lock() {
-            for thread in threads.iter() {
+            let limit = prev_regulars.min(threads.len());
+            for thread in threads.iter().take(limit) {
+                if !self.shared.called_up.load(Ordering::Acquire) {
+                    break;
+                }
                 let handle = thread.as_raw_handle();
                 // SAFETY: a live worker handle owned by `threads`, held through these calls.
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
@@ -1152,13 +1167,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
-        self.pace(
-            state,
-            usize::MAX,
-            THREAD_PRIORITY_ABOVE_NORMAL,
-            true,
-            None,
-        );
     }
     pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
         let regulars = regulars.max(1);

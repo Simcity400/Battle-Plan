@@ -7,7 +7,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -248,6 +248,7 @@ impl State {
 pub(crate) struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    pipeline: OnceLock<engine_allocation::SharedBox<crate::frame_priority::Pipeline>>,
 }
 impl Shared {
     fn reconcile(state: &mut State) {
@@ -583,6 +584,7 @@ impl Writer {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -590,9 +592,11 @@ impl Writer {
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 crate::private_heap::off_hold_path();
+                crate::thread_cpu::register(crate::thread_cpu::Role::SpoolWriter);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     serve(&worker, create)
                 }));
+                crate::thread_cpu::register_id(crate::thread_cpu::Role::SpoolWriter, 0);
                 if result.is_err() {
                     allocation::fail(allocation::Phase::Spool, allocation::Code::Thread);
                 }
@@ -612,6 +616,20 @@ impl Writer {
         })
     }
 
+    pub(crate) fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
+    ) {
+        let _ = self.shared.pipeline.set(pipeline);
+        self.shared.changed.notify_all();
+    }
+    pub(crate) fn thread_id(&self) -> Option<u32> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = self.thread.as_ref()?.as_raw_handle();
+        // SAFETY: `self.thread` stays alive for the duration of this query.
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        (id != 0).then_some(id)
+    }
     pub(crate) fn account_to(&self, counter: engine_allocation::SharedBox<AtomicU64>) {
         let mut state = self.shared.lock();
         assert!(state.pool.counter.is_none());
@@ -1126,8 +1144,12 @@ impl<B: SegmentBackend> Output<B> {
 
 fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId) -> io::Result<B>) {
     let _phase = allocation::enter(allocation::Phase::Spool);
+    let mut priority = crate::runtime::OwnPriority::frame_pipeline();
     let mut spools: Vec<(CampaignId, u64, SegmentedSpool<B>)> = Vec::new();
     loop {
+        if let Some(pipeline) = shared.pipeline.get() {
+            priority.follow_pipeline(pipeline, crate::frame_priority::Role::SpoolWriter);
+        }
         let job = {
             let mut state = shared.lock();
             loop {
@@ -1382,6 +1404,7 @@ mod tests {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let mut output: Output = Output::Queued {
             shared: Arc::clone(&shared),

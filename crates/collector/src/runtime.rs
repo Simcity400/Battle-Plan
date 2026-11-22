@@ -1331,6 +1331,8 @@ fn run(
     let mut priority_reconciler =
         crate::frame_priority::Reconciler::start(shared.frame_priority.clone())?;
     owned_workers.push(priority_reconciler.thread_id());
+    processor.attach_priority(shared.frame_priority.clone());
+    owned_workers.extend(processor.writer_thread_ids().into_iter().flatten());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
         config.replay_dir.clone(),

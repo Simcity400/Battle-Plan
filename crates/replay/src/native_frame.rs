@@ -462,21 +462,19 @@ impl FrameWriter {
             starting: *starting,
             keyframe,
         };
-        let turns = engine_allocation::collect_vec(
-            writers
-                .iter_mut()
-                .zip(prepared.iter_mut())
-                .zip(walls.iter_mut())
-                .map(|((writer, hour), wall)| Mutex::new((writer, hour, wall))),
-        )?;
-        let buffers = engine_allocation::collect_vec(buffers.iter_mut().map(Mutex::new))?;
+        let writers = Disjoint::new(writers);
+        let prepared = Disjoint::new(prepared);
+        let walls = Disjoint::new(walls);
+        let buffers = Disjoint::new(buffers);
         let (next, lane) = (AtomicUsize::new(0), AtomicUsize::new(0));
         let (dictionary, order, intern_until) = (&*dictionary, &**order, &**intern_until);
         let job = || {
-            let Some(buffers) = buffers.get(lane.fetch_add(1, Ordering::Relaxed)) else {
+            let lane_index = lane.fetch_add(1, Ordering::Relaxed);
+            if lane_index >= buffers.len {
                 return;
-            };
-            let mut buffers = lock(buffers);
+            }
+            // SAFETY: each worker claims a distinct `lane_index < buffers.len`.
+            let buffers = unsafe { buffers.get_mut(lane_index) };
             while lanes.proceeds() {
                 let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
                     break;
@@ -484,16 +482,22 @@ impl FrameWriter {
                 if input.hour < intern_until[index] {
                     continue;
                 }
-                let mut turn = lock(&turns[index]);
-                let (writer, hour, wall) = &mut *turn;
+                // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
+                let (writer, hour, wall) = unsafe {
+                    (
+                        writers.get_mut(index),
+                        prepared.get_mut(index),
+                        walls.get_mut(index),
+                    )
+                };
                 let started = Instant::now();
-                **hour = Some(part.table(
+                *hour = Some(part.table(
                     index,
                     writer,
                     Strings::Reading(dictionary),
-                    &mut buffers,
+                    buffers,
                 ));
-                **wall = started.elapsed().as_nanos() as u64;
+                *wall = started.elapsed().as_nanos() as u64;
             }
         };
         lanes.run(&job);
@@ -541,9 +545,9 @@ impl FrameWriter {
     fn apply(
         &mut self,
         at: i32,
-        hours: Vec<TableHour>,
-        shared: Vec<Option<Arc<TableRows>>>,
-        slices: Vec<Option<Slice>>,
+        mut hours: Vec<TableHour>,
+        mut shared: Vec<Option<Arc<TableRows>>>,
+        mut slices: Vec<Option<Slice>>,
         lanes: &dyn Lanes,
     ) -> io::Result<()> {
         let Self {
@@ -556,57 +560,67 @@ impl FrameWriter {
             table_ns,
             ..
         } = self;
-        let turns = engine_allocation::collect_vec(
-            writers
-                .iter_mut()
-                .zip(held.iter_mut().zip(owners.iter_mut()))
-                .zip(walls.iter_mut())
-                .zip(hours.into_iter().zip(shared).zip(slices))
-                .map(|(((writer, held), wall), hour)| Mutex::new((writer, held, wall, Some(hour)))),
-        )?;
         let failed = Mutex::new(None);
-        let next = AtomicUsize::new(0);
-        let order = &**order;
-        let commit = |index: usize| {
-            let mut turn = lock(&turns[index]);
-            let (writer, (held, owners), wall, hour) = &mut *turn;
-            let Some(((hour, shared), slice)) = hour.take() else {
-                return;
-            };
-            let started = Instant::now();
-            let kept = hour.prepared.is_none() && hour.evidence.status == Status::Complete;
-            let committed = writer.commit(hour.prepared, hour.evidence, at).and_then(|()| {
-                **held = shared;
-                let id = TableId::ALL[index];
-                **owners = match (slice, owners.take()) {
-                    (Some(slice), Some(mut known)) => {
-                        hold_slice(&mut known, &slice, id)?;
-                        Some(known)
-                    }
-                    (Some(_), None) => Some(held_owners(&**writer, id)?),
-                    (None, known) => known.filter(|_| kept),
+        {
+            let writers = Disjoint::new(writers);
+            let held = Disjoint::new(held);
+            let owners = Disjoint::new(owners);
+            let wall_slots = Disjoint::new(walls);
+            let hours = Disjoint::new(&mut hours);
+            let shared = Disjoint::new(&mut shared);
+            let slices = Disjoint::new(&mut slices);
+            let next = AtomicUsize::new(0);
+            let order = &**order;
+            let commit = |index: usize| {
+                // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
+                let (writer, held, owners, wall, hour, shared, slice) = unsafe {
+                    (
+                        writers.get_mut(index),
+                        held.get_mut(index),
+                        owners.get_mut(index),
+                        wall_slots.get_mut(index),
+                        hours.get_mut(index),
+                        shared.get_mut(index),
+                        slices.get_mut(index),
+                    )
                 };
-                Ok(())
-            });
-            if let Err(error) = committed {
-                lock(&failed).get_or_insert(error);
-            }
-            **wall = started.elapsed().as_nanos() as u64;
-        };
-        if lanes.count() > 1 {
-            lanes.run(&|| {
-                while lanes.proceeds() {
-                    let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                        break;
+                let prepared = hour.prepared.take();
+                let evidence = hour.evidence;
+                let timed = prepared.is_some();
+                let started = timed.then(Instant::now);
+                let kept = !timed && evidence.status == Status::Complete;
+                let committed = writer.commit(prepared, evidence, at).and_then(|()| {
+                    *held = shared.take();
+                    let id = TableId::ALL[index];
+                    *owners = match (slice.take(), owners.take()) {
+                        (Some(slice), Some(mut known)) => {
+                            hold_slice(&mut known, &slice, id)?;
+                            Some(known)
+                        }
+                        (Some(_), None) => Some(held_owners(&*writer, id)?),
+                        (None, known) => known.filter(|_| kept),
                     };
-                    commit(index);
+                    Ok(())
+                });
+                if let Err(error) = committed {
+                    lock(&failed).get_or_insert(error);
                 }
-            });
+                *wall = started.map_or(0, |started| started.elapsed().as_nanos() as u64);
+            };
+            if lanes.count() > 1 {
+                lanes.run(&|| {
+                    while lanes.proceeds() {
+                        let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                            break;
+                        };
+                        commit(index);
+                    }
+                });
+            }
+            while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                commit(index);
+            }
         }
-        while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
-            commit(index);
-        }
-        drop(turns);
         if let Some(error) = failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
             return Err(error);
         }
@@ -870,6 +884,34 @@ impl Part<'_> {
             Ok(hour) => hour,
             Err(_) => Err(invalid("slice update rows differ from baseline type")),
         }
+    }
+}
+
+struct Disjoint<'a, T> {
+    ptr: *mut T,
+    len: usize,
+    _marker: std::marker::PhantomData<&'a mut [T]>,
+}
+
+// SAFETY: callers partition indices into disjoint positions so no two threads ever
+// alias the same element.
+unsafe impl<T: Send> Sync for Disjoint<'_, T> {}
+
+impl<T> Disjoint<'_, T> {
+    fn new(slice: &mut [T]) -> Self {
+        Self {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// `index < self.len` and no other reference to element `index` exists concurrently.
+    #[allow(clippy::mut_from_ref, reason = "disjoint per-index access across workers")]
+    unsafe fn get_mut(&self, index: usize) -> &mut T {
+        debug_assert!(index < self.len);
+        unsafe { &mut *self.ptr.add(index) }
     }
 }
 

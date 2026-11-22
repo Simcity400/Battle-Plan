@@ -8,7 +8,7 @@ use std::{
     fs, io,
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -37,6 +37,7 @@ pub(crate) struct JournalThread {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    pipeline: OnceLock<engine_allocation::SharedBox<crate::frame_priority::Pipeline>>,
 }
 
 struct State {
@@ -59,7 +60,8 @@ pub(super) struct Hour {
     pub ends_segment: bool,
     pub witness: Option<Witness>,
     pub manifest: Vec<u8>,
-    pub sections: Vec<Vec<u8>>,
+    pub section_bytes: Vec<u8>,
+    pub section_ends: Vec<u32>,
 }
 
 pub(super) enum Op {
@@ -352,11 +354,14 @@ fn write(
     }
     let mut sections: [&[u8]; replay_data::rows::TABLE_COUNT] =
         [&[][..]; replay_data::rows::TABLE_COUNT];
-    for (at, section) in hour.sections.iter().enumerate() {
-        sections[at] = section;
+    let mut start = 0usize;
+    for (at, &end) in hour.section_ends.iter().enumerate() {
+        let end = end as usize;
+        sections[at] = &hour.section_bytes[start..end];
+        start = end;
     }
     journal
-        .hour(hour.witness, &hour.manifest, &sections[..hour.sections.len()])
+        .hour(hour.witness, &hour.manifest, &sections[..hour.section_ends.len()])
         .map_err(|error| (APPEND, error))?;
     if hour.ends_segment {
         let ended = journal
@@ -388,6 +393,7 @@ impl JournalThread {
                 timing: Timing::new(),
             }),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -395,7 +401,9 @@ impl JournalThread {
             .stack_size(STACK_BYTES)
             .spawn(move || {
                 crate::private_heap::off_hold_path();
-                serve(&worker)
+                crate::thread_cpu::register(crate::thread_cpu::Role::JournalWriter);
+                serve(&worker);
+                crate::thread_cpu::register_id(crate::thread_cpu::Role::JournalWriter, 0);
             })?;
         Ok(Arc::new(Self {
             shared,
@@ -403,6 +411,22 @@ impl JournalThread {
             #[cfg(test)]
             refuse: AtomicUsize::new(0),
         }))
+    }
+
+    pub(crate) fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
+    ) {
+        let _ = self.shared.pipeline.set(pipeline);
+        self.shared.changed.notify_all();
+    }
+
+    pub(crate) fn thread_id(&self) -> Option<u32> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = self.thread.as_ref()?.as_raw_handle();
+        // SAFETY: `self.thread` stays alive for the duration of this query.
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        (id != 0).then_some(id)
     }
 
     pub(super) fn queue(&self, lane: &Arc<Lane>, op: Op) {
@@ -467,9 +491,16 @@ impl Drop for JournalThread {
 
 fn serve(shared: &Shared) {
     let _phase = crate::allocation::enter(crate::allocation::Phase::Journal);
-    crate::runtime::OwnPriority::new().follow(false);
+    let mut own = crate::runtime::OwnPriority::new();
+    own.follow(false);
+    let mut managed = None;
     let mut state = shared.lock();
     loop {
+        if let Some(pipeline) = shared.pipeline.get() {
+            managed
+                .get_or_insert_with(crate::runtime::OwnPriority::frame_pipeline)
+                .follow_pipeline(pipeline, crate::frame_priority::Role::JournalWriter);
+        }
         let Some((lane, op)) = state.work.pop_front() else {
             if state.stop {
                 return;

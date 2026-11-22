@@ -23,9 +23,11 @@ pub(crate) enum Role {
     Spool,
     Sizing,
     Builder,
+    SpoolWriter,
+    JournalWriter,
     Helper(usize),
 }
-const FIXED_ROLES: usize = 4;
+const FIXED_ROLES: usize = 6;
 const SLOTS: usize = FIXED_ROLES + crate::pack_conversion::MAX_HELPERS;
 impl Role {
     const fn slot(self) -> usize {
@@ -34,6 +36,8 @@ impl Role {
             Role::Spool => 1,
             Role::Sizing => 2,
             Role::Builder => 3,
+            Role::SpoolWriter => 4,
+            Role::JournalWriter => 5,
             Role::Helper(helper) => FIXED_ROLES + helper,
         }
     }

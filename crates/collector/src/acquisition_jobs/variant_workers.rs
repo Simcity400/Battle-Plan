@@ -22,7 +22,8 @@ pub(crate) enum Work {
         game_state: usize,
     },
     TemplateWalk(crate::extended::division_templates::WalkPart),
-    ProjectsRest(Box<projects::Rest>),
+    ProjectsRestPrimary(Box<projects::RestPrimary>),
+    ProjectsRestAux(Box<projects::RestAux>),
     Buildings(Box<super::BuildingsPart>),
 }
 impl Work {
@@ -31,7 +32,7 @@ impl Work {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
             Self::TemplateWalk(_) => Role::Templates,
-            Self::ProjectsRest(_) => Role::GatedProjects,
+            Self::ProjectsRestPrimary(_) | Self::ProjectsRestAux(_) => Role::GatedProjects,
             Self::Buildings(_) => Role::Governance,
             _ => Role::Variants,
         }
@@ -56,7 +57,8 @@ impl Work {
             Self::TemplateWalk(part) => {
                 part.capture(memory, base, &crate::template_changes::Observer)
             }
-            Self::ProjectsRest(rest) => rest.capture(memory, base),
+            Self::ProjectsRestPrimary(rest) => rest.capture(memory, base),
+            Self::ProjectsRestAux(rest) => rest.capture(memory, base),
             Self::Buildings(part) => part.capture(memory),
         }
     }
@@ -205,6 +207,106 @@ impl Dispatch {
         work.capture(memory, base);
         run();
         Some(work)
+    }
+    pub(super) fn beside_pair(
+        &self,
+        mut first: Work,
+        mut second: Work,
+        memory: &impl engine_native::Memory,
+        base: usize,
+        wait: crate::hour_stages::Part,
+        run: &mut dyn FnMut(),
+    ) -> (Option<Work>, Option<Work>) {
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
+        let fanout = self
+            .calibration
+            .as_ref()
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
+        let tickets = engine_allocation::advisory(|| engine_allocation::vec(2).ok());
+        if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
+            let mut pending = Children {
+                executor: &executor,
+                calibration: self.calibration.as_deref().unwrap(),
+                tickets,
+            };
+            let mut local_first = None;
+            let mut local_second = None;
+            let submit_one = |work: Work| -> Result<Ticket, Work> {
+                let role = work.role();
+                let mut request = Some(Job::VariantPart(Request { base, part: work }));
+                // SAFETY: this parent drains every submitted child before returning its live lease.
+                let submitted = unsafe {
+                    executor.submit_with_priority(&mut request, self.priority, true, true)
+                };
+                note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
+                match submitted {
+                    Ok(ticket) => Ok(ticket),
+                    Err(_) => {
+                        let Some(Job::VariantPart(request)) = request else {
+                            unreachable!()
+                        };
+                        Err(request.part)
+                    }
+                }
+            };
+            let t0 = match submit_one(first) {
+                Ok(ticket) => {
+                    let index = pending.tickets.len();
+                    pending.tickets.push(Some(ticket));
+                    Some(index)
+                }
+                Err(work) => {
+                    local_first = Some(work);
+                    None
+                }
+            };
+            let t1 = match submit_one(second) {
+                Ok(ticket) => {
+                    let index = pending.tickets.len();
+                    pending.tickets.push(Some(ticket));
+                    Some(index)
+                }
+                Err(work) => {
+                    local_second = Some(work);
+                    None
+                }
+            };
+            if let Some(mut work) = local_first {
+                work.capture(memory, base);
+                local_first = Some(work);
+            }
+            if let Some(mut work) = local_second {
+                work.capture(memory, base);
+                local_second = Some(work);
+            }
+            run();
+            let waited = sampling::qpc();
+            for ticket in pending.tickets.iter().flatten() {
+                executor.run_unclaimed_child(*ticket);
+            }
+            let mut collect = |slot: Option<usize>, fallback: Option<Work>| -> Option<Work> {
+                let Some(index) = slot else {
+                    return fallback;
+                };
+                let mut completed = None;
+                executor.finish_worker_into(pending.tickets[index].take().unwrap(), &mut completed);
+                let completed = completed?;
+                account_completion(pending.calibration, &completed);
+                match (completed.report, completed.request) {
+                    (Ok(Report::VariantPart), Job::VariantPart(request)) => Some(request.part),
+                    _ => None,
+                }
+            };
+            let out_first = collect(t0, local_first);
+            let out_second = collect(t1, local_second);
+            crate::hour_stages::record_part(wait, waited, sampling::qpc());
+            return (out_first, out_second);
+        }
+        first.capture(memory, base);
+        second.capture(memory, base);
+        run();
+        (Some(first), Some(second))
     }
     pub(crate) fn lanes(&self) -> usize {
         self.workers

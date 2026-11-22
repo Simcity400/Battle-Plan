@@ -5279,7 +5279,7 @@ mod tests {
 
     use super::*;
     use replay::campaign::Replay;
-    use std::{cell::RefCell, collections::BTreeMap};
+    use std::{cell::RefCell, collections::BTreeMap, ffi::OsStr};
 
     #[test]
     fn a_dropped_content_scan_is_stopped_and_has_ended() {

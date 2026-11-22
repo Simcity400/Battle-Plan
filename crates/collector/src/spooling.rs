@@ -2016,6 +2016,18 @@ impl Processor {
         true
     }
 
+    pub(crate) fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
+    ) {
+        self.writer.attach_priority(pipeline.clone());
+        self.journal_thread.attach_priority(pipeline);
+    }
+
+    pub(crate) fn writer_thread_ids(&self) -> [Option<u32>; 2] {
+        [self.writer.thread_id(), self.journal_thread.thread_id()]
+    }
+
     pub(crate) fn set_backlogged(&mut self, backlogged: bool) {
         self.backlogged = backlogged;
     }
