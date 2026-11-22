@@ -487,6 +487,7 @@ pub(super) fn convoy_weapon_bound_from_database(
                     .checked_add(stat_term(&equipment.module_multiply_stats_multiplier, stat))?;
                 let mut pure_add_range = [equipment.stats[stat], equipment.stats[stat]];
                 let mut pure_mul_range = [0_i64, 0_i64];
+                let mut pure_zero_avg_count = 0_i64;
                 let mut correlated: Vec<(i64, i64, Vec<i64>)> = Vec::new();
                 for (_, module) in &equipment.default_modules {
                     let Some(group) = database.module_stats(module) else {
@@ -508,6 +509,12 @@ pub(super) fn convoy_weapon_bound_from_database(
                         mod_avg.push(delta);
                     }
                     if mod_add == 0 && mod_mul == 0 && mod_avg.is_empty() {
+                        continue;
+                    }
+                    if mod_add == 0 && mod_mul == 0 && mod_avg.iter().all(|&delta| delta == 0) {
+                        pure_zero_avg_count =
+                            pure_zero_avg_count.checked_add(i64::try_from(mod_avg.len()).ok()?)?;
+                        pure_zero_avg_count.checked_mul(100_000)?;
                         continue;
                     }
                     if mod_mul == 0 && mod_avg.is_empty() {
@@ -553,14 +560,23 @@ pub(super) fn convoy_weapon_bound_from_database(
                                 avg_count = avg_count.checked_add(1)?;
                             }
                         }
-                        let avg = if avg_count > 0 {
-                            avg_sum.checked_mul(100_000)? / avg_count.checked_mul(100_000)?
+                        let total_avg_count = avg_count.checked_add(pure_zero_avg_count)?;
+                        total_avg_count.checked_mul(100_000)?;
+                        let avg_bounds = if avg_count > 0 {
+                            let num = avg_sum.checked_mul(100_000)?;
+                            let at_zero = num / avg_count.checked_mul(100_000)?;
+                            let at_max = num / total_avg_count.checked_mul(100_000)?;
+                            [at_zero.min(at_max), at_zero.max(at_max)]
                         } else {
-                            0
+                            [0, 0]
                         };
                         let value_range = [
-                            pure_add_range[0].checked_add(corr_add)?.checked_add(avg)?,
-                            pure_add_range[1].checked_add(corr_add)?.checked_add(avg)?,
+                            pure_add_range[0]
+                                .checked_add(corr_add)?
+                                .checked_add(avg_bounds[0])?,
+                            pure_add_range[1]
+                                .checked_add(corr_add)?
+                                .checked_add(avg_bounds[1])?,
                         ];
                         let factor_range = [
                             pure_mul_range[0].checked_add(corr_mul)?.checked_add(100_000)?,
@@ -581,12 +597,84 @@ pub(super) fn convoy_weapon_bound_from_database(
                     }
                     return best;
                 }
+                let (mul_coupled, non_mul): (Vec<_>, Vec<_>) = correlated
+                    .into_iter()
+                    .partition(|(_, mod_mul, _)| *mod_mul != 0);
                 let mut add_range = pure_add_range;
-                let mut mul_range = pure_mul_range;
                 let mut avg_range = [0_i64, 0_i64];
                 let mut avg_pos_sum = 0_i64;
                 let mut avg_neg_sum = 0_i64;
-                for (mod_add, mod_mul, mod_avg) in &correlated {
+                for (mod_add, _, mod_avg) in &non_mul {
+                    add_range = [
+                        add_range[0].checked_add((*mod_add).min(0))?,
+                        add_range[1].checked_add((*mod_add).max(0))?,
+                    ];
+                    for &delta in mod_avg {
+                        if delta > 0 {
+                            avg_pos_sum = avg_pos_sum.checked_add(delta)?;
+                            avg_pos_sum.checked_mul(100_000)?;
+                        } else if delta < 0 {
+                            avg_neg_sum = avg_neg_sum.checked_add(delta)?;
+                            avg_neg_sum.checked_mul(100_000)?;
+                        }
+                        avg_range = [avg_range[0].min(delta), avg_range[1].max(delta)];
+                    }
+                }
+                if mul_coupled.len() <= 12 {
+                    let mut best: Option<[i64; 2]> = None;
+                    for mask in 0..(1_usize << mul_coupled.len()) {
+                        let mut corr_add = 0_i64;
+                        let mut corr_mul = 0_i64;
+                        let mut mask_avg_range = avg_range;
+                        let mut mask_pos_sum = avg_pos_sum;
+                        let mut mask_neg_sum = avg_neg_sum;
+                        for (bit, (mod_add, mod_mul, mod_avg)) in mul_coupled.iter().enumerate() {
+                            if mask & (1 << bit) == 0 {
+                                continue;
+                            }
+                            corr_add = corr_add.checked_add(*mod_add)?;
+                            corr_mul = corr_mul.checked_add(*mod_mul)?;
+                            for &delta in mod_avg {
+                                if delta > 0 {
+                                    mask_pos_sum = mask_pos_sum.checked_add(delta)?;
+                                    mask_pos_sum.checked_mul(100_000)?;
+                                } else if delta < 0 {
+                                    mask_neg_sum = mask_neg_sum.checked_add(delta)?;
+                                    mask_neg_sum.checked_mul(100_000)?;
+                                }
+                                mask_avg_range =
+                                    [mask_avg_range[0].min(delta), mask_avg_range[1].max(delta)];
+                            }
+                        }
+                        let value_range = [
+                            add_range[0]
+                                .checked_add(corr_add)?
+                                .checked_add(mask_avg_range[0])?,
+                            add_range[1]
+                                .checked_add(corr_add)?
+                                .checked_add(mask_avg_range[1])?,
+                        ];
+                        let factor_range = [
+                            pure_mul_range[0].checked_add(corr_mul)?.checked_add(100_000)?,
+                            pure_mul_range[1].checked_add(corr_mul)?.checked_add(100_000)?,
+                        ];
+                        let corners = [
+                            value_range[0].checked_mul(factor_range[0])? / 100_000,
+                            value_range[0].checked_mul(factor_range[1])? / 100_000,
+                            value_range[1].checked_mul(factor_range[0])? / 100_000,
+                            value_range[1].checked_mul(factor_range[1])? / 100_000,
+                        ];
+                        let low = *corners.iter().min().unwrap();
+                        let high = *corners.iter().max().unwrap();
+                        best = Some(match best {
+                            Some([lo, hi]) => [lo.min(low), hi.max(high)],
+                            None => [low, high],
+                        });
+                    }
+                    return best;
+                }
+                let mut mul_range = pure_mul_range;
+                for (mod_add, mod_mul, mod_avg) in &mul_coupled {
                     add_range = [
                         add_range[0].checked_add((*mod_add).min(0))?,
                         add_range[1].checked_add((*mod_add).max(0))?,
@@ -662,18 +750,6 @@ fn convoy_weapon_bound_for_frame(
                 .to_owned(),
         ));
     }
-    let upgrades = rows::<tables::VariantUpgrades>(frame)?;
-    if !upgrades.is_complete() {
-        return Ok(Err(
-            "VariantUpgrades is incomplete, so convoy variant upgrades are unknown".to_owned(),
-        ));
-    }
-    let modules = rows::<tables::VariantModules>(frame)?;
-    if !modules.is_complete() {
-        return Ok(Err(
-            "VariantModules is incomplete, so convoy variant modules are unknown".to_owned(),
-        ));
-    }
     let lexical = rows::<tables::LexicalTokens>(frame)?;
     if !lexical.is_complete() {
         return Ok(Err(
@@ -685,26 +761,14 @@ fn convoy_weapon_bound_for_frame(
         .iter()
         .map(|row| (row.token, row.literal.as_slice()))
         .collect();
-    let mut upgrades_by_variant: BTreeMap<u64, Vec<&replay_data::rows::VariantUpgradeRow>> =
-        BTreeMap::new();
-    for row in upgrades.rows() {
-        upgrades_by_variant
-            .entry(row.variant)
-            .or_default()
-            .push(row);
-    }
-    let mut modules_by_variant: BTreeMap<u64, Vec<&replay_data::rows::VariantModuleRow>> =
-        BTreeMap::new();
-    for row in modules.rows() {
-        modules_by_variant
-            .entry(row.variant)
-            .or_default()
-            .push(row);
-    }
     let stats: Vec<usize> = CONVOY_WEAPON_STATS
         .iter()
         .filter_map(|name| stat_index(name.as_bytes()))
         .collect();
+    let mut upgrades_by_variant: Option<BTreeMap<u64, Vec<&replay_data::rows::VariantUpgradeRow>>> =
+        None;
+    let mut modules_by_variant: Option<BTreeMap<u64, Vec<&replay_data::rows::VariantModuleRow>>> =
+        None;
     let mut bonus_snapshots: Option<BTreeMap<u64, &replay_data::rows::VariantBonusSource>> = None;
     for definition in definitions.rows() {
         let Some(&equipment_name) = tokens.get(&definition.equipment_token) else {
@@ -733,6 +797,63 @@ fn convoy_weapon_bound_for_frame(
                 )));
             }
         };
+        if !state.named_bonuses.is_empty() {
+            let mut cached = [0_i64; STAT_COUNT];
+            let mut seen = [false; STAT_COUNT];
+            for entry in &state.unresolved_stats {
+                let index = entry.index as usize;
+                if index >= STAT_COUNT {
+                    return Ok(Err(format!(
+                        "convoy variant {} named bonus residual index {index} outside native metadata",
+                        definition.id
+                    )));
+                }
+                cached[index] = entry.value;
+                seen[index] = true;
+            }
+            for &stat in &stats {
+                if !seen[stat] {
+                    return Ok(Err(format!(
+                        "convoy variant {} named bonus residuals omit weapon stat {stat}",
+                        definition.id
+                    )));
+                }
+            }
+            for &stat in &stats {
+                range = [range[0].min(cached[stat]), range[1].max(cached[stat])];
+            }
+            continue;
+        }
+        if upgrades_by_variant.is_none() {
+            let upgrades = rows::<tables::VariantUpgrades>(frame)?;
+            if !upgrades.is_complete() {
+                return Ok(Err(
+                    "VariantUpgrades is incomplete, so convoy variant upgrades are unknown"
+                        .to_owned(),
+                ));
+            }
+            let mut map: BTreeMap<u64, Vec<&replay_data::rows::VariantUpgradeRow>> =
+                BTreeMap::new();
+            for row in upgrades.rows() {
+                map.entry(row.variant).or_default().push(row);
+            }
+            upgrades_by_variant = Some(map);
+        }
+        if modules_by_variant.is_none() {
+            let modules = rows::<tables::VariantModules>(frame)?;
+            if !modules.is_complete() {
+                return Ok(Err(
+                    "VariantModules is incomplete, so convoy variant modules are unknown"
+                        .to_owned(),
+                ));
+            }
+            let mut map: BTreeMap<u64, Vec<&replay_data::rows::VariantModuleRow>> =
+                BTreeMap::new();
+            for row in modules.rows() {
+                map.entry(row.variant).or_default().push(row);
+            }
+            modules_by_variant = Some(map);
+        }
         let mut components = StatComponents::base(&kind.stats);
         if !state.bonus_sources.is_empty() || !state.named_sources.is_empty() {
             if bonus_snapshots.is_none() {
@@ -794,11 +915,12 @@ fn convoy_weapon_bound_for_frame(
                 )));
             }
         }
-        if let Some(variant_upgrades) = upgrades_by_variant.get(&definition.id) {
+        if let Some(variant_upgrades) = upgrades_by_variant
+            .as_ref()
+            .unwrap()
+            .get(&definition.id)
+        {
             for upgrade in variant_upgrades {
-                if upgrade.level == 0 {
-                    continue;
-                }
                 let Ok(token) = u32::try_from(upgrade.definition_token) else {
                     return Ok(Err(format!(
                         "convoy variant {} has negative upgrade token {}",
@@ -827,7 +949,11 @@ fn convoy_weapon_bound_for_frame(
                 }
             }
         }
-        if let Some(variant_modules) = modules_by_variant.get(&definition.id) {
+        if let Some(variant_modules) = modules_by_variant
+            .as_ref()
+            .unwrap()
+            .get(&definition.id)
+        {
             for module in variant_modules {
                 if module.definition_active == 0 {
                     continue;
@@ -854,7 +980,7 @@ fn convoy_weapon_bound_for_frame(
                 }
             }
         }
-        let mut values = match components.finish_for(kind) {
+        let values = match components.finish_for(kind) {
             Ok(values) => values,
             Err(error) => {
                 return Ok(Err(format!(
@@ -863,30 +989,6 @@ fn convoy_weapon_bound_for_frame(
                 )));
             }
         };
-        if !state.named_bonuses.is_empty() {
-            for &stat in &stats {
-                if !state
-                    .unresolved_stats
-                    .iter()
-                    .any(|entry| entry.index as usize == stat)
-                {
-                    return Ok(Err(format!(
-                        "convoy variant {} named bonus residuals omit weapon stat {stat}",
-                        definition.id
-                    )));
-                }
-            }
-            for entry in &state.unresolved_stats {
-                let index = entry.index as usize;
-                if index >= STAT_COUNT {
-                    return Ok(Err(format!(
-                        "convoy variant {} named bonus residual index {index} outside native metadata",
-                        definition.id
-                    )));
-                }
-                values[index] = entry.value;
-            }
-        }
         for &stat in &stats {
             range = [range[0].min(values[stat]), range[1].max(values[stat])];
         }

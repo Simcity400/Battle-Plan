@@ -1054,12 +1054,23 @@ impl Database {
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
                 b"upgrades" => {
                     for upgrade in field.value.items().unwrap_or_default() {
-                        if let Some(value) = upgrade.value.scalar()
-                            && let Token::Name(name) = Token::c_str(value)
-                            && self.upgrade_names.contains(&name)
-                            && !self.equipment[at].upgrades.contains(&name)
-                        {
-                            self.equipment[at].upgrades.push(name);
+                        let Some(value) = upgrade.value.scalar() else {
+                            continue;
+                        };
+                        let shown = String::from_utf8_lossy(c_string(value));
+                        match Token::c_str(value) {
+                            Token::Name(name) if self.upgrade_names.contains(&name) => {
+                                if self.equipment[at].upgrades.contains(&name) {
+                                    notes.push(format!(
+                                        "upgrade {shown} is listed again, which the equipment reader reports, skipping it"
+                                    ));
+                                } else {
+                                    self.equipment[at].upgrades.push(name);
+                                }
+                            }
+                            _ => notes.push(format!(
+                                "upgrade {shown} is no known upgrade, which the equipment reader reports, skipping it"
+                            )),
                         }
                     }
                 }

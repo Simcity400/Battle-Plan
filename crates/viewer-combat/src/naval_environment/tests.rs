@@ -627,7 +627,8 @@ fn bound_of(text: &str) -> ConvoyBound {
 fn equipment_fields_follow_their_value_readers() {
     content_reader_core::test_game::enter();
     let (bound, misreads) = bound_of(
-        "equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
+        "upgrades = { a = { } b = { } }
+         equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
             upgrades = { a b } resources = { steel = 1 } default_modules = { s = empty }
             allow_mission_type = { x } forbid_mission_type = y allowed_types = { convoy }
             ai_type = convoy alias = { c }
@@ -836,6 +837,24 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
     assert!(misreads.is_empty(), "{misreads:?}");
     assert_eq!(bound, Ok([0, 0]));
     assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            cancel = { add_stats = { lg_attack = 1 } multiply_stats = { lg_attack = -1.0 } }
+            zero_avg = { add_average_stats = { lg_attack = 0 } }
+         }
+         equipments = {
+            thirteen_defaults = { type = convoy
+                default_modules = {
+                    main = cancel
+                    z1 = zero_avg z2 = zero_avg z3 = zero_avg z4 = zero_avg
+                    z5 = zero_avg z6 = zero_avg z7 = zero_avg z8 = zero_avg
+                    z9 = zero_avg z10 = zero_avg z11 = zero_avg z12 = zero_avg
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 0]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
 }
 
 #[test]
@@ -860,7 +879,11 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        "upgrades = { global_gun = { lg_attack = 1.0 } }
+        "upgrades = {
+            global_gun = { lg_attack = 1.0 }
+            avg_first = { add_stats = { lg_attack = 2 } add_average_stats = { lg_attack = -2 } }
+            avg_zero = { add_average_stats = { lg_attack = -2 } }
+         }
          equipments = {
             convoy_1 = { type = convoy lg_attack = 0.6 }
             vanilla_convoy = { type = convoy }
@@ -900,6 +923,14 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
                 LexicalTokenRow {
                     token: 14,
                     literal: b"vanilla_convoy".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 15,
+                    literal: b"avg_first".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 16,
+                    literal: b"avg_zero".to_vec(),
                 },
             ]),
         );
@@ -1058,5 +1089,93 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     assert_eq!(
         bounded_total(8_190_000, 1, non_weapon_bound.as_ref().copied().map_err(String::as_str)),
         Some(81)
+    );
+
+    let mut level_zero_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![
+            VariantUpgradeRow {
+                variant: 71,
+                source_ordinal: 0,
+                definition_token: 15,
+                level: 1,
+            },
+            VariantUpgradeRow {
+                variant: 71,
+                source_ordinal: 1,
+                definition_token: 16,
+                level: 0,
+            },
+        ],
+        Vec::new(),
+    );
+    put(
+        &mut level_zero_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 71,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState::default()),
+            ..Default::default()
+        }]),
+    );
+    let level_zero_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &level_zero_frame,
+    )
+    .unwrap();
+    assert_eq!(level_zero_bound, Ok([0, 100_000]));
+    assert_eq!(
+        bounded_total(0, 1, level_zero_bound.as_ref().copied().map_err(String::as_str)),
+        None
+    );
+
+    let mut cached_unavailable_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        Vec::new(),
+        Vec::new(),
+    );
+    put(
+        &mut cached_unavailable_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 72,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState {
+                named_bonuses: vec![9],
+                bonus_sources: vec![bonus_id],
+                unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+                    .filter(|index| {
+                        ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d]
+                            .contains(index)
+                    })
+                    .map(|index| VariantStatEntry { index, value: 0 })
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+    );
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantBonusSnapshots.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "snapshots unavailable".into(),
+        };
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantUpgrades.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "upgrades unavailable".into(),
+        };
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantModules.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "modules unavailable".into(),
+        };
+    let cached_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &cached_unavailable_frame,
+    )
+    .unwrap();
+    assert_eq!(cached_bound, Ok([0, 0]));
+    assert_eq!(
+        bounded_total(0, 1, cached_bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
     );
 }

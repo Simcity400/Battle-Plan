@@ -1453,3 +1453,115 @@ fn static_slot_technology_tag_and_missing_boundary_agreement() {
             .contains("dynamic-tag boundary")
     );
 }
+
+#[test]
+fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents() {
+    use super::{Icon, IconContent, IconHour};
+    use content_reader_equipment_graphics::equipment_graphics;
+    use replay_data::rows::{
+        CountryAppearanceRow, PoliticalPartyRow, PoliticsRow, Recorded, StateRow,
+        VariantDefinitionRow,
+    };
+
+    content_reader_core::test_game::enter();
+    let units = equipment_types(&[br#"
+        equipments = {
+            tanks = { is_archetype = yes type = armor }
+            tanks_1 = { archetype = tanks }
+        }
+    "#])
+    .unwrap();
+    let pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            GER = { tanks_1 = { pool = { weight = 10 icons = { GFX_shared_icon } } } }
+            europe = { tanks_1 = { pool = { weight = 20 icons = { GFX_shared_icon } } } }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let content = IconContent::from_parts(
+        units,
+        Default::default(),
+        pools,
+        Default::default(),
+        ["GFX_shared_icon".to_owned()].into(),
+        Default::default(),
+    );
+
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 11,
+            original_tag_reference: Recorded::Value(Some(0)),
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 11,
+            is_ruling: 1,
+            token: b"fascism".to_vec(),
+            ..Default::default()
+        }]));
+    for table in [TableId::Factions, TableId::FactionMembers] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 1,
+            continent: Recorded::Value(None),
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
+        PoliticsRow {
+            country: 11,
+            original_capital: 1,
+            ..Default::default()
+        },
+        PoliticsRow {
+            country: 21,
+            original_capital: 1,
+            ..Default::default()
+        },
+    ]));
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let from_germany = VariantDefinitionRow {
+        id: 1,
+        creator_link: 11,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &hour, &from_germany, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_shared_icon".into())))
+    );
+    let diverging_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            GER = { tanks_1 = { pool = { weight = 10 icons = { GFX_ger_only GFX_shared_icon } } } }
+            europe = { tanks_1 = { pool = { weight = 20 icons = { GFX_eur_only GFX_shared_icon } } } }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let diverging = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        diverging_pools,
+        Default::default(),
+        ["GFX_ger_only".to_owned(), "GFX_eur_only".to_owned()].into(),
+        Default::default(),
+    );
+    let diverging_hour = IconHour::read(&frame, &diverging).unwrap();
+    assert!(chosen(&diverging, &diverging_hour, &from_germany, "tanks_1").is_err());
+}

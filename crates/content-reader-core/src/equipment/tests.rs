@@ -1320,4 +1320,20 @@ fn archetype_copy_preserves_prior_upgrades_and_skips_unknown_or_duplicate_upgrad
     assert!(database.lost.is_none(), "{:?}", database.lost);
     assert_eq!(named(&database, "hull").upgrades, [b"engine".to_vec()]);
     assert_eq!(named(&database, "child").upgrades, [b"gun".to_vec()]);
+    assert!(
+        database
+            .misreads
+            .iter()
+            .any(|note| note.contains("equipment child") && note.contains("gun") && note.contains("listed again")),
+        "{:?}",
+        database.misreads
+    );
+    assert!(
+        database
+            .misreads
+            .iter()
+            .any(|note| note.contains("equipment child") && note.contains("missing_up") && note.contains("no known upgrade")),
+        "{:?}",
+        database.misreads
+    );
 }
