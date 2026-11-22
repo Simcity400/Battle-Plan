@@ -38,8 +38,8 @@ impl RailwayAdjacency {
     }
 
     pub fn parse(definitions: &[u8], bitmap: &[u8], authored: Option<&[u8]>) -> io::Result<Self> {
-        let definitions = content_reader_core::map::read_definitions(definitions)?;
-        let image = content_reader_core::map::decode_provinces_bmp(bitmap, &definitions)?;
+        let mut definitions = content_reader_core::map::read_definitions(definitions)?;
+        let image = content_reader_core::map::decode_provinces_bmp(bitmap, &mut definitions)?;
         Self::derive(
             &image,
             definitions.provinces.len(),

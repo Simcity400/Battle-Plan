@@ -8,4 +8,4 @@ The prepared read program keeps ownership and header dependencies only. Build it
 
 Merge each character-ordered share into the same order a single walk produces and check duplicates across shares. The projection can retain the row permutation without retaining row values or arena borrows. Validate the permutation against the current share sizes and row ordinals on reuse. A changed distribution can make it invalid even when the total row count matches. A refused larger capture still conveys new growth demand. Reused storage may contain longer previous strings, so only their published extent contributes to the output fingerprint.
 
-[Portrait capture](../../crates/collector/src/extended/character_portraits.rs) · [Projection tests](../../crates/collector/src/extended/character_portraits/projection_tests.rs)
+[Portrait capture](../../crates/collector-characters/src/extended/character_portraits.rs) · [Projection tests](../../crates/collector-characters/src/extended/character_portraits/projection_tests.rs)

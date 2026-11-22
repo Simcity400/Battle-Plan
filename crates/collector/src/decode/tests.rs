@@ -335,8 +335,10 @@ fn exhausted_or_contended_payload_pools_decline_without_allocating() {
 
 #[test]
 fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publication() {
-    use crate::extended::air::{AirStatsCopyContext, stats_test_kit as kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_air::extended::air::{AirStatsCopyContext, stats_test_kit as kit};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled frame");
@@ -367,7 +369,7 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     let bytes = kit::fixture();
     let mut air = AirStatsJob::new();
     assert!(
-        crate::extended::air::copy_air_stats_refresh(
+        collector_air::extended::air::copy_air_stats_refresh(
             &kit::memory(&bytes),
             AirStatsCopyContext {
                 base: kit::BASE,
@@ -1119,26 +1121,28 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
 
 #[test]
 fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
-    let _globals = crate::extended::characters::test_globals();
-    use crate::extended::characters::characters_test_kit;
-    use crate::extended::characters::{CharactersCopyContext, CharactersJob};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _globals = collector_characters::extended::characters::test_globals();
+    use collector_characters::extended::characters::characters_test_kit;
+    use collector_characters::extended::characters::{CharactersCopyContext, CharactersJob};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = characters_test_kit::mapped_fixture();
     let memory = characters_test_kit::memory(&bytes);
     let shared = Shared::new(characters_test_kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let capacities = crate::extended::characters::Capacities {
-        rows: [4096; crate::extended::characters::N],
-        bytes: [131_072; crate::extended::characters::N],
+    let capacities = collector_characters::extended::characters::Capacities {
+        rows: [4096; collector_characters::extended::characters::N],
+        bytes: [131_072; collector_characters::extended::characters::N],
     };
     let direct = characters_test_kit::direct(&memory, &capacities);
     let mut initial = capacities;
     initial.rows[2] = 0;
     initial.bytes[2] = 0;
     *frame.extended.characters_pilot() =
-        crate::extended::characters::Captured::with_capacities(&initial);
+        collector_characters::extended::characters::Captured::with_capacities(&initial);
     let family_bytes_before = frame.extended.characters_pilot().allocated_bytes();
     shared.measure_frame(index);
     let pool_bytes_before = shared.pool_owned();
@@ -1146,18 +1150,23 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         force_full: false,
         base: characters_test_kit::BASE,
         game_state: characters_test_kit::GAME_STATE,
-        active: [true; crate::extended::characters::N],
+        active: [true; collector_characters::extended::characters::N],
     };
     let mut first = CharactersJob::new();
-    let report = crate::extended::characters::copy_characters(
+    let report = collector_characters::extended::characters::copy_characters(
         &memory,
         ctx,
         &mut first,
-        crate::extended::characters::Roles::Independent,
+        collector_characters::extended::characters::Roles::Independent,
     );
     assert!(report.raw_ok);
-    frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
-    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
+    frame.extended.characters_pilot().raw_active =
+        [true; collector_characters::extended::characters::N];
+    shared
+        .frames
+        .slot(index)
+        .completed
+        .store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
         index,
@@ -1228,16 +1237,18 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
 
 #[test]
 fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
-    let _globals = crate::extended::characters::test_globals();
-    use crate::extended::characters::{self, CharactersCopyContext};
+    let _globals = collector_characters::extended::characters::test_globals();
     use characters::characters_test_kit as kit;
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_characters::extended::characters::{self, CharactersCopyContext};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; crate::extended::characters::N],
-        bytes: [131_072; crate::extended::characters::N],
+        rows: [4096; collector_characters::extended::characters::N],
+        bytes: [131_072; collector_characters::extended::characters::N],
     };
     for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
         let bytes = kit::mapped_fixture();
@@ -1248,8 +1259,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
         *captured = characters::Captured::with_capacities(&capacities);
-        captured.set_character_activity([true; crate::extended::characters::N]);
-        captured.raw_active = [true; crate::extended::characters::N];
+        captured.set_character_activity([true; collector_characters::extended::characters::N]);
+        captured.raw_active = [true; collector_characters::extended::characters::N];
         captured.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
         let mut job = bare_job(index, next_seq(), 0, 37);
         job.characters_refresh = [true; CHARACTER_PARTS];
@@ -1267,7 +1278,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
                     active: CHARACTER_MASKS[part],
                 },
                 &mut owned,
-                crate::extended::characters::Roles::Independent,
+                collector_characters::extended::characters::Roles::Independent,
             );
             assert!(report.raw_ok);
             *payload = Some(owned);
@@ -1282,16 +1293,16 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         kit::assert_matches_direct(frame.extended.characters_pilot(), &expected);
         assert_eq!(
             frame.extended.characters_pilot().raw_active,
-            [false; crate::extended::characters::N]
+            [false; collector_characters::extended::characters::N]
         );
     }
 }
 
 #[test]
 fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
-    let _globals = crate::extended::characters::test_globals();
-    use crate::extended::characters::{self, CharactersCopyContext, CharactersJob};
+    let _globals = collector_characters::extended::characters::test_globals();
     use characters::characters_test_kit as kit;
+    use collector_characters::extended::characters::{self, CharactersCopyContext, CharactersJob};
     use engine_native::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1301,8 +1312,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; crate::extended::characters::N],
-        bytes: [131_072; crate::extended::characters::N],
+        rows: [4096; collector_characters::extended::characters::N],
+        bytes: [131_072; collector_characters::extended::characters::N],
     };
     for (hour, force_full) in [(0, false), (21, false), (7, true)] {
         let active =
@@ -1321,7 +1332,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 active,
             },
             &mut payload,
-            crate::extended::characters::Roles::Independent,
+            collector_characters::extended::characters::Roles::Independent,
         );
         assert!(report.raw_ok);
         for (slot, is_active) in active.into_iter().enumerate() {
@@ -1329,7 +1340,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 assert_eq!(report.copy_ticks[slot], 0);
             }
         }
-        frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
+        frame.extended.characters_pilot().raw_active =
+            [true; collector_characters::extended::characters::N];
         let mut job = bare_job(index, next_seq(), 23, 39);
         job.force_full = !force_full;
         job.characters_refresh = [true, false, false, false];
@@ -1524,8 +1536,10 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_preserves_already_typed_wars_rows() {
-    use crate::sampling::wars_test_kit;
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_states::wars_test_kit;
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = wars_test_kit::fixture();
     let memory = wars_test_kit::memory(&bytes);
@@ -2055,7 +2069,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
 
 #[test]
 fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_storage() {
-    use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
+    use collector_air::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
     use engine_native::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -2090,7 +2104,7 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
         let direct = kit::direct(&memory, &capacities);
         assert_eq!(direct.outcome, Outcome::Rows { len: count });
         let report =
-            crate::extended::air::copy_air_stats_refresh(&memory, context, &mut payload);
+            collector_air::extended::air::copy_air_stats_refresh(&memory, context, &mut payload);
         assert!(report.raw_ok);
         assert!(!payload.log.overflowed);
         retained = Some((
@@ -2115,8 +2129,10 @@ fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_s
 
 #[test]
 fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
-    use crate::extended::air::{AirWingCopyContext, wing_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_air::extended::air::{AirWingCopyContext, wing_test_kit};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = wing_test_kit::fixture();
     let memory = wing_test_kit::memory(&bytes);
@@ -2132,7 +2148,7 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         game_score: false,
     };
     let mut first = acquire_air_wing_job();
-    let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first);
+    let report = collector_air::extended::air::copy_air_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2193,14 +2209,16 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
-    use crate::extended::air::{AirStatsCopyContext, stats_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_air::extended::air::{AirStatsCopyContext, stats_test_kit};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = stats_test_kit::fixture();
     let memory = stats_test_kit::memory(&bytes);
     let shared = Shared::new(stats_test_kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
-    let mut capacities = crate::extended::air::Capacities::default();
+    let mut capacities = collector_air::extended::air::Capacities::default();
     capacities.rows[air_slot(replay_data::rows::TableId::AirStatistics)] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
     let ctx = AirStatsCopyContext {
@@ -2210,7 +2228,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         force_full: true,
     };
     let mut first = acquire_air_stats_job();
-    let report = crate::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first);
+    let report = collector_air::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2273,8 +2291,10 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
-    use crate::extended::naval_history::{NavalCopyContext, naval_test_kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_naval_history::extended::naval_history::{NavalCopyContext, naval_test_kit};
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = naval_test_kit::fixture();
     let memory = naval_test_kit::memory(&bytes);
@@ -2289,8 +2309,9 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_naval_job();
     naval_test_kit::stage_wings(&memory, &mut first);
-    let report =
-        crate::extended::naval_history::copy_naval_refresh(&memory, ctx, &mut first);
+    let report = collector_naval_history::extended::naval_history::copy_naval_refresh(
+        &memory, ctx, &mut first,
+    );
     assert!(report.raw_ok);
     shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2351,9 +2372,13 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
 
 #[test]
 fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
-    use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
-    use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_air::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
+    use collector_naval_history::extended::naval_history::{
+        NavalCopyContext, naval_test_kit as naval_kit,
+    };
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let air_bytes = air_kit::fixture();
     let air_memory = air_kit::memory(&air_bytes);
@@ -2367,7 +2392,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         game_score: false,
     };
     let air_report =
-        crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
+        collector_air::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
     assert!(
         air_report.raw_ok,
         "wing force-full live set must fit owned storage"
@@ -2383,7 +2408,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         force_full: true,
     };
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh(
+    let naval_report = collector_naval_history::extended::naval_history::copy_naval_refresh(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2500,9 +2525,8 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         game_state: kit::BASE,
     };
     let mut first = acquire_construction_rest_job();
-    let report = crate::extended::construction::copy_construction_rest_refresh(
-        &memory, ctx, &mut first,
-    );
+    let report =
+        crate::extended::construction::copy_construction_rest_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.construction_rest_pilot().rest_raw_mode = true;
     shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
@@ -2564,9 +2588,13 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
-    use crate::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
-    use crate::extended::naval_history::{NavalCopyContext, naval_test_kit as naval_kit};
-    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use collector_air::extended::air::{AirWingCopyContext, wing_test_kit as air_kit};
+    use collector_naval_history::extended::naval_history::{
+        NavalCopyContext, naval_test_kit as naval_kit,
+    };
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let air_bytes = air_kit::fixture();
     let air_memory = air_kit::memory(&air_bytes);
@@ -2581,7 +2609,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     };
     let mut air_job = acquire_air_wing_job();
     let air_report =
-        crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
+        collector_air::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
     assert!(air_report.raw_ok);
     let naval_bytes = naval_kit::fixture();
     let naval_memory = naval_kit::memory(&naval_bytes);
@@ -2594,7 +2622,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     };
     let mut naval_job = acquire_naval_job();
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh(
+    let naval_report = collector_naval_history::extended::naval_history::copy_naval_refresh(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2722,7 +2750,7 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
 
 #[test]
 fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() {
-    use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
+    use collector_air::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
     use engine_native::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -2742,7 +2770,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             kit::set_first_value(&mut bytes, -(step as i64 + 1));
             let memory = kit::memory(&bytes);
             let mut payload = AirStatsJob::new();
-            let report = crate::extended::air::copy_air_stats_refresh(
+            let report = collector_air::extended::air::copy_air_stats_refresh(
                 &memory,
                 AirStatsCopyContext {
                     base: kit::BASE,
@@ -2793,7 +2821,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
 
 #[test]
 fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_changes() {
-    use crate::extended::air::{
+    use collector_air::extended::air::{
         AirBasesCopyContext, Capacities, Captured, air_bases_test_kit as kit,
     };
     use engine_native::walk::Outcome;
@@ -2822,7 +2850,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
                 hour: if (9..=10).contains(&step) { 21 } else { 0 },
                 force_full: false,
             };
-            let report = crate::extended::air::copy_air_bases_refresh(
+            let report = collector_air::extended::air::copy_air_bases_refresh(
                 &kit::memory(&bytes),
                 ctx,
                 &mut payload,
@@ -2860,7 +2888,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
 
 #[test]
 fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
-    use crate::extended::air::air_bases_test_kit as kit;
+    use collector_air::extended::air::air_bases_test_kit as kit;
     use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -2869,8 +2897,12 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
-    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
-    let ctx = crate::extended::air::AirBasesCopyContext {
+    shared
+        .frames
+        .slot(index)
+        .completed
+        .store(0, Ordering::Relaxed);
+    let ctx = collector_air::extended::air::AirBasesCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         hour: 0,
@@ -2878,7 +2910,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_air_bases_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = crate::extended::air::copy_air_bases_refresh(&memory, ctx, &mut first);
+    let report = collector_air::extended::air::copy_air_bases_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.air_bases_pilot().bases_raw_mode = true;
     frame.extended.radar_pilot().registrations_raw_mode = true;
@@ -2911,7 +2943,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
-    use crate::extended::naval_history::supremacy_test_kit as kit;
+    use collector_naval_history::extended::naval_history::supremacy_test_kit as kit;
     use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -2920,8 +2952,12 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
-    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
-    let ctx = crate::extended::naval_history::SupremacyCopyContext {
+    shared
+        .frames
+        .slot(index)
+        .completed
+        .store(0, Ordering::Relaxed);
+    let ctx = collector_naval_history::extended::naval_history::SupremacyCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         hour: 0,
@@ -2929,8 +2965,9 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_supremacy_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report =
-        crate::extended::naval_history::copy_supremacy_refresh(&memory, ctx, &mut first);
+    let report = collector_naval_history::extended::naval_history::copy_supremacy_refresh(
+        &memory, ctx, &mut first,
+    );
     assert!(report.raw_ok);
     frame.extended.supremacy_pilot().supremacy_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 53);
@@ -2952,7 +2989,7 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
-    use crate::extended::naval_history::sunk_test_kit as kit;
+    use collector_naval_history::extended::naval_history::sunk_test_kit as kit;
     use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -2961,8 +2998,12 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     let direct = kit::direct(&memory);
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.frames.pop().expect("pooled buffer");
-    shared.frames.slot(index).completed.store(0, Ordering::Relaxed);
-    let ctx = crate::extended::naval_history::SunkCopyContext {
+    shared
+        .frames
+        .slot(index)
+        .completed
+        .store(0, Ordering::Relaxed);
+    let ctx = collector_naval_history::extended::naval_history::SunkCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
         hour: kit::HOUR,
@@ -2970,8 +3011,9 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_sunk_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report =
-        crate::extended::naval_history::copy_sunk_refresh(&memory, ctx, &mut first);
+    let report = collector_naval_history::extended::naval_history::copy_sunk_refresh(
+        &memory, ctx, &mut first,
+    );
     assert!(report.raw_ok);
     frame.extended.sunk_pilot().sunk_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 59);
@@ -3000,7 +3042,7 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
-    use crate::extended::fog::radar_test_kit as kit;
+    use collector_air::extended::fog::radar_test_kit as kit;
     use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -3016,7 +3058,7 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
         .extended
         .radar_pilot()
         .radar_copy_context(kit::BASE, kit::GAME_STATE, 0, true);
-    let report = crate::extended::fog::copy_radar_refresh(&memory, ctx, &mut first);
+    let report = collector_air::extended::fog::copy_radar_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.radar_pilot().radar_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 61);
@@ -3035,7 +3077,7 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
 
 #[test]
 fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
-    use crate::extended::fog::intel_test_kit as kit;
+    use collector_air::extended::fog::intel_test_kit as kit;
     use replay_frame::frame::TableView;
     let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
@@ -3051,7 +3093,7 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
         .extended
         .intel_pilot()
         .intel_copy_context(kit::BASE, kit::GAME_STATE);
-    let report = crate::extended::fog::copy_intel_refresh_with_divisions(
+    let report = collector_air::extended::fog::copy_intel_refresh_with_divisions(
         &memory, ctx, &mut first, None,
     );
     assert!(report.raw_ok);
@@ -3137,7 +3179,7 @@ fn a_reserved_job_publishes_in_place_and_an_unpublished_one_returns_vacant() {
 }
 
 fn air_slot(table: replay_data::rows::TableId) -> usize {
-    crate::extended::air::TABLES
+    collector_air::extended::air::TABLES
         .iter()
         .position(|&candidate| candidate == table)
         .expect("an air pack table")

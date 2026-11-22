@@ -179,14 +179,14 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
         job => runner.run(job),
     });
     let stitch = || {
-        use crate::extended::plans::{Capacities, Captured};
+        use collector_plans::extended::plans::{Capacities, Captured};
         Job::OrdersStitch(OrdersRequest {
             countries: engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
             ).unwrap(),
             base: 0,
             game_state: 0,
-            orders: crate::map_capture::Orders::for_test(&Default::default()),
+            orders: crate::map_capture::MapCapacities::default().orders(),
             plans: Captured::with_capacities(&Capacities::default()),
             group_source: None,
         })

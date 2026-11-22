@@ -659,6 +659,7 @@ impl<'a> Walk<'a> {
             diagnostics: Vec::new(),
             refusals: Vec::new(),
             top: None,
+            background_index: None,
             opacity: 1.0,
             hits: Vec::new(),
             hovered: None,

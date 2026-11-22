@@ -140,7 +140,7 @@ use crate::{
 };
 
 
-pub const LOGS: [TableId; 15] = [
+pub const LOGS: [TableId; 16] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
     TableId::PeaceSettlements,
@@ -156,6 +156,7 @@ pub const LOGS: [TableId; 15] = [
     TableId::LeaderBattles,
     TableId::LeaderTraitGains,
     TableId::LeaderCommands,
+    TableId::PowerSpendDays,
 ];
 
 pub fn logs() -> [bool; TABLE_COUNT] {
@@ -192,15 +193,17 @@ macro_rules! define_tables {
         recorded { $($recorded:ident = $recorded_id:literal => $recorded_variant:ident($recorded_row:ident)),+ $(,)? }
         derived { $($derived:ident = $derived_id:literal => $derived_variant:ident($derived_row:ident)),+ $(,)? }
         $(recorded { $($later:ident = $later_id:literal => $later_variant:ident($later_row:ident)),+ $(,)? })?
+        $(derived { $($later_derived:ident = $later_derived_id:literal => $later_derived_variant:ident($later_derived_row:ident)),+ $(,)? })?
     ) => {
         define_tables! {
             $($recorded = $recorded_id => $recorded_variant($recorded_row)),+,
             $($derived = $derived_id => $derived_variant($derived_row)),+
             $($(, $later = $later_id => $later_variant($later_row))+)?
+            $($(, $later_derived = $later_derived_id => $later_derived_variant($later_derived_row))+)?
         }
         impl TableId {
             pub const fn is_derived(self) -> bool {
-                matches!(self, $(Self::$derived)|+)
+                matches!(self, $(Self::$derived)|+ $($( | Self::$later_derived)+)?)
             }
         }
     };
@@ -1089,6 +1092,9 @@ recorded {
 LandUnitOrder = 515 => LandUnitOrder(LandUnitOrderRow),
 StrategicRegionWeights = 516 => StrategicRegionWeight(StrategicRegionWeightRow),
 StateBuildingInputs = 517 => StateBuildingInput(StateBuildingInputRow),
+}
+derived {
+PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
 }
 }
 impl TableId {

@@ -627,6 +627,7 @@ pub struct Products {
     pub overlay: Option<overlay::Made>,
     overlay_withdrawn: bool,
     pub vision_refused: Option<String>,
+    pub overlay_generation: Option<u64>,
     pub overlay_hour: Option<Hour>,
     pub overlay_loading: Vec<String>,
     pub overlay_missed: Vec<replay_data::rows::TableId>,
@@ -675,6 +676,7 @@ impl Default for Products {
             overlay: None,
             overlay_withdrawn: false,
             vision_refused: None,
+            overlay_generation: None,
             overlay_hour: None,
             overlay_loading: Vec::new(),
             overlay_missed: Vec::new(),
@@ -734,6 +736,7 @@ impl Products {
         }
         self.vision = side.vision();
         if let Some(overlay) = side.overlay() {
+            self.overlay_generation = Some(overlay.generation());
             self.overlay_hour = overlay.hour();
             if self.overlay_loading != overlay.loading() {
                 self.overlay_loading = overlay.loading().to_vec();

@@ -1,14 +1,15 @@
-
 #[cfg(test)]
 use collector_output::output_continuity;
 
 use crate::{
-    division_census::UnitInputs,
-    map_capture::{MapSources, Orders, ShipCensus},
+    map_capture::{MapSources, ShipCensus},
     sampling::qpc,
     table_capture::{grow_capacity, grow_vec},
 };
-use collector_extended_support::outcomes::{MISSING, elapsed, failed_capture, truncated_source};
+use collector_divisions::{division_census::UnitInputs, orders::Orders};
+use collector_extended_support::outcomes::{
+    MISSING, NOT_RECORDED, elapsed, records_any,
+};
 use engine_allocation::{filled, owned_vec};
 use engine_native::{Memory, cequipment_variant_pool::DivisionSource, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
@@ -17,26 +18,14 @@ use replay_data::scope::CaptureMode;
 use replay_frame::frame::TableInput;
 use std::mem::size_of;
 
-pub(crate) const NOT_RECORDED: &str = "not recorded in this capture mode";
-
-pub(crate) fn records_any(mode: CaptureMode, tables: &[TableId]) -> bool {
-    tables
-        .iter()
-        .any(|&table| replay_data::scope::records(mode, table))
-}
-
-pub(crate) use collector_division_parts::division_land;
 #[cfg(test)]
 pub(crate) use collector_extended_support::bench_world;
 pub(crate) use collector_intel::daily_intel;
 
 pub(crate) use collector_division_parts::attack_stats;
 mod border_inputs;
-use collector_division_parts::dig_in;
 pub(crate) mod observer_boundary;
 mod packs;
-use collector_division_parts::supply_inputs;
-pub(crate) use collector_division_parts::unit_combat_references;
 use packs::ORDINARY_TABLES;
 pub(crate) use packs::{
     CharacterInputRoles, CharacterInputsRequest, FinalInputsReport, FinalInputsRequest, GatedPacks,
@@ -50,14 +39,14 @@ const FACTION_PROVIDER_TABLES: [TableId; 14] = {
     let mut tables = [TableId::LexicalTokens; 14];
     let mut next = 0;
     let mut index = 0;
-    while index < crate::faction_companions::TABLES.len() {
-        tables[next] = crate::faction_companions::TABLES[index];
+    while index < collector_factions::faction_companions::TABLES.len() {
+        tables[next] = collector_factions::faction_companions::TABLES[index];
         next += 1;
         index += 1;
     }
     index = 0;
-    while index < crate::faction_goals::TABLES.len() {
-        tables[next] = crate::faction_goals::TABLES[index];
+    while index < collector_factions::faction_goals::TABLES.len() {
+        tables[next] = collector_factions::faction_goals::TABLES[index];
         next += 1;
         index += 1;
     }
@@ -600,54 +589,45 @@ impl Captured {
         }
     };
 }
-pub(crate) use collector_air_sorties::air_reference_witness;
-pub(crate) use collector_air_sorties::air_sorties;
 
-pub mod active_abilities;
-pub mod air;
+pub use collector_advisors::hired_advisors;
+use collector_air::extended::air;
+use collector_air::extended::fog;
+use collector_air::extended::game_score;
 pub use collector_air_histories::air_histories;
 pub use collector_air_records::air_records;
 pub use collector_air_relations::air_relations;
 pub use collector_army_icons::army_icon_inputs;
-pub use collector_ledger_tables::air_losses;
-pub use collector_ledger_tables::building_bombing;
-pub mod character_inputs;
-pub mod character_portraits;
-pub mod characters;
+use collector_characters::extended::active_abilities;
+use collector_characters::extended::character_inputs;
+use collector_characters::extended::character_portraits;
+use collector_characters::extended::characters;
 pub use collector_combat::combat_details;
 pub use collector_combat_log::combat_log;
-pub mod combat_progress;
 pub use collector_construction::construction;
 pub use collector_country_counters::country_appearance;
 pub use collector_country_counters::country_counters;
 pub(crate) use collector_country_counters::reserved_visibility;
-pub(crate) use collector_naval_movement::country_naval_movement_inputs;
-pub use collector_output::construction_tables as construction_ic;
-pub use collector_slow_tables::country_factories;
-pub use collector_slow_tables::country_tactic_unlocks;
-pub use collector_slow_tables::state_building_inputs;
-pub use collector_stability::country_stability;
-pub(crate) use country_naval_movement_inputs::Capacities as PhysicalNavyCapacities;
-pub mod division_counts;
-pub mod division_model_inputs;
-pub mod division_presentation;
-pub mod division_templates;
+use collector_division_templates::extended::division_templates;
+use collector_division_templates::extended::group_counters;
+use collector_divisions::extended::division_counts;
+use collector_divisions::extended::division_model_inputs;
+use collector_divisions::extended::division_presentation;
 pub use collector_economy::economy;
-pub mod equipment_destruction;
+use collector_equipment_destruction::extended::equipment_destruction;
 pub use collector_experience_gains::tables as experience_gains;
-pub use collector_ledger_tables::event_feed;
-pub use collector_slow_tables::faction_theatres;
-pub mod fog;
 pub(crate) use collector_fuel_awards::tables as fuel_awards;
-pub mod game_score;
 pub use collector_governance::governance;
-pub mod group_counters;
-pub use collector_advisors::hired_advisors;
 pub use collector_intel::intel;
-pub use collector_production_daily::industrial_organisations;
-pub mod land_events;
+use collector_land_events::extended::combat_progress;
+use collector_land_events::extended::land_events;
 pub use collector_leaders::leader_paths;
 pub use collector_leaders::leader_portraits;
+pub use collector_ledger_tables::air_losses;
+pub use collector_ledger_tables::building_bombing;
+pub use collector_ledger_tables::event_feed;
+pub use collector_ledger_tables::market;
+pub use collector_ledger_tables::nuclear_strikes;
 pub use collector_lexical::lexical;
 pub use collector_map_tables::battle_sounds;
 pub use collector_map_tables::map_facilities;
@@ -656,30 +636,35 @@ pub use collector_model_inputs::model_inputs;
 pub use collector_naval_counters::naval_counters;
 pub use collector_naval_details::naval_combat_sources;
 pub use collector_naval_details::naval_details;
+pub use collector_naval_details::naval_result_details;
+use collector_naval_history::extended::naval_history;
+use collector_naval_missions::extended::naval_mission_inputs;
+pub(crate) use collector_naval_movement::country_naval_movement_inputs;
+use collector_naval_results::extended::naval_result_sources;
+pub use collector_new_divisions::new_divisions;
+pub use collector_output::construction_tables as construction_ic;
 pub use collector_output::line_tables as line_output;
+pub use collector_production_daily::industrial_organisations;
 pub use collector_session::map_names;
+pub use collector_slow_tables::country_factories;
+pub use collector_slow_tables::country_tactic_unlocks;
+pub use collector_slow_tables::faction_theatres;
 pub use collector_slow_tables::logistics;
 pub use collector_slow_tables::modifier_definitions;
-pub(crate) mod naval_escort_trees;
-pub mod naval_history;
-pub mod naval_mission_inputs;
-pub use collector_naval_details::naval_result_details;
-pub mod naval_result_sources;
-pub use collector_ledger_tables::market;
-pub use collector_ledger_tables::nuclear_strikes;
-pub use collector_new_divisions::new_divisions;
+pub use collector_slow_tables::state_building_inputs;
+pub use collector_stability::country_stability;
+pub(crate) use country_naval_movement_inputs::Capacities as PhysicalNavyCapacities;
 pub mod map_events;
-pub mod operation_outcomes;
+use collector_divisions::extended::province_unit_order;
+pub use collector_map_tables::saved_event_targets;
+use collector_operation_outcomes::extended::operation_outcomes;
 pub use collector_peace::peace_bids;
 pub use collector_peace::tables as peace_settlements;
-pub mod plans;
+use collector_plans::extended::plans;
 pub use collector_politics::politics;
 pub use collector_production::production;
 pub use collector_production_daily::production_modifiers;
 pub use collector_projects::projects;
-pub mod province_unit_order;
-pub(crate) mod roster_replay;
-pub use collector_map_tables::saved_event_targets;
 pub use collector_projects::raid_target_statuses;
 pub use collector_raids::raid_launch_inputs;
 pub use collector_raids::raid_state_inputs;
@@ -688,7 +673,7 @@ pub use collector_railway_guns::railway_guns;
 pub use collector_session::session;
 pub use collector_ship_models::ship_models;
 pub mod slice_reads;
-pub mod state_flags;
+use collector_states::extended::state_flags;
 pub use collector_supply_trains::supply_trains;
 pub use collector_visibility::visibility;
 pub use collector_war_overview::war_overview;
@@ -829,9 +814,11 @@ impl Capacities {
             Some(
                 crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
                     if let Some(words) = demand {
-                        crate::land_events::presize(words);
-                        self.land_events.words =
-                            self.land_events.words.max(crate::land_events::capacity());
+                        collector_land_events::land_events::presize(words);
+                        self.land_events.words = self
+                            .land_events
+                            .words
+                            .max(collector_land_events::land_events::capacity());
                     }
                 }),
             ),
@@ -1211,7 +1198,9 @@ impl Captured {
         self.unit_inputs = None;
     }
 
-    pub(crate) fn take_settled_army_store(&mut self) -> Option<division_presentation::held_store::Loan> {
+    pub(crate) fn take_settled_army_store(
+        &mut self,
+    ) -> Option<division_presentation::held_store::Loan> {
         self.division_presentation.take_settled_store()
     }
 
@@ -1349,7 +1338,10 @@ impl Captured {
     pub(crate) fn restore_presentation_request(
         &mut self,
         mut request: crate::acquisition_jobs::PresentationRequest,
-        report: Result<division_presentation::CaptureReport, crate::acquisition::Failure>,
+        report: Result<
+            division_presentation::CaptureReport,
+            collector_workers::acquisition::Failure,
+        >,
     ) -> Option<division_presentation::held_store::Loan> {
         if report.is_err()
             && let Some(store) = request.army_stats.as_deref_mut()
@@ -1370,10 +1362,10 @@ impl Captured {
         self.presentation_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
-                crate::acquisition::Failure::Panicked => {
+                collector_workers::acquisition::Failure::Panicked => {
                     "division presentation acquisition panicked"
                 }
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Stopped => {
                     "division presentation acquisition stopped before reading"
                 }
             }),
@@ -1382,7 +1374,7 @@ impl Captured {
         army_stats
     }
 
-    fn acquire_presentation(&mut self) -> division_presentation::CaptureReport {
+    pub(crate) fn acquire_presentation(&mut self) -> division_presentation::CaptureReport {
         self.presentation_report.take().unwrap_or_else(|| {
             self.division_presentation
                 .fail_owned_capture("division presentation acquisition not supplied")
@@ -1441,7 +1433,10 @@ impl Captured {
     pub(crate) fn restore_research_request(
         &mut self,
         mut request: crate::acquisition_jobs::ResearchRequest,
-        report: Result<crate::acquisition_jobs::ResearchReport, crate::acquisition::Failure>,
+        report: Result<
+            crate::acquisition_jobs::ResearchReport,
+            collector_workers::acquisition::Failure,
+        >,
     ) -> Box<crate::slicing::SliceFingerprints> {
         let ticks = match report {
             Ok(report) => report.ticks,
@@ -1450,8 +1445,10 @@ impl Captured {
                 request.part.fail(
                     request.context,
                     match failure {
-                        crate::acquisition::Failure::Panicked => "research acquisition panicked",
-                        crate::acquisition::Failure::Stopped => {
+                        collector_workers::acquisition::Failure::Panicked => {
+                            "research acquisition panicked"
+                        }
+                        collector_workers::acquisition::Failure::Stopped => {
                             "research acquisition stopped before reading"
                         }
                     },
@@ -1571,12 +1568,12 @@ impl Captured {
     pub(crate) fn restore_variants_request(
         &mut self,
         mut request: crate::acquisition_jobs::VariantsRequest,
-        report: Result<[u64; production::N], crate::acquisition::Failure>,
+        report: Result<[u64; production::N], collector_workers::acquisition::Failure>,
     ) {
         let ticks = report.unwrap_or_else(|failure| {
             request.fail(match failure {
-                crate::acquisition::Failure::Panicked => "variant acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => "variant acquisition panicked",
+                collector_workers::acquisition::Failure::Stopped => {
                     "variant acquisition stopped before reading"
                 }
             })
@@ -1592,7 +1589,10 @@ impl Captured {
     pub(crate) fn restore_governance_request(
         &mut self,
         mut request: crate::acquisition_jobs::GovernanceRequest,
-        report: Result<crate::acquisition_jobs::GovernanceReport, crate::acquisition::Failure>,
+        report: Result<
+            crate::acquisition_jobs::GovernanceReport,
+            collector_workers::acquisition::Failure,
+        >,
     ) -> GovernanceStores {
         let report = match report {
             Ok(report) => report,
@@ -1609,8 +1609,10 @@ impl Captured {
                     store.forget();
                 }
                 request.fail(match failure {
-                    crate::acquisition::Failure::Panicked => "governance acquisition panicked",
-                    crate::acquisition::Failure::Stopped => {
+                    collector_workers::acquisition::Failure::Panicked => {
+                        "governance acquisition panicked"
+                    }
+                    collector_workers::acquisition::Failure::Stopped => {
                         "governance acquisition stopped before reading"
                     }
                 })
@@ -1683,14 +1685,16 @@ impl Captured {
     pub(crate) fn restore_supply_trains_request(
         &mut self,
         mut request: crate::acquisition_jobs::SupplyTrainsRequest,
-        report: Result<supply_trains::CaptureReport, crate::acquisition::Failure>,
+        report: Result<supply_trains::CaptureReport, collector_workers::acquisition::Failure>,
     ) -> Option<Box<crate::slicing::SliceFingerprints>> {
         let failed = report.is_err();
         let report = match report {
             Ok(report) => report,
             Err(failure) => self.supply_trains.fail_owned_capture(match failure {
-                crate::acquisition::Failure::Panicked => "supply trains acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => {
+                    "supply trains acquisition panicked"
+                }
+                collector_workers::acquisition::Failure::Stopped => {
                     "supply trains acquisition stopped before reading"
                 }
             }),
@@ -1768,13 +1772,15 @@ impl Captured {
     pub(crate) fn restore_character_portraits_request(
         &mut self,
         request: crate::acquisition_jobs::CharacterPortraitsRequest,
-        report: Result<character_portraits::CaptureReport, crate::acquisition::Failure>,
+        report: Result<character_portraits::CaptureReport, collector_workers::acquisition::Failure>,
     ) {
         let report = match report {
             Ok(report) => report,
             Err(failure) => self.character_portraits.fail_owned_capture(match failure {
-                crate::acquisition::Failure::Panicked => "character portraits acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => {
+                    "character portraits acquisition panicked"
+                }
+                collector_workers::acquisition::Failure::Stopped => {
                     "character portraits acquisition stopped before reading"
                 }
             }),
@@ -1810,7 +1816,9 @@ impl Captured {
         &mut self,
         base: usize,
         state: usize,
-        inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+        inputs: Option<
+            engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>,
+        >,
     ) -> crate::acquisition_jobs::DivisionModelInputsRequest {
         crate::acquisition_jobs::DivisionModelInputsRequest {
             base,
@@ -1842,7 +1850,9 @@ impl Captured {
         &mut self,
         base: usize,
         state: usize,
-        inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+        inputs: Option<
+            engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>,
+        >,
         store: Option<Box<province_unit_order::ProvinceUnitStore>>,
     ) -> crate::acquisition_jobs::ProvinceUnitOrderRequest {
         self.province_unit_order_report = None;
@@ -1863,7 +1873,7 @@ impl Captured {
     pub(crate) fn restore_province_unit_order_request(
         &mut self,
         mut request: crate::acquisition_jobs::ProvinceUnitOrderRequest,
-        report: Result<province_unit_order::CaptureReport, crate::acquisition::Failure>,
+        report: Result<province_unit_order::CaptureReport, collector_workers::acquisition::Failure>,
     ) -> Option<Box<province_unit_order::ProvinceUnitStore>> {
         drop(request.inputs.take());
         if report.is_err()
@@ -1874,8 +1884,10 @@ impl Captured {
         self.province_unit_order_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
-                crate::acquisition::Failure::Panicked => "province unit order acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => {
+                    "province unit order acquisition panicked"
+                }
+                collector_workers::acquisition::Failure::Stopped => {
                     "province unit order acquisition stopped before reading"
                 }
             }),
@@ -2157,12 +2169,14 @@ impl Captured {
     pub(crate) fn restore_ship_models_request(
         &mut self,
         mut request: crate::acquisition_jobs::ShipModelsRequest,
-        report: Result<(), crate::acquisition::Failure>,
+        report: Result<(), collector_workers::acquisition::Failure>,
     ) -> ShipCensus {
         if let Err(failure) = report {
             let reason = match failure {
-                crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => {
+                    "ship models acquisition panicked"
+                }
+                collector_workers::acquisition::Failure::Stopped => {
                     "ship models acquisition stopped before reading"
                 }
             };
@@ -2188,12 +2202,14 @@ impl Captured {
     pub(crate) fn restore_ship_model_part(
         &mut self,
         mut request: crate::acquisition_jobs::ShipModelDetailsRequest,
-        report: Result<ship_models::CaptureReport, crate::acquisition::Failure>,
+        report: Result<ship_models::CaptureReport, collector_workers::acquisition::Failure>,
     ) {
         let report = report.unwrap_or_else(|failure| {
             request.captured.fail_owned_capture(match failure {
-                crate::acquisition::Failure::Panicked => "ship models acquisition panicked",
-                crate::acquisition::Failure::Stopped => {
+                collector_workers::acquisition::Failure::Panicked => {
+                    "ship models acquisition panicked"
+                }
+                collector_workers::acquisition::Failure::Stopped => {
                     "ship models acquisition stopped before reading"
                 }
             })
@@ -2262,7 +2278,7 @@ impl Captured {
     pub(crate) fn restore_script_variables(
         &mut self,
         mut request: crate::acquisition_jobs::ScriptVariablesRequest,
-        report: Result<u64, crate::acquisition::Failure>,
+        report: Result<u64, collector_workers::acquisition::Failure>,
     ) -> Option<Box<intel::VariableStore>> {
         let mut store = request.store.take();
         match report {
@@ -2274,10 +2290,10 @@ impl Captured {
                 request.part.fail(
                     request.context,
                     match failure {
-                        crate::acquisition::Failure::Panicked => {
+                        collector_workers::acquisition::Failure::Panicked => {
                             "script variable acquisition panicked"
                         }
-                        crate::acquisition::Failure::Stopped => {
+                        collector_workers::acquisition::Failure::Stopped => {
                             "script variable acquisition stopped before reading"
                         }
                     },
@@ -2291,7 +2307,7 @@ impl Captured {
     pub(crate) fn restore_intel_residual_request(
         &mut self,
         mut request: crate::acquisition_jobs::IntelResidualRequest,
-        report: Result<intel::CaptureReport, crate::acquisition::Failure>,
+        report: Result<intel::CaptureReport, collector_workers::acquisition::Failure>,
     ) -> Option<Box<intel::FlagStore>> {
         let mut flags = request.flags.take();
         if report.is_err()
@@ -2304,8 +2320,10 @@ impl Captured {
             Err(failure) => request.captured.fail_residual_capture(
                 request.context,
                 match failure {
-                    crate::acquisition::Failure::Panicked => "residual Intel acquisition panicked",
-                    crate::acquisition::Failure::Stopped => {
+                    collector_workers::acquisition::Failure::Panicked => {
+                        "residual Intel acquisition panicked"
+                    }
+                    collector_workers::acquisition::Failure::Stopped => {
                         "residual Intel acquisition stopped before reading"
                     }
                 },
@@ -2541,7 +2559,10 @@ impl Captured {
     ) -> [replay_frame::frame::TableView; division_presentation::N] {
         self.division_presentation.tables()
     }
-    pub(crate) fn install_division_counts(&mut self, census: &crate::division_census::Census) {
+    pub(crate) fn install_division_counts(
+        &mut self,
+        census: &collector_divisions::division_census::Census,
+    ) {
         self.division_counts.install(census);
     }
     pub(crate) fn install_failed_division_counts(&mut self, reason: &'static str) {
@@ -2761,13 +2782,8 @@ impl Captured {
                 );
                 scatter(
                     &visibility::TABLES,
-                    self.visibility.capture(
-                        memory,
-                        base,
-                        game_state,
-                        current_hour,
-                        force_full,
-                    ),
+                    self.visibility
+                        .capture(memory, base, game_state, current_hour, force_full),
                     &mut ticks,
                 );
             }
@@ -2857,9 +2873,14 @@ impl Captured {
             #[cfg(test)]
             {
                 staggered!(raid_state_inputs);
-                let cost = self
-                    .resource_map
-                    .capture(memory, base, game_state, current_hour, force_full, None);
+                let cost = self.resource_map.capture(
+                    memory,
+                    base,
+                    game_state,
+                    current_hour,
+                    force_full,
+                    None,
+                );
                 scatter(&resource_map::TABLES, cost, &mut ticks);
             }
             #[cfg(not(test))]
@@ -3319,3 +3340,15 @@ pub(crate) fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: imp
     drop(scope);
     disarm();
 }
+
+#[cfg(test)]
+mod naval_reserved_land_tests;
+
+#[cfg(test)]
+mod plans_late_worker_tests;
+
+#[cfg(test)]
+mod presentation_worker_tests;
+
+#[cfg(test)]
+mod naval_mission_publication_tests;

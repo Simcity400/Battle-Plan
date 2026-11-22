@@ -1,10 +1,7 @@
-
 use crate::spooling::campaign_name;
 use replay::{campaign::Replay, columnar_frames::Pool, recording_files};
-use replay_data::{
-    codec::invalid, identity::Identity, identity::SessionStart,
-};
 use replay_data::rows::TableId;
+use replay_data::{codec::invalid, identity::Identity, identity::SessionStart};
 use replay_frame::branches::BranchTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -94,7 +91,7 @@ impl PreparedCampaigns {
             Some(Arc::new(Pool::new(
                 std::thread::available_parallelism().map_or(1, usize::from),
                 "hoi4-history-load",
-                crate::private_heap::off_hold_path,
+                collector_workers::private_heap::off_hold_path,
             )?))
         };
         for (id, path) in paths {

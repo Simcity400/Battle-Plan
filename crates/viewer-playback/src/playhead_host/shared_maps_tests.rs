@@ -256,7 +256,10 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
         let second = second.expect("open");
         second.draws("reads") && !second.composing() && second.applied() == first.applied()
     }, || {});
-    play(&entry, &mut first, Some(&mut second), &mut seen, |first, _| !first.composing() && first.applied() >= Some(last), || {});
+    play_to(&entry, &mut first, Some(&mut second), &mut seen, last, |first, second| {
+        let second = second.expect("open");
+        !first.composing() && !second.composing() && first.applied() == Some(last) && second.applied() == first.applied()
+    }, || {});
     assert_eq!(second_composes.load(Ordering::Relaxed), 1, "it composes once, when its tables join ({seen:?})");
     assert_eq!(first_composes.load(Ordering::Relaxed), 1, "the first map is never reset by it ({seen:?})");
     assert_eq!(first.applied(), second.applied(), "both follow the one clock");
