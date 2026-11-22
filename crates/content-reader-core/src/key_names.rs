@@ -454,9 +454,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&overlay);
     }
 
-    // quarantine: #154 a synthetic base does not retain the traced key-name product
     #[test]
-    #[ignore = "#154"]
     fn traced_readers_of_a_stack_share_one_read_and_trace_what_it_read() {
         use std::sync::{Arc, Mutex};
         crate::test_game::enter();
@@ -496,9 +494,7 @@ mod tests {
         assert_eq!(reads(&b_log, "b"), expected);
     }
 
-    // quarantine: #154 a synthetic base does not retain the traced key-name product
     #[test]
-    #[ignore = "#154"]
     fn a_traced_read_that_met_a_failure_is_not_shared() {
         use std::sync::{Arc, Mutex};
         crate::test_game::enter();
