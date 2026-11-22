@@ -500,9 +500,7 @@ fn has_formations(history: &History) -> bool {
     })
 }
 
-// quarantine: #143 runs past an hour while holding 12 GB
 #[test]
-#[ignore = "quarantined under #143"]
 fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
     let ids: Vec<u32> = [0, 1, 2]
         .into_iter()
@@ -557,14 +555,20 @@ fn merge_join_matches_point_lookups_across_installs_views_and_frames() {
             let placed = step_all(pair, number, roll, time, &ids);
             saw[4] |= !placed.is_empty();
             saw[5] |= has_formations(&pair[0]);
+            for history in pair.iter() {
+                let bound = 18 * (history.provinces.records.len() + 1) + 36;
+                let slots = history.schedule.lock().unwrap().storage_slots();
+                assert!(
+                    slots <= bound,
+                    "frame {number}: schedule storage {slots} exceeded bound {bound}"
+                );
+            }
         }
     }
     assert_eq!(saw, [true; 6]);
 }
 
-// quarantine: #143 runs past an hour while holding 12 GB
 #[test]
-#[ignore = "quarantined under #143"]
 fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames() {
     let branches: [Vec<u32>; 2] = [
         [0, 1, 2]
@@ -647,6 +651,14 @@ fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames()
             let placed = step_all(arms, number, roll, time, ids);
             saw[4] |= !placed.is_empty();
             saw[5] |= has_formations(&arms[0]);
+            for history in arms.iter() {
+                let bound = 18 * (history.provinces.records.len() + 1) + 36;
+                let slots = history.schedule.lock().unwrap().storage_slots();
+                assert!(
+                    slots <= bound,
+                    "frame {number}: schedule storage {slots} exceeded bound {bound}"
+                );
+            }
         }
     }
     assert_eq!(saw, [true; 6]);

@@ -12,79 +12,230 @@ pub enum Update {
     OffScreen,
 }
 
-#[derive(Clone, Debug, Default)]
-struct Ids(Vec<u64>);
+const EMPTY: u32 = u32::MAX;
 
-impl PartialEq for Ids {
+#[derive(Clone, Copy, Debug)]
+struct WordSlot {
+    key: u32,
+    pos: u32,
+    bits: u64,
+}
+
+impl WordSlot {
+    const EMPTY: Self = Self {
+        key: EMPTY,
+        pos: 0,
+        bits: 0,
+    };
+}
+
+fn word_hash(key: u32) -> usize {
+    let mut x = key;
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x as usize
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProvinceSet {
+    slots: Vec<WordSlot>,
+    occupied: Vec<u32>,
+}
+
+impl PartialEq for ProvinceSet {
     fn eq(&self, other: &Self) -> bool {
-        self.iter().eq(other.iter())
+        self.occupied.len() == other.occupied.len()
+            && self.occupied.iter().all(|&slot| {
+                let entry = self.slots[slot as usize];
+                other.word_bits(entry.key) == entry.bits
+            })
     }
 }
 
-impl Ids {
-    fn insert(&mut self, id: u32) {
-        let word = id as usize / 64;
-        if word >= self.0.len() {
-            self.0.resize(word + 1, 0);
+impl Eq for ProvinceSet {}
+
+impl ProvinceSet {
+    fn find_slot(&self, key: u32) -> Option<usize> {
+        if self.occupied.is_empty() {
+            return None;
         }
-        self.0[word] |= 1 << (id % 64);
-    }
-
-    fn remove(&mut self, id: &u32) {
-        if let Some(word) = self.0.get_mut(*id as usize / 64) {
-            *word &= !(1 << (id % 64));
+        let mask = self.slots.len() - 1;
+        let mut slot = word_hash(key) & mask;
+        loop {
+            let entry = self.slots[slot];
+            if entry.key == key {
+                return Some(slot);
+            }
+            if entry.key == EMPTY {
+                return None;
+            }
+            slot = (slot + 1) & mask;
         }
     }
 
-    fn contains(&self, id: &u32) -> bool {
-        self.0
-            .get(*id as usize / 64)
-            .is_some_and(|word| word >> (id % 64) & 1 != 0)
+    fn word_bits(&self, key: u32) -> u64 {
+        self.find_slot(key)
+            .map_or(0, |slot| self.slots[slot].bits)
     }
 
-    fn clear(&mut self) {
-        self.0.fill(0);
+    fn grow(&mut self) {
+        let next_len = (self.slots.len() * 2).max(8);
+        let mask = next_len - 1;
+        let mut next = vec![WordSlot::EMPTY; next_len];
+        for (pos, old_slot) in self.occupied.iter_mut().enumerate() {
+            let mut entry = self.slots[*old_slot as usize];
+            let mut slot = word_hash(entry.key) & mask;
+            while next[slot].key != EMPTY {
+                slot = (slot + 1) & mask;
+            }
+            entry.pos = pos as u32;
+            next[slot] = entry;
+            *old_slot = slot as u32;
+        }
+        self.slots = next;
     }
 
-    fn retain(&mut self, keep: impl Fn(&u32) -> bool) {
-        for (word, bits) in self.0.iter_mut().enumerate() {
-            let mut set = *bits;
-            while set != 0 {
-                let bit = set.trailing_zeros();
-                set &= set - 1;
-                if !keep(&(word as u32 * 64 + bit)) {
-                    *bits &= !(1 << bit);
-                }
+    pub fn insert(&mut self, id: u32) -> bool {
+        let key = id >> 6;
+        let bit = 1u64 << (id & 63);
+        if self.slots.is_empty() {
+            self.grow();
+        }
+        let mask = self.slots.len() - 1;
+        let mut slot = word_hash(key) & mask;
+        loop {
+            let entry = &mut self.slots[slot];
+            if entry.key == key {
+                let fresh = entry.bits & bit == 0;
+                entry.bits |= bit;
+                return fresh;
+            }
+            if entry.key == EMPTY {
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+        if (self.occupied.len() + 1) * 2 > self.slots.len() {
+            self.grow();
+            let mask = self.slots.len() - 1;
+            slot = word_hash(key) & mask;
+            while self.slots[slot].key != EMPTY {
+                slot = (slot + 1) & mask;
             }
         }
+        let pos = self.occupied.len() as u32;
+        self.slots[slot] = WordSlot {
+            key,
+            pos,
+            bits: bit,
+        };
+        self.occupied.push(slot as u32);
+        true
     }
 
-    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.0.iter().enumerate().flat_map(|(word, &bits)| {
-            let mut bits = bits;
+    fn remove_word_bits(&mut self, key: u32, clear_bits: u64) {
+        let Some(slot) = self.find_slot(key) else {
+            return;
+        };
+        self.slots[slot].bits &= !clear_bits;
+        if self.slots[slot].bits != 0 {
+            return;
+        }
+        let pos = self.slots[slot].pos as usize;
+        self.occupied.swap_remove(pos);
+        if pos < self.occupied.len() {
+            let moved_slot = self.occupied[pos] as usize;
+            self.slots[moved_slot].pos = pos as u32;
+        }
+        let mask = self.slots.len() - 1;
+        let mut hole = slot;
+        let mut next = (hole + 1) & mask;
+        while self.slots[next].key != EMPTY {
+            let ideal = word_hash(self.slots[next].key) & mask;
+            if (hole.wrapping_sub(ideal) & mask) < (next.wrapping_sub(ideal) & mask) {
+                let moved = self.slots[next];
+                self.slots[hole] = moved;
+                self.occupied[moved.pos as usize] = hole as u32;
+                hole = next;
+            }
+            next = (next + 1) & mask;
+        }
+        self.slots[hole] = WordSlot::EMPTY;
+    }
+
+    pub fn remove(&mut self, id: u32) {
+        self.remove_word_bits(id >> 6, 1u64 << (id & 63));
+    }
+
+    pub fn remove_all(&mut self, other: &Self) {
+        if self.occupied.is_empty() {
+            return;
+        }
+        for &slot in &other.occupied {
+            let entry = other.slots[slot as usize];
+            self.remove_word_bits(entry.key, entry.bits);
+        }
+    }
+
+    pub fn contains(&self, id: u32) -> bool {
+        let bit = 1u64 << (id & 63);
+        self.word_bits(id >> 6) & bit != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.occupied.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        if self.occupied.is_empty() {
+            return;
+        }
+        if self.occupied.len() * 4 >= self.slots.len() {
+            self.slots.fill(WordSlot::EMPTY);
+        } else {
+            for &slot in &self.occupied {
+                self.slots[slot as usize] = WordSlot::EMPTY;
+            }
+        }
+        self.occupied.clear();
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.occupied.iter().flat_map(|&slot| {
+            let entry = self.slots[slot as usize];
+            let base = entry.key << 6;
+            let mut bits = entry.bits;
             std::iter::from_fn(move || {
                 (bits != 0).then(|| {
                     let bit = bits.trailing_zeros();
                     bits &= bits - 1;
-                    word as u32 * 64 + bit
+                    base | bit
                 })
             })
         })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn slot_capacity(&self) -> usize {
+        self.slots.capacity()
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
     phase: u32,
-    clean: Ids,
-    in_view: Ids,
-    off_screen: Ids,
+    clean: ProvinceSet,
+    in_view: ProvinceSet,
+    off_screen: ProvinceSet,
     pending: bool,
     presented: Option<f32>,
-    candidates: Ids,
+    candidates: Vec<(u32, [f32; 4])>,
     admitted_against: super::camera::Hold,
     candidates_for: Option<(Camera, [u32; 2], u64, super::camera::Slack)>,
-    admitted: Ids,
+    admitted: ProvinceSet,
     admitted_for: Option<(Camera, [u32; 2], u64)>,
     selected: BTreeSet<u32>,
     forced: BTreeMap<u32, u8>,
@@ -118,7 +269,7 @@ pub struct FrameRestore {
 impl Schedule {
     #[cfg(any(test, feature = "test-support"))]
     pub fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
-        let sorted = |values: &Ids| values.iter().collect::<BTreeSet<_>>();
+        let sorted = |values: &ProvinceSet| values.iter().collect::<BTreeSet<_>>();
         (
             self.phase,
             sorted(&self.clean),
@@ -131,15 +282,24 @@ impl Schedule {
         )
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn storage_slots(&self) -> usize {
+        self.clean.slot_capacity()
+            + self.in_view.slot_capacity()
+            + self.off_screen.slot_capacity()
+            + self.admitted.slot_capacity()
+            + self.candidates.capacity()
+    }
+
     pub fn set_selected(&mut self, selected: BTreeSet<u32>) {
         let previous = std::mem::replace(&mut self.selected, selected);
         if self.pending {
             for &id in self.selected.difference(&previous) {
                 self.forced.insert(id, 2);
                 if self.listed(id) {
-                    self.off_screen.remove(&id);
+                    self.off_screen.remove(id);
                     self.in_view.insert(id);
-                    self.clean.remove(&id);
+                    self.clean.remove(id);
                 }
             }
         }
@@ -182,8 +342,8 @@ impl Schedule {
             let admission = Admission::held(against, viewport, slack);
             self.candidates.clear();
             for &(id, bounds) in provinces {
-                if bounds.is_some_and(|bounds| admission.admits(bounds)) {
-                    self.candidates.insert(id);
+                if let Some(bounds) = bounds.filter(|&bounds| admission.admits(bounds)) {
+                    self.candidates.push((id, bounds));
                 }
             }
             self.candidates_for = Some((against, viewport, boxes, slack));
@@ -192,15 +352,15 @@ impl Schedule {
         if self.admitted_for != Some((camera, viewport, boxes)) {
             let admission = Admission::new(camera, viewport);
             self.admitted.clear();
-            for &(id, bounds) in provinces {
-                if self.candidates.contains(&id) && bounds.is_some_and(|bounds| admission.admits(bounds)) {
+            for &(id, bounds) in &self.candidates {
+                if admission.admits(bounds) {
                     self.admitted.insert(id);
                 }
             }
             self.admitted_for = Some((camera, viewport, boxes));
         }
         let admitted = std::mem::take(&mut self.admitted);
-        self.advance_admitted(provinces.iter().map(|&(id, _)| (id, admitted.contains(&id))), steady);
+        self.advance_admitted(provinces.iter().map(|&(id, _)| (id, admitted.contains(id))), steady);
         self.admitted = admitted;
     }
 
@@ -215,7 +375,7 @@ impl Schedule {
         for (id, admitted) in provinces {
             if admitted {
                 self.in_view.insert(id);
-                self.clean.remove(&id);
+                self.clean.remove(id);
             } else if self.dirty(id) {
                 if self.forced.contains_key(&id) {
                     self.in_view.insert(id);
@@ -266,9 +426,9 @@ impl Schedule {
     }
 
     pub fn update(&self, province: u32) -> Option<Update> {
-        if self.in_view.contains(&province) {
+        if self.in_view.contains(province) {
             Some(Update::InView)
-        } else if self.off_screen.contains(&province) {
+        } else if self.off_screen.contains(province) {
             Some(Update::OffScreen)
         } else {
             None
@@ -293,14 +453,14 @@ impl Schedule {
     pub fn take_pending(&mut self) -> bool {
         let pending = std::mem::take(&mut self.pending);
         if pending {
-            for id in self.in_view.iter().chain(self.off_screen.iter()) {
-                if let Some(remaining) = self.forced.get_mut(&id) {
+            self.forced.retain(|&id, remaining| {
+                if self.in_view.contains(id) || self.off_screen.contains(id) {
                     *remaining -= 1;
-                    if *remaining == 0 {
-                        self.forced.remove(&id);
-                    }
+                    *remaining != 0
+                } else {
+                    true
                 }
-            }
+            });
         }
         pending
     }
@@ -310,10 +470,11 @@ impl Schedule {
             return None;
         }
         let spent = self
-            .in_view
+            .forced
             .iter()
-            .chain(self.off_screen.iter())
-            .filter_map(|id| self.forced.get(&id).map(|&count| (id, count)))
+            .filter_map(|(&id, &count)| {
+                (self.in_view.contains(id) || self.off_screen.contains(id)).then_some((id, count))
+            })
             .collect();
         self.take_pending();
         let mut updates: Vec<_> = self.updates().collect();
@@ -332,14 +493,14 @@ impl Schedule {
         if !std::mem::take(&mut self.pending) {
             return;
         }
-        self.clean.retain(|id| !self.off_screen.contains(id));
+        self.clean.remove_all(&self.off_screen);
         self.in_view.clear();
         self.off_screen.clear();
         self.presented = None;
     }
 
     pub fn dirty(&self, province: u32) -> bool {
-        !self.clean.contains(&province)
+        !self.clean.contains(province)
     }
 
     pub fn cleans(&self, province: u32) -> bool {
@@ -349,7 +510,12 @@ impl Schedule {
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         match provinces {
             None => self.clean.clear(),
-            Some(provinces) => self.clean.retain(|id| !provinces.contains(id)),
+            Some(provinces) if !self.clean.is_empty() => {
+                for &id in provinces {
+                    self.clean.remove(id);
+                }
+            }
+            Some(_) => {}
         }
     }
 }
@@ -446,6 +612,9 @@ mod tests {
             if frame % 7 != 0 {
                 assert_eq!(retained.take_pending(), tree.take_pending());
             }
+            let bound = 18 * (boxes.len() + 1) + 36;
+            assert!(retained.storage_slots() <= bound);
+            assert!(tree.storage_slots() <= bound);
         }
     }
 
@@ -815,5 +984,138 @@ mod tests {
         assert!(!schedule.forced.contains_key(&88));
         schedule.present(&bounds, camera, [64, 64], 3.0);
         assert_eq!(schedule.update(88), None);
+    }
+
+    fn assert_province_set_invariants(set: &ProvinceSet) {
+        if set.occupied.is_empty() {
+            assert!(set.slots.iter().all(|slot| slot.key == EMPTY));
+            return;
+        }
+        assert!(set.slots.len().is_power_of_two() && set.slots.len() >= 8);
+        assert!(set.occupied.len() * 2 <= set.slots.len());
+        let non_empty = set
+            .slots
+            .iter()
+            .filter(|slot| slot.key != EMPTY)
+            .count();
+        assert_eq!(non_empty, set.occupied.len());
+        for (pos, &slot) in set.occupied.iter().enumerate() {
+            let entry = set.slots[slot as usize];
+            assert_ne!(entry.key, EMPTY);
+            assert_ne!(entry.bits, 0);
+            assert_eq!(entry.pos as usize, pos);
+            assert_eq!(set.find_slot(entry.key), Some(slot as usize));
+        }
+    }
+
+    #[test]
+    fn province_set_matches_btree_across_extremes_collisions_and_clears() {
+        let mut state = 0x9e37_79b9u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let universe: Vec<u32> = [
+            0,
+            1,
+            63,
+            64,
+            65,
+            127,
+            128,
+            4_000_000_011,
+            u32::MAX - 65,
+            u32::MAX - 64,
+            u32::MAX - 1,
+            u32::MAX,
+        ]
+        .into_iter()
+        .chain((0..96u32).map(|index| index.wrapping_mul(100_019) + 7))
+        .chain((0..64u32).map(|index| index << 10))
+        .collect();
+        let mut set = ProvinceSet::default();
+        let mut oracle = BTreeSet::new();
+        for step in 0..1_500u32 {
+            let roll = next();
+            let id = universe[roll as usize % universe.len()];
+            match (roll >> 8) % 8 {
+                0..=3 => {
+                    assert_eq!(set.insert(id), oracle.insert(id), "step {step} id {id}");
+                }
+                4..=5 => {
+                    set.remove(id);
+                    oracle.remove(&id);
+                }
+                6 => {
+                    let mut removed = ProvinceSet::default();
+                    for _ in 0..(roll >> 16) % 12 {
+                        let victim = universe[next() as usize % universe.len()];
+                        removed.insert(victim);
+                        oracle.remove(&victim);
+                    }
+                    assert_province_set_invariants(&removed);
+                    set.remove_all(&removed);
+                }
+                _ => {
+                    set.clear();
+                    oracle.clear();
+                }
+            }
+            assert_province_set_invariants(&set);
+            assert_eq!(set.is_empty(), oracle.is_empty());
+            let mut reverse = ProvinceSet::default();
+            for &member in oracle.iter().rev() {
+                reverse.insert(member);
+            }
+            assert_eq!(set, reverse);
+            assert_eq!(set.iter().collect::<BTreeSet<_>>(), oracle);
+            for &probe in &[0, 63, 64, u32::MAX - 1, u32::MAX, id] {
+                assert_eq!(set.contains(probe), oracle.contains(&probe));
+            }
+            assert!(
+                set.slot_capacity() <= (4 * universe.len()).max(8),
+                "step {step}: slot capacity {} exceeded sparse bound",
+                set.slot_capacity()
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_high_ids_keep_schedule_storage_bounded_to_active_provinces() {
+        let ids = [0, 1, 100_019, 4_000_000_011, u32::MAX - 1, u32::MAX];
+        let mut schedule = Schedule::default();
+        schedule.set_selected(BTreeSet::from([u32::MAX]));
+        for step in 0..250u32 {
+            let steady = step % 50 == 49;
+            schedule.advance(ids, |id| (id ^ step).is_multiple_of(3), steady);
+            if step % 17 == 0 {
+                let (frame, restore) = schedule.take_frame().expect("pending advance");
+                assert!(
+                    frame.updates().iter().all(|&(id, _)| ids.contains(&id)),
+                    "step {step}"
+                );
+                schedule.untake_frame(restore);
+            }
+            if step % 23 == 0 {
+                schedule.cancel_pending();
+            } else {
+                assert!(schedule.take_pending());
+            }
+            if step % 31 == 0 {
+                schedule.reset(Some(&BTreeSet::from([u32::MAX, 0])));
+            }
+            if step % 71 == 0 {
+                schedule.reset(None);
+            }
+            let bound = 18 * ids.len() + 36;
+            assert!(
+                schedule.storage_slots() <= bound,
+                "step {step}: schedule storage {} exceeded bound {bound}",
+                schedule.storage_slots()
+            );
+        }
+        assert!(schedule.storage_slots() <= 18 * ids.len() + 36);
     }
 }
