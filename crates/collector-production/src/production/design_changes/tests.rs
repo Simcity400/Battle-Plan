@@ -1579,3 +1579,27 @@ fn stat_timing_quiet_refuses_when_design_hooks_are_disabled() {
     assert!(reported.by_lane[4] >= 1);
     assert!(reported.total_withheld >= 1);
 }
+
+#[test]
+fn stat_timing_quiet_detects_design_mio_read_between_and_during_reads() {
+    if !isolated() {
+        return;
+    }
+    static DURING_WAS_QUIET: AtomicBool = AtomicBool::new(false);
+    unsafe extern "system-unwind" fn original(_: usize, _: usize, _: usize, _: usize) -> usize {
+        DURING_WAS_QUIET.store(stat_timing_quiet().is_ok(), Ordering::SeqCst);
+        0
+    }
+    ENABLED.store(true, Ordering::Release);
+    ACTIVE.store(0, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
+    let callback = collector_observers::world_input_changes::design_mio_read_for_test(original);
+    let before = stat_timing_quiet().expect("quiet before design_mio_read");
+    DURING_WAS_QUIET.store(true, Ordering::SeqCst);
+    unsafe { callback(0x1000, 0, 0, 0) };
+    let after = stat_timing_quiet().expect("quiet after design_mio_read");
+    ENABLED.store(false, Ordering::Release);
+    collector_observers::world_input_changes::set_design_watch_enabled_for_test(false);
+    assert!(!DURING_WAS_QUIET.load(Ordering::SeqCst));
+    assert_ne!(before, after);
+}

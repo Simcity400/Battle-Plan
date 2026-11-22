@@ -277,11 +277,17 @@ pub fn read_rocket_spending(
     match instant {
         Some(0) => tick.spent_raw = speed,
         Some(_) => {
-            let cost = variant.and_then(|variant| {
+            let stat = variant.and_then(|variant| {
                 cequipment_variant::verified_cached_stat(memory, base, variant, 9, witness).ok()
             });
-            if let Some(cost) = cost {
-                tick.instant_raw = speed.max(cost);
+            if let Some(stat) = stat.filter(|stat| {
+                stat.variant_id == tick.variant
+                    && field(ROCKET_VARIANT)
+                        .and_then(|address| read::<u64>(memory, address))
+                        .and_then(|address| usize::try_from(address).ok())
+                        == variant
+            }) {
+                tick.instant_raw = speed.max(stat.value);
             } else {
                 tick.failure = RocketFailure::Instant;
             }

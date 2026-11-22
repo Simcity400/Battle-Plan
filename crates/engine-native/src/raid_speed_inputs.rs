@@ -118,8 +118,11 @@ fn transports(
         if flags & AIR_TRANSPORT == 0 {
             continue;
         }
-        let speed = cequipment_variant::verified_cached_stat(memory, base, variant, 4, witness)?;
-        if speed < 0 {
+        let stat = cequipment_variant::verified_cached_stat(memory, base, variant, 4, witness)?;
+        if stat.classifier_flags & AIR_TRANSPORT == 0 {
+            return Err("raid transport classifier changed during read");
+        }
+        if stat.value < 0 {
             return Err("raid transport speed stat negative");
         }
         *required = required
@@ -127,7 +130,7 @@ fn transports(
             .ok_or("raid transport count overflow")?;
         arena.ensure(*required)?;
         if let Some(slot) = arena.get_mut(*len) {
-            *slot = speed;
+            *slot = stat.value;
             *len += 1;
         }
         found += 1;
@@ -620,8 +623,8 @@ mod tests {
 
     struct QuietTestWitness;
     impl cequipment_variant::StatWitness for QuietTestWitness {
-        fn quiet(&self) -> Result<(u64, u64), &'static str> {
-            Ok((1, 7))
+        fn quiet(&self) -> Result<cequipment_variant::QuietToken, &'static str> {
+            Ok(cequipment_variant::QuietToken::new(1, 7))
         }
     }
 
@@ -704,6 +707,51 @@ mod tests {
             run(&memory).0.outcome,
             Outcome::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn raid_transport_refuses_variant_replaced_with_non_transport_before_stat_verification() {
+        use std::cell::Cell;
+
+        struct MutatingClassifier {
+            image: Image,
+            classifier_reads: Cell<usize>,
+        }
+
+        impl Memory for MutatingClassifier {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if !self.image.copy(address, destination) {
+                    return false;
+                }
+                if address == TRANSPORT + cequipment_variant::CLASSIFIER_FLAGS
+                    && destination.len() == 8
+                {
+                    let reads = self.classifier_reads.get();
+                    self.classifier_reads.set(reads + 1);
+                    if reads >= 1 {
+                        destination.copy_from_slice(&0x20_u64.to_le_bytes());
+                    }
+                }
+                true
+            }
+        }
+
+        let memory = MutatingClassifier {
+            image: fixture(),
+            classifier_reads: Cell::new(0),
+        };
+        let mut rows = vec![Row::default(); 2];
+        let mut arena = vec![0; 4];
+        let result = walk(
+            &memory,
+            0,
+            GS,
+            &DefinitionMemo::default(),
+            &mut rows,
+            &mut arena,
+            &QuietTestWitness,
+        );
+        assert!(matches!(result.outcome, Outcome::Unavailable { .. }));
     }
 
     #[test]

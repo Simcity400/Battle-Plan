@@ -40,8 +40,8 @@ impl Memory for World {
 
 struct QuietTestWitness;
 impl cequipment_variant::StatWitness for QuietTestWitness {
-    fn quiet(&self) -> Result<(u64, u64), &'static str> {
-        Ok((1, 7))
+    fn quiet(&self) -> Result<cequipment_variant::QuietToken, &'static str> {
+        Ok(cequipment_variant::QuietToken::new(1, 7))
     }
 }
 
@@ -250,4 +250,47 @@ fn rocket_authenticates_owner_backlink_and_both_receiver_identities() {
             (0, 0, RocketFailure::Country)
         );
     }
+}
+
+#[test]
+fn rocket_instant_refuses_variant_replaced_between_identity_and_cost_read() {
+    use std::cell::Cell;
+
+    struct ReplacingWorld {
+        world: World,
+        identity_reads: Cell<usize>,
+    }
+
+    impl Memory for ReplacingWorld {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if !self.world.copy(address, output) {
+                return false;
+            }
+            if address == VARIANT && output.len() == 16 {
+                let reads = self.identity_reads.get();
+                self.identity_reads.set(reads + 1);
+                if reads >= 1 {
+                    let replacement: u64 = 0x9a_0000_0046;
+                    output[8..16].copy_from_slice(&replacement.to_le_bytes());
+                }
+            }
+            true
+        }
+    }
+
+    let mut world = World::new();
+    world.instant = Some(1);
+    world.word(
+        DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+        777_000,
+    );
+    world.word(VARIANT + cequipment_variant::BUILD_COST, 777_000);
+    world.word(VARIANT + cequipment_variant::BUILD_COST_IC_STAT, 777_000);
+    let replacing = ReplacingWorld {
+        world,
+        identity_reads: Cell::new(0),
+    };
+    let tick = read_rocket_spending(&replacing, BASE, ROCKET, &QuietTestWitness).unwrap();
+    assert_eq!(tick.failure, RocketFailure::Instant);
+    assert_eq!(tick.instant_raw, 0);
 }

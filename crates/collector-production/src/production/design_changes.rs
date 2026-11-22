@@ -283,20 +283,41 @@ static STAT_WITHHELD_BY_LANE: [AtomicU64; native::STAT_LANE_COUNT] =
     [const { AtomicU64::new(0) }; native::STAT_LANE_COUNT];
 static LAST_STAT_WITHHELD: Mutex<Option<(&'static str, &'static str)>> = Mutex::new(None);
 
-pub(super) fn stat_timing_quiet() -> Result<(u64, u64), &'static str> {
+pub(super) fn stat_timing_quiet() -> Result<native::QuietToken, &'static str> {
     if native::mutations::WRITER_AUDIT_REFUSAL.is_some() {
         return Err("variant stat writer audit failed");
     }
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
+    if !enabled() {
+        return Err("variant stat writer hooks disabled");
+    }
+    if active() != 0 {
+        return Err("variant stat writer active");
+    }
+    let Some((world_epoch, world_revision)) =
+        collector_observers::world_input_changes::design_quiet()
+    else {
+        return Err(
+            if collector_observers::world_input_changes::design_forwarder_active() != 0 {
+                "variant stat writer active"
+            } else {
+                "variant stat writer hooks disabled"
+            },
+        );
+    };
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let revision = REVISION.load(Ordering::SeqCst);
+    if active() != 0 {
         return Err("variant stat writer active");
     }
     if !enabled() {
         return Err("variant stat writer hooks disabled");
     }
-    Ok((
-        EPOCH.load(Ordering::Acquire),
-        REVISION.load(Ordering::Acquire),
-    ))
+    Ok(native::QuietToken {
+        epoch,
+        revision,
+        world_epoch,
+        world_revision,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -357,7 +378,7 @@ pub fn stat_witness_status() -> impl serde::Serialize {
 pub(super) struct StatLaneWitness;
 
 impl native::StatWitness for StatLaneWitness {
-    fn quiet(&self) -> Result<(u64, u64), &'static str> {
+    fn quiet(&self) -> Result<native::QuietToken, &'static str> {
         stat_timing_quiet()
     }
     fn record_withheld(&mut self, lane: usize, reason: &'static str) {

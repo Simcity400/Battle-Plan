@@ -666,8 +666,34 @@ pub const AIRCRAFT_DESIGNER_PLANE_MASK: u64 = 0x1d00_26fc_00;
 pub const BY_BLOOD_ALONE_MASK: u32 = 0x0000_0100;
 const DLC_FEATURE_MASK_RVA: Rva = crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuietToken {
+    pub epoch: u64,
+    pub revision: u64,
+    pub world_epoch: u64,
+    pub world_revision: u64,
+}
+
+impl QuietToken {
+    pub const fn new(epoch: u64, revision: u64) -> Self {
+        Self {
+            epoch,
+            revision,
+            world_epoch: 0,
+            world_revision: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VerifiedStat {
+    pub variant_id: u64,
+    pub classifier_flags: u64,
+    pub value: i64,
+}
+
 pub trait StatWitness {
-    fn quiet(&self) -> Result<(u64, u64), &'static str> {
+    fn quiet(&self) -> Result<QuietToken, &'static str> {
         Err("variant stat writer witness unavailable")
     }
     fn record_withheld(&mut self, _lane: usize, _reason: &'static str) {}
@@ -680,8 +706,8 @@ struct TestQuietWitness;
 
 #[cfg(test)]
 impl StatWitness for TestQuietWitness {
-    fn quiet(&self) -> Result<(u64, u64), &'static str> {
-        Ok((0, 0))
+    fn quiet(&self) -> Result<QuietToken, &'static str> {
+        Ok(QuietToken::new(0, 0))
     }
 }
 
@@ -749,6 +775,11 @@ impl WitnessSites {
             dlc_mask: None,
             thrust_factor: None,
         }
+    }
+
+    fn clear_live_operands(&mut self) {
+        self.dlc_mask = None;
+        self.thrust_factor = None;
     }
 
     fn dlc_mask(&mut self, memory: &impl Memory, base: usize) -> Option<u32> {
@@ -1226,16 +1257,23 @@ fn compute_modified_lanes(
             }
         }
     }
+    let mut lane_errors: [Option<&'static str>; STAT_LANE_COUNT] = [None; STAT_LANE_COUNT];
     if type_rel_bonuses != 0 {
-        let mut rel_acc = acc[5];
-        rel_acc.add = rel_acc
-            .add
-            .checked_add(base_stats[5].ok_or("variant definition base stat unreadable")?)
-            .ok_or("variant stat arithmetic overflow")?;
-        let rel = rel_acc
-            .finalize()
-            .ok_or("variant stat arithmetic overflow")?
-            .clamp(0, STAT_FIXED_ONE);
+        let rel = match base_stats[5] {
+            Some(base_rel) => {
+                let mut rel_acc = acc[5];
+                rel_acc
+                    .add
+                    .checked_add(base_rel)
+                    .and_then(|add| {
+                        rel_acc.add = add;
+                        rel_acc.finalize()
+                    })
+                    .map(|v| v.clamp(0, STAT_FIXED_ONE))
+                    .ok_or("variant stat arithmetic overflow")
+            }
+            None => Err("variant definition base stat unreadable"),
+        };
         let bonuses = stat_pair_array(
             memory,
             meta.definition,
@@ -1250,30 +1288,52 @@ fn compute_modified_lanes(
                 "variant stat reliability bonus array unreadable",
             )?;
             if let Some(lane) = lane_for_stat_index(stat_idx) {
-                let scaled = i128::from(value)
-                    .checked_mul(i128::from(rel))
-                    .ok_or("variant stat arithmetic overflow")?
-                    / i128::from(STAT_FIXED_ONE);
-                let delta = i64::try_from(scaled).map_err(|_| "variant stat arithmetic overflow")?;
-                acc[lane].add = acc[lane]
-                    .add
-                    .checked_add(delta)
-                    .ok_or("variant stat arithmetic overflow")?;
+                if value == 0 {
+                    continue;
+                }
+                match rel {
+                    Ok(rel) => {
+                        let updated = i128::from(value)
+                            .checked_mul(i128::from(rel))
+                            .map(|prod| prod / i128::from(STAT_FIXED_ONE))
+                            .and_then(|scaled| i64::try_from(scaled).ok())
+                            .and_then(|delta| acc[lane].add.checked_add(delta));
+                        match updated {
+                            Some(add) => acc[lane].add = add,
+                            None => {
+                                lane_errors[lane]
+                                    .get_or_insert("variant stat arithmetic overflow");
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        lane_errors[lane].get_or_insert(reason);
+                    }
+                }
             }
         }
     }
     let mut expected = [Err("variant definition base stat unreadable"); STAT_LANE_COUNT];
-    for ((dst, mut entry), base_val) in expected.iter_mut().zip(acc).zip(*base_stats) {
-        *dst = match base_val {
-            Some(base_val) => entry
-                .add
-                .checked_add(base_val)
-                .and_then(|add| {
-                    entry.add = add;
-                    entry.finalize()
-                })
-                .ok_or("variant stat arithmetic overflow"),
-            None => Err("variant definition base stat unreadable"),
+    for (((dst, mut entry), base_val), lane_error) in expected
+        .iter_mut()
+        .zip(acc)
+        .zip(*base_stats)
+        .zip(lane_errors)
+    {
+        *dst = if let Some(reason) = lane_error {
+            Err(reason)
+        } else {
+            match base_val {
+                Some(base_val) => entry
+                    .add
+                    .checked_add(base_val)
+                    .and_then(|add| {
+                        entry.add = add;
+                        entry.finalize()
+                    })
+                    .ok_or("variant stat arithmetic overflow"),
+                None => Err("variant definition base stat unreadable"),
+            }
         };
     }
     Ok(expected)
@@ -1330,13 +1390,16 @@ fn verify_lane(
             let is_aircraft_designer_plane =
                 (classifier_flags & AIRCRAFT_DESIGNER_PLANE_MASK) != 0;
             if is_aircraft_designer_plane {
-                let weight = expected[6]?;
-                let thrust = expected[7]?;
-                if weight < thrust {
-                    let Some(dlc_mask) = sites.dlc_mask(memory, base) else {
-                        return Err("variant stat dlc feature mask unreadable");
-                    };
-                    if (dlc_mask & BY_BLOOD_ALONE_MASK) != 0 {
+                let dlc_mask = sites.dlc_mask(memory, base);
+                if dlc_mask.is_some_and(|mask| (mask & BY_BLOOD_ALONE_MASK) == 0) {
+                    val == no_thrust
+                } else {
+                    let weight = expected[6]?;
+                    let thrust = expected[7]?;
+                    if weight < thrust {
+                        if dlc_mask.is_none() {
+                            return Err("variant stat dlc feature mask unreadable");
+                        }
                         let Some(factor) = sites.thrust_factor(memory, base) else {
                             return Err("variant stat thrust agility factor unreadable");
                         };
@@ -1354,8 +1417,6 @@ fn verify_lane(
                     } else {
                         val == no_thrust
                     }
-                } else {
-                    val == no_thrust
                 }
             } else {
                 val == no_thrust
@@ -1383,7 +1444,7 @@ pub fn verified_cached_stat(
     variant: usize,
     lane: usize,
     witness: &impl StatWitness,
-) -> Result<i64, &'static str> {
+) -> Result<VerifiedStat, &'static str> {
     if lane >= STAT_LANE_COUNT {
         return Err("variant stat lane index out of bounds");
     }
@@ -1392,7 +1453,7 @@ pub fn verified_cached_stat(
         .ok()
         .ok_or("variant vtable site unlocated")?;
     let header = read::<[u8; 16]>(memory, variant).ok_or("variant identity unreadable")?;
-    identity_header(expected_vtable, header)?;
+    let variant_id = identity_header(expected_vtable, header)?;
     let mut sites = WitnessSites::resolve(base);
     if !sites.rebuild_located {
         return Err("variant stat rebuild site unlocated");
@@ -1436,7 +1497,11 @@ pub fn verified_cached_stat(
     if before != after {
         return Err("variant stat writer crossed read");
     }
-    Ok(val)
+    Ok(VerifiedStat {
+        variant_id,
+        classifier_flags: meta.classifier_flags,
+        value: val,
+    })
 }
 
 pub trait OrganisationCarry {
@@ -1646,6 +1711,7 @@ pub fn walk_stats_carried(
         let mut lane_readable = [[false; STAT_LANE_COUNT]; BATCH];
         let mut metas: [Option<VariantStatMeta>; BATCH] = [None; BATCH];
         for sources in variants.chunks(BATCH) {
+            sites.clear_live_operands();
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
