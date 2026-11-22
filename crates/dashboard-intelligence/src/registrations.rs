@@ -16,3 +16,20 @@ dashboard_base::register_hourly_products! {
     INTELLIGENCE_PLACEMENTS_OPERATIVEPLACEMENTS => crate::products::intelligence::placements::OperativePlacements,
     INTELLIGENCE_ROSTER_OPERATIVESROSTER => crate::products::intelligence::roster::OperativesRoster,
 }
+
+dashboard_base::register_products! {
+    RAIDS_RAIDLOG => crate::products::raids::RaidLog,
+}
+
+dashboard_base::register_hourly_products! {
+    INTEL_COVERAGE_INTELNETWORKCOVERAGE => crate::products::intel_coverage::IntelNetworkCoverage,
+}
+
+use dashboard_base::{Source, products::at_hour::exact_panel};
+use dashboard_core::config::LoadContext;
+use dashboard_follow::panel::Panel;
+use serde_json::Value;
+
+type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
+
+pub const EXACT_AGENCYCOMPARISON: ExactPanel = exact_panel::<crate::products::intelligence::agencies::AgencyComparison>;

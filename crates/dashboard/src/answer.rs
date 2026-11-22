@@ -1,5 +1,5 @@
 
-use crate::Source;
+use dashboard_base::{Source, queries::{lifetimes, links, query}};
 use dashboard_core::config::LoadContext;
 use serde_json::Value;
 use std::{
@@ -16,59 +16,15 @@ pub const SERIES_PRODUCTS: &[&str] = &[
     dashboard_query::series::PARTS,
 ];
 
-pub use dashboard_base::queries::{index, lexicon, lifetimes, links, query, spellings, warm_lexicons};
-
 pub fn forget(source: &Source) {
     dashboard_base::queries::forget(source);
-    *source.state::<Runs>().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Runs::default();
-    crate::products::wars::forget(source);
-    crate::products::leaders::forget(source);
-    crate::products::feed::scope::forget(source);
-    crate::products::air_ledger::forget(source);
-}
-
-#[derive(Default)]
-struct Runs {
-    looks: std::collections::HashMap<u32, Arc<crate::products::styles::RunLooks>>,
-    groups: std::collections::HashMap<u32, Arc<crate::products::groups::RunGroups>>,
-    territory: std::collections::HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
-    army_mix: std::collections::HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
-    subjects: std::collections::HashMap<u32, Arc<crate::products::subjects::RunSubjects>>,
-    pacts: std::collections::HashMap<u32, Arc<crate::products::diplomacy::RunPacts>>,
-    production_lines: std::collections::HashMap<u32, Arc<crate::products::production::RunLines>>,
-    convoys: std::collections::HashMap<u32, Arc<crate::products::convoys::RunConvoys>>,
-    construction: std::collections::HashMap<u32, Arc<crate::products::construction::RunLines>>,
-    division_templates: std::collections::HashMap<u32, Arc<Vec<crate::products::division_log::SeenTemplate>>>,
-    wars: std::collections::HashMap<u32, Arc<crate::products::wars::RunWars>>,
-    casualty_ends: std::collections::HashMap<u32, Arc<crate::products::casualties::EndedCounters>>,
-}
-
-fn held<T>(source: &Source, pick: impl Fn(&mut Runs) -> &mut std::collections::HashMap<u32, Arc<T>>, run: u32, read: impl FnOnce() -> io::Result<T>) -> io::Result<Arc<T>> {
-    let state = source.state::<Runs>();
-    if let Some(found) = pick(&mut state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).get(&run) {
-        return Ok(Arc::clone(found));
-    }
-    let made = Arc::new(read()?);
-    pick(&mut state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).insert(run, Arc::clone(&made));
-    Ok(made)
-}
-
-pub fn looks(source: &Source, run: u32) -> io::Result<Arc<crate::products::styles::RunLooks>> {
-    held(source, |runs| &mut runs.looks, run, || crate::products::styles::run_looks(source.replay_ref().recording(), run))
-}
-
-pub fn groups(source: &Source, run: u32) -> io::Result<Arc<crate::products::groups::RunGroups>> {
-    held(source, |runs| &mut runs.groups, run, || crate::products::groups::run_groups(source.replay_ref().recording(), run))
-}
-
-pub fn territory(source: &Source, run: u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
-    held(source, |runs| &mut runs.territory, run, || crate::products::land_owners::holding(source.replay_ref().recording(), run))
-}
-
-pub fn army_mix(source: &Source, run: u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
-    held(source, |runs| &mut runs.army_mix, run, || {
-        dashboard_query::cost::lifetimes(source.replay_ref().recording(), run, replay_data::rows::TableId::ArmyMix)
-    })
+    dashboard_world::forget(source);
+    dashboard_land::forget(source);
+    dashboard_wars::forget(source);
+    dashboard_production::forget(source);
+    dashboard_economy::forget(source);
+    dashboard_politics::forget(source);
+    dashboard_air::forget(source);
 }
 
 const KEPT_LIFETIMES: [replay_data::rows::TableId; 9] = [
@@ -82,82 +38,6 @@ const KEPT_LIFETIMES: [replay_data::rows::TableId; 9] = [
     replay_data::rows::TableId::UnitLeaders,
     replay_data::rows::TableId::ProductionTypeTotals,
 ];
-
-
-
-pub fn subjects(source: &Source, run: u32) -> io::Result<Arc<crate::products::subjects::RunSubjects>> {
-    held(source, |runs| &mut runs.subjects, run, || crate::products::subjects::run_subjects(source.replay_ref().recording(), run))
-}
-
-pub fn pacts(source: &Source, run: u32) -> io::Result<Arc<crate::products::diplomacy::RunPacts>> {
-    held(source, |runs| &mut runs.pacts, run, || crate::products::diplomacy::run_pacts(source.replay_ref().recording(), run))
-}
-
-pub fn production_lines(source: &Source, run: u32) -> io::Result<Arc<crate::products::production::RunLines>> {
-    held(source, |runs| &mut runs.production_lines, run, || crate::products::production::run_lines(source.replay_ref().recording(), run))
-}
-
-#[derive(Clone)]
-pub struct ProductionIndex {
-    replay: Arc<replay::campaign::Replay>,
-    state: Arc<std::sync::Mutex<Runs>>,
-}
-
-impl ProductionIndex {
-    pub fn of(source: &Source) -> Self {
-        Self { replay: source.replay(), state: source.state::<Runs>() }
-    }
-
-    pub fn run(&self, run: u32) -> io::Result<Arc<crate::products::production::RunLines>> {
-        if let Some(found) = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).production_lines.get(&run) {
-            return Ok(Arc::clone(found));
-        }
-        let made = Arc::new(crate::products::production::run_lines(self.replay.recording(), run)?);
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).production_lines.insert(run, Arc::clone(&made));
-        Ok(made)
-    }
-}
-
-#[derive(Clone)]
-pub struct ConvoyIndex {
-    replay: Arc<replay::campaign::Replay>,
-    state: Arc<std::sync::Mutex<Runs>>,
-}
-
-impl ConvoyIndex {
-    pub fn of(source: &Source) -> Self {
-        Self { replay: source.replay(), state: source.state::<Runs>() }
-    }
-
-    pub fn run(&self, run: u32) -> io::Result<Arc<crate::products::convoys::RunConvoys>> {
-        if let Some(found) = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).convoys.get(&run) {
-            return Ok(Arc::clone(found));
-        }
-        let made = Arc::new(crate::products::convoys::run_convoys(self.replay.recording(), run)?);
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).convoys.insert(run, Arc::clone(&made));
-        Ok(made)
-    }
-}
-
-pub fn convoys(source: &Source, run: u32) -> io::Result<Arc<crate::products::convoys::RunConvoys>> {
-    held(source, |runs| &mut runs.convoys, run, || crate::products::convoys::run_convoys(source.replay_ref().recording(), run))
-}
-
-pub fn construction(source: &Source, run: u32) -> io::Result<Arc<crate::products::construction::RunLines>> {
-    held(source, |runs| &mut runs.construction, run, || crate::products::construction::run_lines(source, run))
-}
-
-pub fn division_templates(source: &Source, run: u32) -> io::Result<Arc<Vec<crate::products::division_log::SeenTemplate>>> {
-    held(source, |runs| &mut runs.division_templates, run, || crate::products::division_log::run_templates(source.replay_ref().recording(), run))
-}
-
-pub fn wars(source: &Source, run: u32) -> io::Result<Arc<crate::products::wars::RunWars>> {
-    held(source, |runs| &mut runs.wars, run, || crate::products::wars::run_wars(source.replay_ref().recording(), run))
-}
-
-pub fn casualty_ends(source: &Source, run: u32) -> io::Result<Arc<crate::products::casualties::EndedCounters>> {
-    held(source, |runs| &mut runs.casualty_ends, run, || crate::products::casualties::run_ends(source, run))
-}
 
 pub fn open_all(source: &Source) -> io::Result<()> {
     if let Some(timelines) = source.replay_ref().timelines() {
@@ -194,19 +74,19 @@ fn build_all(parts: Vec<Part<'_>>) -> io::Result<()> {
 
 fn run_parts(source: &Source, run: u32) -> Vec<Part<'_>> {
     let mut parts: Vec<Part<'_>> = vec![
-        Box::new(move || looks(source, run).map(drop)),
-        Box::new(move || groups(source, run).map(drop)),
-        Box::new(move || territory(source, run).map(drop)),
-        Box::new(move || army_mix(source, run).map(drop)),
+        Box::new(move || dashboard_world::products::styles::cached_looks(source, run).map(drop)),
+        Box::new(move || dashboard_world::products::groups::cached_groups(source, run).map(drop)),
+        Box::new(move || dashboard_world::products::land_owners::cached_territory(source, run).map(drop)),
+        Box::new(move || dashboard_land::products::army::cached_army_mix(source, run).map(drop)),
         Box::new(move || links(source, run).map(drop)),
-        Box::new(move || subjects(source, run).map(drop)),
-        Box::new(move || pacts(source, run).map(drop)),
-        Box::new(move || production_lines(source, run).map(drop)),
-        Box::new(move || convoys(source, run).map(drop)),
-        Box::new(move || construction(source, run).map(drop)),
-        Box::new(move || crate::products::economy::market::history::run_ended(source, run).map(drop)),
-        Box::new(move || wars(source, run).map(drop)),
-        Box::new(move || casualty_ends(source, run).map(drop)),
+        Box::new(move || dashboard_world::products::subjects::cached_subjects(source, run).map(drop)),
+        Box::new(move || dashboard_wars::products::diplomacy::cached_pacts(source, run).map(drop)),
+        Box::new(move || dashboard_production::products::production::cached_production_lines(source, run).map(drop)),
+        Box::new(move || dashboard_economy::products::convoys::cached_convoys(source, run).map(drop)),
+        Box::new(move || dashboard_production::products::construction::cached_construction(source, run).map(drop)),
+        Box::new(move || dashboard_economy::products::economy::market::history::run_ended(source, run).map(drop)),
+        Box::new(move || dashboard_wars::products::wars::cached_wars(source, run).map(drop)),
+        Box::new(move || dashboard_wars::products::casualties::cached_casualty_ends(source, run).map(drop)),
     ];
     parts.extend(KEPT_LIFETIMES.map(|table| -> Part<'_> { Box::new(move || lifetimes(source, run, table).map(drop)) }));
     parts
@@ -219,9 +99,9 @@ pub fn open(source: &Source, branch: u64) -> io::Result<()> {
     runs.dedup();
     build_all(runs.into_iter().flat_map(|run| run_parts(source, run)).collect())?;
     build_all(vec![
-        Box::new(|| crate::products::air_aces::history(source, branch).map(drop)),
-        Box::new(|| crate::products::air_superiority::index::index(source, branch).map(drop)),
-        Box::new(|| crate::products::intelligence::decryption::open(source, branch)),
+        Box::new(|| dashboard_air::products::air_aces::history(source, branch).map(drop)),
+        Box::new(|| dashboard_air::products::air_superiority::index::index(source, branch).map(drop)),
+        Box::new(|| dashboard_intelligence::products::intelligence::decryption::open(source, branch)),
     ])
 }
 
@@ -236,15 +116,15 @@ pub fn answers(product: &str, params: &Value) -> bool {
     }
     if SERIES_PRODUCTS.contains(&product) {
         return kind(params).is_some_and(|kind| {
-            dashboard_declare::series(kind).is_some() || crate::products::army::SERIES == kind
-                || (product == dashboard_query::tile::PRODUCT && crate::products::player_apm::head::SERIES == kind)
+            dashboard_declare::series(kind).is_some() || dashboard_land::products::army::SERIES == kind
+                || (product == dashboard_query::tile::PRODUCT && dashboard_players::products::player_apm::head::SERIES == kind)
         });
     }
     crate::products::MOVED.contains(&product)
 }
 
 pub fn panel(source: &Source, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
-    use crate::products::at_hour::{dated_panel_of, panel_of};
+    use crate::panel::{dated_panel_of, panel_of};
     dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
 }
 
@@ -253,7 +133,7 @@ pub fn follows(product: &str) -> bool {
 }
 
 pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
-    crate::metadata::check_cancel(cancelled)?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
     if follows(product) {
         return dashboard_follow::registry::registry().answer_heads(
             source.path(),
@@ -264,24 +144,24 @@ pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadCont
                 Ok(dashboard_follow::Identity { holders: Arc::clone(&query.holders), timeline: Arc::clone(&query.timeline) })
             },
             Box::new(|asked| panel(source, context, asked)),
-            Box::new(|asked| crate::products::player_apm::head::head_of(source, asked)),
+            Box::new(|asked| dashboard_players::products::player_apm::head::head_of(source, asked)),
         );
     }
     if SERIES_PRODUCTS.contains(&product) {
         let branch = dashboard_query::branch(params)?;
         let query = query(source, branch)?;
-        if kind(params) == Some(crate::products::player_apm::head::SERIES) {
-            return Ok(serde_json::to_value(crate::products::player_apm::head::tile(source, branch, query.timeline.last, params)?)?);
+        if kind(params) == Some(dashboard_players::products::player_apm::head::SERIES) {
+            return Ok(serde_json::to_value(dashboard_players::products::player_apm::head::tile(source, branch, query.timeline.last, params)?)?);
         }
-        if kind(params) == Some(crate::products::army::SERIES) {
+        if kind(params) == Some(dashboard_land::products::army::SERIES) {
             if product == dashboard_query::tile::PRODUCT {
-                let line = crate::products::army::tile_line(&query, params)?;
+                let line = dashboard_land::products::army::tile_line(&query, params)?;
                 return Ok(serde_json::to_value(dashboard_query::tile::reply(&line, &dashboard_query::branch(params)?.to_string(), params)?)?);
             }
-            return crate::products::army::series(source, &query, product, params, context);
+            return dashboard_land::products::army::series(source, &query, product, params, context);
         }
-        if product == "series-next-change" && kind(params) == Some(crate::products::scalars::world_tension::SERIES) {
-            return crate::products::scalars::world_tension::next_change(&query, params);
+        if product == "series-next-change" && kind(params) == Some(dashboard_world::products::scalars::world_tension::SERIES) {
+            return dashboard_world::products::scalars::world_tension::next_change(&query, params);
         }
         return dashboard_query::series::answer(&query, product, params)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
@@ -313,5 +193,81 @@ mod tests {
         let failing: Vec<Part<'_>> = vec![Box::new(|| Ok(())), Box::new(|| Err(io::Error::other("a history could not be read"))), Box::new(|| Ok(()))];
         assert_eq!(build_all(failing).unwrap_err().to_string(), "a history could not be read");
         build_all(Vec::new()).unwrap();
+    }
+
+    #[test]
+    fn forgetting_the_dashboard_clears_every_cache() {
+        use dashboard_air::products::air_ledger;
+        use dashboard_base::{SourceKey, queries, test_fixtures::{replay, source}};
+        use dashboard_economy::products::convoys;
+        use dashboard_land::products::{army, division_log, leaders::LeadersContext};
+        use dashboard_politics::products::feed::scope;
+        use dashboard_production::products::{construction, production};
+        use dashboard_wars::products::{casualties, diplomacy, wars};
+        use dashboard_world::products::{groups, land_owners, styles, subjects};
+
+        fn warm<'a, T: 'a>(name: impl std::fmt::Display + 'a, read: impl Fn() -> Arc<T> + 'a) -> Box<dyn FnOnce() + 'a> {
+            let first = read();
+            assert!(Arc::ptr_eq(&first, &read()), "{name} should be warm");
+            Box::new(move || assert!(!Arc::ptr_eq(&first, &read()), "{name} should be cold"))
+        }
+
+        let hour = 100;
+        let branch = 1;
+        let frames = [hour, hour + 1].map(|hour| source(branch, hour, None));
+        let replay = replay(frames.into()).into_timelines(&Default::default()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(
+            SourceKey { source_id: "forget".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &cancelled,
+        ).unwrap();
+        let run = query(&source, branch).unwrap().timeline.stretches[0].run;
+        let load = LoadContext { content: None };
+        let leaders = LeadersContext::load(&source, &load).unwrap();
+        leaders.keep_test_verdict(run, hour);
+        answer(&source, "wars", &serde_json::json!({ "branchId": branch.to_string() }), &load, &cancelled).unwrap();
+        queries::spellings(&source, run, hour, &std::collections::BTreeSet::from([7])).unwrap();
+        scope::warm(&source, branch).unwrap();
+        air_ledger::warm_observed(&source, branch).unwrap();
+
+        let caches = [
+            warm("query index", || queries::index(&source)),
+            warm("links", || links(&source, run).unwrap()),
+            warm("lexicon", || queries::lexicon(&source, run).unwrap()),
+            warm("country looks", || styles::cached_looks(&source, run).unwrap()),
+            warm("country groups", || groups::cached_groups(&source, run).unwrap()),
+            warm("territory", || land_owners::cached_territory(&source, run).unwrap()),
+            warm("subjects", || subjects::cached_subjects(&source, run).unwrap()),
+            warm("army mix", || army::cached_army_mix(&source, run).unwrap()),
+            warm("division templates", || division_log::cached_division_templates(&source, run).unwrap()),
+            warm("wars", || wars::cached_wars(&source, run).unwrap()),
+            warm("diplomatic pacts", || diplomacy::cached_pacts(&source, run).unwrap()),
+            warm("casualty endings", || casualties::cached_casualty_ends(&source, run).unwrap()),
+            warm("production lines", || production::cached_production_lines(&source, run).unwrap()),
+            warm("construction", || construction::cached_construction(&source, run).unwrap()),
+            warm("convoys", || convoys::cached_convoys(&source, run).unwrap()),
+        ];
+        let histories = KEPT_LIFETIMES.map(|table| {
+            let source = &source;
+            warm(format!("{table:?}"), move || lifetimes(source, run, table).unwrap())
+        });
+        assert!(queries::has_cached_spellings(&source), "spellings should be warm");
+        assert!(leaders.has_cached_verdicts(run, hour), "leader verdicts should be warm");
+        assert!(wars::has_cached_walks(&source), "war walks should be warm");
+        assert_eq!(scope::kept(&source), [run], "feed scope should be warm");
+        assert_eq!(air_ledger::kept_observed(&source).len(), 2, "both air ledgers should be warm");
+
+        forget(&source);
+
+        assert!(!queries::has_cached_spellings(&source), "spellings should be cold");
+        assert!(!leaders.has_cached_verdicts(run, hour), "leader verdicts should be cold");
+        assert!(!wars::has_cached_walks(&source), "war walks should be cold");
+        assert!(scope::kept(&source).is_empty(), "feed scope should be cold");
+        assert!(air_ledger::kept_observed(&source).is_empty(), "air ledgers should be cold");
+        for check in caches.into_iter().chain(histories) {
+            check();
+        }
     }
 }

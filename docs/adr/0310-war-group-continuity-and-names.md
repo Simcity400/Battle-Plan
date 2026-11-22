@@ -10,4 +10,4 @@ Resolve goal, token, state and country naming values from the run histories at t
 
 Participation combines directional contributions and same-side deliveries at the selected hour, resolving countries through that hour's tags and links. Values use signed fixed5 decimal strings. Tests separate a relation's key order from group-side order, and vary a first goal, its token and an owner name at different hours to tie naming to recorded history.
 
-[Group evaluation](../../crates/dashboard/src/products/wars/native.rs) · [Continuity walk](../../crates/dashboard/src/products/wars/walk.rs) · [Names](../../crates/dashboard/src/products/wars/naming.rs) · [Participation](../../crates/dashboard/src/products/wars/participation.rs) · [Fixtures](../../crates/dashboard/src/products/wars/tests.rs)
+[Group evaluation](../../crates/dashboard-wars/src/products/wars/native.rs) · [Continuity walk](../../crates/dashboard-wars/src/products/wars/walk.rs) · [Names](../../crates/dashboard-wars/src/products/wars/naming.rs) · [Participation](../../crates/dashboard-wars/src/products/wars/participation.rs) · [Fixtures](../../crates/dashboard-wars/src/products/wars/tests.rs)

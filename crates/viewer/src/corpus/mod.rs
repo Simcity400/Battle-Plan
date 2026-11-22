@@ -99,8 +99,8 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
     if sounds_only && maps_only {
         return Err(invalid("give one of --sounds-only and --maps-only"));
     }
-    let config = dashboard::Config::load().ok();
-    let configured = |path: Option<PathBuf>, pick: fn(&dashboard::Config) -> &PathBuf| {
+    let config = dashboard_core::config::Config::load().ok();
+    let configured = |path: Option<PathBuf>, pick: fn(&dashboard_core::config::Config) -> &PathBuf| {
         path.or_else(|| config.as_ref().map(|config| pick(config).clone()))
             .filter(|path| !path.as_os_str().is_empty())
     };

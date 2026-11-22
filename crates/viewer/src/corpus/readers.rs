@@ -280,7 +280,7 @@ pub fn run(
         ),
     }
     log.read("dashboard.scripted_content", || {
-        dashboard::scripted_text::ScriptedContent::read(Arc::clone(&resolved), language.clone())
+        dashboard_text::scripted_text::ScriptedContent::read(Arc::clone(&resolved), language.clone())
             .map(|content| {
                 (
                     content.names,
@@ -731,7 +731,7 @@ fn map(
         }
     }
     log.read("dashboard.resource_bonuses", || {
-        dashboard::state_resources::resource_bonuses(defines)
+        dashboard_text::state_resources::resource_bonuses(defines)
     });
     let Some(data) = &map else {
         log.not_run(&["states", "province_graph.neighbor_states"], "map");

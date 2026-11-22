@@ -1,7 +1,7 @@
 
 use super::NativeHost;
 use crate::popout::PopOuts;
-use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
+use dashboard_core::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs, GilrsBuilder};
 use std::{collections::HashMap, thread, time::Duration};
 use tauri::{AppHandle, Manager};
