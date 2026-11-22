@@ -124,7 +124,8 @@ test('both groups complete sequentially and failure of either group fails test:u
 test('the production group runner reports actual Node test failures', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'hoi4-test-ui-results-'));
   try {
-    await writeFile(resolve(root, 'pass.test.mjs'), "import test from 'node:test'; test('synthetic pass', () => {});");
+    await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
+test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
@@ -135,13 +136,14 @@ const passed = await executeGroup({ files: ['pass.test.mjs'], concurrency: true 
 const passReport = reported;
 reported = '';
 const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output);
-console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported }));
+console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported, cwd: process.cwd() }));
 `);
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const { stdout } = await promisify(execFile)(process.execPath, [resolve(root, 'driver.mjs')], { env, timeout: driverTimeoutMs, windowsHide: true });
+    const { stdout } = await promisify(execFile)(process.execPath, [resolve(root, 'driver.mjs')], { env, cwd: repositoryRoot, timeout: driverTimeoutMs, windowsHide: true });
     const result = JSON.parse(stdout);
-    assert.equal(result.passed, 0);
+    assert.equal(resolve(result.cwd), resolve(repositoryRoot), 'the caller gets its own directory back');
+    assert.equal(result.passed, 0, result.passReport);
     assert.match(result.passReport, /synthetic pass/);
     assert.equal(result.failed, 1);
     assert.match(result.failureReport, /expected synthetic failure/);
