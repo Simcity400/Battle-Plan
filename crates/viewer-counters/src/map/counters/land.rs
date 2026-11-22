@@ -996,9 +996,12 @@ pub(super) struct JoinRules {
 
 impl JoinRules {
     pub(super) fn owners_join(self, countries: &Countries, rep: u32, candidate: u32) -> bool {
+        if rep == candidate {
+            return true;
+        }
         match self.color_mode {
-            CounterColorMode::Country => rep == candidate,
-            CounterColorMode::Allegiance => countries.side(rep) == countries.side(candidate),
+            CounterColorMode::Country => false,
+            CounterColorMode::Allegiance => countries.same_allegiance_group(rep, candidate),
         }
     }
 }
@@ -1114,7 +1117,7 @@ impl LandUnit<'_> {
         {
             return false;
         }
-        if countries.side(rep.owner) == Allegiance::Ours {
+        if countries.is_ours(rep.owner) {
             if rep.movement.map(|m| m.idle) != self.movement.map(|m| m.idle) {
                 return false;
             }
@@ -1143,7 +1146,7 @@ impl GunUnit {
         if self.name.is_empty() || self.name != first.name {
             return false;
         }
-        if countries.side(rep.owner) == Allegiance::Ours {
+        if countries.is_ours(rep.owner) {
             let idle = |action| matches!(action, 1 | 12);
             if self.join_action != first.join_action
                 && (idle(self.join_action) || idle(first.join_action))

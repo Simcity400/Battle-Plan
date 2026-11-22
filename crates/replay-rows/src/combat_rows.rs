@@ -1013,8 +1013,8 @@ pub fn land_combat_members<'a>(
 }
 typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
- { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (commander): U64, 4 => (scales[0]): I64, 5 => (scales[1]): I64, 6 => (scales[2]): I64, 7 => (scales[3]): I64, 8 => (context): Opaque, 9 => (width_terms): Opaque, 10 => (direction_group): I32, 11 => (exile): Opaque, 12 => (categories): U64, 13 => (reinforcement_speed): OptionalI64, 14 => (own): Opaque }, |row| { if row.side > 1 { return Err(invalid("invalid combat side")); }
-    if matches!(row.reinforcement_speed, Some(share) if !(0..=LandCombatDivisionRow::SPEED_SHARE_MAXIMUM).contains(&share)) { return Err(invalid("reserve speed share outside reinforcement bounds")); } Ok(()) });
+ { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (commander): U64, 4 => (scales[0]): I64, 5 => (scales[1]): I64, 6 => (scales[2]): I64, 7 => (scales[3]): I64, 8 => (context): Opaque, 9 => (width_terms): Opaque, 10 => (direction_group): I32, 11 => (exile): Opaque, 12 => (categories): U64, 13 => (reinforcement_speed): OptionalI64, 14 => (own): Opaque }, |row, mask| { if row.side > 1 { return Err(invalid("invalid combat side")); }
+    if mask & (1_u64 << 13) != 0 && matches!(row.reinforcement_speed, Some(share) if !(0..=LandCombatDivisionRow::SPEED_SHARE_MAXIMUM).contains(&share)) { return Err(invalid("reserve speed share outside reinforcement bounds")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -1080,7 +1080,12 @@ pub struct NavalCombatDetailsRow {
 }
 typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque, 5 => (custom_sea): Opaque, 6 => (custom_sea_error): U8 }, |row| { if row.custom_sea.as_ref().is_some_and(|sea| sea.len() % 2 != 0) { return Err(invalid("odd custom sea i16 bytes")); } else if row.custom_sea_error > 1 || (row.custom_sea.is_some() == (row.custom_sea_error != 0)) { return Err(invalid("custom sea capture status conflicts with values")); } Ok(()) });
+ { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque, 5 => (custom_sea): Opaque, 6 => (custom_sea_error): U8 }, |row, mask| {
+    if mask & (1_u64 << 5) != 0 && row.custom_sea.as_ref().is_some_and(|sea| sea.len() % 2 != 0) { return Err(invalid("odd custom sea i16 bytes")); }
+    if mask & (1_u64 << 6) != 0 && row.custom_sea_error > 1 { return Err(invalid("custom sea capture status conflicts with values")); }
+    if mask & ((1_u64 << 5) | (1_u64 << 6)) == ((1_u64 << 5) | (1_u64 << 6)) && (row.custom_sea.is_some() == (row.custom_sea_error != 0)) { return Err(invalid("custom sea capture status conflicts with values")); }
+    Ok(())
+ });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
