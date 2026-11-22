@@ -1433,6 +1433,7 @@ mod tests {
             })],
             instanced: 0,
             stream: None,
+            vertex_color_tint: None,
         }
     }
 

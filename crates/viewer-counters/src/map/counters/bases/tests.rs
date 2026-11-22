@@ -720,3 +720,146 @@ fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_no
         },
     );
 }
+
+#[test]
+fn merging_state_air_bases_preserves_unknown_occupancy_unless_known_positive() {
+    let link = |raw: u32| Some(raw);
+    let single_empty = wings_of(&WingInputs {
+        flags: &[],
+        flags_complete: true,
+        link: &link,
+        wings: &[],
+        wings_complete: true,
+        registrations: &[],
+        registrations_complete: true,
+        registrations_truncated: false,
+        bases: &[AirBaseFields {
+            id: 1,
+            state: Some(7),
+            kind: 0,
+            capacity: 200,
+        }],
+        ours: 1,
+    });
+    assert_eq!(single_empty[&(7, 0)].occupied, Some(false));
+    assert_eq!(single_empty[&(7, 0)].stationed, Some(false));
+    assert_eq!(single_empty[&(7, 0)].foreign, Some(false));
+
+    let single_unknown = wings_of(&WingInputs {
+        flags: &[],
+        flags_complete: true,
+        link: &link,
+        wings: &[],
+        wings_complete: false,
+        registrations: &[RegistrationFields {
+            base: 1,
+            slot: 2,
+            capacity_raw: 200,
+            wings: vec![99],
+        }],
+        registrations_complete: true,
+        registrations_truncated: false,
+        bases: &[AirBaseFields {
+            id: 1,
+            state: Some(7),
+            kind: 0,
+            capacity: 200,
+        }],
+        ours: 1,
+    });
+    assert_eq!(single_unknown[&(7, 0)].occupied, None);
+
+    for (first_id, second_id) in [(1, 2), (2, 1)] {
+        let empty_and_unknown = wings_of(&WingInputs {
+            flags: &[],
+            flags_complete: true,
+            link: &link,
+            wings: &[],
+            wings_complete: false,
+            registrations: &[RegistrationFields {
+                base: first_id,
+                slot: 2,
+                capacity_raw: 200,
+                wings: vec![99],
+            }],
+            registrations_complete: true,
+            registrations_truncated: false,
+            bases: &[
+                AirBaseFields {
+                    id: first_id,
+                    state: Some(7),
+                    kind: 0,
+                    capacity: 200,
+                },
+                AirBaseFields {
+                    id: second_id,
+                    state: Some(7),
+                    kind: 0,
+                    capacity: 200,
+                },
+            ],
+            ours: 1,
+        });
+        assert_eq!(
+            empty_and_unknown[&(7, 0)].occupied,
+            None,
+            "unknown occupancy must not collapse to Some(false) for ({first_id}, {second_id})"
+        );
+
+        let positive_and_unknown = wings_of(&WingInputs {
+            flags: &[],
+            flags_complete: true,
+            link: &link,
+            wings: &[WingFields {
+                id: 50,
+                owner: 2,
+                country_override: 0,
+                air_base: second_id,
+                base_override: 0,
+                planes: 10,
+            }],
+            wings_complete: false,
+            registrations: &[
+                RegistrationFields {
+                    base: first_id,
+                    slot: 2,
+                    capacity_raw: 200,
+                    wings: vec![99],
+                },
+                RegistrationFields {
+                    base: second_id,
+                    slot: 2,
+                    capacity_raw: 200,
+                    wings: vec![50],
+                },
+            ],
+            registrations_complete: true,
+            registrations_truncated: false,
+            bases: &[
+                AirBaseFields {
+                    id: first_id,
+                    state: Some(7),
+                    kind: 0,
+                    capacity: 200,
+                },
+                AirBaseFields {
+                    id: second_id,
+                    state: Some(7),
+                    kind: 0,
+                    capacity: 200,
+                },
+            ],
+            ours: 1,
+        });
+        assert_eq!(positive_and_unknown[&(7, 0)].occupied, Some(true));
+    }
+
+    assert_eq!(merge(Some(true), None), Some(true));
+    assert_eq!(merge(None, Some(true)), Some(true));
+    assert_eq!(merge(Some(true), Some(false)), Some(true));
+    assert_eq!(merge(Some(false), Some(true)), Some(true));
+    assert_eq!(merge(Some(false), Some(false)), Some(false));
+    assert_eq!(merge(Some(false), None), None);
+    assert_eq!(merge(None, Some(false)), None);
+    assert_eq!(merge(None, None), None);
+}

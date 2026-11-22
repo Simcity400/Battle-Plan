@@ -2533,3 +2533,229 @@ fn a_lead_builds_its_seconds_of_steps_past_the_head_sized_by_the_pace_and_stops_
     let capped = playhead.lead_held();
     assert!(capped.past < 30 && capped.bytes >= whole.bytes / 3, "stopped at its bytes, short of its steps: {capped:?}");
 }
+
+#[test]
+fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        None,
+    )
+    .unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    let mid = 8;
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0).min(mid);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= mid) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, mid).unwrap(), "playhead stopped before step {mid}");
+    }
+    playhead.wait_until(|| playhead.ring_len() == 4);
+    let published = super::lock(&playhead.shared.ring).next_seq();
+    playhead.wait_until(|| playhead.step_state().1 >= published);
+    assert!(playhead.newest().is_some_and(|newest| newest > mid));
+    let paused_dropped = playhead.consumer(reader);
+    let paused_id = paused_dropped.id;
+    drop(paused_dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(paused_id);
+        control.caught_up_at = None;
+    });
+    assert!(
+        !consumer.wait_step_after(playhead.step_state(), mid).unwrap(),
+        "a paused dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    let at_end = playhead.step_state();
+    assert!(!consumer.wait_step_after(at_end, last).unwrap(), "at end with all tables caught up and ring drained, wait_step_after reports exhausted");
+    let dropped = playhead.consumer(reader);
+    let dropped_id = dropped.id;
+    drop(dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(dropped_id);
+        control.caught_up_at = None;
+    });
+    assert!(
+        !consumer.wait_step_after(playhead.step_state(), last).unwrap(),
+        "a dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
+    let before_redeclare = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    assert!(
+        consumer.wait_step_after(before_redeclare, last).unwrap(),
+        "redeclaring table 1 at the last hour delivers a same-hour join step instead of reporting exhausted",
+    );
+    playhead.wait_until(|| {
+        playhead.step_state().1 > before_redeclare.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
+    let queued = playhead.step_state();
+    assert!(
+        consumer.wait_step_after(queued, last).unwrap(),
+        "a join step already queued in the ring is observed even when published_steps has not moved since",
+    );
+    let before_take = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "the same-hour join step carries table 1");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "once the join step is drained at end, wait_step_after reports exhausted again");
+}
+
+#[test]
+fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() {
+    #[derive(Default)]
+    struct HookGate {
+        state: std::sync::Mutex<(Option<usize>, bool, [bool; 3], bool)>,
+        changed: std::sync::Condvar,
+    }
+    struct OpenGate(Arc<HookGate>);
+    impl Drop for OpenGate {
+        fn drop(&mut self) {
+            let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.1 = true;
+            state.3 = true;
+            self.0.changed.notify_all();
+        }
+    }
+    let gate = Arc::new(HookGate::default());
+    let hook_gate = Arc::clone(&gate);
+    let hook: super::Hook = Box::new(move |step, _| {
+        for table in [1usize, 2] {
+            if step.table(table).is_some() {
+                let mut state = hook_gate.state.lock().unwrap();
+                if state.2[table] || state.3 {
+                    continue;
+                }
+                state.2[table] = true;
+                state.0 = Some(table);
+                state.1 = false;
+                hook_gate.changed.notify_all();
+                while !state.1 && !state.3 {
+                    state = hook_gate.changed.wait(state).unwrap();
+                }
+            }
+        }
+    });
+    let wait_hook = |target: usize| {
+        let mut state = gate.state.lock().unwrap();
+        while state.0 != Some(target) {
+            state = gate.changed.wait(state).unwrap();
+        }
+    };
+    let release_hook = || {
+        let mut state = gate.state.lock().unwrap();
+        state.1 = true;
+        gate.changed.notify_all();
+    };
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        Some(hook),
+    )
+    .unwrap();
+    let _open = OpenGate(Arc::clone(&gate));
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    wait_hook(1);
+    let before_t1_land = playhead.step_state();
+    playhead.redeclare(reader, every(&[0, 1, 2])).unwrap();
+    {
+        let mut control = super::lock(&playhead.shared.control);
+        release_hook();
+        while control.published_steps == before_t1_land.1 {
+            assert!(control.error.is_none(), "playhead errored while landing table 1: {:?}", control.error);
+            assert!(!control.stop, "playhead stopped while landing table 1");
+            control = playhead.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        assert_eq!(control.caught_up_at, None, "table 1's completion nudge did not clobber table 2's pending declaration");
+    }
+    wait_hook(2);
+    let before_take = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "table 1 landed while table 2 is still joining");
+    assert!(steps[before_take..].iter().all(|step| step.table(2).is_none()), "table 2 has not landed yet");
+    let after_t1 = playhead.step_state();
+    let opener = {
+        let gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            let mut state = gate.state.lock().unwrap();
+            state.1 = true;
+            gate.changed.notify_all();
+        })
+    };
+    assert!(consumer.wait_step_after(after_t1, last).unwrap(), "wait_step_after waits for table 2 instead of reporting exhausted");
+    opener.join().unwrap();
+    playhead.wait_until(|| {
+        playhead.step_state().1 > after_t1.1
+            && playhead.held().2.joins_open == 0
+            && playhead.held().2.declarations_applied == playhead.declarations()
+    });
+    let before_t2 = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_t2..].iter().any(|step| step.table(2).is_some()), "table 2 landed after release");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "after both joins drain at end, wait_step_after reports exhausted");
+
+    let mut stepper = super::Stepper::new(Arc::clone(&playhead.shared), None, Vec::new());
+    stepper.epoch = playhead.epoch();
+    stepper.selection_seen = playhead.declarations();
+    let mut control = super::lock(&playhead.shared.control);
+    let original_selection = control.selection;
+    control.caught_up_at = None;
+    control.selection = stepper.selection_seen + 1;
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "newer selection blocks setting caught_up_at");
+    control.selection = original_selection;
+    control.seek = Some((0, stepper.epoch + 1));
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending seek blocks setting caught_up_at");
+    control.seek = None;
+    control.lands.push(0);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "pending land blocks setting caught_up_at");
+    control.lands.clear();
+    stepper.epoch = playhead.epoch().wrapping_add(1);
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, None, "mismatched epoch blocks setting caught_up_at");
+    stepper.epoch = playhead.epoch();
+    stepper.publish_caught_up(&mut control, Some(last));
+    assert_eq!(control.caught_up_at, Some(last), "current control state accepts caught_up_at");
+}

@@ -808,7 +808,7 @@ impl Model {
 }
 
 fn area_bytes(area: &Area) -> usize {
-    let name_bytes = |name: &WorldName| name.key.capacity() + name.text.capacity() + name.pages.capacity() * 8 + name.corners.capacity() * 12 + name.uvs.capacity() * 16 + 96;
+    let name_bytes = |name: &WorldName| name.key.capacity() + name.text.capacity() + name.pages.capacity() * 8 + name.corners.capacity() * 12 + name.uvs.capacity() * 16 + name.colors.capacity() * 16 + 96;
     area.members.len() * 8
         + area.tag.as_ref().map_or(0, String::capacity)
         + area.text.as_ref().map_or_else(String::capacity, String::capacity)

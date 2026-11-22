@@ -780,7 +780,11 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
     Ok(minimum.filter(|&hours| hours > 0))
 }
 
-fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, String> {
+fn next_location(
+    loc: &Localisation,
+    hours: Option<i32>,
+    estimated: bool,
+) -> Result<String, String> {
     let Some(hours) = hours else {
         return Ok(String::new());
     };
@@ -800,6 +804,9 @@ fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, Strin
             ],
         )?
     };
+    if estimated && !text.is_empty() {
+        return Ok(format!("{text}{}\n\n", counter_eta::ESTIMATED_SUFFIX));
+    }
     Ok(format!("{text}\n\n"))
 }
 
@@ -1120,7 +1127,7 @@ fn build_divisions(
                         context,
                         true,
                         "arrival",
-                        counter_eta::sentence(context.loc, &arrival, input.ours)
+                        counter_eta::estimated_sentence(context.loc, &arrival, input.ours)
                             .map(|text| format!("{text}\n")),
                     );
                 }
@@ -1145,7 +1152,7 @@ fn build_divisions(
                         Ok((id, division.province, movement.path_total, timing))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                next_location(context.loc, next_hours(&members)?)
+                next_location(context.loc, next_hours(&members)?, true)
             })();
             append(&mut out, context, true, "next location", next);
         }
@@ -2194,7 +2201,7 @@ mod tests {
             "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)"
         );
         assert!(named.body.starts_with(
-            "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         ));
         assert_eq!(named.refused.len(), 1);
         assert_eq!(named.refused.values().copied().sum::<usize>(), 1);
@@ -2238,7 +2245,7 @@ mod tests {
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
         assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha");
         assert!(detailed.body.starts_with(
-            "arrival 1d 5h\nnext 2h\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
         ));
         assert!(
             !detailed
@@ -2660,7 +2667,10 @@ mod tests {
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
         assert_eq!(detailed.title, "");
-        assert_eq!(detailed.body, "other arrival 1d 5h\nnext 2h\n\n");
+        assert_eq!(
+            detailed.body,
+            "other arrival 1d 5h (estimated)\nnext 2h (estimated)\n\n"
+        );
         assert_eq!(
             detailed
                 .refused
@@ -2745,10 +2755,10 @@ mod tests {
             if ours == 1 {
                 assert_eq!(hidden.body, visible.body);
             } else {
-                assert!(visible.body.starts_with("other arrival 1d 5h\n"));
+                assert!(visible.body.starts_with("other arrival 1d 5h (estimated)\n"));
                 assert!(
                     hidden.body.starts_with(
-                        "next 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+                        "next 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
                     )
                 );
                 assert!(
@@ -2816,13 +2826,13 @@ mod tests {
                     .any(|key| key.starts_with("counter destination ETA:"))
             );
             assert_eq!(
-                out.body.starts_with("arrival 1d 5h\n"),
+                out.body.starts_with("arrival 1d 5h (estimated)\n"),
                 remaining == Some(2_900_000) && moving && replacement.is_none()
             );
             if moving && replacement.is_none() {
                 match remaining {
-                    Some(0) => assert!(out.body.starts_with("arrival 0h\n")),
-                    Some(-2_900_000) => assert!(out.body.starts_with("arrival -29h\n")),
+                    Some(0) => assert!(out.body.starts_with("arrival 0h (estimated)\n")),
+                    Some(-2_900_000) => assert!(out.body.starts_with("arrival -29h (estimated)\n")),
                     _ => (),
                 }
             }
@@ -2965,9 +2975,9 @@ mod tests {
             assert_eq!(calls, expected_calls, "{case}");
             assert_eq!(
                 out.body.starts_with(if ours {
-                    "arrival 1d 5h\n"
+                    "arrival 1d 5h (estimated)\n"
                 } else {
-                    "other arrival 1d 5h\n"
+                    "other arrival 1d 5h (estimated)\n"
                 }),
                 expected_calls == 1,
                 "{case}"
@@ -3059,14 +3069,26 @@ mod tests {
             TableRows::DivisionTemplateIcons(neutral_templates),
         );
         for (base_speed, ours, expected) in [
-            (Recorded::Value(Some(100_000)), true, Ok("arrival 1d 1h\n")),
+            (
+                Recorded::Value(Some(100_000)),
+                true,
+                Ok("arrival 1d 1h (estimated)\n"),
+            ),
             (
                 Recorded::Value(Some(100_000)),
                 false,
-                Ok("other arrival 1d 1h\n"),
+                Ok("other arrival 1d 1h (estimated)\n"),
             ),
-            (Recorded::Value(Some(40_000)), true, Ok("arrival 1d 1h\n")),
-            (Recorded::Value(Some(200_000)), true, Ok("arrival 13h\n")),
+            (
+                Recorded::Value(Some(40_000)),
+                true,
+                Ok("arrival 1d 1h (estimated)\n"),
+            ),
+            (
+                Recorded::Value(Some(200_000)),
+                true,
+                Ok("arrival 13h (estimated)\n"),
+            ),
             (
                 Recorded::NotRecorded,
                 true,
@@ -3222,7 +3244,12 @@ mod tests {
                 );
                 assert_eq!(skipped, baseline, "class13={railway_gun} coarse={coarse}");
                 if !coarse {
-                    assert!(skipped.body.contains("next 2h\n\n"), "{}", skipped.body);
+                    let expected = if railway_gun {
+                        "next 2h\n\n"
+                    } else {
+                        "next 2h (estimated)\n\n"
+                    };
+                    assert!(skipped.body.contains(expected), "{}", skipped.body);
                 }
             }
             let repeated = build(&frame, &known, railway_gun, true, &[1, dangling, 2, 2], &[]);
@@ -3580,9 +3607,13 @@ mod tests {
                     remaining.clone()
                 });
                 assert_eq!(calls.get(), expected_calls, "{case} class13={railway_gun}");
-                if let Some(expected) = match case {
-                    "visible foreign zero ETA" => Some("other arrival 0h\n"),
-                    "visible foreign negative ETA" => Some("other arrival -1h\n"),
+                if let Some(expected) = match (case, railway_gun) {
+                    ("visible foreign zero ETA", true) => Some("other arrival 0h\n"),
+                    ("visible foreign zero ETA", false) => Some("other arrival 0h (estimated)\n"),
+                    ("visible foreign negative ETA", true) => Some("other arrival -1h\n"),
+                    ("visible foreign negative ETA", false) => {
+                        Some("other arrival -1h (estimated)\n")
+                    }
                     _ => None,
                 } {
                     assert!(
@@ -3700,5 +3731,130 @@ mod tests {
             next_hours(&[(1, 3, first, &a), (2, 4, first, &b)]).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn division_arrival_is_labeled_estimated_while_railway_gun_and_task_force_keep_native_wording() {
+        let mut frame = frame(true);
+        put(
+            &mut frame,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                division: 1,
+                path_total: 1,
+                path: vec![4],
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![
+                replay_data::rows::RailwayGunCounterInputRow {
+                    gun: 1,
+                    roster_owner: 11,
+                    province: 3,
+                    ordinary_path: vec![4],
+                    current_strength: 10,
+                    maximum_strength: 10,
+                    name: Recorded::Value(Some(b"Gun".to_vec())),
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![replay_data::rows::TaskForceRow {
+                id: 7,
+                route_count: 1,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::TaskForceMapMotion(vec![replay_data::rows::TaskForceMapMotionRow {
+                task_force: 7,
+                path: vec![4],
+                ..Default::default()
+            }]),
+        );
+        let mut loc_map: Localisation = loc()
+            .iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .chain([(
+                "UNIT_MOVING_HOURS_NONPLAYER".to_owned(),
+                "other arrival $HOURS$h".to_owned(),
+            )])
+            .collect();
+        loc_map.language = "english".into();
+        let names = content_reader_division_names::division_names::Database::default();
+        let units = Err("unused".into());
+        for (ours, remaining, native, estimated) in [
+            (true, 2_900_000, "arrival 1d 5h\n", "arrival 1d 5h (estimated)\n"),
+            (false, 2_900_000, "other arrival 1d 5h\n", "other arrival 1d 5h (estimated)\n"),
+            (true, 200_000, "arrival 2h\n", "arrival 2h (estimated)\n"),
+            (false, 200_000, "other arrival 2h\n", "other arrival 2h (estimated)\n"),
+        ] {
+            let vision = Vision::sharing(if ours { 1 } else { 2 }, [1]);
+            let ctx = context(&frame, &loc_map, &vision, &names, &units);
+            let div_hover = CounterHover {
+                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                authored: None,
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing { next: Some(100_001), kind: Some(2) }].into(),
+                coarse: false,
+                hidden: false,
+                railway_gun: false,
+                remaining: None,
+                ours,
+            };
+            let div_out = build_context(&ctx, &div_hover, false, |_, _| Ok(remaining));
+            let expected_div = format!("{estimated}next 2h (estimated)\n\n");
+            assert!(
+                div_out.body.starts_with(&expected_div),
+                "ours={ours} remaining={remaining}: {:?}",
+                div_out.body
+            );
+            if !ours {
+                let hidden_div = CounterHover {
+                    hidden: true,
+                    ..div_hover.clone()
+                };
+                let hidden_out = build_context(&ctx, &hidden_div, false, |_, _| Ok(remaining));
+                assert!(
+                    hidden_out.body.starts_with("next 2h (estimated)\n\n"),
+                    "hidden foreign division remaining={remaining}: {:?}",
+                    hidden_out.body
+                );
+            }
+            let gun_hover = CounterHover {
+                railway_gun: true,
+                ..div_hover
+            };
+            let gun_out = build_context(&ctx, &gun_hover, false, |_, _| Ok(remaining));
+            let expected_gun = format!("{native}next 2h\n\n");
+            assert!(
+                gun_out.body.starts_with(&expected_gun),
+                "gun ours={ours} remaining={remaining}: {:?}",
+                gun_out.body
+            );
+            let tf_hover = viewer_foundation::map::counter_hovers::task_force::Hover {
+                control: viewer_foundation::map::counter_hovers::task_force::Control::Normal,
+                unit_hit: 0,
+                rect: [0.0; 4],
+                hit: None,
+                authored: None,
+                supported: true,
+                ours,
+                coarse: false,
+                hidden: false,
+                members: vec![7].into(),
+            };
+            let tf_out = task_force::build(&ctx, &tf_hover, |_, _| Ok(remaining));
+            assert!(
+                tf_out.body.starts_with(native),
+                "tf ours={ours} remaining={remaining}: {:?}",
+                tf_out.body
+            );
+        }
     }
 }

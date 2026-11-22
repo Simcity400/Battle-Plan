@@ -1195,10 +1195,14 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         }
         match placement {
             Ok(Some(placed)) => {
-                let glyphs = placed
-                    .glyphs
-                    .iter()
-                    .map(|glyph| (glyph.corners, glyph.uv, glyph.page));
+                let glyphs = placed.glyphs.iter().map(|glyph| {
+                    (
+                        glyph.corners,
+                        glyph.uv,
+                        glyph.page,
+                        glyph.color.unwrap_or([1.0; 4]),
+                    )
+                });
                 match WorldName::from_glyphs(
                     format!("{}:{}", key.0, key.1),
                     placed.text,
