@@ -592,66 +592,7 @@ impl AtHour for SpecialProjectDetailsAt {
     }
 
     fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
-        let Some(holder) = at.owner else { return Ok(false) };
-        let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-        let reads = Reads { query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
-        let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
-        for (table, group, what) in [(TableId::ProjectPrograms, "programs", "Program assignments"), (TableId::ProjectBreakthroughs, "breakthroughs", "Specialization progress points")] {
-            let Some(read) = reads.continued(previous, table, what) else { return Ok(false) };
-            if let Some(hour) = read {
-                let Some(items) = data[group].as_array_mut() else { return Ok(false) };
-                for item in items { item["readHour"] = hour.into(); }
-            }
-        }
-        let Some(daily) = reads.continued(previous, TableId::ScientistDaily, "Scientist injuries and visibility") else { return Ok(false) };
-        if let Some(daily) = daily {
-            if frame.complete::<tables::ScientistDaily>().is_ok_and(|rows| rows.iter().any(|r| matches!(r.template_visibility, Recorded::Value(Some(1))))) { return Ok(false); }
-            let Some(scientists) = data["scientists"].as_array_mut() else { return Ok(false) };
-            for scientist in scientists {
-                for key in ["visibilityHour", "injuryHour"] {
-                    if !scientist[key].is_null() { scientist[key] = daily.into(); }
-                }
-            }
-        }
-        let Ok(slices) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
-        let Some(TableView::Complete(before)) = edits.previous.get(&TableId::SliceReads).map(|view| view.held()) else { return Ok(false) };
-        let Some(before_slices) = before.rows::<tables::SliceReads>() else { return Ok(false) };
-        let Ok(owners) = owners_of(frame, holder.slot) else { return Ok(false) };
-        let Ok(rows) = frame.complete::<tables::Projects>() else { return Ok(false) };
-        let earlier = Reads { hour: previous, ..reads };
-        let mut read_of = BTreeMap::new();
-        for &owner in &owners {
-            let has_rows = !prefixed(rows, owner, |r| r.owner).is_empty();
-            let now = OwnerRead::of(slices, &reads, owner, has_rows);
-            if now.refusal() != OwnerRead::of(before_slices, &earlier, owner, has_rows).refusal() {
-                return Ok(false);
-            }
-            match now {
-                OwnerRead::Read(read, history) => {
-                    read_of.insert(owner, (read, history));
-                }
-                OwnerRead::Withheld => return Ok(false),
-            }
-        }
-        let unavailable: BTreeSet<&str> = data["unavailable"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
-        let Some(projects) = data["projects"].as_array() else { return Ok(false) };
-        for project in projects {
-            let Some((_, Some(history))) = project["owner"].as_u64().and_then(|owner| read_of.get(&(owner as u32))) else { return Ok(false) };
-            let kept = match history {
-                Ok(read) => project["historyReadHour"].as_i64() == Some(i64::from(*read)),
-                Err(why) => project["choices"].is_null() && unavailable.contains(why.as_str()),
-            };
-            if !kept {
-                return Ok(false);
-            }
-        }
-        let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
-        for project in projects {
-            project["readHour"] = read_of[&(project["owner"].as_u64().unwrap() as u32)].0.into();
-        }
-        data["hour"] = at.hour.into();
-        Ok(true)
+        reread(frame, params, at, edits, data)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -730,6 +671,69 @@ impl AtHour for SpecialProjectDetailsAt {
         out.warnings = namer.warnings();
         Ok(out)
     }
+}
+
+fn reread(frame: &DecodedFrame, params: &SpecialProjectDetailsParams, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, data: &mut impl std::ops::DerefMut<Target = serde_json::Value>) -> io::Result<bool> {
+    if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
+    let Some(holder) = at.owner else { return Ok(false) };
+    let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
+    let reads = Reads { query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
+    let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
+    for (table, group, what) in [(TableId::ProjectPrograms, "programs", "Program assignments"), (TableId::ProjectBreakthroughs, "breakthroughs", "Specialization progress points")] {
+        let Some(read) = reads.continued(previous, table, what) else { return Ok(false) };
+        if let Some(hour) = read {
+            let Some(items) = data[group].as_array_mut() else { return Ok(false) };
+            for item in items { item["readHour"] = hour.into(); }
+        }
+    }
+    let Some(daily) = reads.continued(previous, TableId::ScientistDaily, "Scientist injuries and visibility") else { return Ok(false) };
+    if let Some(daily) = daily {
+        if frame.complete::<tables::ScientistDaily>().is_ok_and(|rows| rows.iter().any(|r| matches!(r.template_visibility, Recorded::Value(Some(1))))) { return Ok(false); }
+        let Some(scientists) = data["scientists"].as_array_mut() else { return Ok(false) };
+        for scientist in scientists {
+            for key in ["visibilityHour", "injuryHour"] {
+                if !scientist[key].is_null() { scientist[key] = daily.into(); }
+            }
+        }
+    }
+    let Ok(slices) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
+    let Some(TableView::Complete(before)) = edits.previous.get(&TableId::SliceReads).map(|view| view.held()) else { return Ok(false) };
+    let Some(before_slices) = before.rows::<tables::SliceReads>() else { return Ok(false) };
+    let Ok(owners) = owners_of(frame, holder.slot) else { return Ok(false) };
+    let Ok(rows) = frame.complete::<tables::Projects>() else { return Ok(false) };
+    let earlier = Reads { hour: previous, ..reads };
+    let mut read_of = BTreeMap::new();
+    for &owner in &owners {
+        let has_rows = !prefixed(rows, owner, |r| r.owner).is_empty();
+        let now = OwnerRead::of(slices, &reads, owner, has_rows);
+        if now.refusal() != OwnerRead::of(before_slices, &earlier, owner, has_rows).refusal() {
+            return Ok(false);
+        }
+        match now {
+            OwnerRead::Read(read, history) => {
+                read_of.insert(owner, (read, history));
+            }
+            OwnerRead::Withheld => return Ok(false),
+        }
+    }
+    let unavailable: BTreeSet<&str> = data["unavailable"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
+    let Some(projects) = data["projects"].as_array() else { return Ok(false) };
+    for project in projects {
+        let Some((_, Some(history))) = project["owner"].as_u64().and_then(|owner| read_of.get(&(owner as u32))) else { return Ok(false) };
+        let kept = match history {
+            Ok(read) => project["historyReadHour"].as_i64() == Some(i64::from(*read)),
+            Err(why) => project["choices"].is_null() && unavailable.contains(why.as_str()),
+        };
+        if !kept {
+            return Ok(false);
+        }
+    }
+    let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
+    for project in projects {
+        project["readHour"] = read_of[&(project["owner"].as_u64().unwrap() as u32)].0.into();
+    }
+    data["hour"] = at.hour.into();
+    Ok(true)
 }
 
 fn scientists(

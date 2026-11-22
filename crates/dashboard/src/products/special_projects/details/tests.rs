@@ -244,6 +244,19 @@ fn followed_details_spell_choices_again_when_unchanged_rows_are_read_again() {
     let option = |hour: i32| at(hour)["projects"][0]["choices"][0]["option"]["token"].clone();
     assert_eq!(option(READS[1] - 1), json!("42"), "the read that listed the choice could not spell it, though a later hour can");
     assert_eq!(option(READS[1]), json!("mod_option"), "the next read of the same rows spells the choice and drops its refusal");
+    let mut edits = crate::products::at_hour::Edits::default();
+    edits.previous.insert(TableId::SliceReads, frame(READS[1] - 1).tables[TableId::SliceReads.index()].clone());
+    let stamps = [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| slice_read(table, owner)));
+    edits.tables.insert(TableId::SliceReads, stamps.map(|key| (key, crate::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"]))).collect());
+    let context = SpecialProjectDetailsAt::context(&source, &load()).unwrap();
+    let query = crate::answer::query(&source, 1).unwrap();
+    let params: SpecialProjectDetailsParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let Some(Holder::Found { slot, id }) = query.holders.at(&params.country, READS[1]).map(|run| run.holder) else { panic!("GER is held at the read") };
+    let (cells, cancelled) = (dashboard_follow::live::Cells::default(), AtomicBool::new(false));
+    let stepped = At { owner: Some(Owner { slot, id }), holders: &query.holders, hour: READS[1], context: &context, cancelled: &cancelled, live: &cells };
+    let mut data = Box::new(at(READS[1] - 1));
+    let kept = reread(&frame(READS[1]), &params, &stepped, &edits, &mut data).unwrap();
+    assert!(!kept || *data == at(READS[1]), "a step that only moves read stamps keeps no choice spelled by the read it replaced: {data}");
 }
 
 #[test]
