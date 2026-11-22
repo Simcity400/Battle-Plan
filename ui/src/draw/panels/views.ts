@@ -7,12 +7,19 @@ import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { detailTexts, detailsStructure, effectsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
+import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewardsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 import { projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
+
+function detailValues(reply: SpecialProjectDetails) {
+  const values = detailTexts(reply);
+  if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
+  if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
+  return values;
+}
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
   fields: (record: T, values: LiveValues<number>, hour: number) => Map<string, string>, geometry: PanelGeometry, nextChange?: (reply: T, hour: number) => number) {
@@ -105,12 +112,8 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       }
       return next;
     }),
-  'special-project-details': recordView(validateProjectDetails, detailsStructure, reply => {
-    const values = detailTexts(reply);
-    if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
-    if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
-    return values;
-  }, { extendInline }),
+  'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
+  [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
   'doctrine-mastery': recordView(validateDoctrineMastery, masteryStructure, (reply, values) => {
     const fields = new Map<string, string>();
     for (const folder of reply.folders) for (const track of folder.tracks) {

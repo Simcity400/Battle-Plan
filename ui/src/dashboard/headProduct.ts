@@ -41,6 +41,7 @@ export interface HeadProductOptions<T> {
   validate: (data: unknown) => T;
   structure?: (reply: T, hour: number) => string;
   hoverHour?: number | null;
+  panel?: string;
 }
 
 export interface HeadProduct<T> extends ProductState<T> {
@@ -90,7 +91,7 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
 
 export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, product: string, params: Readonly<Record<string, unknown>> | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
-  const { active, validate, structure, paint, hoverHour = null } = options;
+  const { active, validate, structure, paint, hoverHour = null, panel = product } = options;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const { follows, hourAt } = headRead(widget, track, runtime.tracks, hoverHour);
   const prepared = useContext(PreparingPage);
@@ -99,8 +100,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const [element, setElement] = useState<Element | null>(null);
   const target = useMemo(() => ({ current: element }), [element]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
-    [following, product, paramsKey, track?.branch.id]);
+  const query = useMemo(() => following ? { ...params, panel, branchId: track!.branch.id } : null,
+    [following, panel, paramsKey, track?.branch.id]);
   const latest = useRef({ validate, structure, paint });
   latest.current = { validate, structure, paint };
   const shape = useCallback((_answer: FollowedAnswer | undefined, entry: FollowEntry) => {

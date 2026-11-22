@@ -23,12 +23,14 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
   const bad = () => { throw new Error('Invalid special-projects reply'); };
   if (!object(input) || typeof input.branchId !== 'string' || typeof input.tag !== 'string' || !nullableString(input.unavailable)
     || !Array.isArray(input.identities) || !validCountryIdentityRuns(input.identities as CountryIdentityRun[])
-    || !Array.isArray(input.available) || !input.available.every(span)
+    || !Array.isArray(input.available) || !input.available.every(span) || !Array.isArray(input.partial) || !input.partial.every(span)
     || !object(input.iterationTexts) || !Object.entries(input.iterationTexts).every(([count, text]) => /^-?(0|[1-9][0-9]*)$/.test(count) && integer(Number(count)) && nullableString(text))
     || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people)
     || !Array.isArray(input.warnings) || !input.warnings.every(item => typeof item === 'string')) return bad();
   const ordered = (values: readonly { firstHour: number; lastHour: number }[]) => values.every((value, i) => !i || values[i - 1].lastHour < value.firstHour);
-  if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[])) return bad();
+  if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[])
+    || !ordered(input.partial as HourSpan[]) || !spansCovered(input.partial as HourSpan[], input.identities as CountryIdentityRun[])
+    || (input.partial as HourSpan[]).some(span => runAt(input.available as HourSpan[], span.firstHour) !== null || runAt(input.available as HourSpan[], span.lastHour) !== null)) return bad();
   for (const person of input.people) if (!object(person) || !(person.id === null || integer(person.id) && person.id >= 0)
     || !(person.assigned === null || typeof person.assigned === 'boolean') || !nullableString(person.name) || !nullableString(person.portrait) || !nullableString(person.missing)) return bad();
   for (const info of input.presentations) if (!object(info) || typeof info.name !== 'string'
@@ -59,6 +61,8 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
 
 export const projectDate = (date: ProjectDate) => `${date.exact ? '' : 'by '}${dayLabel(date.hour)}`;
 export const observedAt = (data: SpecialProjectsReply, hour: number) => runAt(data.available, hour) !== null;
+export const unobservedReason = (data: SpecialProjectsReply, hour: number) =>
+  runAt(data.partial, hour) !== null ? 'Projects were read only in part at this time.' : 'Projects were not recorded at this time.';
 
 export function projectCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, first: number, last: number) {
   const requested = worldRequestTags(selection, fallback, groups, last);
@@ -132,18 +136,38 @@ export function episodeBound(reply: SpecialProjectsReply, project: ProjectEpisod
   return { through: open && through !== null && through > last ? through : last, open };
 }
 
-export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number,
-  bound: EpisodeBound = { through: card.project.runs[card.project.runs.length - 1].lastHour, open: false }): ProjectRuntimeDetails | string | null {
+const ended = (card: ProjectCard): EpisodeBound => ({ through: card.project.runs[card.project.runs.length - 1].lastHour, open: false });
+const joined = (details: SpecialProjectDetails, card: ProjectCard) =>
+  details.projects?.find(project => project.owner === card.project.owner && project.id === card.project.local);
+const listStale = (found: ProjectRuntimeDetails | undefined, bound: EpisodeBound) => !!found && bound.open && found.readHour > bound.through;
+const inEpisode = (project: ProjectEpisode, bound: EpisodeBound, read: number) => runAt(project.runs, read) !== null
+  || bound.open && read > project.runs[project.runs.length - 1].lastHour && read <= bound.through;
+
+export interface RuntimeMatch { project: ProjectRuntimeDetails; choices: ProjectRuntimeDetails['choices'] | string }
+
+function episodeChoices(project: ProjectEpisode, bound: EpisodeBound, found: ProjectRuntimeDetails): RuntimeMatch['choices'] {
+  const read = found.historyReadHour;
+  if (found.choices === null || read === null) return null;
+  if (read < project.start.hour) return 'Iterations were last read before this project began.';
+  return inEpisode(project, bound, read) ? found.choices : 'Iterations were read while this project was not recorded.';
+}
+
+export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound = ended(card)): RuntimeMatch | string | null {
+  const found = joined(details, card);
+  if (listStale(found, bound)) return `Project rewards were read ${dayLabel(found!.readHour)}, after the project list is known current (${dayLabel(bound.through)}).`;
   if (details.hour > hour) return null;
   if (!details.projects) return 'Project rewards and output were not read at this time.';
-  const { owner, local, start } = card.project;
-  const found = details.projects.find(project => project.owner === owner && project.id === local);
   if (!found) return 'Project rewards and output were not recorded for this project at this time.';
-  if (found.readHour < start.hour) return 'Project rewards and output were last read before this project began.';
-  if (found.readHour > bound.through) return bound.open
-    ? `Project rewards were read ${dayLabel(found.readHour)}, after the project list is known current (${dayLabel(bound.through)}).`
-    : 'Project rewards and output were read after this project ended.';
-  return found;
+  if (found.readHour < card.project.start.hour) return 'Project rewards and output were last read before this project began.';
+  if (found.readHour > bound.through) return 'Project rewards and output were read after this project ended.';
+  if (!inEpisode(card.project, bound, found.readHour)) return 'Project rewards and output were read while this project was not recorded.';
+  return { project: found, choices: episodeChoices(card.project, bound, found) };
+}
+
+export function joinDue(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound): { hour: number; list: boolean } | null {
+  const found = joined(details, card);
+  if (listStale(found, bound)) return { hour: found!.readHour, list: true };
+  return details.hour > hour ? { hour: details.hour, list: false } : null;
 }
 
 const shownRuns = (project: ProjectEpisode, hour: number, membership?: readonly HourSpan[]) => {

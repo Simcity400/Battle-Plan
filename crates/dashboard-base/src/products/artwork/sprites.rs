@@ -4,6 +4,7 @@ use crate::{
     catalogue::{self, Catalogue},
     products::{LoadContext, Product, check_reply_budget},
 };
+use content_reader_gfx::gfx::SpriteSet;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -110,12 +111,17 @@ fn frame_png(catalogue: &Catalogue, key: &str, frame: u32) -> io::Result<String>
     )
 }
 
-fn asked_png(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> io::Result<String> {
+fn routed(sprites: &SpriteSet, key: &str, asked: &SpriteFrame) -> io::Result<(String, u32)> {
     if asked.text != Some(true) {
-        return frame_png(catalogue, key, asked.frame);
+        return Ok((key.to_owned(), asked.frame));
     }
-    let (sprite, frame) = dashboard_text::catalogue::text_icon(&catalogue.sprites, key)?;
-    frame_png(catalogue, &sprite.name, frame)
+    let (sprite, frame) = dashboard_text::catalogue::text_icon(sprites, key)?;
+    Ok((sprite.name.clone(), frame))
+}
+
+fn asked_png(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> io::Result<String> {
+    let (key, frame) = routed(&catalogue.sprites, key, asked)?;
+    frame_png(catalogue, &key, frame)
 }
 
 impl Product for SpriteArtwork {
@@ -287,7 +293,6 @@ mod tests {
             .chain(["Mixed_Mod", "Mixed_Mod|2", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
             .collect(),
         };
-        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![SpriteFrame { text: Some(true), ..frame("Mixed_Mod", 1) }] }).is_err(), "a text icon's frame is its name's");
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.items.len(), 7);
         let text = |key: &str| reply.items.iter().find(|art| art.key == key).unwrap().icon.as_deref();
@@ -520,6 +525,30 @@ mod tests {
             })
             .is_ok()
         );
+        let text = |frame_index: u32, text: bool| SpriteFrame { text: Some(text), ..frame("Mixed_Mod", frame_index) };
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(1, true)] }).is_err(), "a text icon's frame is its name's");
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, false)] }).is_err(), "text is asked as true or not at all");
+        assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites: vec![text(0, true)] }).is_ok());
+    }
+
+    #[test]
+    fn a_text_icon_is_drawn_from_its_stems_sprite_at_its_suffixs_frame_and_a_sprite_at_its_asked_frame() {
+        use content_reader_core::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
+        let facts = Sprites {
+            sprites: vec![SpriteFacts {
+                name: b"GFX_Mixed_Mod".to_vec(),
+                load_type: 0,
+                kind: SpriteKind::Plain(Plain { texture: b"gfx/mod.png".to_vec(), frames: 3, ..Plain::default() }),
+                refusals: Vec::new(),
+            }],
+            ..Sprites::default()
+        };
+        let sprites = SpriteSet::new(&[("interface/mod.gfx".to_owned(), facts)]);
+        let text = |key: &str| SpriteFrame { text: Some(true), ..frame(key, 0) };
+        assert_eq!(routed(&sprites, "Mixed_Mod|3", &text("Mixed_Mod|3")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "the suffix names the third frame, never the first");
+        assert_eq!(routed(&sprites, "Mixed_Mod", &text("Mixed_Mod")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 0));
+        assert_eq!(routed(&sprites, "GFX_Mixed_Mod", &frame("GFX_Mixed_Mod", 2)).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "a sprite is drawn at the frame asked");
+        assert!(routed(&sprites, "Absent_Icon", &text("Absent_Icon")).is_err(), "an undeclared text icon is refused by name");
     }
 
     #[test]

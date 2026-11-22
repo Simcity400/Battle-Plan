@@ -41,6 +41,7 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
     || !(program.assignments === null || Array.isArray(program.assignments) && program.assignments.every((assignment, ordinal) => object(assignment) && assignment.ordinal === ordinal
       && reference(assignment.reference) && person(assignment.person) && signed(assignment.target) && signed(assignment.current) && byte(assignment.timed)))) return bad();
   for (const project of value.projects ?? []) if (!object(project) || !uint(project.owner) || !uint(project.id) || !label(project.label) || !readBy(project.readHour, hour)
+    || !(project.historyReadHour === null ? project.choices === null : readBy(project.historyReadHour, hour) && project.choices !== null)
     || typeof project.pendingKnown !== 'boolean' || !(project.pending === null || project.pendingKnown && reward(project.pending)) || !(project.seed === null || uint(project.seed))
     || !(project.variables === null || Array.isArray(project.variables) && project.variables.every(variable => object(variable) && typeof variable.name === 'string' && raw(variable.valueRaw)))
     || !(project.choices === null || Array.isArray(project.choices) && project.choices.every(choice => object(choice) && uint(choice.ordinal) && integer(choice.date) && label(choice.reward) && label(choice.option)
@@ -131,8 +132,13 @@ export function detailsStructure(details: SpecialProjectDetails): string {
     details.breakthroughs?.map(b => label(b.specialization)),
     details.programs?.map(p => [p.id, p.province, p.assignments?.map(a => [a.ordinal, a.reference, person(a.person), a.timed]),
       p.facility && [p.facility.unavailable, p.facility.sources.map(s => [s.kind, s.unit, label(s.label), label(s.modifier), s.assignment, s.scientistReference])]]),
-    details.projects?.map(p => [p.owner, p.id, p.readHour, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
+    details.projects?.map(p => [p.owner, p.id, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
       p.pending && [label(p.pending.label), p.pending.ordinal, p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
       p.choices?.map(c => [c.ordinal, c.date, label(c.reward), label(c.option), c.province, c.progress, c.characterReference, c.country, c.scientist, c.state])]),
   ]);
 }
+
+export const REWARDS_PANEL = 'special-project-rewards';
+
+export const rewardsStructure = (details: SpecialProjectDetails) =>
+  JSON.stringify([detailsStructure(details), details.projects?.map(p => [p.owner, p.id, p.readHour, p.historyReadHour])]);

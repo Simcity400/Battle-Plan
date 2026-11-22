@@ -22,19 +22,24 @@ export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | und
   const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
   const caches = cachesOf(runtime.client);
   const icons = caches.icons(scope);
-  useEffect(() => caches.hold(scope), [caches, scope]);
+  const [, setLanded] = useState(0);
+  useEffect(() => {
+    const release = caches.hold(scope);
+    if (caches.icons(scope) !== icons) setLanded(count => count + 1);
+    return release;
+  }, [caches, scope]);
   const asked = spriteFrames(sprites).filter(sprite => !icons.has(spriteId(sprite)));
   const request = track && asked.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork',
     params: { sprites: asked } } : null;
-  const key = JSON.stringify([request, revision]);
-  const [, setLanded] = useState(0);
+  const key = JSON.stringify([request, revision, scope]);
   useEffect(() => {
     if (!active || !request) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
-      for (const [id, icon] of spriteIcons(reply, asked)) icons.set(id, icon);
-      if (paint) paint(icons);
+      const held = caches.icons(scope);
+      for (const [id, icon] of spriteIcons(reply, asked)) held.set(id, icon);
+      if (paint) paint(held);
       else setLanded(count => count + 1);
     }).catch(() => {
     });

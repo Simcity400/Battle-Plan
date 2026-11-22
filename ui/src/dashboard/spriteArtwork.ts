@@ -48,7 +48,6 @@ export class SpriteCaches {
   hold(scope: string): () => void {
     const held = this.held(scope);
     held.users++;
-    for (const [other, cache] of this.scopes) if (cache.users === 0) this.scopes.delete(other);
     return () => { if (--held.users === 0 && this.scopes.get(scope) === held) this.scopes.delete(scope); };
   }
 }

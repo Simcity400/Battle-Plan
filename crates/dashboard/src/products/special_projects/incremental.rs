@@ -86,6 +86,7 @@ impl Current {
 struct Episodes {
     fold: Fold,
     observed: Vec<(i32, i32)>,
+    partial: Vec<(i32, i32)>,
     current: Option<Current>,
     spelling: Option<Spelling>,
     through: Option<i32>,
@@ -104,13 +105,13 @@ fn open_programs(keys: &BTreeSet<u128>, open: impl FnOnce() -> io::Result<Track>
 
 impl Episodes {
     fn new(first: i32) -> Self {
-        Self { fold: Fold::new(first), observed: Vec::new(), current: None, spelling: None, through: None, data: Arc::new(Err(String::new())), links: HashMap::new() }
+        Self { fold: Fold::new(first), observed: Vec::new(), partial: Vec::new(), current: None, spelling: None, through: None, data: Arc::new(Err(String::new())), links: HashMap::new() }
     }
 
     fn enter(&mut self, q: &Query<'_>, piece: Piece, last: bool, cancelled: &AtomicBool, count: &mut u64) -> io::Result<()> {
         let links = links_of(q, &mut self.links, piece.run)?;
         let read = read_piece(q, links, &piece)?;
-        fold_piece(&mut self.fold, &piece, &read, &mut self.observed, cancelled)?;
+        fold_piece(&mut self.fold, &piece, &read, &mut self.observed, &mut self.partial, cancelled)?;
         self.current = if last {
             let known: BTreeSet<_> = read.owners.keys().copied().collect();
             let programs: BTreeSet<_> = read.projects.iter().flat_map(|h| &h.keys).flat_map(|(_, s)| s).filter_map(|s| program(s.cells.as_deref()?)).collect();
@@ -152,7 +153,11 @@ impl Episodes {
             boundary |= c.reads.step(r, |k| read_of(&c.known, k), count)?;
             if let Some(track) = &mut c.scientists { boundary |= track.step(r, |k| c.programs.contains(&k), count)?; }
             let linked: BTreeSet<u32> = c.owners.iter().filter(|(_, runs)| within(runs, next)).map(|(&raw, _)| raw).collect();
-            let observable = c.projects.reader.available() && linked.iter().all(|&raw| c.supplies(TableId::Projects, raw));
+            let status = c.projects.reader.status();
+            if matches!(status, Status::Truncated { .. }) {
+                extend(&mut self.partial, next, next);
+            }
+            let observable = status == Status::Complete && linked.iter().all(|&raw| c.supplies(TableId::Projects, raw));
             boundary |= observable != c.observable;
             c.observable = observable;
             observed_change |= boundary;
@@ -178,22 +183,36 @@ impl Episodes {
                         }
                     }
                     let shown: Vec<_> = rows.iter().map(|(key, row)| Observed {
-                        row, history: (c.history.reader.available() && histories.contains(&row.owner)).then(|| history.get(key).map_or(&[][..], Vec::as_slice)),
+                        row, history: (c.history.reader.status() == Status::Complete && histories.contains(&row.owner)).then(|| history.get(key).map_or(&[][..], Vec::as_slice)),
                         person: person(row.program, (row.program as u32 == PROGRAM_REFERENCE).then(|| c.scientists.as_ref().and_then(|t| t.rows.get(&u128::from(row.program >> 32))).map(AsRef::as_ref))),
                     }).collect();
                     self.fold.observe((piece.slot, piece.id), next, next, &shown);
                 } else { self.fold.extend(before, next); }
-                if let Some(span) = self.observed.last_mut().filter(|s| s.1 == before) { span.1 = next; }
-                else { self.observed.push((next, next)); }
+                extend(&mut self.observed, next, next);
             }
             c.piece.last = next;
         }
         Ok(observed_change)
     }
 
+    fn follow(&mut self, query: &Query<'_>, country: &Country, hour: i32, cancelled: &AtomicBool, count: &mut u64) -> io::Result<(bool, Vec<CountryIdentityRun>)> {
+        let (pieces, identities) = pieces(query, country, hour);
+        let mut changed = false;
+        for piece in pieces.into_iter().filter(|p| self.through.is_none_or(|h| p.last > h)).collect::<Vec<_>>() {
+            if self.current.as_ref().is_some_and(|c| (c.piece.first, c.piece.run) == (piece.first, piece.run)) {
+                changed |= self.advance(query, &piece, cancelled, count)?;
+            } else {
+                let last = piece.last == hour;
+                self.enter(query, piece, last, cancelled, count)?;
+                changed = true;
+            }
+        }
+        Ok((changed, identities))
+    }
+
     fn extend_reply(&mut self, before: i32, hour: i32) -> io::Result<()> {
         let value = Arc::make_mut(&mut self.data).as_mut().expect("presented");
-        for group in ["available", "identities"] {
+        for group in ["available", "partial", "identities"] {
             if let Some(span) = value[group].as_array_mut().and_then(|v| v.last_mut())
                 && span["lastHour"] == before {
                 span["lastHour"] = hour.into();
@@ -223,18 +242,10 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 *held = Some(Episodes::new(timeline.first));
             }
             let s = held.as_mut().unwrap();
-            let (pieces, identities) = pieces(&query, &params.country, hour);
             let tag = query.holders.name(&params.country, hour);
             let mut changed = s.through.is_none() || s.data.as_ref().as_ref().is_ok_and(|reply| reply["tag"].as_str() != Some(tag.as_str()));
-            for piece in pieces.into_iter().filter(|p| s.through.is_none_or(|h| p.last > h)).collect::<Vec<_>>() {
-                if s.current.as_ref().is_some_and(|c| (c.piece.first, c.piece.run) == (piece.first, piece.run)) {
-                    changed |= s.advance(&query, &piece, cancelled, &mut count)?;
-                } else {
-                    let last = piece.last == hour;
-                    s.enter(&query, piece, last, cancelled, &mut count)?;
-                    changed = true;
-                }
-            }
+            let (stepped, identities) = s.follow(&query, &params.country, hour, cancelled, &mut count)?;
+            changed |= stepped;
             let previous = s.through.replace(hour);
             if !changed && let Some(before) = previous {
                 if s.current.as_ref().is_some_and(|c| c.piece.last == hour) {
@@ -244,7 +255,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 }
             }
             if changed {
-                let reply = present(&query, &params, &content, &s.fold, s.observed.clone(), identities, &tag, cancelled, &mut s.spelling)?;
+                let reply = present(&query, &params, &content, &s.fold, Observation { observed: s.observed.clone(), partial: s.partial.clone() }, identities, &tag, cancelled, &mut s.spelling)?;
                 s.data = Arc::new(Ok(serde_json::to_value(reply)?));
             }
             Ok(s.data.clone())
@@ -252,6 +263,16 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
         let value = answer.unwrap_or_else(|e| { *held = None; Arc::new(Err(e.to_string())) });
         dashboard_follow::panel::ProductRead { value, rows: count, fresh: true, pending: false, live: None, lanes: Vec::new() }
     })
+}
+
+#[cfg(test)]
+pub(super) fn followed(query: &Query<'_>, country: &Country, first: i32, through: i32) -> io::Result<(Fold, Vec<(i32, i32)>, Vec<(i32, i32)>)> {
+    let mut episodes = Episodes::new(first);
+    for hour in first..=through {
+        episodes.follow(query, country, hour, &AtomicBool::new(false), &mut 0)?;
+        episodes.through = Some(hour);
+    }
+    Ok((episodes.fold, episodes.observed, episodes.partial))
 }
 
 #[cfg(test)]

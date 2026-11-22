@@ -2025,10 +2025,25 @@ pub mod tests {
                 .contains("noOfFrames")
         );
         assert!(text_icon_sprite(&sprites, "missing").is_err());
-        let (sprite, frame) = text_icon(&sprites, "mod_alias|2").unwrap();
-        assert_eq!((sprite.name.as_str(), frame), ("GFX_mod_alias", 1), "a frame suffix draws that frame of the sprite its stem names");
-        assert_eq!(text_icon(&sprites, "bare_only").unwrap().1, 0);
-        assert!(text_icon(&sprites, "mod_alias|0").unwrap_err().to_string().contains("names no frame"));
+    }
+
+    #[test]
+    fn a_text_icon_routes_to_its_stems_sprite_and_the_frame_its_suffix_names() {
+        use content_reader_core::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
+        let sprite = |name: &str| SpriteFacts {
+            name: name.as_bytes().to_vec(),
+            load_type: 0,
+            kind: SpriteKind::Plain(Plain { texture: b"strip.dds".to_vec(), frames: 4, ..Plain::default() }),
+            refusals: Vec::new(),
+        };
+        let facts = Sprites { sprites: vec![sprite("GFX_mod_alias"), sprite("mod_alias"), sprite("bare_only")], ..Sprites::default() };
+        let sprites = SpriteSet::new(&[("interface/synthetic.gfx".to_owned(), facts)]);
+        let routed = |name: &str| text_icon(&sprites, name).map(|(sprite, frame)| (sprite.name.clone(), frame));
+        assert_eq!(routed("mod_alias|3").unwrap(), ("GFX_mod_alias".to_owned(), 2), "a frame suffix draws that frame of the sprite its stem names");
+        assert_eq!(routed("mod_alias").unwrap(), ("GFX_mod_alias".to_owned(), 0), "the native prefix is chosen before the bare name");
+        assert_eq!(routed("bare_only|1").unwrap(), ("bare_only".to_owned(), 0));
+        assert!(routed("mod_alias|0").unwrap_err().to_string().contains("names no frame"));
+        assert!(routed("missing|2").is_err(), "an undeclared stem is refused by name");
     }
 
     #[test]

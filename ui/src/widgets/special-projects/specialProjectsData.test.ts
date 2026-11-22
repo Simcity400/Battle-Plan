@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -20,7 +20,7 @@ test('project effects render again when their game text changes, never only beca
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
-  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}],
+  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
   people:[{assigned:true,id:77,name:'Mod scientist',portrait:null,missing:'Portrait not recorded.'}],
   presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistAsOf:null}],
@@ -419,12 +419,13 @@ test('the iteration mark names its count only, and its tooltip says what the cou
 test('a project window joins its runtime project on the episode owner and local id, read within the episode and not after the hour', () => {
   const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
   const card=shownCard(data,120,data.projects[0].id)!;
-  const runtime=(owner:number,id:number,name:string|null,readHour=120):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour,pendingKnown:true,pending:null,seed:null,variables:null,choices:null});
+  const runtime=(owner:number,id:number,name:string|null,readHour=120):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour,pendingKnown:true,pending:null,seed:null,variables:null,choices:null,historyReadHour:null});
   const details=(projects:ProjectRuntimeDetails[]|null,hour=120):SpecialProjectDetails=>({hour,scientists:null,programs:null,breakthroughs:null,projects,unavailable:[],warnings:[]});
-  assert.deepEqual(runtimeProject(details([runtime(9,4,'Mod project name'),runtime(9,3,'Other')]),card,120), runtime(9,3,'Other'), 'the name is not the join');
+  const joined=(project:ProjectRuntimeDetails)=>({project,choices:project.choices});
+  assert.deepEqual(runtimeProject(details([runtime(9,4,'Mod project name'),runtime(9,3,'Other')]),card,120), joined(runtime(9,3,'Other')), 'the name is not the join');
   assert.match(runtimeProject(details([runtime(10,3,'Mod project name')]),card,120) as string, /not recorded/, 'another owner with the same local id is not this project');
   assert.match(runtimeProject(details([runtime(9,3,'Mod project name',99)],106),card,120) as string, /before this project/, 'a reply dated within the project whose row was read before it began is not this project');
-  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',100)],106),card,120), runtime(9,3,'Mod project name',100), 'a row read at the start of the project is its own');
+  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',100)],106),card,120), joined(runtime(9,3,'Mod project name',100)), 'a row read at the start of the project is its own');
   const ended={...card,project:{...card.project,runs:[card.project.runs[0]]}};
   assert.match(runtimeProject(details([runtime(9,3,'Mod project name',148)],148),ended,150) as string, /after this project ended/);
   assert.equal(runtimeProject(details([runtime(9,3,'Mod project name')],121),card,120), null, 'a reply from after the displayed hour waits');
@@ -437,7 +438,38 @@ test('a project window joins its runtime project on the episode owner and local 
     assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
       'a running project read after the list stands is not yet joined, and never said to have ended');
   }
-  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), runtime(9,3,'Mod project name',160),
+  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
     'a running project the list still covers takes its later read');
   assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'an ended episode keeps its end');
+});
+
+test('the live pop-up names a read past the list it was joined on, and wakes when the list reaches it', () => {
+  const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
+  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],runs:[data.projects[0].runs[0]]}]};
+  const running=shownCard(open,147,open.projects[0].id)!;
+  const read:ProjectRuntimeDetails={owner:9,id:3,label:{token:'mod_project',name:null},readHour:160,pendingKnown:true,pending:null,seed:null,variables:null,choices:null,historyReadHour:null};
+  const details:SpecialProjectDetails={hour:160,scientists:null,programs:null,breakthroughs:null,projects:[read],unavailable:[],warnings:[]};
+  const listed=147, shown=Math.max(147, listed), bound=episodeBound(open,running.project,listed);
+  assert.equal(runtimeProject(details,running,shown,bound), `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
+    "the pop-up at the list's own hour says why it does not join, never waits on a clock the list holds back");
+  assert.deepEqual(joinDue(details,running,shown,bound), { hour: 160, list: true }, 'it wakes on the list reaching the read, not on the frozen hour');
+  assert.deepEqual(joinDue({...details,projects:[{...read,readHour:140}]},running,shown,bound), { hour: 160, list: false }, 'a reply ahead of the shown hour waits on the clock');
+  assert.equal(joinDue({...details,hour:147,projects:[{...read,readHour:140}]},running,shown,bound), null);
+});
+
+test("a pop-up joins only reads and choices of its own episode, never a predecessor's or one read in a gap", () => {
+  const data=fixture();
+  const gapped={...data,projects:[{...data.projects[0],owner:9,local:3,start:{hour:110,exact:false},runs:[{...data.projects[0].runs[0],firstHour:110,lastHour:123},{...data.projects[0].runs[0],firstHour:140,lastHour:145}]}]};
+  const card={project:gapped.projects[0],run:gapped.projects[0].runs[1],info:gapped.presentations[0]};
+  const choice={ordinal:0,date:100,reward:{token:'mod_reward',name:null},option:{token:'mod_option',name:null},province:0,progress:0,characterReference:'0',country:null,scientist:null,state:null};
+  const read=(readHour:number,historyReadHour:number|null):ProjectRuntimeDetails=>({owner:9,id:3,label:{token:'mod_project',name:null},readHour,pendingKnown:true,pending:null,seed:null,variables:null,
+    choices:historyReadHour===null?null:[choice],historyReadHour});
+  const details=(project:ProjectRuntimeDetails):SpecialProjectDetails=>({hour:145,scientists:null,programs:null,breakthroughs:null,projects:[project],unavailable:[],warnings:[]});
+  assert.equal(runtimeProject(details(read(130,130)),card,145), 'Project rewards and output were read while this project was not recorded.', 'a read inside a gap of the episode is not proven its own');
+  const replaced=runtimeProject(details(read(141,100)),card,145);
+  assert.ok(replaced && typeof replaced==='object');
+  assert.equal(replaced.choices, 'Iterations were last read before this project began.', 'a predecessor with the same owner and id lends its choices to no replacement');
+  assert.equal((runtimeProject(details(read(141,130)),card,145) as {choices:unknown}).choices, 'Iterations were read while this project was not recorded.');
+  assert.deepEqual((runtimeProject(details(read(141,142)),card,145) as {choices:unknown}).choices, [choice], 'choices read within the episode are its own, whatever date they carry');
+  assert.equal((runtimeProject(details(read(141,null)),card,145) as {choices:unknown}).choices, null);
 });

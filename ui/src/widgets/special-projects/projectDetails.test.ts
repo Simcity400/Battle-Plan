@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detailsStructure, detailTexts, effectsRead, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
+import { REWARDS_PANEL, detailsStructure, detailTexts, effectsRead, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
 import { panelViews } from '../../draw/panels/views.ts';
+import { Followed } from '../../draw/followed.ts';
 import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
@@ -16,7 +17,7 @@ const reply = {
     assignments: [{ ordinal: 0, reference: '30064771145', person, target: 5, current: -2, timed: 1 }, { ordinal: 1, reference: '30064771145', person, target: 5, current: 2, timed: 0 }] }],
   projects: [{ owner: 5, id: 1, label, readHour: 24, pendingKnown: true, pending: { label, ordinal: 0, description: null, options: [{ label }], unavailable: null },
     choices: [{ ordinal: 0, date: 23, reward: label, option: label, province: -1, progress: 12345, characterReference: '18446744073709551615', country: 5, scientist: 7, state: null }],
-    seed: 4294967295, variables: [{ name: 'mod_array^0', valueRaw: '-9223372036854775808' }] }],
+    seed: 4294967295, variables: [{ name: 'mod_array^0', valueRaw: '-9223372036854775808' }], historyReadHour: 23 }],
 } satisfies SpecialProjectDetails;
 
 test('project details keep duplicate traits, supporting assignments, pending choices and exact variables, and refuse what cannot be', () => {
@@ -30,6 +31,9 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, scientists: [{ ...reply.scientists[0], visibilityHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], readHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
+  assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], historyReadHour: 25 }] }), /Invalid/, 'choices read after the hour shown');
+  assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], historyReadHour: null }] }), /Invalid/, 'choices with no history read');
+  assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], choices: null }] }), /Invalid/, 'a history read with no choices');
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
   const runs = [{ kind: 'text', text: 'Unlocks ', tone: 'H' }, { kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: null, text: 'Gun Carriages', tone: 'H' }];
   const effects = { hour: 24, readHour: 24, output: { runs, refusals: { 'Scope unavailable': 1 } },
@@ -83,16 +87,18 @@ test('an iteration reply is the game\'s headed output read at that iteration\'s 
   assert.equal(validateProjectIteration(missing, 23), missing, 'not recorded is a named state, never an empty output');
 });
 
-test('a daily read moves only painted texts: only the project read its rewards are joined on changes the structure that renders', () => {
+test('a daily read moves only painted texts: only the open reward join is given each project read it joins on', () => {
   const next = { ...reply, hour: 48,
     scientists: [{ ...reply.scientists[0], active: 0, injuryDays: 6, injuryHour: 48, visibilityHour: 48, skills: [{ ...reply.scientists[0].skills[0], level: -2, experienceRaw: '100000' }] }],
     breakthroughs: [{ ...reply.breakthroughs[0], points: 20000, readHour: 48 }],
     programs: [{ ...reply.programs[0], readHour: 48, facility: { ...reply.programs[0].facility, speedRaw: '100000', sources: [{ ...reply.programs[0].facility.sources[0], valueRaw: '1' }] },
       assignments: [{ ...reply.programs[0].assignments[0], current: 3 }, reply.programs[0].assignments[1]] }],
-    projects: [{ ...reply.projects[0], readHour: 48, variables: [{ name: 'mod_array^0', valueRaw: '5' }] }] } satisfies SpecialProjectDetails;
-  assert.equal(detailsStructure({ ...next, projects: [{ ...next.projects[0], readHour: 24 }] }), detailsStructure(reply));
-  assert.notEqual(detailsStructure(next), detailsStructure(reply), 'the page is given each read its project rewards are joined on');
-  assert.equal(panelViews['special-project-details']!.values(next, null, 48, detailsStructure(reply)), null, 'a later project read is never painted into the one shown');
+    projects: [{ ...reply.projects[0], readHour: 48, historyReadHour: 47, variables: [{ name: 'mod_array^0', valueRaw: '5' }] }] } satisfies SpecialProjectDetails;
+  assert.equal(detailsStructure(next), detailsStructure(reply), 'the inline details never render again for a project read alone');
+  assert.equal(rewardsStructure({ ...next, projects: [{ ...next.projects[0], readHour: 24, historyReadHour: 23 }] }), rewardsStructure(reply));
+  assert.notEqual(rewardsStructure(next), rewardsStructure(reply), 'the open reward join is given each read it joins on');
+  assert.notEqual(rewardsStructure({ ...next, projects: [{ ...next.projects[0], readHour: 24 }] }), rewardsStructure(reply), 'and each choice-history read');
+  assert.equal(panelViews[REWARDS_PANEL]!.values(next, null, 48, rewardsStructure(reply)), null, 'a later project read is never painted into the one joined');
   const reseeded = { ...next, projects: [{ ...next.projects[0], seed: 123 }] };
   assert.equal(detailsStructure(reseeded), detailsStructure(next));
   assert.equal(detailTexts(reseeded).get('j:5:1:seed'), '123');
@@ -111,4 +117,22 @@ test('a daily read moves only painted texts: only the project read its rewards a
   assert.equal(detailTexts(unread).get('s:7:injury'), 'Injury recovery unavailable.', 'a value not read says so, never zero');
   assert.equal(detailTexts(unread).get('s:7:visibility'), 'Roster visibility unavailable');
   assert.equal(detailTexts(unread).get('s:7:state'), 'State unavailable');
+});
+
+test('a project read alone sends the page a structure only for the open reward join, never the inline details', () => {
+  const updates = (product: string) => {
+    const followed = new Followed(() => {});
+    followed.add(1, 'a', product); followed.bind('a', 1, 1);
+    let led = 0;
+    for (let hour = 24; hour < 84; hour++) {
+      const data = { ...reply, hour, projects: [{ ...reply.projects[0], readHour: hour, historyReadHour: hour - 1 }] };
+      followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: hour,
+        panels: [{ id: 1, hour, stepped: true, panel: { data, refused: null } }] } }], message => { if (message.type === 'structureLead') led += message.updates.length; });
+      followed.drain(hour);
+      led += [...followed.structures(true)].length;
+    }
+    return led;
+  };
+  assert.equal(updates('special-project-details'), 1, 'sixty frames of new project reads update the inline details once, as they first arrive');
+  assert.equal(updates(REWARDS_PANEL), 60, 'the open pop-up is given every read it joins on');
 });

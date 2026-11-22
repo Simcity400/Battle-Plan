@@ -27,6 +27,7 @@ const MOVED_ITERATION: i32 = 51;
 const HISTORY_UNSTAMPED: [i32; 2] = [30, 35];
 const LATER_READ_ITERATION: u32 = 5;
 const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = 30..45;
+const BEFORE_UNHELD_ITERATION: (u32, i32) = (6, 33);
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -76,6 +77,7 @@ fn frame(hour: i32) -> DecodedFrame {
             history(3, NEXT_DAY_ITERATION, PROJECT_READS[1]),
             history(4, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
             history(LATER_READ_ITERATION, PROJECT_READS[0], PROJECT_READS[1]),
+            history(BEFORE_UNHELD_ITERATION.0, BEFORE_UNHELD_ITERATION.1, PROJECT_READS[1]),
             moved.filter(|&read| read >= MOVED_READS[2]).map(|_| ProjectHistoryRow { owner: MOVED_OWNER, project: 5, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: MOVED_ITERATION, ..Default::default() }),
         ]
         .into_iter()
@@ -142,10 +144,12 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     let project = &reply["projects"][0];
     assert_eq!((project["readHour"].clone(), project["label"]["token"].clone(), project["label"]["name"].clone()), (json!(PROJECT_READS[1]), json!("77"), Value::Null));
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
-    assert_eq!(project["choices"].as_array().unwrap().len(), 3, "the completion marker is not a chosen option");
+    assert_eq!(project["choices"].as_array().unwrap().len(), 4, "the completion marker is not a chosen option");
+    assert_eq!(project["historyReadHour"], json!(FIRST), "the choices carry the history read they come from, apart from the project read: {project}");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
     let unstamped = details(&source, HISTORY_UNSTAMPED[1]);
     assert_eq!(unstamped["projects"][0]["choices"], Value::Null, "a complete history table with no proven read is not an empty one: {unstamped}");
+    assert_eq!(unstamped["projects"][0]["historyReadHour"], Value::Null, "no choices, no history read");
     assert!(has(&unstamped, "Project choice history was not read"), "{unstamped}");
 }
 
@@ -169,6 +173,51 @@ fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_r
     assert!(at(expired - 1)["projects"][0]["choices"].is_array());
     assert_eq!(at(expired)["projects"][0]["choices"], Value::Null, "a history read older than a day is not recorded, though no table changed");
     assert!(has(&at(expired), "Project choice history was not read"));
+}
+
+#[test]
+fn followed_details_drop_an_owners_refusal_once_another_reason_withholds_its_choices() {
+    const SHIFTED: u32 = 9003;
+    const UNSTAMPED: u32 = 9004;
+    const READ: i32 = 30;
+    const EXPIRED: i32 = FIRST + STAGGER_PERIOD;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        for &table in DETAIL_TABLES.iter().filter(|&&table| table != TableId::CountryLinks) {
+            set(&mut frame, table, TableRows::empty(table));
+        }
+        let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+        if hour > FIRST {
+            links.push(CountryLinkRow { id: SHIFTED, canonical_slot: 7 });
+        }
+        links.push(CountryLinkRow { id: UNSTAMPED, canonical_slot: 7 });
+        let read = hour >= READ;
+        let projects = [SHIFTED, UNSTAMPED].map(|owner| ProjectRow { owner, local_id: 1, definition_id: 77, ..Default::default() });
+        set(&mut frame, TableId::Projects, TableRows::Projects(if read { projects.to_vec() } else { Vec::new() }));
+        set(&mut frame, TableId::ProjectHistory, TableRows::empty(TableId::ProjectHistory));
+        let stamp = |table: TableId, owner, sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour };
+        let slices = if read {
+            vec![stamp(TableId::Projects, 9001, READ), stamp(TableId::Projects, SHIFTED, READ), stamp(TableId::Projects, UNSTAMPED, READ), stamp(TableId::ProjectHistory, SHIFTED, FIRST)]
+        } else {
+            Vec::new()
+        };
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-project-refusals".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let panel = crate::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    for hour in FIRST..=LAST {
+        let followed = (exact.advance)(hour, hour == FIRST, &cancelled, None);
+        let direct = (exact.cold)(hour, &cancelled).unwrap();
+        assert_eq!(followed.value.as_ref().as_ref().ok(), Some(&direct), "hour {hour}");
+    }
+    let at = |hour: i32| (exact.cold)(hour, &cancelled).unwrap();
+    assert!(has(&at(EXPIRED - 1), OTHER_OWNER), "the history read before the owner joined is another country's");
+    assert!(!has(&at(EXPIRED), OTHER_OWNER), "once that read is older than a day, only its age withholds the choices");
+    assert!(has(&at(EXPIRED), "Project choice history was not read"));
 }
 
 #[test]
@@ -264,6 +313,10 @@ fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
         "an iteration whose hour has no proven history read is found at the first proven read after it, within its day"
     );
     assert!(refused(iteration(3, NEXT_DAY_ITERATION)).contains("content"), "a choice first read later in its day, under the same holder, is found for its own hour");
+    assert!(
+        refused(iteration(BEFORE_UNHELD_ITERATION.0, BEFORE_UNHELD_ITERATION.1)).contains("content"),
+        "the first proven read after the choice finds it, though a later read in the day came after the holder changed"
+    );
     assert_eq!(
         unavailable(4, UNHELD_NEXT_ITERATION),
         "This iteration's choice was next read after this country stopped holding the tag",

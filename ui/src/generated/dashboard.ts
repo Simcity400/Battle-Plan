@@ -3379,7 +3379,11 @@ identities: Array<CountryIdentityRun>,
 /**
  * The hours the holders' projects were recorded.
  */
-available: Array<HourSpan>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+available: Array<HourSpan>,
+/**
+ * The hours the holders' projects were read only in part: no list is shown for them.
+ */
+partial: Array<HourSpan>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
 /**
  * The game's text for each iteration count shown, none where it cannot be made.
  */
@@ -5785,7 +5789,11 @@ ordinal: number | null, description: string | null, options: Array<ProjectReward
 export type ProjectVariableValue = { name: string, valueRaw: string, };
 export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
 export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
-export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, choices: Array<ProjectChoice> | null, };
+export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, choices: Array<ProjectChoice> | null,
+/**
+ * The choice-history read `choices` comes from; none where they are not recorded.
+ */
+historyReadHour: number | null, };
 export type SpecialProjectDetailsParamsAtHour = SpecialProjectDetailsParams & { hour: number };
 export type SpecialProjectEffectsParams = { branchId: string, country: CountryRef,
 /**

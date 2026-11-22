@@ -14,9 +14,9 @@ use dashboard_query::{Index, Query, cost, identity::Holder};
 use replay::{campaign::Replay, lanes};
 use replay_data::{
     cadence::STAGGER_PERIOD,
-    rows::{CharacterRoleTraitRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, TableId, tables},
+    rows::{CharacterRoleTraitRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, SliceReadRow, TableId, tables},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -181,6 +181,8 @@ pub struct ProjectRuntimeDetails {
     pub seed: Option<u32>,
     pub variables: Option<Vec<ProjectVariableValue>>,
     pub choices: Option<Vec<ProjectChoice>>,
+    #[doc = " The choice-history read `choices` comes from; none where they are not recorded."]
+    pub history_read_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -461,14 +463,15 @@ fn project_slices(owner: u32) -> Read {
 
 fn owner_read(frame: &DecodedFrame, table: TableId, owner: u32) -> Result<i32, String> {
     let slices = frame.complete::<tables::SliceReads>().map_err(|why| format!("Project read hours are unavailable: {why}"))?;
-    replay_data::sliced::read_hour(slices, table, owner).ok_or_else(|| "Projects were not read in the day up to this hour while this country held the tag".to_owned())
+    replay_data::sliced::read_hour(slices, table, owner).ok_or_else(|| PROJECTS_UNREAD.to_owned())
 }
 
 const OTHER_OWNER: &str = "The project was read while its owner belonged to another country";
+const PROJECTS_UNREAD: &str = "Projects were not read in the day up to this hour while this country held the tag";
 
 fn supplied_project<'f>(frame: &'f DecodedFrame, reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(&'f ProjectRow, i32), String> {
     let read = owner_read(frame, TableId::Projects, owner).ok().filter(|&read| reads.supplies(read));
-    let read = read.ok_or("Projects were not read in the day up to this hour while this country held the tag")?;
+    let read = read.ok_or(PROJECTS_UNREAD)?;
     reads.owned(owner, read)?;
     let rows = frame.complete::<tables::Projects>().map_err(|why| format!("Projects are unavailable: {why}"))?;
     rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| (&rows[at], read)).ok_or_else(|| "The project is not recorded at this hour".to_owned())
@@ -584,6 +587,10 @@ impl AtHour for SpecialProjectDetailsAt {
         (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
     }
 
+    fn compares_previous(table: TableId) -> bool {
+        table == TableId::SliceReads
+    }
+
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {
             1 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].iter().any(|&t| edits.fields(t, u64::MAX)),
@@ -616,17 +623,24 @@ impl AtHour for SpecialProjectDetailsAt {
             }
         }
         let Ok(slices) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
+        let Some(TableView::Complete(before)) = edits.previous.get(&TableId::SliceReads).map(|view| view.held()) else { return Ok(false) };
+        let Some(before_slices) = before.rows::<tables::SliceReads>() else { return Ok(false) };
         let Ok(owners) = owners_of(frame, holder.slot) else { return Ok(false) };
         let Ok(rows) = frame.complete::<tables::Projects>() else { return Ok(false) };
+        let earlier = Reads { hour: previous, ..reads };
         let mut read_of = BTreeMap::new();
         for &owner in &owners {
             let has_rows = !prefixed(rows, owner, |r| r.owner).is_empty();
-            match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| reads.supplies(read)) {
-                Some(read) if reads.owned(owner, read).is_ok() => {
-                    read_of.insert(owner, (read, has_rows.then(|| history_read(frame, &reads, owner, read))));
+            let now = OwnerRead::of(slices, &reads, owner, has_rows);
+            if now.refusal() != OwnerRead::of(before_slices, &earlier, owner, has_rows).refusal() {
+                return Ok(false);
+            }
+            match now {
+                OwnerRead::Read(read, history) => {
+                    read_of.insert(owner, (read, history));
                 }
-                None if !has_rows && owner != holder.id => {}
-                _ => return Ok(false),
+                OwnerRead::Unread => {}
+                OwnerRead::Withheld => return Ok(false),
             }
         }
         let unavailable: BTreeSet<&str> = data["unavailable"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
@@ -634,7 +648,7 @@ impl AtHour for SpecialProjectDetailsAt {
         for project in projects {
             let Some((_, Some(history))) = project["owner"].as_u64().and_then(|owner| read_of.get(&(owner as u32))) else { return Ok(false) };
             let kept = match history {
-                Ok(()) => !project["choices"].is_null(),
+                Ok(_) => !project["choices"].is_null(),
                 Err(why) => project["choices"].is_null() && unavailable.contains(why.as_str()),
             };
             if !kept {
@@ -643,7 +657,9 @@ impl AtHour for SpecialProjectDetailsAt {
         }
         let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
         for project in projects {
-            project["readHour"] = read_of[&(project["owner"].as_u64().unwrap() as u32)].0.into();
+            let (read, history) = &read_of[&(project["owner"].as_u64().unwrap() as u32)];
+            project["readHour"] = (*read).into();
+            project["historyReadHour"] = history.as_ref().and_then(|history| history.as_ref().ok()).copied().into();
         }
         data["hour"] = at.hour.into();
         Ok(true)
@@ -914,12 +930,37 @@ pub(super) fn option_name(options: &[content_reader_core::special_projects::Prot
     Ok(first.name.clone())
 }
 
-fn history_read(frame: &DecodedFrame, reads: &Reads<'_, '_>, owner: u32, projects: i32) -> Result<(), String> {
-    let read = owner_read(frame, TableId::ProjectHistory, owner)
-        .ok()
+fn history_read(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, projects: i32) -> Result<i32, String> {
+    let read = replay_data::sliced::read_hour(slices, TableId::ProjectHistory, owner)
         .filter(|&read| reads.supplies(read))
         .ok_or("Project choice history was not read in the day up to this hour while this country held the tag")?;
-    if read == projects { Ok(()) } else { reads.owned(owner, read) }
+    if read != projects {
+        reads.owned(owner, read)?;
+    }
+    Ok(read)
+}
+
+enum OwnerRead {
+    Unread,
+    Read(i32, Option<Result<i32, String>>),
+    Withheld,
+}
+
+impl OwnerRead {
+    fn of(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, has_rows: bool) -> Self {
+        match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| reads.supplies(read)) {
+            Some(read) if reads.owned(owner, read).is_ok() => Self::Read(read, has_rows.then(|| history_read(slices, reads, owner, read))),
+            None if !has_rows && owner != reads.holder.id => Self::Unread,
+            _ => Self::Withheld,
+        }
+    }
+
+    fn refusal(&self) -> Option<&str> {
+        match self {
+            Self::Read(_, Some(Err(why))) => Some(why),
+            _ => None,
+        }
+    }
 }
 
 fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
@@ -982,7 +1023,7 @@ fn projects(
                 }
                 Err(why) => why,
             },
-            _ if has_rows || owner == reads.holder.id => "Projects were not read in the day up to this hour while this country held the tag".to_owned(),
+            _ if has_rows || owner == reads.holder.id => PROJECTS_UNREAD.to_owned(),
             _ => continue,
         };
         if !withheld.contains(&why) {
@@ -995,7 +1036,7 @@ fn projects(
     }
     let mut out = Vec::new();
     for (&owner, &read) in &read_of {
-        let history = history_read(frame, reads, owner, read);
+        let history = history_read(slices, reads, owner, read);
         if let Err(why) = &history
             && !prefixed(rows, owner, |row| row.owner).is_empty()
             && !unavailable.contains(why)
@@ -1022,6 +1063,7 @@ fn projects(
                     .map_err(|_| unavailable.push(format!("A variable name of project {owner}:{} is not UTF-8", project.local_id)))
                     .ok()
             });
+            let choices = history.is_ok().then(|| choices(frame, project, namer, unavailable)).flatten();
             out.push(ProjectRuntimeDetails {
                 owner,
                 id: project.local_id,
@@ -1031,7 +1073,8 @@ fn projects(
                 pending: runtime.and_then(|runtime| runtime.pending_reward.map(|id| pending(frame, runtime, token.as_deref().map_err(String::as_str), id, namer))),
                 seed: runtime.and_then(|runtime| runtime.variables.as_ref()).map(|store| store.seed),
                 variables,
-                choices: history.is_ok().then(|| choices(frame, project, namer, unavailable)).flatten(),
+                history_read_hour: history.as_ref().ok().copied().filter(|_| choices.is_some()),
+                choices,
             });
         }
     }

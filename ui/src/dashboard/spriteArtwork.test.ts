@@ -57,3 +57,15 @@ test('each active recording and revision keeps its own icons, and a scope no one
   assert.equal(caches.icons('a').has('icon'), false, 'a scope released by its last widget is not kept');
   releaseB();
 });
+
+test('two recordings mounting together keep their own icons whatever order their renders and effects run in', () => {
+  const caches = new SpriteCaches();
+  const a = caches.icons('a'), b = caches.icons('b');
+  const releaseA = caches.hold('a');
+  const releaseB = caches.hold('b');
+  assert.equal(caches.icons('a'), a);
+  assert.equal(caches.icons('b'), b, 'a scope rendered but not yet held is not dropped when another is held');
+  b.set('icon', png);
+  assert.equal(caches.icons('b').get('icon'), png);
+  releaseA(); releaseB();
+});

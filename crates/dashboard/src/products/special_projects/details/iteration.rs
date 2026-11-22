@@ -8,6 +8,8 @@ use crate::{
     },
 };
 use dashboard_base::products::Country;
+use dashboard_query::cost;
+use replay::lanes::{self, Keys};
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{ProjectHistoryRow, ProjectRow, TableId, tables},
@@ -74,21 +76,26 @@ fn history_row(rows: &[ProjectHistoryRow], key: (u32, u32, u32)) -> Option<&Proj
 
 fn later_history(reads: &Reads<'_, '_>, params: &SpecialProjectIterationParams) -> Result<ProjectHistoryRow, String> {
     let unread = "This iteration's choice was not read within a day of its hour";
-    let last = reads.query.replay.recording().run(reads.run).map_err(|why| why.to_string())?.last_hour();
+    let recording = reads.query.replay.recording();
+    let last = recording.run(reads.run).map_err(|why| why.to_string())?.last_hour();
     let until = reads.hour.saturating_add(STAGGER_PERIOD - 1).min(last);
     if until <= reads.hour {
         return Err(unread.into());
     }
-    let asked = [history_read(params), Read::these(TableId::SliceReads, [slice_read(TableId::ProjectHistory, params.owner)])];
-    let frame = dashboard_base::products::at_hour::frame(reads.query, until, &asked, SpecialProjectIterationAt::TITLE).map_err(|why| why.to_string())?;
-    let read = owner_read(&frame, TableId::ProjectHistory, params.owner)?;
-    if read <= reads.hour {
-        return Err(unread.into());
-    }
+    let key = slice_read(TableId::ProjectHistory, params.owner);
+    let columns = super::super::read_columns().map_err(|why| why.to_string())?;
+    let stamps = cost::storage(|| lanes::history(recording, reads.run, TableId::SliceReads, &columns, Keys::These(&[key]), reads.hour + 1, until)).map_err(|why| why.to_string())?;
+    let mut later = stamps.keys.iter().flat_map(|(_, steps)| steps).filter_map(|step| Some((step.hour, super::super::sample(step.cells.as_deref())?))).filter(|&(_, read)| read > reads.hour);
+    let Some((shown, read)) = later.next() else { return Err(unread.into()) };
     if !reads.follows(read, until) {
         return Err("This iteration's choice was next read after this country stopped holding the tag".into());
     }
     reads.owned(params.owner, read)?;
+    let frame = dashboard_base::products::at_hour::frame(reads.query, shown, &[history_read(params), Read::these(TableId::SliceReads, [key])], SpecialProjectIterationAt::TITLE)
+        .map_err(|why| why.to_string())?;
+    if owner_read(&frame, TableId::ProjectHistory, params.owner)? != read {
+        return Err(unread.into());
+    }
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
     history_row(rows, history_key(params)).cloned().ok_or_else(|| unread.into())
 }

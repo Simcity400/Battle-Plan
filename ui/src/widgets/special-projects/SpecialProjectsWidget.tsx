@@ -37,7 +37,7 @@ import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip,
   observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
-  validateSpecialProjectsReply } from './specialProjectsData';
+  unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { PlaybackController } from '../../dashboard/playback';
@@ -261,11 +261,11 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       const shown = opened?.on === openedOn(track, reply.tag) ? opened : null;
       const popup = shown && <ProjectWindow key={shown.id} runtime={runtime} widget={widget} tag={reply.tag} active={active} reply={reply} feed={feed}
         card={observed ? shownCard(reply, at, shown.id) : null} hour={at} through={live.shownAt} anchor={shown}
-        missing={observed ? 'This project is not in progress or completed at this time.' : 'Projects were not recorded at this time.'}
-        onClose={() => setOpened(null)} onWarnings={reportWarnings} />;
+        missing={observed ? 'This project is not in progress or completed at this time.' : unobservedReason(reply, at)}
+        onClose={() => setOpened(null)} />;
       body = observed ? <><CurrentList clock={runtime.clock} feed={feed} reply={reply} at={at} item={item(reply)}
         open={(card, event) => setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
-        : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}{popup}</>;
+        : <><WidgetState kind="unavailable" message={unobservedReason(reply, at)} />{details}{popup}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />

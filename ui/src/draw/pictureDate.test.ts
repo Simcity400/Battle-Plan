@@ -63,7 +63,7 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   const frame = () => { const cb = render!; render = undefined; cb(performance.now()); };
   const reply = { branchId: '1', tag: 'GER', unavailable: null, iterationTexts: {},
     identities: [{ firstHour: 0, lastHour: 99, slot: 5, countryId: 10 }],
-    available: [{ firstHour: 0, lastHour: 23 }], projects: [], presentations: [], people: [], warnings: [] };
+    available: [{ firstHour: 0, lastHour: 23 }], partial: [], projects: [], presentations: [], people: [], warnings: [] };
   const clears: number[][] = [];
   const ctx = new Proxy({ clearRect: (...args: number[]) => clears.push(args), measureText: (s: string) => ({ width: s.length * 5 }) },
     { get: (o, k) => Reflect.get(o, k) ?? (() => {}) });

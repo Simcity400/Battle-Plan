@@ -167,11 +167,12 @@ fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countr
         reads: rows(vec![(read_key(TableId::Projects, 11), samples(&[47, 50])), (read_key(TableId::Projects, 12), samples(&[45]))]),
         owners: BTreeMap::from([(11, vec![(49, 60)]), (12, vec![(40, 55)])]),
         projects_available: vec![(40, 60)],
+        projects_partial: Vec::new(),
         history_available: Vec::new(),
     };
     let mut fold = Fold::new(0);
     let mut observed = Vec::new();
-    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut observed, &AtomicBool::new(false)).unwrap();
+    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut observed, &mut Vec::new(), &AtomicBool::new(false)).unwrap();
     let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.owner, episode.start.hour, episode.runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>())).collect();
     assert_eq!(
         shown,
@@ -180,4 +181,66 @@ fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countr
     );
     assert_eq!(observed, [(45, 48), (50, 60)], "an hour whose linked owner has no proven read is not recorded, never an empty list");
     assert!(!supplied(&read.owners, 11, None), "a row whose read is not recorded is not admitted");
+}
+
+#[test]
+fn a_read_of_projects_or_choices_in_part_ends_no_project_and_counts_no_iterations() {
+    use crate::test_fixtures::{CAMPAIGN, records, source};
+    use replay_data::rows::{ProjectHistoryRow, ProjectRow, SliceReadRow, TableRows};
+    use replay_frame::frame::TableView;
+    const FIRST: i32 = 20;
+    const LAST: i32 = 40;
+    const PROJECTS_IN_PART: i32 = 30;
+    const CHOICES_IN_PART: i32 = 33;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        let project = |local_id| {
+            let mut row = ProjectRow { owner: 9001, local_id, definition_id: 40, program_reference: 1, started: 1, ..Default::default() };
+            row.state.current_offset = 0x18;
+            row.state.not_completed = 1;
+            row
+        };
+        let choice = |ordinal| ProjectHistoryRow { owner: 9001, project: 1, ordinal, prototype_reward_handle: 3, option_handle: 4, date: FIRST, ..Default::default() };
+        *frame.tables[TableId::Projects.index()] = if hour == PROJECTS_IN_PART {
+            TableView::Truncated { rows: TableRows::Projects(vec![project(1)]), missing: 1 }
+        } else {
+            TableView::Complete(TableRows::Projects(vec![project(1), project(2)]))
+        };
+        *frame.tables[TableId::ProjectHistory.index()] = if hour == CHOICES_IN_PART {
+            TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice(0)]), missing: 1 }
+        } else {
+            TableView::Complete(TableRows::ProjectHistory(vec![choice(0), choice(1)]))
+        };
+        *frame.tables[TableId::ProjectPrograms.index()] = TableView::Complete(TableRows::empty(TableId::ProjectPrograms));
+        let mut stamps: Vec<SliceReadRow> =
+            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: hour })).collect();
+        stamps.sort_by_key(|row| (row.table, row.owner));
+        *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
+        frame
+    };
+    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-projects-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = crate::answer::query(&source, 1).unwrap();
+    let params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let mut links = HashMap::new();
+    let mut direct = Fold::new(FIRST);
+    let (mut observed, mut partial) = (Vec::new(), Vec::new());
+    for piece in pieces(&query, &params.country, LAST).0 {
+        let read = read_piece(&query, links_of(&query, &mut links, piece.run).unwrap(), &piece).unwrap();
+        fold_piece(&mut direct, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false)).unwrap();
+    }
+    let (followed, followed_observed, followed_partial) = incremental::followed(&query, &params.country, FIRST, LAST).unwrap();
+    for (fold, observed, partial) in [(&direct, &observed, &partial), (&followed, &followed_observed, &followed_partial)] {
+        let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.local, episode.runs.iter().map(|run| (run.first_hour, run.last_hour, run.iterations)).collect::<Vec<_>>())).collect();
+        assert_eq!(
+            shown,
+            [
+                (1, vec![(FIRST, PROJECTS_IN_PART - 1, Some(2)), (PROJECTS_IN_PART + 1, CHOICES_IN_PART - 1, Some(2)), (CHOICES_IN_PART, CHOICES_IN_PART, None), (CHOICES_IN_PART + 1, LAST, Some(2))]),
+                (2, vec![(FIRST, PROJECTS_IN_PART - 1, Some(0)), (PROJECTS_IN_PART + 1, CHOICES_IN_PART - 1, Some(0)), (CHOICES_IN_PART, CHOICES_IN_PART, None), (CHOICES_IN_PART + 1, LAST, Some(0))]),
+            ],
+            "a project missing from a read in part is not ended, and a history read in part is no count"
+        );
+        assert_eq!(*observed, [(FIRST, PROJECTS_IN_PART - 1), (PROJECTS_IN_PART + 1, LAST)]);
+        assert_eq!(*partial, [(PROJECTS_IN_PART, PROJECTS_IN_PART)], "the hour read in part is named apart from an unrecorded one");
+    }
 }
