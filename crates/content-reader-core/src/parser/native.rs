@@ -858,6 +858,22 @@ impl<'n> Reader<'n> {
             return;
         }
         let peeked = self.peek().clone();
+        if peeked.kind == Kind::Close
+            && let Some((_, block)) = self.unknown_scopes.last()
+            && self.unsettled.is_none()
+        {
+            self.unsettled = Some(Misread {
+                kind: crate::DiagnosticKind::Unsettled,
+                count: None,
+                line: peeked.line,
+                what: format!(
+                    "definition {} has no value before `}}` in block `{}` under unknown dispatch: a key reader consumes `}}` as its value while a skip or list reader closes the block here",
+                    name.shown(),
+                    String::from_utf8_lossy(block),
+                ),
+            });
+            return;
+        }
         let value = match peeked {
             token if token.text.starts_with(b"@") => {
                 let resolved = self.resolve(token.clone());
@@ -920,26 +936,28 @@ impl<'n> Reader<'n> {
             if !self.advance() {
                 return Slots::Ended;
             }
-            if self.current().text.starts_with(b"@") {
+            if self.current().starts_with_at() {
                 let defined_name = self.current();
                 self.define();
                 if self.unsettled.is_some() {
                     return Slots::Ended;
                 }
-                let peek = self.peek();
-                let (closes, line) = (peek.kind == Kind::Close, peek.line);
-                if closes && let Some((_, block)) = self.unknown_scopes.last() {
-                    self.unsettled = Some(Misread {
-                        kind: crate::DiagnosticKind::Unsettled,
-                        count: None,
-                        line,
-                        what: format!(
-                            "variable {} ends block `{}` under unknown dispatch: a key reader consumes `}}` as a key while a skip or list reader closes the block here",
-                            defined_name.shown(),
-                            String::from_utf8_lossy(block),
-                        ),
-                    });
-                    return Slots::Ended;
+                if !self.unknown_scopes.is_empty() {
+                    let peek = self.peek();
+                    let (closes, line) = (peek.kind == Kind::Close, peek.line);
+                    if closes && let Some((_, block)) = self.unknown_scopes.last() {
+                        self.unsettled = Some(Misread {
+                            kind: crate::DiagnosticKind::Unsettled,
+                            count: None,
+                            line,
+                            what: format!(
+                                "variable {} ends block `{}` under unknown dispatch: a key reader consumes `}}` as a key while a skip or list reader closes the block here",
+                                defined_name.shown(),
+                                String::from_utf8_lossy(block),
+                            ),
+                        });
+                        return Slots::Ended;
+                    }
                 }
                 continue;
             }
@@ -1678,9 +1696,6 @@ impl<'n> Reader<'n> {
                 let body = self.apply(Shape::Trigger, &token, &value, &mut |_: bool, field| {
                     untraced(field)
                 });
-                if self.unsettled.is_some() {
-                    break;
-                }
                 items.push(Item {
                     key: Some(token.text.clone()),
                     key_quoted: false,
@@ -1688,6 +1703,9 @@ impl<'n> Reader<'n> {
                     kind: value.kind,
                     value: body,
                 });
+                if self.unsettled.is_some() {
+                    break;
+                }
                 self.advance();
                 self.current = self.resolve(self.current());
                 if self.unsettled.is_some() {
@@ -2151,7 +2169,7 @@ impl<'n> Reader<'n> {
                 at += 1;
                 continue;
             }
-            if !token.quoted && token.text.starts_with(b"@") && definition.is_none() {
+            if token.starts_with_at() && definition.is_none() {
                 definition = Some(String::from_utf8_lossy(&token.text).into_owned());
             }
             at += 2;
@@ -2235,8 +2253,7 @@ fn scan_block(tokens: &[Token], mut at: usize) -> (usize, Option<String>) {
     while let Some(token) = tokens.get(at) {
         if depth > 0
             && definition.is_none()
-            && !token.quoted
-            && token.text.starts_with(b"@")
+            && token.starts_with_at()
             && tokens.get(at + 1).is_some_and(Token::operator)
         {
             definition = Some(String::from_utf8_lossy(&token.text).into_owned());

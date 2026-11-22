@@ -1257,3 +1257,86 @@ fn direct_resolution_readers_stop_before_storing_ambiguous_values() {
     assert_eq!(keys(&color.items), ["opaque", "col"]);
     assert!(block(&color.items, "col").is_empty());
 }
+
+#[test]
+fn valueless_definition_before_close_under_unknown_dispatch_refuses_without_swallowing_brace() {
+    let read = test_read(b"a = { trigger = { @x = } n = @x } c = { n = 4 }");
+    let unsettled = read.unsettled.as_ref().expect("valueless definition refused");
+    assert!(
+        unsettled.what.contains("@x") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    assert!(block(block(&read.items, "a"), "trigger").is_empty());
+}
+
+#[test]
+fn mixed_list_with_quoted_nested_definition_under_unknown_dispatch_refuses() {
+    let read = test_read(
+        br#"a = { n = 1 } b = { trigger = { nested = { "@x" = 3 marker = 1 } loose } n = @x } c = { n = 4 }"#,
+    );
+    let unsettled = read
+        .unsettled
+        .as_ref()
+        .expect("quoted nested definition refused");
+    assert!(unsettled.what.contains("@x"), "{unsettled}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+}
+
+#[test]
+fn known_dispatch_definition_at_eof_preserves_quoted_token_kind() {
+    let read = read(
+        br#"k = old @x = "tail""#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _| Shape::Current,
+    );
+    assert!(read.unsettled.is_none(), "{read:?}");
+    assert_eq!(read.items.len(), 2);
+    assert_eq!(read.items[1].kind, Kind::Quoted);
+    assert_eq!(read.items[1].value, Value::Scalar(b"tail".to_vec()));
+}
+
+#[test]
+fn equipment_limit_and_math_arguments_preserve_proved_partial_children_on_refusal() {
+    crate::test_game::enter();
+    let names = KeyNames::default();
+    let equip = read(
+        b"opaque = { @x = flag marker = yes } enable_equipments = { limit = { always = yes has_country_flag = @x } tank_1 } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        Some(&names),
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"enable_equipments") => Shape::TechnologyEquipment,
+            _ => Shape::One,
+        },
+    );
+    assert!(equip.unsettled.is_some(), "{equip:?}");
+    assert_eq!(keys(&equip.items), ["opaque", "enable_equipments"]);
+    let limit_items = block(block(&equip.items, "enable_equipments"), "limit");
+    assert_eq!(keys(limit_items), ["always"]);
+    assert_eq!(limit_items[0].value, Value::Scalar(b"yes".to_vec()));
+
+    let math = read(
+        b"opaque = { @x = 5 marker = yes } expr = { value = 1 clamp = { min = { value = 2 add = @x } max = 9 } } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"expr") => Shape::Expression,
+            _ => Shape::One,
+        },
+    );
+    assert!(math.unsettled.is_some(), "{math:?}");
+    assert_eq!(keys(&math.items), ["opaque", "expr"]);
+    let clamp = block(block(&math.items, "expr"), "clamp");
+    assert_eq!(keys(clamp), ["min"]);
+    let min = block(clamp, "min");
+    assert_eq!(keys(min), ["value"]);
+    assert_eq!(min[0].value, Value::Scalar(b"2".to_vec()));
+}

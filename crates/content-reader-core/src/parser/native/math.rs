@@ -203,10 +203,10 @@ impl Reader<'_> {
                 return Value::Block(items);
             }
             item.value = self.math_operand(state);
+            items.push(item);
             if self.unsettled.is_some() {
                 return Value::Block(items);
             }
-            items.push(item);
         }
         self.advance();
         self.current = self.resolve(self.current());

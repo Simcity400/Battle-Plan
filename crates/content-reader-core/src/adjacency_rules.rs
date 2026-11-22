@@ -248,6 +248,17 @@ enum TriggerNames<'a> {
     Lazy(&'a ResolvedLayers),
 }
 
+fn trigger_registry_status() -> Option<Result<(), String>> {
+    let tables = engine_executable::executable_tables::current()?;
+    Some(
+        tables
+            .registries
+            .as_ref()
+            .map(|_| ())
+            .map_err(|withheld| withheld.to_string()),
+    )
+}
+
 fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
     let lazy_names: std::cell::OnceCell<Result<std::sync::Arc<KeyNames>, String>> =
         std::cell::OnceCell::new();
@@ -263,58 +274,68 @@ fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<Adjacenc
         native::Top::Persistent(Node::File),
         provided,
         &mut |node, field| {
-            let mut trigger_shape = |target: crate::combat_tactics::Node| match names {
-                TriggerNames::Provided(names) => shaper
-                    .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
-                    .shape(target, field)
-                    .map(Node::Trigger),
-                TriggerNames::Lazy(layers) => {
-                    let loaded = lazy_names.get_or_init(|| match layers.key_names() {
-                        Ok(names) => Ok(names),
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                            let reason = error.to_string();
-                            interrupted = Some(error);
-                            Err(reason)
-                        }
-                        Err(error) => Err(error.to_string()),
-                    });
-                    match loaded {
-                        Ok(names) => shaper
-                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
-                            .shape(target, field)
-                            .map(Node::Trigger),
-                        Err(why) => {
-                            if interrupted.is_some() {
-                                Shape::Unsettled(why.clone())
-                            } else if engine_executable::executable_tables::is_initialized() {
-                                match shaper
-                                    .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
-                                    .shape(target, field)
-                                    .map(Node::Trigger)
-                                {
-                                    Shape::Unsettled(reason) => {
-                                        Shape::Unsettled(format!("{reason} ({why})"))
+            let mut trigger_shape = |target: crate::combat_tactics::Node| {
+                let registry = trigger_registry_status();
+                if let Some(Err(withheld)) = &registry {
+                    return Shape::Unsettled(withheld.clone());
+                }
+                match names {
+                    TriggerNames::Provided(names) => shaper
+                        .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
+                        .shape(target, field)
+                        .map(Node::Trigger),
+                    TriggerNames::Lazy(layers) => {
+                        let loaded = lazy_names.get_or_init(|| match layers.key_names() {
+                            Ok(names) => Ok(names),
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                let reason = error.to_string();
+                                interrupted = Some(error);
+                                Err(reason)
+                            }
+                            Err(error) => Err(error.to_string()),
+                        });
+                        match loaded {
+                            Ok(names) => shaper
+                                .get_or_insert_with(|| {
+                                    crate::combat_tactics::Shaper::new(Some(names))
+                                })
+                                .shape(target, field)
+                                .map(Node::Trigger),
+                            Err(why) => {
+                                if interrupted.is_some() {
+                                    Shape::Unsettled(why.clone())
+                                } else if matches!(registry, Some(Ok(()))) {
+                                    match shaper
+                                        .get_or_insert_with(|| {
+                                            crate::combat_tactics::Shaper::new(None)
+                                        })
+                                        .shape(target, field)
+                                        .map(Node::Trigger)
+                                    {
+                                        Shape::Unsettled(reason) => {
+                                            Shape::Unsettled(format!("{reason} ({why})"))
+                                        }
+                                        other => other,
                                     }
-                                    other => other,
+                                } else if field.opens() || field.skips_block() {
+                                    Shape::Unsettled(format!(
+                                        "trigger dispatch requires key names, which failed to load: {why}"
+                                    ))
+                                } else {
+                                    Shape::One
                                 }
-                            } else if field.opens() || field.skips_block() {
-                                Shape::Unsettled(format!(
-                                    "trigger dispatch requires key names, which failed to load: {why}"
-                                ))
-                            } else {
-                                Shape::One
                             }
                         }
                     }
-                }
-                TriggerNames::None => {
-                    if engine_executable::executable_tables::is_initialized() {
-                        shaper
-                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
-                            .shape(target, field)
-                            .map(Node::Trigger)
-                    } else {
-                        native::untraced(field)
+                    TriggerNames::None => {
+                        if matches!(registry, Some(Ok(()))) {
+                            shaper
+                                .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
+                                .shape(target, field)
+                                .map(Node::Trigger)
+                        } else {
+                            native::untraced(field)
+                        }
                     }
                 }
             };
@@ -831,5 +852,19 @@ adjacency_rule = {
         std::fs::remove_file(needs.base().join("common/country_tags/broken.txt")).unwrap();
         let error = read(&layers).unwrap_err().to_string();
         assert!(error.contains("custom_scope"), "{error}");
+    }
+
+    #[test]
+    fn withheld_executable_registries_refuse_trigger_dispatch_without_panicking() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Registries,
+                "fixture withheld registries",
+            )
+        });
+        let error = parse(b"adjacency_rule = { name = A is_enemy = { always = yes } }")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fixture withheld registries"), "{error}");
     }
 }
