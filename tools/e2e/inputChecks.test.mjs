@@ -13,16 +13,15 @@ test('scrub waits for the released timeline target and fails when it is not reac
     'a failed scrub target wait stops the input sequence');
 });
 
-test('scroll fails when its wheel does not move the selected scroller', () => {
+test('scroll tries each scrollable area and fails when none moves under the wheel', () => {
   const wheel = source.indexOf("type: 'mouseWheel'");
-  const need = source.lastIndexOf('const point = await s.need(target);', wheel);
-  const before = source.indexOf('const before = await app.evaluate', need);
+  const need = source.lastIndexOf('const point = await s.locate(target);', wheel);
+  const before = source.indexOf('const [before, wheel, at] = await app.evaluate', need);
   assert.ok(need >= 0 && before > need, 'the baseline is captured after revealing the target');
   assert.ok(wheel >= 0, 'the scripted wheel is present');
-  const wait = source.indexOf('scroll target', wheel);
-  assert.ok(wait > wheel, 'the wheel is followed by a named target wait');
-  assert.match(source.slice(wheel, wait + 300), /if \(!await s\.until\([\s\S]+?\)\)\s*throw new Error\([\s\S]*?scroll/i,
-    'a failed scroll wait stops the input sequence');
+  const wait = source.indexOf('scrolled = await s.until(', wheel), fail = source.indexOf('if (!scrolled) throw new Error(', wait);
+  assert.ok(wait > wheel, 'the wheel is followed by a wait on the target');
+  assert.ok(fail > wait && /moved under the wheel/.test(source.slice(fail, fail + 200)), 'a scroll no candidate makes stops the input sequence');
 });
 
 test('pause verifies that the playback clock stopped after the click', () => {
