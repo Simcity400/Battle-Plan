@@ -35,6 +35,7 @@ export interface Painted {
   reason?: string;
   hit?: (point: readonly [number, number]) => string | null;
   pending?: boolean;
+  needs?: readonly { sub: number; countries: readonly string[] }[];
 }
 
 export interface LaneView {
@@ -51,10 +52,10 @@ export interface LaneHost<B extends Bitmap> {
   crop(sources: readonly Bitmapped[]): Promise<B[]>;
   present(presentation: Presented<B>, transfer: B[]): void;
   release(bytes: number): void;
-  charge(bytes: number): void;
   fail(reason: string): void;
   later(run: () => void): void;
   hit?(widget: number, key: string | null): void;
+  needs?(widget: number, needs: readonly { sub: number; countries: readonly string[] }[]): void;
   budget?: number;
   clock?: () => number;
   stretch?: (ms: number) => void;
@@ -71,7 +72,12 @@ interface Widget {
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; halted: number | null;
 }
 
-interface Held { kind: 'follow' | 'confirm' | 'panels'; native: number; seek: number; hour: number; id: number; record: Uint8Array | null; size: number; completed?: number }
+interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
+
+const charged = (record: Uint8Array) => {
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength), length = view.getUint32(8, true);
+  return 16 + Math.max(length, view.getUint32(12, true));
+};
 
 const BUFFER = 8 << 20;
 const HELD_COST = 32;
@@ -109,7 +115,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly lost = new Map<number, number>();
   private readonly gone = new Set<number>();
   private readonly failed = new Set<number>();
-  private readonly presented = new Map<number, number>();
+  private readonly presented = new Map<number, { widget: number; sent: Sent }>();
   private request: FrameRequest | null = null;
   private lastExact: FrameRequest | null = null;
   private working = false;
@@ -172,7 +178,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   unmount(widget: number) {
     this.widgets.delete(widget);
-    for (const [id, owner] of this.presented) if (owner === widget) this.presented.delete(id);
+    for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
 
   bind(widget: number, binding: Binding, model?: unknown) {
@@ -230,10 +236,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private after() {
     for (const id of this.facts.drain()) this.gone.add(id);
-    const bytes = this.freed + this.facts.releasedBytes();
+    const bytes = this.freed + this.releasedFacts();
     this.freed = 0;
     if (bytes) this.host.release(bytes);
     this.wake();
+  }
+
+  private releasedFacts() {
+    const shown = new Set<unknown>();
+    for (const widget of this.widgets.values()) for (const sent of [widget.installed, widget.inflight])
+      for (const picture of sent?.pictures ?? []) for (const part of picture.parts) shown.add(part);
+    return this.facts.release(fact => shown.has(fact));
   }
 
   private routeOf(widget: Widget) {
@@ -246,8 +259,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private hold(item: Held) {
-    if (item.id >= CELL && this.gone.has(item.id)) { this.freed += item.size; return; }
-    if (this.lost.has(item.id)) { this.freed += item.size; return; }
+    if (item.id >= CELL && this.gone.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
     if (this.heldBytes + item.size + HELD_COST > BUFFER) {
       this.freed += item.size;
       this.forget(item.id);
@@ -260,30 +272,38 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.held.push(item);
   }
 
-  private forget(id: number) {
-    if (!this.heldIds.has(id)) return;
-    this.heldIds.delete(id);
-    this.held = this.held.filter(item => {
-      if (item.id !== id) return true;
-      this.heldBytes -= item.size + HELD_COST; this.freed += item.size;
-      return false;
-    });
+  private release(items: readonly Held[]) {
+    for (const item of items) { this.heldBytes -= item.size + HELD_COST; this.freed += item.size; }
   }
 
-  private drop(native: number) {
-    for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
-    this.held = this.held.filter(item => {
-      if (item.native !== native || item.kind === 'panels') return true;
-      this.heldBytes -= item.size + HELD_COST; this.freed += item.size;
-      return false;
-    });
+  private reindex() {
     this.heldIds.clear();
     for (const item of this.held) this.heldIds.set(item.id, item.native);
   }
 
-  private confirmHeld(native: number, seek: number, hour: number, mentioned: ReadonlySet<number>, kind: 'confirm' | 'panels', completed?: number) {
-    for (const [id, from] of [...this.heldIds]) if (from === native && !mentioned.has(id) && (kind === 'confirm') === this.heldFollows(id))
-      this.hold({ kind, native, seek, hour, id, record: null, size: 0, ...completed !== undefined ? { completed } : {} });
+  private forget(id: number) {
+    if (!this.heldIds.has(id)) return;
+    this.release(this.held.filter(item => item.id === id));
+    this.held = this.held.filter(item => item.id !== id);
+    this.reindex();
+  }
+
+  private drop(native: number) {
+    for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
+    const dropped = this.held.filter(item => item.native === native && item.kind === 'follow');
+    this.release(dropped);
+    this.held = this.held.filter(item => !dropped.includes(item));
+    this.reindex();
+  }
+
+  private holdMessage(kind: Held['kind'], native: number, seek: number, hour: number, records: ReadonlyMap<number, { records: Uint8Array[]; size: number }>, completed?: number) {
+    const ids = new Set(records.keys());
+    for (const [id, from] of this.heldIds) if (from === native && (kind === 'follow') === this.heldFollows(id)) ids.add(id);
+    for (const id of ids) {
+      const own = records.get(id);
+      if (!own && kind === 'panels' && completed === undefined) continue;
+      this.hold({ kind, native, seek, hour, id, records: own?.records ?? [], size: own?.size ?? 0, ...completed !== undefined ? { completed } : {} });
+    }
   }
 
   private heldFollows(id: number) { return id >= CELL || this.subs.get(id)?.channel === 'followed'; }
@@ -303,60 +323,44 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private replay() {
-    this.held = this.held.filter(item => {
-      if (item.kind === 'panels' || this.current(item) !== -1) return true;
-      this.heldBytes -= item.size + HELD_COST; this.freed += item.size;
-      return false;
-    });
+    const stale = this.held.filter(item => item.kind === 'follow' && this.current(item) === -1);
+    this.release(stale);
+    this.held = this.held.filter(item => !stale.includes(item));
     const ready = this.held.filter(item => this.known(item.id) && this.routes.has(item.native) && (item.kind === 'panels' || this.current(item) === 0));
-    if (!ready.length) return;
-    const replayed = new Set(ready);
-    this.held = this.held.filter(item => !replayed.has(item));
-    for (const item of ready) {
-      this.heldBytes -= item.size + HELD_COST;
-      this.heldIds.delete(item.id);
-    }
-    for (const item of this.held) this.heldIds.set(item.id, item.native);
+    if (!ready.length) { this.reindex(); return; }
+    this.held = this.held.filter(item => !ready.includes(item));
+    for (const item of ready) this.heldBytes -= item.size + HELD_COST;
+    this.reindex();
     for (const item of ready) {
       const route = this.routes.get(item.native)!, only = new Set([item.id]);
-      if (item.kind === 'confirm') this.facts.followed(route, item.seek, { hour: item.hour, answers: [] }, only);
-      else if (item.kind === 'follow') this.replayAnswer(route, item, only);
-      else if (item.record) this.panel(route, item.seek, item.record, item.size, item.completed, only);
-      else this.facts.panels(route, item.seek, [], item.completed, only);
+      if (item.kind === 'follow') {
+        const limited = new Map<number, number>(), answers: FollowAnswer<Value>[] = [], latest = new Map<number, AnswerValue>();
+        for (const record of item.records) {
+          const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+          if (!view.getUint32(8, true)) limited.set(item.id, view.getInt32(4, true));
+          else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
+        }
+        this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
+      } else this.facts.panels(route, item.seek, item.records.map(record => this.panel(record)), item.completed, only);
     }
     this.replay();
   }
 
-  private answer(id: number, record: Uint8Array, size: number, reset: boolean, latest: Map<number, AnswerValue>): FollowAnswer<Value> | null {
+  private answer(id: number, record: Uint8Array, bytes: number, reset: boolean, latest: Map<number, AnswerValue>): FollowAnswer<Value> | null {
     const at = new DataView(record.buffer, record.byteOffset, record.byteLength).getInt32(4, true);
-    const parsed = parseAnswer(record.subarray(16));
-    let value: AnswerValue, bytes = size;
+    const parsed = parseAnswer(record.subarray(16, 16 + new DataView(record.buffer, record.byteOffset).getUint32(8, true)));
+    let value: AnswerValue;
     if (parsed.kind === 'changed') {
       const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
-      if (!base || base.kind !== 'answer') { this.freed += size; this.host.fail('Changed rows arrived without the table they change.'); return null; }
+      if (!base || base.kind !== 'answer') { this.freed += bytes; this.host.fail('Changed rows arrived without the table they change.'); return null; }
       const merged = mergeChanged(base.answer, parsed);
       value = { kind: 'answer', body: merged, answer: parseAnswer(merged) };
-      bytes = 16 + merged.length;
-      if (bytes > size) this.host.charge(bytes - size);
-      else this.freed += size - bytes;
     } else {
       const body = record.slice(16);
       value = { kind: 'answer', body, answer: parseAnswer(body) };
     }
     latest.set(id, value);
     return { id, hour: at, value, bytes };
-  }
-
-  private replayAnswer(route: number, item: Held, only: ReadonlySet<number>) {
-    const record = item.record!;
-    const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
-    if (!view.getUint32(8, true)) {
-      this.freed += item.size;
-      this.facts.followed(route, item.seek, { hour: item.hour, answers: [], limited: new Map([[item.id, view.getInt32(4, true)]]) }, only);
-      return;
-    }
-    const answer = this.answer(item.id, record, item.size, false, new Map());
-    if (answer) this.facts.followed(route, item.seek, { hour: item.hour, answers: [answer] }, only);
   }
 
   private follows(bytes: Uint8Array, replayed = false) {
@@ -366,44 +370,48 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.drop(message.route);
     }
     const order = this.current({ native: message.route, seek: message.seek });
-    if (order === -1) { this.freed += bytes.length - 24; return; }
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = data.getUint32(12, true);
+    if (order === -1) {
+      let at = 24;
+      for (let i = 0; i < count; i++) { const length = data.getUint32(at + 8, true); this.freed += charged(bytes.subarray(at, at + 16 + length)); at += 16 + length; }
+      return;
+    }
     if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
     const route = this.routes.get(message.route);
-    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const count = data.getUint32(12, true), limited = new Map<number, number>(), mentioned = new Set<number>();
+    const limited = new Map<number, number>(), unbound = new Map<number, { records: Uint8Array[]; size: number }>();
     const mine: [number, number, number][] = [];
     let at = 24;
     for (let i = 0; i < count; i++) {
-      const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), length = data.getUint32(at + 8, true), size = 16 + length;
-      mentioned.add(id);
+      const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), length = data.getUint32(at + 8, true), record = bytes.subarray(at, at + 16 + length);
+      const size = charged(record);
       if (route === undefined || !this.known(id)) {
-        if (this.subs.has(id) || id >= CELL) this.hold({ kind: 'follow', native: message.route, seek: message.seek, hour: message.hour, id, record: bytes.slice(at, at + size), size });
-        else this.freed += size;
+        if (this.subs.has(id) || id >= CELL) {
+          let own = unbound.get(id);
+          if (!own) unbound.set(id, own = { records: [], size: 0 });
+          own.records.push(record.slice()); own.size += size;
+        } else this.freed += size;
       } else if (!length) { limited.set(id, hour); this.freed += size; }
-      else mine.push([id, at, size]);
-      at += size;
+      else mine.push([id, at, length]);
+      at += 16 + length;
     }
-    this.confirmHeld(message.route, message.seek, message.hour, mentioned, 'confirm');
+    this.holdMessage('follow', message.route, message.seek, message.hour, unbound);
     if (route === undefined) return;
     const latest = new Map<number, AnswerValue>();
-    const answers = mine.flatMap(([id, start, size]) => this.answer(id, bytes.subarray(start, start + size), size, message.reset, latest) ?? []);
+    const answers = mine.flatMap(([id, start, length]) => { const record = bytes.subarray(start, start + 16 + length); return this.answer(id, record, charged(record), message.reset, latest) ?? []; });
     this.facts.followed(route, message.seek, { hour: message.hour, reset: message.reset, answers, limited });
   }
 
-  private panel(route: number, seek: number, record: Uint8Array, size: number, completed?: number, only?: ReadonlySet<number>) {
-    const panel = parseDatedPanelRecord(record);
-    let item: PanelRecord<Value>;
-    if (panel.waiting) { this.freed += size; item = { kind: 'waiting', id: panel.id, hour: panel.hour }; }
-    else if (!panel.panel) { this.freed += size; item = { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
-    else if (panel.panel.refused !== null) item = { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
+  private panel(record: Uint8Array): PanelRecord<Value> {
+    const panel = parseDatedPanelRecord(record), size = record.length;
+    if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
+    if (!panel.panel) { this.freed += size; return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
+    if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
       value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
-    else {
-      let cells: ReturnType<typeof cellsOf> = [];
-      try { cells = cellsOf(panel.panel.data); } catch { cells = []; }
-      item = { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells,
-        value: { kind: 'panel', bytes: panel.panel.bytes ? panel.panel.bytes.slice() : null, data: panel.panel.data, refused: null } };
-    }
-    this.facts.panels(route, seek, [item], completed, only);
+    let cells: ReturnType<typeof cellsOf> = [];
+    try { cells = cellsOf(panel.panel.data); } catch { cells = []; }
+    return { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells,
+      value: { kind: 'panel', bytes: panel.panel.bytes ? panel.panel.bytes.slice() : null, data: panel.panel.data, refused: null } };
   }
 
   private panels(bytes: Uint8Array) {
@@ -411,24 +419,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const native = data.getUint32(16, true), seek = data.getUint32(20, true), count = data.getUint32(8, true);
     const route = this.routes.get(native);
     let at = 24, completed: number | undefined;
-    const mine: [number, number][] = [], mentioned = new Set<number>();
+    const mine: PanelRecord<Value>[] = [], unbound = new Map<number, { records: Uint8Array[]; size: number }>();
     for (let i = 0; i < count; i++) {
       const id = data.getUint32(at, true), kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true);
       const size = ((16 + length + 7) & ~7);
       if (kind === 4) completed = data.getInt32(at + 4, true);
-      else {
-        mentioned.add(id);
-        if (route === undefined || !this.known(id)) {
-          if (this.subs.has(id)) this.hold({ kind: 'panels', native, seek, hour: data.getInt32(at + 4, true), id, record: bytes.slice(at, at + size), size });
-          else this.freed += size;
-        } else mine.push([at, size]);
-      }
+      else if (route === undefined || !this.known(id)) {
+        if (this.subs.has(id)) {
+          let own = unbound.get(id);
+          if (!own) unbound.set(id, own = { records: [], size: 0 });
+          own.records.push(bytes.slice(at, at + size)); own.size += size;
+        } else this.freed += size;
+      } else mine.push(this.panel(bytes.subarray(at, at + size)));
       at += size;
     }
-    if (completed !== undefined) this.confirmHeld(native, seek, completed, mentioned, 'panels', completed);
+    this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
     if (route === undefined) return;
-    if (!mine.length) { this.facts.panels(route, seek, [], completed); return; }
-    mine.forEach(([start, size], index) => this.panel(route, seek, bytes.subarray(start, start + size), size, index === mine.length - 1 ? completed : undefined));
+    this.facts.panels(route, seek, mine, completed);
   }
 
   frame(request: FrameRequest) {
@@ -469,11 +476,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const ack of installed) {
       const owner = this.presented.get(ack.id);
       this.presented.delete(ack.id);
-      const widget = owner === undefined ? undefined : this.widgets.get(owner);
-      const sent = widget?.inflight?.id === ack.id ? widget.inflight : null;
-      if (!widget || !sent) continue;
-      if (!widget.installed || widget.installed.id < sent.id) widget.installed = sent;
-      widget.inflight = null;
+      const widget = owner === undefined ? undefined : this.widgets.get(owner.widget);
+      if (!widget || !owner || owner.sent.binding !== widget.binding.generation) continue;
+      if (!widget.installed || widget.installed.id < owner.sent.id) widget.installed = owner.sent;
+      if (widget.inflight?.id === ack.id) widget.inflight = null;
     }
     for (const refusal of refused) {
       this.presented.delete(refusal.id);
@@ -557,8 +563,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const budget = this.host.budget ?? 10;
     const entries: Entry<B>[] = [], surfaces: (B | typeof SAME | null)[][] = [], sources: Bitmapped[] = [], slots: [number, number, number][] = [];
     const shared = new Map<string, number>();
+    let tried = 0;
     for (const { widget, selected, motion, target } of due) {
-      if (entries.length && this.time() - began + widget.cost > budget) break;
+      if (tried++ && this.time() - began + widget.cost > budget) break;
       const start = this.time();
       widget.served = this.requests;
       if (selected === 'lost') {
@@ -578,7 +585,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       widget.motion = painted.motion;
       widget.cost = widget.cost * 0.8 + (this.time() - start) * 0.2;
-      if (painted.pending) continue;
+      if (painted.pending) {
+        const needs = JSON.stringify(painted.needs ?? []);
+        if (painted.needs?.length && widget.state.get('needs') !== needs) { widget.state.set('needs', needs); this.host.needs?.(widget.id, painted.needs); }
+        continue;
+      }
       if (motion) this.stats.motion++;
       const parts: (B | typeof SAME | null)[] = [];
       const entry = this.entry(widget, selected, painted, mode, reason, parts, request.seek, this.time() - start);
@@ -604,7 +615,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (entries.length || moved) this.host.present({ lane: this.host.lane, serial: request.serial, resets, entries }, crops);
     this.stats.entries += entries.length;
     this.prune(request.now);
-    const bytes = this.freed + this.facts.releasedBytes();
+    const bytes = this.freed + this.releasedFacts();
     this.freed = 0;
     if (bytes) this.host.release(bytes);
     this.host.stretch?.(this.time() - began);
@@ -630,7 +641,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       binding: widget.binding.generation, contents, inspect: widget.inspect, hit: painted.hit };
     widget.sent = { ...contents };
     widget.inflight = sent;
-    this.presented.set(id, widget.id);
+    this.presented.set(id, { widget: widget.id, sent });
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), ...rank ? { rank } : {}, mode, ...reason !== undefined ? { reason } : {},
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });

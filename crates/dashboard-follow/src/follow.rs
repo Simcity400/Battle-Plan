@@ -273,6 +273,7 @@ struct Followed {
     pending: Vec<u8>,
     has_pending: bool,
     pending_hour: Hour,
+    pending_held: u32,
     queued: bool,
     live: LiveRows,
     ranking: evaluate::Ranking,
@@ -512,6 +513,7 @@ fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: H
     mem::swap(&mut followed.pending, body);
     followed.has_pending = true;
     followed.pending_hour = hour;
+    followed.pending_held = 0;
     if !followed.queued {
         followed.queued = true;
         queue.push(query);
@@ -649,6 +651,7 @@ impl Engine {
             pending: Vec::new(),
             has_pending: false,
             pending_hour: 0,
+            pending_held: 0,
             queued: false,
             live: LiveRows::default(),
             ranking: evaluate::Ranking::default(),
@@ -1047,7 +1050,9 @@ impl Engine {
                     live_rows::Answer::Same => followed.has_pending = false,
                     live_rows::Answer::Body => {
                         stats.changed += 1;
+                        let changed = self.body.first() == Some(&answer::CHANGED);
                         queue_body(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue);
+                        if changed { followed.pending_held = followed.live.whole(); }
                     }
                 }
                 continue;
@@ -1126,7 +1131,7 @@ impl Engine {
                 }
                 &followed.pending
             };
-            answer::push(&mut self.message, followed.id, followed.pending_hour, body);
+            answer::push_held(&mut self.message, followed.id, followed.pending_hour, body, if followed.query.appended() { 0 } else { followed.pending_held });
             stats.sent += 1;
             followed.queued = false;
             if followed.query.appended() && followed.phase != Phase::Refused {

@@ -387,3 +387,40 @@ test('should-fix b: an entry for a widget that unmounted is refused to its lane,
   offer(entry({ id: 7 })); p.frame();
   assert.deepEqual(frames(0).at(-1)!.refused.map(r => [r.id, r.reason]), [[7, 'unmounted']]);
 });
+
+test('review 4 finding 5: a forward step past the painted window never redates its pixels: shown through the window end and dimmed', () => {
+  const { p, offer, view } = page();
+  p.publish(100, { playing: false });
+  offer(entry({ id: 1, h: 96, c: 140, lo: 96, hi: 119 })); p.frame();
+  assert.deepEqual([view().through, view().dim], [100, false]);
+  p.publish(120, { playing: false });
+  assert.deepEqual([view().id, view().through, view().dim], [1, 119, true], 'text painted for 96-119 is not shown as 120');
+  p.publish(125, { playing: true });
+  assert.equal(view().through, 119, 'nor while playing');
+});
+
+test('review 4 finding 9: a named failure survives a resize, and a failed bitmap transfer holds against queued entries of the same commit', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1 })); p.publish(0);
+  p.name(1, 'failed', 'The pushed answers stopped');
+  p.rebind(1, {});
+  offer(entry({ id: 2, binding: 2 })); p.frame();
+  assert.deepEqual([view().mode, view().reason], ['failed', 'The pushed answers stopped'], 'a new binding of the same failed stream does not revive it');
+  const { p: q, offer: offerQ, view: viewQ } = page();
+  const broken = entry({ id: 1 });
+  (broken.surfaces[0] as Fake).fail = true;
+  offerQ(broken, entry({ id: 2 })); q.publish(0);
+  assert.deepEqual([viewQ().mode, viewQ().reason], ['failed', 'drawing failed']);
+});
+
+test('should-fix: an entry that only moves the confirmation dates the widget without telling its install listeners', () => {
+  let told = 0, dated = 0;
+  const p = new Page<Fake>({ lanes: 1 });
+  p.mount(1, { route: 9, lane: 0, surfaces: [], changed: () => told++, dated: () => dated++ });
+  p.offer({ lane: 0, serial: 1, entries: [entry({ id: 1, n: 0, h: 0, c: 10 })] }); p.publish(5);
+  const installed = told;
+  const later = entry({ id: 2, n: 0, h: 0, c: 20, content: 1 });
+  later.fields = { legend: SAME, a11y: SAME };
+  p.offer({ lane: 0, serial: 2, entries: [later] }); p.frame();
+  assert.deepEqual([told, dated, p.view(1).id], [installed, 1, 2]);
+});

@@ -34,7 +34,7 @@ interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c:
 function rig(views: Record<string, LaneView> = {}, extra: { budget?: number } = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
-  const presented: Presented<Fake>[] = [], charged: number[] = [];
+  const presented: Presented<Fake>[] = [];
   const shown = new Map<number, (string | null)[]>();
   const lane: Lane<Fake> = new Lane<Fake>({
     lane: 0, lanes: 1, ...extra,
@@ -42,7 +42,6 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number } = 
     crop: async sources => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })),
     present: presentation => { presented.push(presentation); page.offer(presentation); },
     release: bytes => released.push(bytes),
-    charge: bytes => charged.push(bytes),
     fail: reason => failures.push(reason),
     later: run => later.push(run),
     hit: (_widget, key) => hits.push(key),
@@ -58,7 +57,7 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number } = 
       ...timing.dated ? { dated: timing.dated } : {} });
   };
   const step = async (T: number, options: Parameters<Page<Fake>['publish']>[1] = {}) => { page.publish(T, options); await flush(); await flush(); page.frame(); await flush(); };
-  return { page, lane, posted, released, charged, failures, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
+  return { page, lane, posted, released, failures, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
 }
 
 const rows = (keys: bigint[], values: bigint[], extra: { changed?: boolean } = {}) => ({ keys, columns: 1, values, ...extra });
@@ -208,7 +207,7 @@ test('astra 4: a lane bound after an earlier reset dates its entries with the re
     if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
   }) });
   for (let index = 0; index < 2; index++) lanes.push(new Lane<Fake>({ lane: index, lanes: 2, views: () => fieldsView(() => undefined), crop: async () => [],
-    present: presentation => page.offer(presentation), release: () => {}, charge: () => {}, fail: () => {}, later: () => {} }));
+    present: presentation => page.offer(presentation), release: () => {}, fail: () => {}, later: () => {} }));
   const send = (bytes: Uint8Array) => { const split = splitForLanes(bytes, 2); if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) lanes[index]!.receive('follow', part); }); };
   const step = async (T: number) => { page.publish(T, { playing: false }); await flush(); await flush(); page.frame(); await flush(); };
   for (const [widget, sub, index] of [[1, 4, 0], [2, 5, 1]] as const) {
@@ -343,4 +342,58 @@ test('changed rows still in flight from before a rewind never merge onto the new
   assert.deepEqual([failures, page.view(1).mode], [[], 'picture'], 'the old stream\'s change is dropped, not merged onto a not-recorded answer');
   await step(9, { playing: false, seek: true });
   assert.deepEqual([page.view(1).h, valueOf(page.view(1), 5, 0), valueOf(page.view(1), 5, 1)], [9, 80n, 91n], 'the early stream merges onto its own table once its seek is current');
+});
+
+test('review 4 finding 4: a buffered message replays as native sent it: a limit before its answer still limits it, and a same-batch completion still covers a stepped panel', () => {
+  const { lane, mount } = rig();
+  mount(1, [{ id: 7, channel: 'followed' }]);
+  const answer = message(40, [{ id: 7, hour: 10, answer: rows([1n], [1n]) }], false, NATIVE);
+  const limitFirst = new Uint8Array(answer.length + 16), view = new DataView(limitFirst.buffer);
+  limitFirst.set(answer.subarray(0, 24)); limitFirst.set(answer.subarray(24), 40);
+  view.setUint32(12, 2, true); view.setUint32(24, 7, true); view.setInt32(28, 10, true);
+  lane.receive('follow', limitFirst);
+  lane.bindRoute(7, ROUTE, NATIVE);
+  assert.deepEqual([lane.facts.select(7, 40)?.h, lane.facts.select(7, 40)?.c], [10, 10], 'confirmed through its limit of 10, never through the envelope hour 40');
+  mount(2, [{ id: 3, channel: 'panel' }]);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }, { id: 0, hour: 40, kind: 'completed' }]));
+  lane.bindRoute(3, ROUTE, NATIVE);
+  assert.deepEqual([lane.facts.select(3, 40)?.h, lane.facts.select(3, 40)?.c], [10, 40], 'the completion in its own batch covers the stepped panel');
+});
+
+test('review 4 finding 8: a seek that carries the shown picture keeps its bytes charged until a new picture replaces it', async () => {
+  const { page, lane, mount, step, released } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const first = panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A', pad: 'x'.repeat(4000) } }, { id: 0, hour: 20, kind: 'completed' }]);
+  lane.receive('panels', first);
+  await step(12, { playing: false });
+  assert.equal(page.view(1).h, 10);
+  const total = () => released.reduce((sum, bytes) => sum + bytes, 0);
+  await step(14, { playing: false, seek: true });
+  assert.equal(page.view(1).h, 10, 'the carried picture still shows');
+  assert.ok(total() < 4000, `released ${total()} while the carried picture still holds its fact`);
+  lane.receive('panels', panels([{ id: 3, hour: 14, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }], 1));
+  await step(14); await step(14);
+  assert.equal(page.view(1).h, 14);
+  assert.ok(total() >= 4000, 'once replaced, its bytes come back');
+});
+
+test('should-fix: an acknowledgement for an entry sent before the one in flight still makes it the installed picture that pointers hit-test', async () => {
+  const view: LaneView = { paint: (input): Painted => ({ surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } }, motion: false,
+    hit: () => `row:${input.pictures[0]!.h}` }) };
+  const { page, lane, mount, step, hits } = rig({ view });
+  mount(1, [{ id: 3, channel: 'panel' }], 'view');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+  await step(10, { playing: false });
+  lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+  page.publish(20, { playing: false });
+  await flush(); await flush();
+  page.frame();
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: {} }]));
+  page.publish(30, { playing: false });
+  await flush(); await flush();
+  assert.equal(page.view(1).h, 20, 'the page shows 20 while 30 is in flight');
+  lane.pointer(1, 0, [1, 1]);
+  assert.deepEqual(hits, ['row:20']);
 });

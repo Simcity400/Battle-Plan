@@ -145,10 +145,13 @@ export function tableView(structureOf: (product: string | undefined) => Structur
       for (const [key, until] of next.highlight) if (until <= now) next.highlight.delete(key);
       if (next.nextChange !== undefined && next.nextChange <= input.hour) advanceTableState(next, input.hour, now);
       held.state = next;
+      const needs: { sub: number; countries: string[] }[] = [];
       if (model.sources) for (const id of Object.values(model.sources)) {
         const windowed = input.subs.find(sub => sub.id === id)?.countries;
-        if (windowed && next.rows.some(row => !windowed.has(row.key))) return { surfaces: [], fields, motion: false, pending: true };
+        const missing = windowed ? next.rows.filter(row => !windowed.has(row.key)).map(row => row.key) : [];
+        if (missing.length) needs.push({ sub: id, countries: next.rows.map(row => row.key) });
       }
+      if (needs.length) return { surfaces: [], fields, motion: false, pending: true, needs };
       if (drawTable(held.ctx, next, now, model.scrollLeft, held.icons, held.picture, surface.dpr)) held.content = content();
       const moving = next.glide.size > 0 || next.highlight.size > 0 || [...held.markers.values()].some(marker => marker.until > now);
       const widths = Object.fromEntries(next.layout.columns.map(column => [column.key, column.width]));

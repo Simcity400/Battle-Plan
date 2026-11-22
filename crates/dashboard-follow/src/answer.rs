@@ -164,6 +164,11 @@ impl Table {
         self.keys.capacity() * 16 + self.values.capacity() * 8 + self.states.capacity() + (self.reasons.capacity() + self.names.capacity()) * 4 + self.hours.capacity() * 4 + self.texts.iter().map(|text| text.capacity() * 2).sum::<usize>() + self.held.capacity() * (size_of::<String>() + 4 + 1)
     }
 
+    pub(crate) fn encoded_len(&self) -> usize {
+        let (rows, up) = (self.keys.len(), |at: usize| at.next_multiple_of(8));
+        16 + rows * 16 + self.values.len() * 8 + up(self.states.len()) + up(rows * 4) * 2 + up((self.texts.len() + 1) * 4) + up(self.texts.iter().map(String::len).sum())
+    }
+
     pub(crate) fn canonical(&self) -> bool {
         !self.log && self.keys.windows(2).all(|pair| pair[0] < pair[1])
     }
@@ -238,10 +243,14 @@ pub fn begin(out: &mut Vec<u8>, route: u32, clock: i32, hour: Hour, seek: u32, r
 }
 
 pub fn push(out: &mut Vec<u8>, id: u32, hour: Hour, body: &[u8]) {
+    push_held(out, id, hour, body, 0);
+}
+
+pub fn push_held(out: &mut Vec<u8>, id: u32, hour: Hour, body: &[u8], held: u32) {
     out.extend_from_slice(&id.to_le_bytes());
     out.extend_from_slice(&hour.to_le_bytes());
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&held.to_le_bytes());
     out.extend_from_slice(body);
     let count = u32::from_le_bytes(out[12..16].try_into().expect("a message head")) + 1;
     out[12..16].copy_from_slice(&count.to_le_bytes());
@@ -255,6 +264,19 @@ pub struct Decoded<'a> {
     pub reset: bool,
     pub limited: Vec<(u32, Hour)>,
     pub answers: Vec<(u32, Hour, &'a [u8])>,
+    pub held: Vec<u32>,
+}
+
+pub fn charge(bytes: &[u8]) -> usize {
+    if !bytes.starts_with(&MAGIC.to_le_bytes()) { return bytes.len(); }
+    let word = |at: usize| bytes.get(at..at + 4).map_or(0, |word| u32::from_le_bytes(word.try_into().expect("four bytes")) as usize);
+    let (mut at, mut total) = (24, 24);
+    while at + 16 <= bytes.len() {
+        let (length, held) = (word(at + 8), word(at + 12));
+        total += 16 + length.max(held);
+        at += 16 + length;
+    }
+    total
 }
 
 struct Reader<'a> {
@@ -292,17 +314,18 @@ pub fn decode(bytes: &[u8]) -> io::Result<Decoded<'_>> {
     let stamp = (reader.u32()?, reader.u32()? as i32);
     let mut answers = Vec::new();
     let mut limited = Vec::new();
+    let mut held = Vec::new();
     for _ in 0..count {
         let id = reader.u32()?;
         let at = reader.u32()? as Hour;
         let length = reader.u32()? as usize;
-        reader.u32()?;
-        if length == 0 { limited.push((id, at)); } else { answers.push((id, at, reader.take(length)?)); }
+        let whole = reader.u32()?;
+        if length == 0 { limited.push((id, at)); } else { answers.push((id, at, reader.take(length)?)); held.push(whole); }
     }
     if reader.at != bytes.len() {
         return Err(invalid("A followed message holds bytes past its answers"));
     }
-    Ok(Decoded { stamp, route: flags >> 1, hour, reset: flags & RESET != 0, limited, answers })
+    Ok(Decoded { stamp, route: flags >> 1, hour, reset: flags & RESET != 0, limited, answers, held })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -396,7 +419,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let mut superseded = 0;
     let is_log = |body: &[u8]| body.first() == Some(&LOG);
     let laid = |earlier: &[u8], later: &[u8]| later.first() == Some(&CHANGED) && matches!(earlier.first(), Some(&ROWS | &CHANGED));
-    for &(id, hour, body) in &old.answers {
+    for (at, &(id, hour, body)) in old.answers.iter().enumerate() {
         if new.reset {
             superseded += 1;
         } else if let Some(&(.., later)) = new.answers.iter().find(|&&(held, ..)| held == id) {
@@ -404,14 +427,18 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
                 superseded += 1;
             }
         } else {
-            push(&mut out, id, hour, body);
+            push_held(&mut out, id, hour, body, old.held[at]);
         }
     }
-    for &(id, hour, body) in &new.answers {
+    for (at, &(id, hour, body)) in new.answers.iter().enumerate() {
         match old.answers.iter().find(|&&(held, ..)| held == id).map(|&(.., earlier)| earlier) {
             Some(earlier) if is_log(earlier) && is_log(body) && !new.reset => push(&mut out, id, hour, &logs(earlier, body)?),
-            Some(earlier) if !new.reset && laid(earlier, body) => push(&mut out, id, hour, &changed(earlier, body)?),
-            _ => push(&mut out, id, hour, body),
+            Some(earlier) if !new.reset && laid(earlier, body) => {
+                let merged = changed(earlier, body)?;
+                let whole = if merged.first() == Some(&CHANGED) { new.held[at] } else { 0 };
+                push_held(&mut out, id, hour, &merged, whole);
+            }
+            _ => push_held(&mut out, id, hour, body, new.held[at]),
         }
     }
     Ok((out, superseded))

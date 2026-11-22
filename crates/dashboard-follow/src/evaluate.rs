@@ -411,7 +411,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, wi
             table.clear(1, false);
             let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
             for (at, tag) in tags.rows.iter().enumerate() {
-                if window.is_some_and(|window| !window.countries.contains(&names[at])) { continue; }
+                if window.is_some_and(|window| !window.every && !window.countries.contains(&names[at])) { continue; }
                 let key = match tag {
                     TagRow::Absent(reason) => {
                         table.row(0);

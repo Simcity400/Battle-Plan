@@ -181,8 +181,17 @@ impl State {
         self.charge.resize(self.bytes + self.in_flight)
     }
 
-    fn sendable(&self) -> bool {
-        self.queue.front().is_some_and(|front| self.in_flight == 0 || self.in_flight + front.bytes.len() <= self.credit || self.reached(front.stream))
+    fn sendable(&self) -> Option<usize> {
+        let mut blocked: Vec<u32> = Vec::new();
+        for (at, queued) in self.queue.iter().enumerate() {
+            let route = queued.stream.version().map(|(route, _)| route);
+            if route.is_some_and(|route| blocked.contains(&route)) { continue; }
+            if queued.stream == Stream::Notice || self.in_flight == 0 || self.in_flight + answer::charge(&queued.bytes) <= self.credit || self.reached(queued.stream) {
+                return Some(at);
+            }
+            if let Some(route) = route { blocked.push(route); }
+        }
+        None
     }
 
     fn overflow(&mut self, reason: &str, sequence: u32) {
@@ -314,15 +323,10 @@ impl Push {
         self.ready.notify_all();
     }
 
-    pub fn charge(&self, bytes: usize) {
+    pub fn restart_flight(&self) {
         let mut state = lock(&self.state);
-        if state.stopped { return; }
-        state.in_flight += bytes;
-        if let Err(error) = state.charged() {
-            let sequence = state.next;
-            state.next = state.next.wrapping_add(1);
-            state.overflow(&error.to_string(), sequence);
-        }
+        state.in_flight = 0;
+        state.charged().expect("forgetting what a closed page held releases bytes");
         drop(state);
         self.ready.notify_all();
     }
@@ -344,10 +348,10 @@ impl Push {
     }
 
     fn send(state: &mut State) -> Option<(u8, Vec<u8>, u32, Instant)> {
-        if !state.sendable() { return None; }
-        let held = state.queue.pop_front()?;
+        let at = state.sendable()?;
+        let held = state.queue.remove(at)?;
         state.bytes -= held.bytes.len();
-        if held.stream != Stream::Notice { state.in_flight += held.bytes.len(); }
+        if held.stream != Stream::Notice { state.in_flight += answer::charge(&held.bytes); }
         state.charged().expect("a sent packet's credit was reserved while it was queued");
         state.counters.written += 1;
         state.counters.bytes += held.bytes.len() as u64;

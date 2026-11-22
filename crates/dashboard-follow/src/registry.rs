@@ -41,7 +41,7 @@ pub trait Hosted: Send + Sync {
 pub trait Playheads: Send + Sync {
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
     fn credit(&self, _bytes: usize) {}
-    fn charge(&self, _bytes: usize) {}
+    fn restart(&self) {}
 }
 
 struct Followed {
@@ -93,7 +93,8 @@ fn rank_window(params: &Value) -> io::Result<crate::query::RankWindow> {
         Some(value) => serde_json::from_value(value.clone()).map_err(|_| crate::invalid("A follow window's countries are slots or tags"))?,
     };
     let version = params.get("version").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()).ok_or_else(|| crate::invalid("A follow window names no version"))?;
-    Ok(crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version })
+    let every = params.get("every").and_then(Value::as_bool).unwrap_or(false);
+    Ok(crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version, every })
 }
 
 fn unavailable(reason: impl Into<String>) -> Value {
@@ -214,8 +215,8 @@ impl Registry {
         if let Some(playheads) = &self.playheads { playheads.credit(bytes); }
     }
 
-    pub fn charge(&self, bytes: usize) {
-        if let Some(playheads) = &self.playheads { playheads.charge(bytes); }
+    pub fn restart(&self) {
+        if let Some(playheads) = &self.playheads { playheads.restart(); }
     }
 
     pub fn close(&self, path: &Path) {

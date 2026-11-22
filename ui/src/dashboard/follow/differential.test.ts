@@ -76,7 +76,7 @@ async function run(seed: number): Promise<{ faults: Fault[]; frames: number; ins
   for (let index = 0; index < LANES; index++) lanes.push(new Lane<Fake>({
     lane: index, lanes: LANES, views: () => fieldsView(() => undefined),
     crop: async sources => sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })),
-    present: presentation => page.offer(presentation), release: () => {}, charge: () => {}, later: () => {},
+    present: presentation => page.offer(presentation), release: () => {}, later: () => {},
     fail: reason => { failures.set(index, reason); for (const widget of widgets) if (widget.id % LANES === index) page.name(widget.id, 'failed', reason); },
   }));
   for (const widget of widgets) {

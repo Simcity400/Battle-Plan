@@ -21,8 +21,9 @@ export type ToLane =
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
-  | { type: 'hit'; widget: number; key: string | null };
+  | { type: 'hit'; widget: number; key: string | null }
+  | { type: 'needs'; widget: number; needs: readonly { sub: number; countries: readonly string[] }[] };
 
 export type FromPull = { kind: 'follow' | 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 
-export type ToPull = { release: number } | { charge: number };
+export type ToPull = { release: number };

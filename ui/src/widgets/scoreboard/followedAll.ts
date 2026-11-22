@@ -29,6 +29,7 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   const pipe = useFollowedWidget(pipeline, wanted && store ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null });
   const key = JSON.stringify(queries.map(query => query ? canonical(query) : null));
   const asked = useRef(queries); asked.current = queries;
+  const windowsNow = useRef(windows); windowsNow.current = windows;
   const [subs, setSubs] = useState<{ key: string; subs: (number | null)[] }>({ key: '', subs: [] });
   useLayoutEffect(() => {
     if (!pipeline || pipe === null || !store || !visible) { setSubs({ key: '', subs: [] }); return; }
@@ -38,7 +39,7 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
       const branch = query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId;
       if (typeof branch !== 'string') return null;
       return pipeline.subscribe(pipe, tokens[at]!, store.source, branch, store.offset, query, typeof query.panel === 'string' ? 'panel' : 'followed',
-        typeof query.panel === 'string' ? query.panel : undefined) ?? null;
+        typeof query.panel === 'string' ? query.panel : undefined, windowsNow.current[at] ?? undefined) ?? null;
     });
     setSubs({ key, subs: made });
     return () => { for (const token of tokens) pipeline.unsubscribe(pipe, token); };

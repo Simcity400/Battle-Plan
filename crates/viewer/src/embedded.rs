@@ -463,8 +463,8 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         self.push.credit(bytes);
     }
 
-    fn charge(&self, bytes: usize) {
-        self.push.charge(bytes);
+    fn restart(&self) {
+        self.push.restart_flight();
     }
 
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {

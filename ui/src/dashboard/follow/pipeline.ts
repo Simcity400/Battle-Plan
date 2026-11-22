@@ -26,22 +26,12 @@ export type SubStatus = 'pending' | 'followed' | 'refused';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string;
-  rank: number; widgets: Set<number>; windows: Map<number, RankWindow>; wanted: string; told: string;
+  rank: number; widgets: Set<number>; window: RankWindow | null; told: string | null;
 }
 
-export interface RankWindow { from: number; count: number; countries: readonly string[] }
+export interface RankWindow { from: number; count: number; countries: readonly string[]; most?: number }
 
-function union(windows: Iterable<RankWindow>): RankWindow | null {
-  let from = Infinity, end = 0, any = false;
-  const countries = new Set<string>();
-  for (const window of windows) {
-    any = true;
-    if (window.count > 0) { from = Math.min(from, window.from); end = Math.max(end, window.from + window.count); }
-    for (const country of window.countries) countries.add(country);
-  }
-  if (!any) return null;
-  return { from: Number.isFinite(from) ? from : 0, count: Number.isFinite(from) ? end - from : 0, countries: [...countries].sort() };
-}
+const EVERY: RankWindow = { from: 0, count: Number.MAX_SAFE_INTEGER, countries: [] };
 
 interface RouteState { page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number; serial: Promise<unknown>; told: string | null }
 
@@ -72,6 +62,7 @@ export class Pipeline {
   private opened: Promise<void> | null = null;
   private readonly ports: readonly MessagePort[];
   private changed = new Set<WidgetState>();
+  private redated = new Set<WidgetState>();
   private dated = false;
   private framing = false;
   private stopPublish: (() => void) | null = null;
@@ -144,11 +135,11 @@ export class Pipeline {
   }
 
   private flush() {
-    const changed = this.changed, dated = this.dated;
-    this.changed = new Set();
+    const changed = this.changed, dated = this.dated, redated = this.redated;
+    this.changed = new Set(); this.redated = new Set();
     this.dated = false;
     if (changed.size) flushSync(() => { for (const widget of changed) for (const listener of [...widget.installListeners]) listener(); });
-    if (dated) for (const widget of this.widgets.values()) for (const listener of [...widget.dateListeners]) listener();
+    for (const widget of dated ? this.widgets.values() : redated) for (const listener of [...widget.dateListeners]) listener();
   }
 
   private receive(lane: number, message: FromLane) {
@@ -158,6 +149,7 @@ export class Pipeline {
       return;
     }
     if (message.type === 'hit') { this.page.inspect(message.widget, message.key); this.flush(); return; }
+    if (message.type === 'needs') { for (const need of message.needs) this.needs(message.widget, need.sub, need.countries); this.flush(); return; }
     this.page.offer(message);
     if (!this.page.playing) this.commitSoon();
   }
@@ -184,7 +176,8 @@ export class Pipeline {
     const widget: WidgetState = { id, lane, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
       installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
     this.widgets.set(id, widget);
-    this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget) });
+    this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
+      dated: () => this.redated.add(widget) });
     return id;
   }
 
@@ -245,17 +238,19 @@ export class Pipeline {
     return route;
   }
 
-  subscribe(widgetId: number, token: object, source: DashboardSource, branch: string, offset: number, query: FollowQuery, channel: Channel, product?: string) {
+  subscribe(widgetId: number, token: object, source: DashboardSource, branch: string, offset: number, query: FollowQuery, channel: Channel, product?: string,
+    window?: RankWindow) {
     const widget = this.widgets.get(widgetId);
     if (!widget) return;
     const route = this.routeOf(source, branch, offset);
-    const key = JSON.stringify([widget.lane, route.key, channel, canonical(query)]);
+    const key = JSON.stringify([widget.lane, route.key, channel, canonical(query), window ? widgetId : null]);
     let sub = this.subs.get(key);
     if (!sub) {
       const id = this.nextSub[widget.lane]!++ * this.lanes + widget.lane;
-      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', rank: 0, widgets: new Set(), windows: new Map(), wanted: 'null', told: 'null' };
+      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', rank: 0, widgets: new Set(), window: null, told: null };
       this.subs.set(key, sub); this.byId.set(id, sub);
       this.register(sub, query, product);
+      if (window) this.setWindow(sub, window);
     }
     sub.holders++;
     sub.widgets.add(widgetId);
@@ -280,7 +275,7 @@ export class Pipeline {
     const sub = this.byId.get(id);
     if (!sub) return;
     sub.widgets.delete(widget);
-    if (--sub.holders > 0) { if (sub.windows.delete(widget)) this.rewindow(sub); return; }
+    if (--sub.holders > 0) return;
     this.subs.delete(sub.key); this.byId.delete(id);
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
     if (sub.channel !== 'pinned') void this.ask('unfollow', { id }).catch(() => {});
@@ -289,7 +284,9 @@ export class Pipeline {
   private remount(widget: WidgetState) {
     const subs = [...new Set(widget.subs.values())];
     this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.model });
-    this.page.rebind(widget.id, { subscription: true });
+    this.page.rebind(widget.id, { subscription: true, rank: this.rankOf(widget) });
+    const followed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'followed');
+    if (followed) this.page.mountRoute(widget.id, followed.route.page);
     widget.binding = this.timed(widget, widget.binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
@@ -357,9 +354,25 @@ export class Pipeline {
 
   window(widget: number, sub: number, window: RankWindow | null) {
     const held = this.byId.get(sub);
-    if (!held || !held.widgets.has(widget)) return;
-    if (window) held.windows.set(widget, window); else held.windows.delete(widget);
-    this.rewindow(held);
+    if (!held || !held.widgets.has(widget) || held.widgets.size > 1) return;
+    if (JSON.stringify(held.window) === JSON.stringify(window)) return;
+    this.setWindow(held, window ?? EVERY);
+    for (const id of held.widgets) { const owner = this.widgets.get(id); if (owner) this.retime(id, { rank: this.rankOf(owner) }); }
+    if (held.status === 'followed') this.tellWindow(held);
+  }
+
+  needs(widget: number, sub: number, countries: readonly string[]) {
+    const held = this.byId.get(sub);
+    if (!held?.window) return;
+    const now = held.window, grown = [...new Set([...now.countries, ...countries])].sort();
+    this.window(widget, sub, { ...now, countries: grown.length > (now.most ?? Infinity) ? [...new Set(countries)].sort() : grown });
+  }
+
+  private setWindow(sub: SubState, window: RankWindow) {
+    sub.window = window;
+    sub.rank = (sub.rank + 1) & 0xffff || 1;
+    const filters = window !== EVERY && window.count === 0;
+    this.host.lanes[sub.lane]!.postMessage({ type: 'rank', sub: sub.id, version: sub.rank, ...filters ? { countries: window.countries } : {} });
   }
 
   private rankOf(widget: WidgetState) {
@@ -368,25 +381,15 @@ export class Pipeline {
     return rank;
   }
 
-  private rewindow(sub: SubState) {
-    const wanted = union(sub.windows.values()), text = JSON.stringify(wanted);
-    if (text === sub.wanted || !wanted) return;
-    sub.wanted = text;
-    sub.rank = (sub.rank + 1) & 0xffff || 1;
-    this.host.lanes[sub.lane]!.postMessage({ type: 'rank', sub: sub.id, version: sub.rank, countries: wanted.countries });
-    for (const id of sub.widgets) { const widget = this.widgets.get(id); if (widget) this.retime(id, { rank: this.rankOf(widget) }); }
-    if (sub.status === 'followed') this.tellWindow(sub);
-  }
-
   private windowParams(sub: SubState) {
-    const wanted = JSON.parse(sub.wanted) as RankWindow | null;
-    return wanted && { ...wanted, version: sub.rank };
+    const window = sub.window;
+    return window && { from: window.from, count: window.count, countries: window.countries, version: sub.rank, ...window === EVERY ? { every: true } : {} };
   }
 
   private tellWindow(sub: SubState) {
-    const params = this.windowParams(sub);
-    if (!params || sub.told === sub.wanted) return;
-    sub.told = sub.wanted;
+    const params = this.windowParams(sub), text = JSON.stringify(params);
+    if (!params || sub.told === text) return;
+    sub.told = text;
     void this.ask('follow-window', { id: sub.id, ...params }, sub.route).then(reply => {
       const data = reply as { available?: boolean; reason?: string } | null;
       if (data?.available !== true) for (const widget of sub.widgets) this.page.name(widget, 'failed', data?.reason ?? 'The ranked window was not moved');
@@ -405,7 +408,7 @@ export class Pipeline {
     if (sub.channel === 'pinned') { sub.status = 'followed'; return; }
     if (!this.client.openFollow) { this.refuse(sub, NO_CHANNEL); return; }
     void this.open().then(() => {
-      sub.told = sub.wanted;
+      sub.told = JSON.stringify(this.windowParams(sub));
       return this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes, window: this.windowParams(sub) }, sub.route);
     })
       .then(reply => {

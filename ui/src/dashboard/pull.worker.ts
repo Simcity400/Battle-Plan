@@ -13,10 +13,10 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[]
       timer = undefined;
       const bytes = owed;
       owed = 0;
-      if (bytes !== 0) void fetch(`${PUSH}credit?session=${encodeURIComponent(session)}&bytes=${bytes}`, { cache: 'no-store' }).catch(() => {});
+      if (bytes) void fetch(`${PUSH}credit?session=${encodeURIComponent(session)}&bytes=${bytes}`, { cache: 'no-store' }).catch(() => {});
     }, CREDIT_EVERY_MS);
   };
-  for (const port of ports) port.onmessage = ({ data }: MessageEvent<ToPull>) => credit('release' in data ? data.release : -data.charge);
+  for (const port of ports) port.onmessage = ({ data }: MessageEvent<ToPull>) => credit(data.release);
   const all = (message: FromPull) => { for (const port of ports) port.postMessage(message); };
   void readStream({ session,
     ready: () => self.postMessage('ready'),

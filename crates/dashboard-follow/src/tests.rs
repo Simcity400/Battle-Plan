@@ -1499,10 +1499,52 @@ fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_pictu
     assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
     push.head(0, 30);
     assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
-    push.charge(packet.len());
-    assert_eq!((push.in_flight(), budget.used()), (packet.len() * 4, packet.len() * 4), "a lane's merged table is charged at the size it holds");
-    push.charge(packet.len() * 2);
-    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "holding past the budget is a named failure");
+    push.restart_flight();
+    assert_eq!((push.in_flight(), budget.used()), (0, 0), "a closed page's held bytes are forgotten once, by the one queue that charged them");
+}
+
+fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {
+    let mut message = Vec::new();
+    crate::answer::begin(&mut message, route, 0, hour, 0, false);
+    crate::answer::push_held(&mut message, 7, hour, &body(7, value), held);
+    message
+}
+
+#[test]
+fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_own() {
+    use crate::push::Push;
+    let small = routed(1, 5, 1, 0);
+    let push = Push::with_budget(playhead::ByteBudget::new(small.len() * 20));
+    push.offer(small.clone());
+    assert!(push.try_take().is_some());
+    push.offer(routed(1, 50, 2, (small.len() * 20) as u32));
+    assert!(push.try_take().is_none(), "the future update of route 1 waits for credit");
+    push.offer(routed(2, 10, 3, 0));
+    push.head(2, 10);
+    let (_, sent, ..) = push.try_take().expect("route 2's reached update goes past it");
+    assert_eq!(crate::answer::decode(&sent).unwrap().route, 2);
+    push.offer(routed(1, 11, 4, 0));
+    push.head(1, 11);
+    assert!(push.try_take().is_none(), "route 1's later update never overtakes route 1's waiting one");
+}
+
+#[test]
+fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
+    use crate::push::Push;
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let changed = routed(0, 10, 1, 4096);
+    push.offer(changed.clone());
+    push.try_take().unwrap();
+    assert_eq!(push.in_flight(), 24 + 16 + 4096, "a changed answer is charged at the whole table it lands on");
+    assert_eq!(crate::answer::charge(&changed), 24 + 16 + 4096);
+    let mut table = crate::answer::Table::default();
+    table.clear(1, false);
+    for key in [1u128, 5, 9] { table.row(key); table.cell(key as i64, State::Value); table.name("TAG"); }
+    let mut body = Vec::new();
+    table.encode(&mut body);
+    assert_eq!(table.encoded_len(), body.len(), "the held size is the whole table's encoded size");
+    let merged = crate::answer::merge(&rows_message(10, true, &[(1, 1)]), &rows_message(11, true, &[(1, 2)])).unwrap().0;
+    assert_eq!(crate::answer::decode(&merged).unwrap().held.len(), 1);
 }
 
 #[test]
@@ -1568,11 +1610,14 @@ fn a_window_on_a_series_of_every_country_sends_only_its_countries_under_its_vers
     let Query::Series { countries, .. } = Query::series_top(&POWER, &POWER.measures[0], 3, identity.clone()) else { unreachable!() };
     let every = Query::Series { series: &POWER, measure: &POWER.measures[0], countries, top: None, least: false, parts: false, identity };
     harness.follow.follow(7, every).unwrap();
-    harness.follow.window(7, crate::RankWindow { from: 0, count: 0, countries: vec!["ZZZ".into()], version: 3 }).unwrap();
+    harness.follow.window(7, crate::RankWindow { from: 0, count: 0, countries: vec!["ZZZ".into()], version: 3, every: false }).unwrap();
     harness.seek(0);
     let answered = harness.play(20).iter().flat_map(Played::answers).filter(|(at, ..)| *at == 7).last().expect("an answer").2;
     let names: Vec<&str> = (0..answered.keys.len()).filter_map(|row| answered.name(row)).collect();
     assert_eq!((names, answered.window), (vec!["ZZZ"], 3), "the window's countries alone, under its version");
+    harness.follow.window(7, crate::RankWindow { from: 0, count: usize::MAX, countries: Vec::new(), version: 4, every: true }).unwrap();
+    let every = harness.play(200).iter().flat_map(Played::answers).filter(|(at, ..)| *at == 7).last().expect("an answer").2;
+    assert_eq!((every.keys.len(), every.window), (3, 4), "clearing the window answers every country under a new version");
 }
 
 #[test]
@@ -1583,7 +1628,7 @@ fn a_window_change_wakes_a_settled_paused_query_as_a_new_follow_does() {
     let seen = Arc::clone(&joined);
     harness.follow.bind(move |_, joining| { seen.fetch_add(usize::from(joining), std::sync::atomic::Ordering::Relaxed); Ok(()) }, harness.playhead().log_reads()).unwrap();
     harness.follow.follow(7, keys(&[105], &[3])).unwrap();
-    harness.follow.window(7, crate::RankWindow { from: 0, count: 1, countries: Vec::new(), version: 2 }).unwrap();
+    harness.follow.window(7, crate::RankWindow { from: 0, count: 1, countries: Vec::new(), version: 2, every: false }).unwrap();
     assert_eq!(joined.load(std::sync::atomic::Ordering::Relaxed), 2, "the paused query is seeded again, so the new window is answered without a playhead step");
 }
 
@@ -1607,7 +1652,7 @@ fn a_ranked_window_sends_its_ranks_its_version_and_the_selected_holders_outside_
     let names: Vec<&str> = (0..ranked.keys.len()).filter_map(|row| ranked.name(row)).collect();
     assert_eq!((names, ranked.columns, ranked.window), (vec!["MMM", "AAA", "ZZZ"], 2, 0));
     assert_eq!((0..3).map(|row| ranked.values[row * 2 + 1]).collect::<Vec<_>>(), [0, 1, 2], "explicit ranks, so key order loses nothing");
-    harness.follow.window(7, crate::RankWindow { from: 1, count: 1, countries: vec!["MMM".into()], version: 4 }).unwrap();
+    harness.follow.window(7, crate::RankWindow { from: 1, count: 1, countries: vec!["MMM".into()], version: 4, every: false }).unwrap();
     let windowed = last(&harness.play(200));
     let names: Vec<&str> = (0..windowed.keys.len()).filter_map(|row| windowed.name(row)).collect();
     assert_eq!((names, windowed.window), (vec!["AAA", "MMM"], 4), "rank 1 alone, then the selected holder outside the window");

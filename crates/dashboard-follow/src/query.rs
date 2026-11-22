@@ -25,6 +25,7 @@ pub struct RankWindow {
     pub count: usize,
     pub countries: Vec<Country>,
     pub version: u16,
+    pub every: bool,
 }
 
 #[derive(Clone)]

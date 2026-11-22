@@ -52,7 +52,7 @@ async function workload(name: string, countries: number, change: number, distinc
   for (let index = 0; index < LANES; index++) lanes.push(new Lane<Fake>({
     lane: index, lanes: LANES, views: () => fieldsView(() => undefined),
     crop: async sources => sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })),
-    present: presentation => page.offer({ ...presentation, entries: presentation.entries.map(cloned) }), release: () => {}, charge: () => {}, fail: () => {}, later: () => {},
+    present: presentation => page.offer({ ...presentation, entries: presentation.entries.map(cloned) }), release: () => {}, fail: () => {}, later: () => {},
   }));
   const subs = new Set<number>();
   let shown = 0;

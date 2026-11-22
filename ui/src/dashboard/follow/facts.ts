@@ -59,6 +59,7 @@ export class Facts<V> {
   private readonly routes = new Map<number, Route>();
   private released: number[] = [];
   private freed = 0;
+  private removed: Fact<V>[] = [];
 
   private route(id: number): Route {
     let route = this.routes.get(id);
@@ -81,14 +82,31 @@ export class Facts<V> {
     const sub = this.subs.get(id);
     if (!sub) return [];
     this.subs.delete(id);
-    for (const fact of sub.facts) this.freed += fact.bytes;
+    this.removed.push(...sub.facts);
     this.retain(sub, new Set());
     return this.drain();
   }
 
   drain(): number[] { const out = this.released; this.released = []; return out; }
 
-  releasedBytes(): number { const out = this.freed; this.freed = 0; return out; }
+  releasedBytes(): number { return this.release(() => false); }
+
+  release(held: (fact: Fact<V>) => boolean): number {
+    let bytes = this.freed;
+    this.freed = 0;
+    if (!this.removed.length) return bytes;
+    const carried = new Set<Fact<V>>();
+    for (const sub of this.subs.values()) for (const part of sub.carried?.parts ?? []) carried.add(part);
+    for (const sub of this.subs.values()) for (const fact of sub.facts) carried.add(fact);
+    for (const group of this.groups.values()) for (const fact of group.facts) carried.add(fact);
+    const kept: Fact<V>[] = [];
+    for (const fact of new Set(this.removed)) {
+      if (carried.has(fact) || held(fact)) kept.push(fact);
+      else bytes += fact.bytes;
+    }
+    this.removed = kept;
+    return bytes;
+  }
 
   generation(route: number): Generation { const at = this.route(route); return { seek: at.seek, reset: at.reset }; }
 
@@ -115,11 +133,11 @@ export class Facts<V> {
     for (const sub of this.subs.values()) if (sub.route === route && sub.channel !== 'pinned') {
       const shown = this.select(sub.id, target);
       sub.carried = shown && shown.h <= target && target <= shown.c ? Object.freeze({ ...shown, carried: true as const }) : null;
-      for (const fact of sub.facts) this.freed += fact.bytes;
+      this.removed.push(...sub.facts);
       sub.facts = []; sub.open = false; sub.stepped = false;
     }
     for (const group of this.groups.values()) if (group.route === route) {
-      for (const fact of group.facts) this.freed += fact.bytes;
+      this.removed.push(...group.facts);
       group.facts = []; group.open = false;
     }
     at.seek = seek;
@@ -131,7 +149,7 @@ export class Facts<V> {
 
   private add(owner: Owner<V>, fact: Fact<V>) {
     const last = owner.facts.at(-1);
-    if (last && last.h === fact.h) { this.freed += last.bytes; owner.facts[owner.facts.length - 1] = fact; }
+    if (last && last.h === fact.h) { this.removed.push(last); owner.facts[owner.facts.length - 1] = fact; }
     else {
       if (last && last.c >= fact.h) last.c = fact.h - 1;
       owner.facts.push(fact);
@@ -154,7 +172,7 @@ export class Facts<V> {
   exact(id: number, hour: number, value: V, refused: string | null = null, bytes = 0) {
     const sub = this.subs.get(id);
     if (!sub || sub.channel !== 'pinned') return;
-    for (const fact of sub.facts) this.freed += fact.bytes;
+    this.removed.push(...sub.facts);
     sub.facts = [this.fact(hour, hour, value, refused, 'pinned', bytes)];
   }
 
@@ -200,7 +218,7 @@ export class Facts<V> {
     if (message.reset) {
       at.reset++;
       for (const owner of this.owners(route)) if (owner.channel === 'followed') {
-        for (const fact of owner.facts) this.freed += fact.bytes;
+        this.removed.push(...owner.facts);
         owner.facts = []; owner.open = false;
       }
       for (const sub of this.subs.values()) if (sub.route === route && sub.carried && followsChannel(sub.carried)) sub.carried = null;
@@ -305,7 +323,7 @@ export class Facts<V> {
     for (const picture of [current, ...keep]) for (const part of picture?.parts ?? []) held.add(part);
     if (from > 0) sub.facts = sub.facts.filter((fact, at) => {
       const kept = at >= from || held.has(fact);
-      if (!kept) this.freed += fact.bytes;
+      if (!kept) this.removed.push(fact);
       return kept;
     });
     if (sub.carried && sub.facts.length && current !== sub.carried && !keep.some(picture => picture === sub.carried)) sub.carried = null;
@@ -329,7 +347,7 @@ export class Facts<V> {
       if (!group) continue;
       group.users.delete(sub.id);
       if (!group.users.size) {
-        for (const fact of group.facts) this.freed += fact.bytes;
+        this.removed.push(...group.facts);
         this.groups.delete(id); this.released.push(id);
       }
     }
@@ -349,7 +367,7 @@ export class Facts<V> {
       }
       group.facts = group.facts.filter((fact, at) => {
         const kept = fact.c >= lowest || needed.has(fact) || at === group.facts.length - 1;
-        if (!kept) this.freed += fact.bytes;
+        if (!kept) this.removed.push(fact);
         return kept;
       });
     }
