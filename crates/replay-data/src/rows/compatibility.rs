@@ -466,12 +466,19 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "pol/capture-factions",
         )
     };
-    history[TableId::RocketProductionOutput.index()] = table(
-        TableId::RocketProductionOutput,
-        WIDGET_CAPTURE_FORMAT,
-        "wc/rocket",
+    history[TableId::RocketProductionOutput.index()] = LastChange {
+        introduced: WIDGET_CAPTURE_FORMAT,
+        ..table(
+            TableId::RocketProductionOutput,
+            VARIANT_STAT_WITNESS_FORMAT,
+            "variant stat lane witnesses",
+        )
+    };
+    history[TableId::RaidSpeedInputs.index()] = table(
+        TableId::RaidSpeedInputs,
+        VARIANT_STAT_WITNESS_FORMAT,
+        "variant stat lane witnesses",
     );
-    history[TableId::RocketProductionOutput.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::ProductionLineOutput.index()] = appended_at(
         TableId::ProductionLineOutput,
         CONVERSION_PURPOSE_FORMAT,
@@ -3030,8 +3037,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: DESIGN_STATE_FORMAT,
         ..table(
             TableId::VariantChanges,
-            DESIGN_STATE_FORMAT,
-            "pol/capture-designs",
+            VARIANT_STAT_WITNESS_FORMAT,
+            "variant stat lane witnesses",
         )
     };
     history[TableId::VariantBonusSnapshots.index()] = LastChange {
@@ -3419,8 +3426,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::VariantStats.index()] = appended_at(
         TableId::VariantStats,
-        INDUSTRIAL_ORGANISATION_DETAILS_FORMAT,
-        "pol/capture-mios",
+        VARIANT_STAT_WITNESS_FORMAT,
+        "variant stat lane witnesses",
         &[
             AppendedField {
                 index: 10,
@@ -4518,8 +4525,13 @@ mod tests {
             TableId::DesignOrganisationLiveness,
         ] {
             let entry = table.last_change();
+            let expected_format = if matches!(table, TableId::VariantChanges) {
+                VARIANT_STAT_WITNESS_FORMAT
+            } else {
+                DESIGN_STATE_FORMAT
+            };
             assert_eq!(entry.introduced, DESIGN_STATE_FORMAT, "{table:?}");
-            assert_eq!(entry.format, DESIGN_STATE_FORMAT, "{table:?}");
+            assert_eq!(entry.format, expected_format, "{table:?}");
             assert_eq!(entry.kind, ChangeKind::Layout, "{table:?}");
             for version in [PROVEN_FROM, 97, DESIGN_STATE_FORMAT - 1] {
                 assert!(!entry.present(version), "{table:?} in format {version}");
@@ -4531,7 +4543,16 @@ mod tests {
                 );
             }
             assert!(entry.present(DESIGN_STATE_FORMAT), "{table:?}");
-            assert!(entry.table_gap(table, DESIGN_STATE_FORMAT).is_none());
+            if matches!(table, TableId::VariantChanges) {
+                assert_eq!(
+                    entry.table_gap(table, DESIGN_STATE_FORMAT).unwrap(),
+                    format!(
+                        "{table:?} layout or meaning changed at format {VARIANT_STAT_WITNESS_FORMAT}; this recording is format {DESIGN_STATE_FORMAT}"
+                    ),
+                );
+            } else {
+                assert!(entry.table_gap(table, DESIGN_STATE_FORMAT).is_none());
+            }
             assert!(entry.present(FORMAT_VERSION), "{table:?}");
             assert!(entry.table_gap(table, FORMAT_VERSION).is_none());
         }
@@ -4616,7 +4637,9 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(POWER_LEDGER_DAY_LOG_FORMAT, 143);
+        assert_eq!(VARIANT_STAT_WITNESS_FORMAT, 144);
+        assert_eq!(FORMAT_VERSION, VARIANT_STAT_WITNESS_FORMAT);
         assert_eq!(TableId::PowerSpendTotals.field_count(), 32);
         let spend_days = TableId::PowerSpendDays.last_change();
         assert_eq!(spend_days.introduced, POWER_LEDGER_DAY_LOG_FORMAT);

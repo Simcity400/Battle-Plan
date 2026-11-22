@@ -1052,7 +1052,7 @@ impl Sample for VariantDesignState {
         }
     }
 }
-fixture!(VariantStatsRow, |key| {variant: key as u64}, {values: [i64;10], organisation: u64, organisation_trait_count: i32, organisation_bonuses: Vec<IndustrialOrganisationBonus>});
+fixture!(VariantStatsRow, |key| {variant: key as u64}, {values: [Option<i64>;10], organisation: u64, organisation_trait_count: i32, organisation_bonuses: Vec<IndustrialOrganisationBonus>});
 fixture!(VariantUpgradeRow, |key| {variant: (key >> 32) as u64, source_ordinal: key as u32}, {definition_token: i32, level: u8});
 fixture!(ArmyUpgradeGroupRow, |key| {army: key as u64}, {country: u32, priority: u32});
 fixture!(ArmyUpgradeRequestRow, |key| {army: (key >> 32) as u64, ordinal: key as u32}, {country: u32, equipment: u64, request_raw: i64, total_raw: i64});
@@ -5747,7 +5747,7 @@ fn wide_masks_change_one_native_channel_at_a_time() {
     let previous = VariantStatsRow::default();
     for index in 0..10 {
         let mut next = previous.clone();
-        next.values[index] = i64::MAX;
+        next.values[index] = Some(i64::MAX);
         let delta = next.delta(Some(&previous)).unwrap().unwrap();
         assert_eq!(delta.mask, 1_u64 << index);
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
@@ -7367,7 +7367,9 @@ impl Fixture for VariantChangeRow {
             removed: tick % 2 == 1,
             snapshot: Some(VariantSnapshot {
                 definition: VariantDefinitionRow::fixture(key, tick).into(),
-                stats: vec![tick as i64; 10],
+                stats: (0..10)
+                    .map(|index| ((tick + index) % 3 != 0).then_some(tick as i64))
+                    .collect(),
                 ..Default::default()
             }),
             failure: Vec::new(),

@@ -695,3 +695,68 @@ fn supply_vehicle_limits_name_each_unsaved_scalar() {
             .any(|reason| reason.contains("without first clearing"))
     );
 }
+
+#[test]
+fn required_trucks_oracle_checks_non_negative_and_keeps_other_scalars_when_withheld() {
+    let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    save.economy.supply = Some(Default::default());
+    owned_states(&mut frame, std::slice::from_ref(&country), 0);
+    *frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(vec![TrainInventoryRow {
+            country: country.id,
+            allocated_trucks: Recorded::Value(Some(40)),
+            required_trucks_raw: Recorded::Value(Some(9_000_000)),
+            required_trains: Recorded::Value(Some(5)),
+            ..Default::default()
+        }]));
+    let mut ok = Report::default();
+    trains(&frame, &save, &mut ok).unwrap();
+    assert!(ok.differences.is_empty(), "{:?}", ok.differences);
+    assert!(
+        ok.limitations
+            .keys()
+            .any(|reason| reason.contains("same-hour supply nodes"))
+    );
+
+    let TableView::Complete(TableRows::TrainInventory(rows)) =
+        &mut *frame.tables[TableId::TrainInventory.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].required_trucks_raw = Recorded::Value(Some(-1));
+    let mut bad = Report::default();
+    trains(&frame, &save, &mut bad).unwrap();
+    assert!(
+        bad.differences
+            .iter()
+            .any(|line| line.contains("required_trucks_raw non-negative")),
+        "{:?}",
+        bad.differences
+    );
+
+    let TableView::Complete(TableRows::TrainInventory(rows)) =
+        &mut *frame.tables[TableId::TrainInventory.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].required_trucks_raw = Recorded::Value(None);
+    let mut withheld = Report::default();
+    trains(&frame, &save, &mut withheld).unwrap();
+    assert!(withheld.differences.is_empty(), "{:?}", withheld.differences);
+    assert!(
+        withheld
+            .limitations
+            .contains_key("TrainInventory.required_trucks_raw native capture is unavailable")
+    );
+    assert!(
+        !withheld
+            .limitations
+            .contains_key("TrainInventory.allocated_trucks native capture is unavailable")
+    );
+    assert!(
+        !withheld
+            .limitations
+            .contains_key("TrainInventory.required_trains native capture is unavailable")
+    );
+}
