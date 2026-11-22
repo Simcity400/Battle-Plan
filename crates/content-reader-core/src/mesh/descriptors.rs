@@ -1417,7 +1417,31 @@ fn recover_names(
     let native_items = native(bytes, "", true)
         .map(|(items, _)| items)
         .unwrap_or_default();
-    declared_names_from(&native_items, document, words)
+    let mut names = declared_names_from(&native_items, document, words);
+    variable_values(&document.items, &mut names);
+    names
+}
+
+fn variable_values(items: &[parser::Item], names: &mut BTreeSet<String>) {
+    for item in items {
+        match &item.value {
+            parser::Value::Scalar(raw) => {
+                if !item.key_quoted
+                    && item.key.as_deref().is_some_and(|key| key.starts_with(b"@"))
+                    && (item.quoted() || !raw.starts_with(b"@"))
+                    && let Ok(text) = std::str::from_utf8(raw)
+                {
+                    let name = unquote(text);
+                    if !name.is_empty() {
+                        names.insert(name);
+                    }
+                }
+            }
+            parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
+                variable_values(items, names);
+            }
+        }
+    }
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

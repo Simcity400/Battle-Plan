@@ -2258,6 +2258,11 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
         entity = { name = "second" pdxmesh = "m" scale = 9.0 }
         @after_extra = overlay_after
         entity = { name = @after_extra pdxmesh = "m" }
+        @extra = overlay_redefined
+        entity = { name = @extra pdxmesh = "m" }
+        entity = { name = "third" pdxmesh = "m" locator = { name = "p" position = { @y = 1 } } }
+        @later = overlay_later
+        entity = { name = @later pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
@@ -2336,6 +2341,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.unreadable_names.get("@broken_var"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
     assert!(roster.refused_declaration("overlay_after").is_some());
+    assert!(roster.refused_declaration("overlay_redefined").is_some());
+    assert!(roster.refused_declaration("overlay_later").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(

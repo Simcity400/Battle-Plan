@@ -1452,9 +1452,6 @@ impl<'n> Reader<'n> {
                             key.c_str().to_ascii_lowercase().as_slice(),
                             b"meta_effect" | b"meta_trigger"
                         );
-                    if self.recover_unsettled {
-                        return Value::Block(self.generic(meta));
-                    }
                     self.next_unknown_scope += 1;
                     let scope = self.next_unknown_scope;
                     self.unknown_scopes.push((scope, key.c_str().to_vec()));
