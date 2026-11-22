@@ -4293,7 +4293,7 @@ fn spool_loop(
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
-    let mut reported = Instant::now() - Duration::from_secs(1);
+    let mut reported = EverySecond::default();
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
     let _ = shared.spool_waker.set(std::thread::current());
@@ -4492,7 +4492,7 @@ fn spool_loop(
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
                 .map_err(|_| "spool slow-frame allocation failed")?;
-            if reported.elapsed() >= Duration::from_secs(1) {
+            if reported.due(Instant::now()) {
                 break;
             }
         }
@@ -4527,8 +4527,7 @@ fn spool_loop(
             &shared.history_frames,
             shared.frames.slots().map(|slot| &slot.fence),
         );
-        if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
-        {
+        if reported.due(Instant::now()) || shared.stop_spool.load(Ordering::Acquire) {
             let _span = phases.span(Phase::Status);
             crate::allocation::attempted_hour(None);
             let _status_phase = crate::allocation::enter(crate::allocation::Phase::Status);
@@ -4563,7 +4562,7 @@ fn spool_loop(
                         .map_err(|e| error_reason(e, "status directories allocation failed"))?,
                 )
                 .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
-            reported = Instant::now();
+            reported.done(Instant::now());
         }
         processor
             .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
@@ -4712,11 +4711,39 @@ impl SizingBackoff {
     }
 }
 
+trait Moment: Copy {
+    fn since(self, earlier: Self) -> Duration;
+}
+
+impl Moment for Instant {
+    fn since(self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+}
+
+struct EverySecond<T = Instant>(Option<T>);
+
+impl<T> Default for EverySecond<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Moment> EverySecond<T> {
+    fn due(&self, now: T) -> bool {
+        self.0.is_none_or(|last| now.since(last) >= Duration::from_secs(1))
+    }
+
+    fn done(&mut self, now: T) {
+        self.0 = Some(now);
+    }
+}
+
 struct SizingState {
     registry: RegistryWatch,
     applied_combat_hints: AppliedHints,
     fuel_demand_at: Instant,
-    second: Instant,
+    second: EverySecond,
     capacity_census: SizingBackoff,
     politics_frames: usize,
 }
@@ -4924,7 +4951,7 @@ impl SizingThread {
                 registry: RegistryWatch::default(),
                 applied_combat_hints: state.applied_combat_hints,
                 fuel_demand_at: Instant::now(),
-                second: Instant::now() - Duration::from_secs(1),
+                second: EverySecond::default(),
                 capacity_census: SizingBackoff::new(),
                 politics_frames: sampling::BUFFERS,
             }),
@@ -5119,7 +5146,7 @@ fn sizing_pass(
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
-    let once_a_second = state.second.elapsed() >= Duration::from_secs(1);
+    let once_a_second = state.second.due(Instant::now());
     let loading = crate::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
     let capacity_census = state.capacity_census.due(
@@ -5600,7 +5627,7 @@ fn sizing_pass(
         state.capacity_census.reset();
     }
     if once_a_second {
-        state.second = Instant::now();
+        state.second.done(Instant::now());
     }
     Ok(())
 }
@@ -7041,6 +7068,22 @@ mod tests {
         }
         cadence.observed(now, true, true);
         assert_eq!(cadence.interval, SizingBackoff::FAST);
+    }
+
+    #[test]
+    fn every_second_is_due_at_once_from_the_clock_origin_then_once_a_second() {
+        impl Moment for Duration {
+            fn since(self, earlier: Self) -> Duration {
+                self.saturating_sub(earlier)
+            }
+        }
+        let origin = Duration::ZERO;
+        let mut every = EverySecond::default();
+        assert!(every.due(origin));
+        every.done(origin);
+        assert!(!every.due(origin));
+        assert!(!every.due(origin + Duration::from_millis(999)));
+        assert!(every.due(origin + Duration::from_secs(1)));
     }
 
     fn sizing_fixture() -> (Shared, SizingThread) {

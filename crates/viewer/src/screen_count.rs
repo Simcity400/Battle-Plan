@@ -292,9 +292,19 @@ pub(crate) mod readout {
         }
     }
 
+    trait Moment: Copy {
+        fn since(self, earlier: Self) -> Duration;
+    }
+
+    impl Moment for Instant {
+        fn since(self, earlier: Self) -> Duration {
+            self.saturating_duration_since(earlier)
+        }
+    }
+
     #[derive(Clone, Copy)]
-    struct Frame {
-        at: Instant,
+    struct Frame<T = Instant> {
+        at: T,
         differed: bool,
         seen: bool,
         presented: u64,
@@ -407,17 +417,23 @@ pub(crate) mod readout {
             let (read, _) = self.read.take().expect("held above");
             read.unmap();
             drop(read);
-            self.frames.push(Frame {
-                at: Instant::now(),
-                differed: screen[0] > 0,
-                seen: screen[1] > SEEN,
-                presented: PRESENTED.load(Ordering::Relaxed),
-            });
-            let second = Instant::now() - Duration::from_secs(1);
-            self.frames.retain(|frame| frame.at >= second);
+            keep(
+                &mut self.frames,
+                Frame {
+                    at: Instant::now(),
+                    differed: screen[0] > 0,
+                    seen: screen[1] > SEEN,
+                    presented: PRESENTED.load(Ordering::Relaxed),
+                },
+            );
             self.waiting = false;
             self.compare.last = None;
         }
+    }
+
+    fn keep<T: Moment>(frames: &mut Vec<Frame<T>>, frame: Frame<T>) {
+        frames.retain(|kept| frame.at.since(kept.at) <= Duration::from_secs(1));
+        frames.push(frame);
     }
 
     pub(crate) fn lines() -> Vec<String> {
@@ -446,5 +462,31 @@ pub(crate) mod readout {
                 ),
             ]
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn frames_from_the_clock_origin_keep_the_last_second() {
+            impl Moment for Duration {
+                fn since(self, earlier: Self) -> Duration {
+                    self.saturating_sub(earlier)
+                }
+            }
+            let frame = |millis| Frame {
+                at: Duration::from_millis(millis),
+                differed: false,
+                seen: false,
+                presented: millis,
+            };
+            let mut frames = Vec::new();
+            for millis in [0, 500, 900, 1_000, 1_600] {
+                keep(&mut frames, frame(millis));
+            }
+            let kept: Vec<u64> = frames.iter().map(|frame| frame.presented).collect();
+            assert_eq!(kept, [900, 1_000, 1_600]);
+        }
     }
 }
