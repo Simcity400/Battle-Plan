@@ -9,6 +9,7 @@ mod perf;
 mod popout;
 mod recorder;
 mod replay_library;
+mod saving;
 #[cfg(feature = "served-ui")]
 mod served_ui;
 mod updates;
@@ -386,7 +387,13 @@ fn shut(window: &impl Shut) {
 fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
     let main = MainWindow { window: window.clone(), hwnd: window.hwnd()?.0 as isize };
-    app.state::<Leaving>().follow(stop_page(window.clone()), Arc::new(move || shut(&main)));
+    app.state::<Leaving>().follow(
+        stop_page(window.clone()),
+        Arc::new(move || {
+            replay::writes::WRITES.close_admission();
+            shut(&main);
+        }),
+    );
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -654,6 +661,7 @@ fn main() {
 }
 
 const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+const SAVING_UNSEEN: std::time::Duration = std::time::Duration::from_millis(300);
 
 fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (done, finished) = std::sync::mpsc::channel();
@@ -666,11 +674,30 @@ fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> 
     finished.recv_timeout(limit).ok()
 }
 
-fn ordered<P>(page: impl FnOnce() -> P, steps: impl FnOnce() -> bool + Send + 'static, summary: impl FnOnce(P), limit: std::time::Duration) -> Option<bool> {
+fn ordered<P: Send + 'static>(
+    page: impl FnOnce() -> P,
+    steps: impl FnOnce() -> bool + Send + 'static,
+    summary: impl FnOnce(P) + Send + 'static,
+    limit: std::time::Duration,
+) -> Option<bool> {
     let page = page();
+    let deadline = std::time::Instant::now().checked_add(limit);
     let ended = within(limit, steps);
-    summary(page);
+    let left = deadline.map_or(limit, |deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+    let _ = within(left, move || summary(page));
     ended
+}
+
+fn saved_before_exit(writes: &replay::writes::Writes, show: impl FnOnce() -> Result<saving::Saving, String>) {
+    if !writes.close_admission() || writes.drained_within(SAVING_UNSEEN) {
+        return;
+    }
+    let shown = show();
+    if let Err(error) = &shown {
+        eprintln!("BattlePlan couldn’t show that it is saving before it closes: {error}");
+    }
+    writes.close();
+    drop(shown);
 }
 
 fn end_now() -> ! {
@@ -687,6 +714,7 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
                 .name("ordered exit".into())
                 .spawn(move || {
                     handle.state::<Leaving>().until_launched();
+                    saved_before_exit(&replay::writes::WRITES, saving::Saving::show);
                     let ordered_steps = handle.clone();
                     let ended = ordered(|| perf::finish_page(&handle), move || shutdown(&ordered_steps), perf::finish, EXIT_BOUND);
                     EXIT.done();
@@ -703,7 +731,6 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
         },
         || {
             app.state::<Leaving>().until_launched();
-            perf::close();
             end_now();
         },
     )
@@ -750,7 +777,7 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, Shut, ordered, shut, within};
+    use super::{ExitOrder, Shut, ordered, saved_before_exit, shut, within};
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -762,9 +789,35 @@ mod tests {
         assert_eq!(within(Duration::MAX, || true), Some(true), "a shutdown that finishes ends in order");
 
         let (_never, stalled) = std::sync::mpsc::channel::<()>();
-        let mut written = None;
-        let ended = ordered(|| Some(true), move || stalled.recv().is_ok(), |page| written = Some(page), Duration::ZERO);
-        assert_eq!((ended, written), (None, Some(Some(true))), "a page that took its whole wait still has its summary written, though the steps after it overran");
+        let (wrote, written) = std::sync::mpsc::channel();
+        let ended = ordered(|| Some(true), move || stalled.recv().is_ok(), move |page| wrote.send(page).unwrap(), Duration::ZERO);
+        assert_eq!(ended, None);
+        assert_eq!(written.recv(), Ok(Some(true)), "a page that took its whole wait still has its summary written, though the steps after it overran");
+
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::ZERO);
+    }
+
+    #[test]
+    fn an_exit_drains_the_writes_admitted_before_it_behind_a_window_that_says_so_and_admits_none_after() {
+        let writes = replay::writes::Writes::new();
+        saved_before_exit(&writes, || unreachable!("nothing is being written, so nothing is shown"));
+        assert!(writes.begin().is_err(), "the exit closed admission");
+
+        let writes = replay::writes::Writes::new();
+        let writing = writes.begin().unwrap();
+        std::thread::scope(|scope| {
+            let (showing, shown) = std::sync::mpsc::channel();
+            let exit = scope.spawn(|| saved_before_exit(&writes, move || {
+                showing.send(()).unwrap();
+                Err("no window in a test".into())
+            }));
+            shown.recv().unwrap();
+            assert!(writes.begin().is_err(), "a write asked for while the exit drains is refused");
+            assert!(!exit.is_finished(), "the exit waits for the write under way");
+            drop(writing);
+            exit.join().unwrap();
+        });
     }
 
     struct Window {

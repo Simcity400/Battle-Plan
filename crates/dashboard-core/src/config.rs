@@ -44,11 +44,11 @@ impl Config {
     }
 
     fn save_folders_at(&self, path: &Path) -> io::Result<()> {
-        locked(path, || {
-            replace(path, |stored| {
-                stored.game_dir = self.game_dir.clone();
-                stored.user_dir = self.user_dir.clone();
-            })
+        replay::writes::WRITES.under_lock(&path.with_extension("lock"), |writing| {
+            let mut config = Config::load_from(path)?;
+            config.game_dir = self.game_dir.clone();
+            config.user_dir = self.user_dir.clone();
+            writing.replace(path, |out| serde_json::to_writer_pretty(out, &config).map_err(io::Error::from))
         })
     }
 
@@ -73,33 +73,6 @@ impl Config {
         .join("BattlePlan")
         .join("viewer"))
     }
-}
-
-fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let folder = path
-        .parent()
-        .ok_or_else(|| invalid("content preferences have no folder"))?;
-    let _writing = replay::writes::WRITES.begin()?;
-    fs::create_dir_all(folder)?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("lock"))?;
-    lock.lock()?;
-    work()
-}
-
-fn replace(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
-    let mut config = Config::load_from(path)?;
-    change(&mut config);
-    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-    let written = fs::write(&temporary, serde_json::to_vec_pretty(&config)?)
-        .and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    written
 }
 
 #[derive(Clone)]

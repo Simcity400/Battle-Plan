@@ -15,7 +15,7 @@ use viewer_foundation::map::gpu_contract::{
     device_requirements, map_device_descriptor, read_texture, select_adapter,
 };
 
-use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
+use std::{fs::File, io, path::Path, sync::Arc};
 
 use eframe::wgpu;
 
@@ -212,13 +212,15 @@ pub fn write_texture_png(
 ) -> io::Result<()> {
     let (width, height) = (texture.width(), texture.height());
     let pixels = read_texture(device, queue, texture, 4)?;
-    let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-    let mut writer = encoder.write_header().map_err(io::Error::other)?;
-    writer.write_image_data(&pixels).map_err(io::Error::other)?;
-    writer.finish().map_err(io::Error::other)
+    replay::writes::WRITES.begin()?.replace(path, |out| {
+        let mut encoder = png::Encoder::new(out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        let mut writer = encoder.write_header().map_err(io::Error::other)?;
+        writer.write_image_data(&pixels).map_err(io::Error::other)?;
+        writer.finish().map_err(io::Error::other)
+    })
 }
 
 pub struct DumpReport {

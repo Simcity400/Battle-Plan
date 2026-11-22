@@ -91,14 +91,13 @@ impl Shell {
             unsafe { ShowWindowAsync(hwnd as HWND, SW_HIDE) };
         }
     }
+}
 
-    pub fn raise(&self) {
-        let hwnd = self.hwnd();
-        if hwnd != 0 {
-            unsafe {
-                ShowWindow(hwnd as HWND, SW_SHOW);
-                SetForegroundWindow(hwnd as HWND);
-            }
+pub fn raise(hwnd: usize) {
+    if hwnd != 0 {
+        unsafe {
+            ShowWindow(hwnd as HWND, SW_SHOW);
+            SetForegroundWindow(hwnd as HWND);
         }
     }
 }

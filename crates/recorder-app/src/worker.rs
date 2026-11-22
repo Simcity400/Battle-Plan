@@ -57,11 +57,8 @@ struct Inner {
     seen: bool,
     hours: u64,
     earlier: Option<(String, Option<PathBuf>, Option<u64>)>,
-    idle_recording: targets::RecordingCache,
-    saved_recording: targets::RecordingCache,
     session: Option<(PathBuf, PathBuf)>,
     game_running: bool,
-    menu: Option<(bool, bool)>,
     set_aside: Vec<Waiting>,
     names: BTreeMap<String, String>,
     flag_keys: Option<FlagAsk>,
@@ -70,6 +67,7 @@ struct Inner {
     leaving: Option<Leaving>,
     closing: bool,
     acting: usize,
+    tray: u64,
 }
 
 pub enum Leave {
@@ -90,6 +88,7 @@ const RECORDING_FOR_UPDATE: &str =
 const CONNECTED_FOR_UPDATE: &str =
     "BattlePlan Recorder is connected to the game. Restart to update once the game has closed.";
 const CLOSING_FOR_UPDATE: &str = "BattlePlan Recorder is closing for an update.";
+const QUITTING: &str = "BattlePlan Recorder is quitting, so it starts nothing more.";
 const SESSION_ENDED: &str = "The session you asked about has already ended, so nothing was changed.";
 const SESSION_STOPPING: &str = "BattlePlan Recorder is already stopping this session.";
 const SESSION_SAVING: &str =
@@ -110,6 +109,26 @@ fn cancelled(inner: &mut Inner, through: u64, stopping: bool) {
 }
 
 impl Inner {
+    fn quit(&mut self) -> Quitting {
+        if let Some(session) = self.live_session() {
+            self.ask(session, true);
+            Quitting::Prompt
+        } else if !self.capturing && !self.unloading && self.acting == 0 {
+            Quitting::Exit
+        } else {
+            self.quit_when_idle = true;
+            if self.capturing && !self.snapshot.stopping { Quitting::Stop } else { Quitting::Wait }
+        }
+    }
+
+    fn exit_due(&self) -> bool {
+        (self.quit_when_idle || self.quit_after_stop.is_some()) && self.acting == 0
+    }
+
+    fn saving_to_quit(&self) -> bool {
+        self.quit_when_idle && self.acting > 0
+    }
+
     fn new_session(&mut self) {
         self.sessions += 1;
         self.snapshot.session_key = Some(self.sessions);
@@ -201,6 +220,7 @@ pub struct Acting(Arc<Recorder>);
 impl Drop for Acting {
     fn drop(&mut self) {
         self.0.lock().acting -= 1;
+        self.0.wake.notify_all();
     }
 }
 
@@ -210,6 +230,13 @@ pub struct Recorder {
     inner: Mutex<Inner>,
     wake: Condvar,
     flag_content: Mutex<Option<(PathBuf, Arc<FlagContent>)>>,
+    recordings: Mutex<Recordings>,
+}
+
+#[derive(Default)]
+struct Recordings {
+    idle: targets::RecordingCache,
+    saved: targets::RecordingCache,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -513,8 +540,12 @@ impl Recorder {
         Ok(content)
     }
 
+    fn recordings(&self) -> MutexGuard<'_, Recordings> {
+        self.recordings.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     fn update(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) {
-        let (published, menu, menu_changed, light, tooltip) = {
+        let (published, shown) = {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
@@ -522,31 +553,25 @@ impl Recorder {
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
-            let menu = (
-                inner.game_running && !inner.capturing && !inner.unloading,
-                inner.capturing
+            inner.tray += 1;
+            let saving_to_quit = inner.saving_to_quit();
+            let shown = tray::Tray {
+                revision: inner.tray,
+                light: if saving_to_quit { crate::snapshot::Light::Saving } else { inner.snapshot.light() },
+                tooltip: tray::tooltip_for(&inner.snapshot, saving_to_quit),
+                can_start: inner.game_running && !inner.capturing && !inner.unloading,
+                can_stop: inner.capturing
                     && inner.snapshot.phase == Phase::Recording
                     && !inner.snapshot.stopping,
-            );
-            let menu_changed = inner.menu.replace(menu) != Some(menu);
-            (
-                published,
-                menu,
-                menu_changed,
-                inner.snapshot.light(),
-                tray::tooltip(&inner.snapshot),
-            )
+            };
+            (published, shown)
         };
         if let Some(snapshot) = &published
             && let Err(error) = app.emit(STATUS_EVENT, snapshot)
         {
             eprintln!("Recorder status could not reach the panel: {error}");
         }
-        if published.is_some() || menu_changed {
-            tray::show(app, light, &tooltip, menu.0, menu.1);
-        } else {
-            tray::follow_theme(app, light);
-        }
+        tray::show(app, shown);
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -641,17 +666,7 @@ impl Recorder {
 
     pub fn quit(&self, app: &AppHandle) {
         let mut quitting = Quitting::Wait;
-        self.update(app, |inner| {
-            quitting = if let Some(session) = inner.live_session() {
-                inner.ask(session, true);
-                Quitting::Prompt
-            } else if !inner.capturing && !inner.unloading {
-                Quitting::Exit
-            } else {
-                inner.quit_when_idle = true;
-                if inner.capturing && !inner.snapshot.stopping { Quitting::Stop } else { Quitting::Wait }
-            };
-        });
+        self.update(app, |inner| quitting = inner.quit());
         match quitting {
             Quitting::Prompt => panel::open(app, None, true),
             Quitting::Exit => app.exit(0),
@@ -739,6 +754,9 @@ impl Recorder {
         if inner.closing || inner.leaving.is_some() {
             return Err(CLOSING_FOR_UPDATE.into());
         }
+        if inner.quit_when_idle {
+            return Err(QUITTING.into());
+        }
         inner.acting += 1;
         Ok(Acting(Arc::clone(self)))
     }
@@ -781,8 +799,7 @@ impl Recorder {
     }
 
     fn exit_requested(&self) -> bool {
-        let inner = self.lock();
-        inner.quit_when_idle || inner.quit_after_stop.is_some()
+        self.lock().exit_due()
     }
 
     fn run(&self, app: &AppHandle) {
@@ -953,21 +970,20 @@ impl Recorder {
         let named = loaded.and_then(|loaded| {
             let root = save_root(settings).ok()?;
             let folder = targets::current_folder(settings, &root, &loaded.campaign);
-            let recording = self.lock().idle_recording.get(&folder, &loaded.campaign);
+            let recording = self.recordings().idle.get(&folder, &loaded.campaign);
             Some((loaded.clone(), recording))
         });
-        let saved = {
-            let mut guard = self.lock();
-            let inner = &mut *guard;
+        let shown = {
+            let inner = self.lock();
             let snapshot = &inner.snapshot;
             match (inner.result, &snapshot.recording, snapshot.campaign.clone()) {
-                (true, Some(recording), Some(campaign)) => Path::new(recording)
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .and_then(|folder| inner.saved_recording.get(&folder, &campaign)),
+                (true, Some(recording), Some(campaign)) => {
+                    Path::new(recording).parent().map(|folder| (folder.to_path_buf(), campaign))
+                }
                 _ => None,
             }
         };
+        let saved = shown.and_then(|(folder, campaign)| self.recordings().saved.get(&folder, &campaign));
         self.update(app, |inner| {
             inner.game_running = game_running;
             let automatic = settings.record_every_campaign;
@@ -1708,6 +1724,20 @@ mod tests {
                 assert!(inner.snapshot.problem.is_none());
             }
         }
+    }
+
+    #[test]
+    fn quit_waits_for_a_waiting_recording_being_saved_and_the_tray_says_so() {
+        let mut inner = Inner { acting: 1, ..Inner::default() };
+        assert!(matches!(inner.quit(), Quitting::Wait), "a recording is being saved without a capture, so Quit doesn’t end the process inside it");
+        assert!(!inner.exit_due() && inner.saving_to_quit());
+        assert!(tray::tooltip_for(&inner.snapshot, inner.saving_to_quit()).contains("Saving a recording, then quitting"));
+        inner.acting = 0;
+        assert!(inner.exit_due(), "the Quit goes ahead once the save has published");
+
+        let recorder = Arc::new(Recorder::default());
+        recorder.lock().quit_when_idle = true;
+        assert_eq!(recorder.acting().err(), Some(QUITTING.to_owned()), "and nothing new is admitted once Quit waits");
     }
 
     #[test]

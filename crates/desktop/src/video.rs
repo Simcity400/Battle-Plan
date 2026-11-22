@@ -116,40 +116,29 @@ fn update(
     fallback: Option<&VideoSettings>,
     change: impl FnOnce(&mut VideoSettings),
 ) -> Result<VideoSettings, String> {
-    let folder = path.parent().ok_or("Video settings have no folder")?;
-    let _writing = replay::writes::WRITES.begin().map_err(|e| e.to_string())?;
-    fs::create_dir_all(folder).map_err(|e| e.to_string())?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("lock"))
-        .map_err(|e| e.to_string())?;
-    lock.lock().map_err(|e| e.to_string())?;
-    let mut settings = match load_from(path) {
-        Ok(saved) => saved,
-        Err(error) => fallback.cloned().ok_or(error)?,
-    };
-    change(&mut settings);
-    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(
-        &temp,
-        serde_json::to_vec(&settings).map_err(|e| e.to_string())?,
-    )
-    .and_then(|()| fs::rename(&temp, path))
-    .map_err(|e| e.to_string())?;
-    Ok(settings)
+    replay::writes::WRITES
+        .under_lock(&path.with_extension("lock"), |writing| {
+            let mut settings = match load_from(path) {
+                Ok(saved) => saved,
+                Err(error) => fallback.cloned().ok_or_else(|| io::Error::other(error))?,
+            };
+            change(&mut settings);
+            writing.replace(path, |out| serde_json::to_writer(out, &settings).map_err(io::Error::from))?;
+            Ok(settings)
+        })
+        .map_err(|e| e.to_string())
 }
-fn commit(
-    path: &Path,
-    stored: &mut Result<VideoSettings, String>,
-    change: impl Fn(&mut VideoSettings),
-) -> Result<(), String> {
-    let saved = update(path, stored.as_ref().ok(), &change)?;
-    if let Ok(current) = stored {
-        change(current);
-    } else {
-        *stored = Ok(saved);
+type Stored = Mutex<Result<VideoSettings, String>>;
+fn stored(state: &Stored) -> Result<std::sync::MutexGuard<'_, Result<VideoSettings, String>>, String> {
+    state.lock().map_err(|e| e.to_string())
+}
+fn commit(path: &Path, state: &Stored, change: impl Fn(&mut VideoSettings)) -> Result<(), String> {
+    let fallback = stored(state)?.as_ref().ok().cloned();
+    let saved = update(path, fallback.as_ref(), &change)?;
+    let mut current = stored(state)?;
+    match &mut *current {
+        Ok(current) => change(current),
+        Err(_) => *current = Ok(saved),
     }
     Ok(())
 }
@@ -283,8 +272,7 @@ pub fn video_settings(
     state: State<'_, VideoState>,
     host: State<'_, NativeHost>,
 ) -> Result<VideoReply, String> {
-    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
-    let mut settings = stored.clone()?;
+    let mut settings = stored(&state.0)?.clone()?;
     if settings.use_game_settings
         && let Ok(game) = game_settings()
     {
@@ -299,18 +287,28 @@ pub fn video_settings(
             .mirror(&dashboard::protocol::MapAction::Vsync {
                 enabled: game.vsync,
             });
-        settings = inherit_game(&settings, game);
-        *stored = Ok(settings.clone());
+        let mut current = stored(&state.0)?;
+        if let Ok(current) = &mut *current
+            && current.use_game_settings
+        {
+            *current = inherit_game(current, game);
+            settings = current.clone();
+        }
     }
     Ok(reply(settings))
 }
 #[tauri::command]
-pub fn set_video_settings(
+pub async fn set_video_settings(
     window: WebviewWindow,
-    state: State<'_, VideoState>,
-    host: State<'_, NativeHost>,
     settings: VideoSettings,
 ) -> Result<VideoReply, String> {
+    tauri::async_runtime::spawn_blocking(move || save_video_settings(&window, settings))
+        .await
+        .map_err(|error| error.to_string())?
+}
+fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Result<VideoReply, String> {
+    let state = window.state::<VideoState>();
+    let host = window.state::<NativeHost>();
     let mut settings = if settings.use_game_settings {
         game_settings()?
     } else {
@@ -323,25 +321,25 @@ pub fn set_video_settings(
             "Wait for the map to start before changing display settings".into(),
         );
     }
-    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
-    let previous = stored.clone().unwrap_or_default();
-    settings.map_diagnostics = match &*stored {
+    let before = stored(&state.0)?.clone();
+    let previous = before.clone().unwrap_or_default();
+    settings.map_diagnostics = match &before {
         Ok(stored) => stored.map_diagnostics,
         Err(_) => load().is_ok_and(|saved| saved.map_diagnostics),
     };
-    settings.map_muted = match &*stored {
+    settings.map_muted = match &before {
         Ok(stored) => stored.map_muted,
         Err(_) => load().is_ok_and(|saved| saved.map_muted),
     };
     if settings.use_game_settings {
-        settings.map_frame_limit = match &*stored {
+        settings.map_frame_limit = match &before {
             Ok(stored) => stored.map_frame_limit,
             Err(_) => load().ok().and_then(|saved| saved.map_frame_limit),
         };
     }
     let result = (|| {
-        if stored.is_err() || settings.ui_scale != previous.ui_scale {
-            apply_scale(&window, &settings)?;
+        if before.is_err() || settings.ui_scale != previous.ui_scale {
+            apply_scale(window, &settings)?;
         }
         host.set_display(dashboard::protocol::MapAction::Vsync {
             enabled: settings.vsync,
@@ -360,7 +358,7 @@ pub fn set_video_settings(
         Ok(())
     })();
     if let Err(error) = result {
-        let _ = apply_scale(&window, &previous);
+        let _ = apply_scale(window, &previous);
         host.set_display(dashboard::protocol::MapAction::Vsync {
             enabled: previous.vsync,
         });
@@ -368,7 +366,14 @@ pub fn set_video_settings(
         host.set_display(previous.map_frame_limit_action());
         return Err(error);
     }
-    *stored = Ok(settings.clone());
+    let settings = {
+        let mut current = stored(&state.0)?;
+        match &mut *current {
+            Ok(current) => with_display(current, &settings),
+            Err(_) => *current = Ok(settings),
+        }
+        current.clone()?
+    };
     Ok(reply(settings))
 }
 
@@ -421,17 +426,19 @@ fn diagnostics_switch(state: &VideoState) -> MapSwitch {
 
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
-    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
-    let enabled = enabled
-        .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored));
-    let muted = muted_in(&stored);
-    commit(&path()?, &mut stored, |settings| {
+    let (enabled, muted) = {
+        let current = stored(&state.0)?;
+        let enabled = enabled
+            .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &current));
+        (enabled, muted_in(&current))
+    };
+    commit(&path()?, &state.0, |settings| {
         settings.map_diagnostics = enabled
     })?;
     state.1.store(false, Ordering::Release);
     let changed = announce_diagnostics(app, &state, enabled);
-    let muted = (muted_in(&stored) != muted).then(|| announce_muted(app, &state, !muted));
-    drop(stored);
+    let now_muted = muted_in(&*stored(&state.0)?);
+    let muted = (now_muted != muted).then(|| announce_muted(app, &state, !muted));
     let _ = app.emit("map-diagnostics", changed);
     if let Some(muted) = muted {
         let _ = app.emit("map-muted", muted);
@@ -473,14 +480,11 @@ fn muted_switch(state: &VideoState) -> MapSwitch {
 
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
-    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
-    let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored);
-    commit(&path()?, &mut stored, |settings| settings.map_muted = muted)?;
+    let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
+    commit(&path()?, &state.0, |settings| settings.map_muted = muted)?;
     let changed = announce_muted(app, &state, muted);
-    let diagnostics = (effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored)
-        != diagnostics)
-        .then(|| announce_diagnostics(app, &state, !diagnostics));
-    drop(stored);
+    let now = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
+    let diagnostics = (now != diagnostics).then(|| announce_diagnostics(app, &state, !diagnostics));
     let _ = app.emit("map-muted", changed);
     if let Some(diagnostics) = diagnostics {
         let _ = app.emit("map-diagnostics", diagnostics);
@@ -494,8 +498,10 @@ pub fn map_muted(state: State<'_, VideoState>) -> MapSwitch {
 }
 
 #[tauri::command]
-pub fn set_map_muted(app: AppHandle, muted: bool) -> Result<MapSwitch, String> {
-    change_map_muted(&app, muted)
+pub async fn set_map_muted(app: AppHandle, muted: bool) -> Result<MapSwitch, String> {
+    tauri::async_runtime::spawn_blocking(move || change_map_muted(&app, muted))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -504,10 +510,14 @@ pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
 }
 
 #[tauri::command]
-pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
-    change_map_diagnostics(&app, enabled).inspect_err(|error| {
-        let _ = app.emit("map-diagnostics-error", error);
+pub async fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        change_map_diagnostics(&app, enabled).inspect_err(|error| {
+            let _ = app.emit("map-diagnostics-error", error);
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -590,16 +600,16 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-video-settings-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         let path = folder.join("video.json");
-        let mut first = Ok(VideoSettings::default());
-        let mut second = Ok(VideoSettings::default());
-        commit(&path, &mut first, |settings| settings.map_muted = true).unwrap();
-        commit(&path, &mut second, |settings| {
+        let first = Mutex::new(Ok(VideoSettings::default()));
+        let second = Mutex::new(Ok(VideoSettings::default()));
+        commit(&path, &first, |settings| settings.map_muted = true).unwrap();
+        commit(&path, &second, |settings| {
             settings.map_diagnostics = true
         })
         .unwrap();
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.map_diagnostics);
-        let second = second.unwrap();
+        let second = second.into_inner().unwrap().unwrap();
         assert!(second.map_diagnostics && !second.map_muted);
         let form = VideoSettings {
             use_game_settings: false,
@@ -611,13 +621,13 @@ mod tests {
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.map_diagnostics && saved.ui_scale == 110.0);
         assert_eq!(saved.map_frame_limit, Some(60.0));
-        let mut lost = Err("zoom failed".to_owned());
-        commit(&path, &mut lost, |settings| settings.map_muted = false).unwrap();
-        let lost = lost.unwrap();
+        let lost = Mutex::new(Err("zoom failed".to_owned()));
+        commit(&path, &lost, |settings| settings.map_muted = false).unwrap();
+        let lost = lost.into_inner().unwrap().unwrap();
         assert!(lost.map_diagnostics && !lost.map_muted && lost.ui_scale == 110.0);
         fs::write(&path, b"not json").unwrap();
-        assert!(commit(&path, &mut Err("unreadable".into()), |_| ()).is_err());
-        commit(&path, &mut Ok(game_like(90.0)), |settings| {
+        assert!(commit(&path, &Mutex::new(Err("unreadable".into())), |_| ()).is_err());
+        commit(&path, &Mutex::new(Ok(game_like(90.0))), |settings| {
             settings.map_muted = true
         })
         .unwrap();
@@ -625,6 +635,8 @@ mod tests {
         assert!(saved.map_muted && saved.ui_scale == 90.0);
         fs::remove_dir_all(&folder).unwrap();
     }
+
+
 
     #[test]
     fn the_mute_choice_is_off_by_default_and_survives_game_settings() {

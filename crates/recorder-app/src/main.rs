@@ -85,12 +85,11 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("Could not start BattlePlan Recorder");
-    app.run(|_, event| {
-        if let tauri::RunEvent::ExitRequested {
+    app.run(|_, event| match event {
+        tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } = event
-        {
-            api.prevent_exit();
-        }
+        } => api.prevent_exit(),
+        tauri::RunEvent::Exit => replay::writes::WRITES.close(),
+        _ => {}
     });
 }

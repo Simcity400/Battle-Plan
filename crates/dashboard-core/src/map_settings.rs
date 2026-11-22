@@ -206,37 +206,23 @@ impl Store {
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<()> {
-        let folder = path
-            .parent()
-            .ok_or_else(|| crate::invalid("Map settings have no folder"))?;
-        let _writing = writes.begin()?;
-        fs::create_dir_all(folder)?;
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path.with_extension("lock"))?;
-        lock.lock()?;
-        let saved = Self {
-            entries: Self::load_from(path)?.entries,
-            game: self.game,
-            ..Self::default()
-        };
-        let settings = choose(&saved, &key)?;
-        settings.validate().map_err(crate::invalid)?;
-        let mut entries = saved.entries;
-        entries.insert(key, settings);
-        let bytes = serde_json::to_vec(&entries)?;
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(crate::invalid("Map settings exceed their size limit"));
-        }
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-        let written = fs::write(&temporary, bytes)
-            .and_then(|()| fs::rename(&temporary, path));
-        if written.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        written?;
+        let entries = writes.under_lock(&path.with_extension("lock"), |writing| {
+            let saved = Self {
+                entries: Self::load_from(path)?.entries,
+                game: self.game,
+                ..Self::default()
+            };
+            let settings = choose(&saved, &key)?;
+            settings.validate().map_err(crate::invalid)?;
+            let mut entries = saved.entries;
+            entries.insert(key, settings);
+            let bytes = serde_json::to_vec(&entries)?;
+            if bytes.len() > 4 * 1024 * 1024 {
+                return Err(crate::invalid("Map settings exceed their size limit"));
+            }
+            writing.replace(path, |out| io::Write::write_all(out, &bytes))?;
+            Ok(entries)
+        })?;
         self.entries = entries;
         self.generation += 1;
         Ok(())

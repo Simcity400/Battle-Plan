@@ -507,6 +507,35 @@ impl Library {
         }
         let settings_stamp = version(&RecorderSettings::path());
         let installation = (self.installation)();
+        let keys: Vec<Option<NameKey>> = unsaved
+            .iter_mut()
+            .map(|(target, sessions, row)| {
+                row.recording = cache
+                    .continued(target, &row.campaign)
+                    .map(|path| path.display().to_string());
+                if live.target == Some(target.as_path()) {
+                    row.name = live.names.get(&row.campaign).cloned();
+                    return None;
+                }
+                view.as_ref()?;
+                sessions.sort();
+                Some(NameKey {
+                    recordings: cache.recordings(target).0.clone(),
+                    unsaved: recording_files::listing(&replay::publication::unsaved_folder(target))
+                        .ok(),
+                    sessions: sessions
+                        .iter()
+                        .map(|session| waiting_revision(session))
+                        .collect(),
+                    chosen: target
+                        .canonicalize()
+                        .is_ok_and(|folder| settings.name_chosen(&folder, row.campaign.as_bytes())),
+                    user_folder: settings.user_folder.clone(),
+                    installation: installation.clone(),
+                    settings: settings_stamp,
+                })
+            })
+            .collect();
         let mut names = self.names.lock().unwrap_or_else(|error| error.into_inner());
         let view_open = view.is_some_and(|view| view.0 == names.request);
         if view_open {
@@ -518,32 +547,9 @@ impl Library {
         let mut wanted = Vec::new();
         let mut refresh = false;
         let now = Instant::now();
-        for (target, sessions, row) in &mut unsaved {
-            row.recording = cache
-                .continued(target, &row.campaign)
-                .map(|path| path.display().to_string());
-            if live.target == Some(target.as_path()) {
-                row.name = live.names.get(&row.campaign).cloned();
+        for ((target, _, row), key) in unsaved.iter_mut().zip(keys) {
+            let Some(key) = key.filter(|_| view_open) else {
                 continue;
-            }
-            if !view_open {
-                continue;
-            }
-            sessions.sort();
-            let key = NameKey {
-                recordings: cache.recordings(target).0.clone(),
-                unsaved: recording_files::listing(&replay::publication::unsaved_folder(target))
-                    .ok(),
-                sessions: sessions
-                    .iter()
-                    .map(|session| waiting_revision(session))
-                    .collect(),
-                chosen: target
-                    .canonicalize()
-                    .is_ok_and(|folder| settings.name_chosen(&folder, row.campaign.as_bytes())),
-                user_folder: settings.user_folder.clone(),
-                installation: installation.clone(),
-                settings: settings_stamp,
             };
             let id = (target.clone(), row.campaign.clone());
             match names.known.get(&id) {

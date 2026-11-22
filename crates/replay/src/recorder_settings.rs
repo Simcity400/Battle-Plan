@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -179,33 +179,26 @@ impl RecorderSettings {
         self.save_to(&Self::path())
     }
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
-        let _writing = crate::writes::WRITES.begin()?;
-        write_atomic(path, &serde_json::to_vec_pretty(self)?)
+        self.write_under(&crate::writes::WRITES.begin()?, path)
+    }
+
+    fn write_under(&self, writing: &crate::writes::Writing<'_>, path: &Path) -> io::Result<()> {
+        writing.replace(path, |out| serde_json::to_writer_pretty(out, self).map_err(io::Error::from))
     }
 
     pub fn update<T>(change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
         Self::update_at(&Self::path(), change)
     }
     pub fn update_at<T>(path: &Path, change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
-        let _writing = crate::writes::WRITES.begin()?;
-        fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| io::Error::other("Missing settings directory"))?,
-        )?;
+        Self::hold_at(path, |held| held.update(change))
+    }
+    pub fn hold_at<T>(path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
+        Self::hold_under(&crate::writes::WRITES, path, work)
+    }
+    fn hold_under<T>(writes: &crate::writes::Writes, path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(PathBuf::from(lock_path))?;
-        lock.lock()?;
-        let mut settings = Self::load_from(path)?;
-        let result = change(&mut settings);
-        settings.campaigns.retain(|_, choice| !choice.is_empty());
-        settings.save_to(path)?;
-        Ok((settings, result))
+        writes.under_lock(Path::new(&lock_path), |writing| work(&Held { path, writing }))
     }
 
     pub fn effective_save_folder(&self) -> PathBuf {
@@ -282,37 +275,19 @@ impl RecorderSettings {
     }
 }
 
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    fs::create_dir_all(
-        path.parent()
-            .ok_or_else(|| io::Error::other("Missing settings directory"))?,
-    )?;
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos()
-    ));
-    let temporary = PathBuf::from(name);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let result = (|| {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        #[cfg(windows)]
-        let replaced = crate::publication::replace_file(&temporary, path).map_err(io::Error::from);
-        #[cfg(not(windows))]
-        let replaced = fs::rename(&temporary, path);
-        replaced
-    })();
-    let _ = fs::remove_file(&temporary);
-    result
+pub struct Held<'a> {
+    path: &'a Path,
+    writing: &'a crate::writes::Writing<'a>,
+}
+
+impl Held<'_> {
+    pub fn update<T>(&self, change: impl FnOnce(&mut RecorderSettings) -> T) -> io::Result<(RecorderSettings, T)> {
+        let mut settings = RecorderSettings::load_from(self.path)?;
+        let result = change(&mut settings);
+        settings.campaigns.retain(|_, choice| !choice.is_empty());
+        settings.write_under(self.writing, self.path)?;
+        Ok((settings, result))
+    }
 }
 
 #[cfg(test)]
@@ -520,6 +495,24 @@ mod tests {
         let settings = RecorderSettings::load_from(&path).unwrap();
         assert_eq!(settings.chosen_names.len(), 25);
         assert_eq!(settings.campaigns.len(), 25);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_operation_admitted_before_battleplan_closes_writes_all_its_steps_on_its_one_permit() {
+        let root = scratch("admitted");
+        let path = root.join("settings.json");
+        let writes = crate::writes::Writes::new();
+        let written = RecorderSettings::hold_under(&writes, &path, |held| {
+            assert!(writes.close_admission(), "BattlePlan starts closing while the operation holds its permit");
+            held.update(|settings| settings.auto_compress = false)?;
+            held.update(|settings| settings.record_every_campaign = false)
+        });
+        assert!(written.is_ok(), "neither the save nor its compensating write asks for a second permit: {written:?}");
+        let saved = RecorderSettings::load_from(&path).unwrap();
+        assert!(!saved.auto_compress && !saved.record_every_campaign);
+        let refused = RecorderSettings::hold_under(&writes, &path, |held| held.update(|_| ())).unwrap_err();
+        assert_eq!(refused.to_string(), crate::writes::CLOSED, "an operation that begins after the close is refused whole");
         fs::remove_dir_all(root).unwrap();
     }
 }

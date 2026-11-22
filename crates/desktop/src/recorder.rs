@@ -198,24 +198,28 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
     let campaign = recording_files::campaign_of(path)
         .map_err(failed)?
         .and_then(|id| String::from_utf8(id).ok());
-    let added = match &campaign {
-        Some(campaign) => {
-            RecorderSettings::update_at(settings, |settings| {
-                let before = settings.name_chosen(&folder, campaign.as_bytes());
-                settings.choose_name(&folder, campaign, true);
-                !before
-            })
-            .map_err(failed)?
-            .1
+    let renamed = RecorderSettings::hold_at(settings, |held| {
+        let added = match &campaign {
+            Some(campaign) => {
+                held.update(|settings| {
+                    let before = settings.name_chosen(&folder, campaign.as_bytes());
+                    settings.choose_name(&folder, campaign, true);
+                    !before
+                })?
+                .1
+            }
+            None => false,
+        };
+        let renamed = recording_files::rename(path, &stem);
+        if renamed.is_err()
+            && let (true, Some(campaign)) = (added, &campaign)
+        {
+            held.update(|settings| settings.choose_name(&folder, campaign, false))?;
         }
-        None => false,
-    };
-    recording_files::rename(path, &stem).map_err(|error| {
-        if let (true, Some(campaign)) = (added, &campaign) {
-            let _ = RecorderSettings::update_at(settings, |settings| {
-                settings.choose_name(&folder, campaign, false)
-            });
-        }
+        Ok(renamed)
+    })
+    .map_err(failed)?;
+    renamed.map_err(|error| {
         if error.raw_os_error() == Some(32) {
             "BattlePlan Recorder is recording into this file. Rename it once the session is saved."
                 .to_owned()

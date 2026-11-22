@@ -432,7 +432,9 @@ impl Owner {
                 }
             }
             Effect::Raise => {
-                self.shared.with(|_, popout| popout.shell.raise());
+                if let Some(hwnd) = self.shared.with(|_, popout| popout.shell.hwnd()) {
+                    shell::raise(hwnd);
+                }
             }
             Effect::Release(generation) => {
                 let current = {

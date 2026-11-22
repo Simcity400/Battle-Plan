@@ -527,6 +527,26 @@ test('a recheck the host dispatched keeps its Try again until the page runs a ba
   assert.deepEqual([locked(), shown()], [null, []], 'the batch the request named unlocks the page');
 });
 
+test('a restart whose reply is lost while its installer still starts keeps Try again until the install is resolved', async () => {
+  const { start, batch, send, ask, hold, retire, shown, locked } = desktop();
+  const guard = start();
+  await flush();
+  ask(1, 'install');
+  hold(1, 'install');
+  send();
+  guard.recheck();
+  await flush();
+  send();
+  assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNRECHECKED], 'update'], 'the batch the request named still holds the install, so Try again stays');
+  retire(1);
+  batch();
+  assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNRECHECKED], 'update'], 'setup failed and its release batch was lost, and the page can still ask');
+  shown()[0]!.retry();
+  await flush();
+  send();
+  assert.deepEqual([locked(), shown()], [null, []], 'the batch Try again brought unlocks the page');
+});
+
 test('an answer that fails says which way it failed', async () => {
   const { host, start, ask, shown } = desktop();
   start();

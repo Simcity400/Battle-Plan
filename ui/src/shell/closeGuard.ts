@@ -78,10 +78,11 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }
   };
   const rejudge = () => refresh('judge', UNJUDGED, rejudge);
+  const updating = () => [...committed.values()].some(commitment => commitment.leaving === 'update');
   const recheck = () => {
     if (!failures.has('recheck')) fail('recheck', UNRECHECKED, AWAITED, recheck);
     refresh('recheck', UNRECHECKED, recheck, seq => {
-      if (applied < seq) { recheckAfter = seq; fail('recheck', UNRECHECKED, AWAITED, recheck); return; }
+      if (applied < seq || updating()) { recheckAfter = seq; fail('recheck', UNRECHECKED, AWAITED, recheck); return; }
       recheckAfter = undefined;
       clear('recheck');
     }, () => committed.size > 0);
@@ -173,15 +174,18 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
     for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
     const rechecked = recheckAfter !== undefined && batch.seq >= recheckAfter;
-    if (rechecked) recheckAfter = undefined;
-    const settled = [...failures.keys()].filter(key => (key === 'recheck' && rechecked) || (key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length)))));
-    for (const key of settled) failures.delete(key);
-    if (settled.length) publish();
+    const settled = [...failures.keys()].filter(key => key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length))));
     for (const hold of batch.holds) {
       const commitment = committed.get(hold.id);
       if (commitment) commitment.accepted = true;
       else committed.set(hold.id, { leaving: leavingFor(hold.about), accepted: true });
     }
+    if (rechecked && !updating()) {
+      recheckAfter = undefined;
+      if (failures.has('recheck')) settled.push('recheck');
+    }
+    for (const key of settled) failures.delete(key);
+    if (settled.length) publish();
     show();
     resendDue();
     return judge(waiting, true);
