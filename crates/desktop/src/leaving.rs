@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -14,6 +14,12 @@ pub enum About {
 pub enum Request {
     Ask { id: u64, about: About },
     Stay { id: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Batch {
+    pub token: u64,
+    pub requests: Vec<Request>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +79,7 @@ pub enum Answered {
     Unknown,
 }
 
-pub type Reach = Box<dyn Fn(&Request) -> Result<(), String> + Send + Sync>;
+pub type Reach = Arc<dyn Fn(Batch) + Send + Sync>;
 
 pub struct Asked(u64);
 
@@ -82,6 +88,12 @@ struct Question {
     about: About,
     asked: Option<u64>,
     verdict: Option<Verdict>,
+}
+
+struct Sent {
+    token: u64,
+    stays: Vec<u64>,
+    asks: Vec<(u64, u64)>,
 }
 
 enum Page {
@@ -96,7 +108,9 @@ struct State {
     next: u64,
     questions: Vec<Question>,
     accepted: Vec<u64>,
-    unsent: Vec<u64>,
+    stays: Vec<u64>,
+    sent: Vec<Sent>,
+    outbox: Vec<(Reach, Batch)>,
     offering: bool,
 }
 
@@ -107,46 +121,39 @@ impl State {
         id
     }
 
-    fn send(&self, request: &Request) -> bool {
+    fn send(&mut self, keys: &[u64]) {
         let Page::Watched { reach, .. } = &self.page else {
-            return false;
+            return;
         };
-        match reach(request) {
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!("BattlePlan couldn’t pass {request:?} to its page: {error}");
-                false
+        let reach = Arc::clone(reach);
+        let mut requests: Vec<Request> = self.stays.iter().map(|&id| Request::Stay { id }).collect();
+        let mut asks = Vec::new();
+        for &key in keys {
+            let id = self.fresh();
+            if let Some(question) = self.questions.iter_mut().find(|question| question.key == key) {
+                question.asked = Some(id);
+                requests.push(Request::Ask { id, about: question.about });
+                asks.push((key, id));
             }
         }
-    }
-
-    fn flush(&mut self) {
-        let unsent = std::mem::take(&mut self.unsent);
-        self.unsent = unsent.into_iter().filter(|&id| !self.send(&Request::Stay { id })).collect();
-    }
-
-    fn ask(&mut self, key: u64) -> bool {
-        if !matches!(self.page, Page::Watched { .. }) {
-            return false;
+        if requests.is_empty() {
+            return;
         }
-        self.flush();
-        let id = self.fresh();
-        let Some(question) = self.questions.iter_mut().find(|question| question.key == key) else {
-            return false;
-        };
-        question.asked = Some(id);
-        let about = question.about;
-        if self.send(&Request::Ask { id, about }) {
-            return true;
-        }
-        if let Some(question) = self.questions.iter_mut().find(|question| question.key == key) {
-            question.asked = None;
-        }
-        false
+        let token = self.fresh();
+        self.sent.push(Sent { token, stays: self.stays.clone(), asks });
+        self.outbox.push((reach, Batch { token, requests }));
     }
 
     fn offer(&mut self, why: Unanswered) -> Closing {
         if std::mem::replace(&mut self.offering, true) { Closing::Held } else { Closing::Offer(why) }
+    }
+
+    fn keys(&self, waiting: impl Fn(&Question) -> bool) -> Vec<u64> {
+        self.questions
+            .iter()
+            .filter(|question| question.verdict.is_none() && waiting(question))
+            .map(|question| question.key)
+            .collect()
     }
 }
 
@@ -164,7 +171,9 @@ impl Default for Leaving {
                 next: 0,
                 questions: Vec::new(),
                 accepted: Vec::new(),
-                unsent: Vec::new(),
+                stays: Vec::new(),
+                sent: Vec::new(),
+                outbox: Vec::new(),
                 offering: false,
             }),
             answered: Condvar::new(),
@@ -177,6 +186,18 @@ impl Leaving {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn act<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+        let (value, outbox) = {
+            let mut state = self.lock();
+            let value = change(&mut state);
+            (value, std::mem::take(&mut state.outbox))
+        };
+        for (reach, batch) in outbox {
+            reach(batch);
+        }
+        value
+    }
+
     fn settle(&self, state: &mut State, verdict: Verdict) {
         for question in &mut state.questions {
             if question.about != About::Close && question.verdict.is_none() {
@@ -186,38 +207,66 @@ impl Leaving {
         self.answered.notify_all();
     }
 
+    fn start(&self, state: &mut State) {
+        state.document += 1;
+        state.page = Page::Started;
+        state.stays.clear();
+        state.sent.clear();
+        for question in &mut state.questions {
+            question.asked = None;
+        }
+        self.settle(state, Verdict::Reloaded);
+    }
+
     pub fn document(&self) -> u64 {
         self.lock().document
     }
 
     pub fn watch(&self, document: u64, seq: u64, reach: impl FnOnce() -> Reach) -> Result<(), &'static str> {
-        let mut state = self.lock();
-        if document != state.document {
-            return Err(REPLACED);
-        }
-        if let Page::Watched { seq: current, .. } = &state.page
-            && *current >= seq
-        {
-            return Ok(());
-        }
-        state.page = Page::Watched { seq, reach: reach() };
-        state.unsent.clear();
-        let waiting: Vec<(u64, About)> = state
-            .questions
-            .iter()
-            .filter(|question| question.verdict.is_none())
-            .map(|question| (question.key, question.about))
-            .collect();
-        for (key, about) in waiting {
-            if !state.ask(key)
-                && about != About::Close
-                && let Some(question) = state.questions.iter_mut().find(|question| question.key == key)
+        self.act(|state| {
+            if document != state.document {
+                return Err(REPLACED);
+            }
+            if let Page::Watched { seq: current, .. } = &state.page
+                && *current >= seq
             {
+                return Ok(());
+            }
+            state.page = Page::Watched { seq, reach: reach() };
+            let waiting = state.keys(|_| true);
+            state.send(&waiting);
+            Ok(())
+        })
+    }
+
+    pub fn delivered(&self, token: u64, reached: bool) -> Option<Unanswered> {
+        let mut state = self.lock();
+        let at = state.sent.iter().position(|sent| sent.token == token)?;
+        let sent = state.sent.remove(at);
+        if reached {
+            state.stays.retain(|id| !sent.stays.contains(id));
+            return None;
+        }
+        let mut offer = None;
+        for (key, id) in sent.asks {
+            let Some(question) = state
+                .questions
+                .iter_mut()
+                .find(|question| question.key == key && question.asked == Some(id) && question.verdict.is_none())
+            else {
+                continue;
+            };
+            if question.about == About::Close {
+                question.asked = None;
+                if let Closing::Offer(why) = state.offer(Unanswered::Unreached) {
+                    offer = Some(why);
+                }
+            } else {
                 question.verdict = Some(Verdict::Unreached);
                 self.answered.notify_all();
             }
         }
-        Ok(())
+        offer
     }
 
     pub fn answer(&self, id: u64, stays: bool) -> Answered {
@@ -239,46 +288,52 @@ impl Leaving {
     }
 
     pub fn close_requested(&self) -> Closing {
-        let mut state = self.lock();
-        if matches!(state.page, Page::Empty) {
-            return Closing::Through;
-        }
-        if let Some(close) = state.questions.iter().find(|question| question.about == About::Close) {
-            let (key, delivered) = (close.key, close.asked.is_some());
-            if delivered || !matches!(state.page, Page::Watched { .. }) {
-                return state.offer(Unanswered::Close);
+        self.act(|state| {
+            if matches!(state.page, Page::Empty) {
+                return Closing::Through;
             }
-            return if state.ask(key) { Closing::Held } else { state.offer(Unanswered::Unreached) };
-        }
-        let key = state.fresh();
-        state.questions.push(Question { key, about: About::Close, asked: None, verdict: None });
-        if matches!(state.page, Page::Watched { .. }) && !state.ask(key) {
-            return state.offer(Unanswered::Unreached);
-        }
-        Closing::Held
+            let watched = matches!(state.page, Page::Watched { .. });
+            if let Some(close) = state.questions.iter().find(|question| question.about == About::Close) {
+                let (key, asked) = (close.key, close.asked.is_some());
+                if asked || !watched {
+                    return state.offer(Unanswered::Close);
+                }
+                state.send(&[key]);
+                return Closing::Held;
+            }
+            let key = state.fresh();
+            state.questions.push(Question { key, about: About::Close, asked: None, verdict: None });
+            state.send(&[key]);
+            Closing::Held
+        })
     }
 
     pub fn chosen(&self) {
         self.lock().offering = false;
     }
 
+    pub fn navigating(&self) -> bool {
+        let mut state = self.lock();
+        if !state.accepted.is_empty() {
+            return false;
+        }
+        if !matches!(state.page, Page::Empty) {
+            self.start(&mut state);
+        }
+        true
+    }
+
     pub fn page_started(&self) {
         let mut state = self.lock();
-        state.document += 1;
-        state.page = Page::Started;
-        state.accepted.clear();
-        state.unsent.clear();
-        for question in &mut state.questions {
-            question.asked = None;
-        }
-        self.settle(&mut state, Verdict::Reloaded);
+        self.start(&mut state);
     }
 
     pub fn page_gone(&self) {
         let mut state = self.lock();
         state.page = Page::Empty;
         state.accepted.clear();
-        state.unsent.clear();
+        state.stays.clear();
+        state.sent.clear();
         state.questions.retain(|question| question.about != About::Close);
         self.settle(&mut state, Verdict::Leaving);
     }
@@ -290,19 +345,17 @@ impl Leaving {
     }
 
     fn pose(&self, about: About) -> Result<Asked, Verdict> {
-        let mut state = self.lock();
-        match state.page {
-            Page::Empty => return Err(Verdict::Leaving),
-            Page::Started => return Err(Verdict::Unheard),
-            Page::Watched { .. } => {}
-        }
-        let key = state.fresh();
-        state.questions.push(Question { key, about, asked: None, verdict: None });
-        if state.ask(key) {
-            return Ok(Asked(key));
-        }
-        state.questions.retain(|question| question.key != key);
-        Err(Verdict::Unreached)
+        self.act(|state| {
+            match state.page {
+                Page::Empty => return Err(Verdict::Leaving),
+                Page::Started => return Err(Verdict::Unheard),
+                Page::Watched { .. } => {}
+            }
+            let key = state.fresh();
+            state.questions.push(Question { key, about, asked: None, verdict: None });
+            state.send(&[key]);
+            Ok(Asked(key))
+        })
     }
 
     fn wait(&self, asked: Result<Asked, Verdict>) -> (Verdict, Option<u64>) {
@@ -324,13 +377,15 @@ impl Leaving {
     }
 
     fn stay(&self, id: u64) {
-        let mut state = self.lock();
-        let Some(at) = state.accepted.iter().position(|&accepted| accepted == id) else {
-            return;
-        };
-        state.accepted.remove(at);
-        state.unsent.push(id);
-        state.flush();
+        self.act(|state| {
+            let Some(at) = state.accepted.iter().position(|&accepted| accepted == id) else {
+                return;
+            };
+            state.accepted.remove(at);
+            state.stays.push(id);
+            let asked = state.keys(|question| question.asked.is_some());
+            state.send(&asked);
+        });
     }
 
     fn leave_after(&self, asked: Result<Asked, Verdict>, launch: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -362,52 +417,70 @@ impl Leaving {
 
 #[cfg(test)]
 mod tests {
-    use super::{About, Answered, Closing, Leaving, REPLACED, Reach, Request, Unanswered, Verdict};
+    use super::{About, Answered, Batch, Closing, Leaving, REPLACED, Reach, Request, Unanswered, Verdict};
     use std::sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender, channel},
     };
 
-    #[derive(Clone, Default)]
     struct Page {
-        heard: Arc<Mutex<Vec<(u32, Request)>>>,
-        full: Arc<AtomicBool>,
+        sent: Sender<(u32, Batch)>,
+        heard: Mutex<Receiver<(u32, Batch)>>,
+    }
+
+    impl Default for Page {
+        fn default() -> Self {
+            let (sent, heard) = channel();
+            Self { sent, heard: Mutex::new(heard) }
+        }
     }
 
     impl Page {
         fn reach(&self, callback: u32) -> impl FnOnce() -> Reach {
-            let page = self.clone();
+            let sent = self.sent.clone();
             move || {
-                Box::new(move |request: &Request| {
-                    if page.full.load(Ordering::SeqCst) {
-                        return Err("the window’s message queue is full".into());
-                    }
-                    page.heard.lock().unwrap().push((callback, *request));
-                    Ok(())
+                Arc::new(move |batch: Batch| {
+                    sent.send((callback, batch)).unwrap();
                 })
             }
         }
 
-        fn next(&self) -> (u32, Request) {
-            let mut heard = self.heard.lock().unwrap();
-            assert!(!heard.is_empty(), "the page was sent nothing");
-            heard.remove(0)
+        fn dispatched(&self) -> (u32, Batch) {
+            self.heard.lock().unwrap().try_recv().expect("the page was sent nothing")
+        }
+
+        fn awaited(&self) -> (u32, Batch) {
+            self.heard.lock().unwrap().recv().unwrap()
         }
 
         fn quiet(&self) -> bool {
-            self.heard.lock().unwrap().is_empty()
+            self.heard.lock().unwrap().try_recv().is_err()
         }
 
-        fn queue_full(&self, full: bool) {
-            self.full.store(full, Ordering::SeqCst);
+        fn hears(&self, leaving: &Leaving) -> (u32, Vec<Request>) {
+            let (callback, batch) = self.dispatched();
+            assert_eq!(leaving.delivered(batch.token, true), None);
+            (callback, batch.requests)
+        }
+
+        fn misses(&self, leaving: &Leaving) -> (Vec<Request>, Option<Unanswered>) {
+            let (_, batch) = self.dispatched();
+            let offer = leaving.delivered(batch.token, false);
+            (batch.requests, offer)
         }
     }
 
-    fn asked(request: (u32, Request)) -> (u32, u64, About) {
-        match request {
-            (callback, Request::Ask { id, about }) => (callback, id, about),
-            other => panic!("expected a question, got {other:?}"),
+    fn asked(requests: &[Request]) -> (u64, About) {
+        match requests {
+            [Request::Ask { id, about }] => (*id, *about),
+            other => panic!("expected one question, got {other:?}"),
         }
+    }
+
+    fn heard(leaving: &Leaving, page: &Page) -> (u32, u64, About) {
+        let (callback, requests) = page.hears(leaving);
+        let (id, about) = asked(&requests);
+        (callback, id, about)
     }
 
     fn watched(leaving: &Leaving, page: &Page, callback: u32) {
@@ -424,7 +497,7 @@ mod tests {
         assert_eq!(leaving.watch(document, 1, || unreachable!("a registration sent again replaces nothing")), Ok(()));
         assert_eq!(leaving.watch(document, 0, || unreachable!("an older registration arriving late replaces nothing")), Ok(()));
         assert_eq!(leaving.close_requested(), Closing::Held);
-        assert_eq!(asked(page.next()).0, 7);
+        assert_eq!(heard(&leaving, &page).0, 7);
     }
 
     #[test]
@@ -442,7 +515,7 @@ mod tests {
         );
         assert_eq!(leaving.watch(current, 1, page.reach(8)), Ok(()), "the new page’s first registration wins");
         assert_eq!(leaving.close_requested(), Closing::Held);
-        assert_eq!(asked(page.next()).0, 8, "its closes are asked of the new page");
+        assert_eq!(heard(&leaving, &page).0, 8, "its closes are asked of the new page");
     }
 
     #[test]
@@ -451,9 +524,9 @@ mod tests {
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Query);
-        let (_, first, _) = asked(page.next());
+        let (_, first, _) = heard(&leaving, &page);
         assert_eq!(leaving.watch(leaving.document(), 2, page.reach(8)), Ok(()));
-        let (callback, second, _) = asked(page.next());
+        let (callback, second, _) = heard(&leaving, &page);
         assert_eq!(callback, 8, "the question is asked again of the newer registration");
         assert_ne!(first, second, "with a fresh id");
         assert_eq!(leaving.answer(first, false), Answered::Unknown, "the superseded page’s in-flight Saved doesn’t count");
@@ -467,7 +540,7 @@ mod tests {
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Leave);
-        let (_, id, _) = asked(page.next());
+        let (_, id, _) = heard(&leaving, &page);
         assert_eq!(leaving.answer(id, false), Answered::Heard);
         let (verdict, answered) = leaving.wait(asking);
         assert_eq!((verdict, answered), (Verdict::Leaving, Some(id)));
@@ -475,49 +548,121 @@ mod tests {
         assert_eq!(leaving.answer(id, true), Answered::Unknown, "an agreed leave can’t be taken back");
 
         leaving.stay(id);
-        assert_eq!(page.next().1, Request::Stay { id });
+        assert_eq!(page.hears(&leaving).1, [Request::Stay { id }]);
         assert_eq!(leaving.answer(id, false), Answered::Unknown, "after Stay the page goes on");
 
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, close, _) = asked(page.next());
+        let (_, close, _) = heard(&leaving, &page);
         assert_eq!(leaving.answer(close, false), Answered::Leave);
         assert_eq!(leaving.answer(close, false), Answered::Heard, "a close the host accepted is still accepted, without leaving twice");
     }
 
     #[test]
-    fn a_question_the_page_cant_be_sent_is_refused_by_name_and_a_live_page_is_not_taken_for_gone() {
+    fn a_question_the_page_never_runs_is_refused_by_name_and_wakes_setup() {
         let page = Page::default();
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
-        page.queue_full(true);
-        assert_eq!(leaving.close_for_update(), Err(Verdict::UNREACHED.to_owned()), "setup is refused, never let through");
-        assert_eq!(leaving.busy(), Some(Verdict::UNREACHED.to_owned()));
-        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Unreached), "the user chooses instead");
+        std::thread::scope(|scope| {
+            let setup = scope.spawn(|| leaving.close_for_update());
+            let (_, batch) = page.awaited();
+            assert_eq!(leaving.delivered(batch.token, false), None, "WebView2 took the script and didn’t run it");
+            assert_eq!(setup.join().unwrap(), Err(Verdict::UNREACHED.to_owned()), "setup is refused, never left waiting");
+        });
+        let asking = leaving.pose(About::Query);
+        page.misses(&leaving);
+        assert_eq!(leaving.wait(asking).0.refusal(), Some(Verdict::UNREACHED));
+
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        assert_eq!(page.misses(&leaving).1, Some(Unanswered::Unreached), "the user chooses instead");
         leaving.chosen();
-        page.queue_full(false);
         assert_eq!(leaving.close_requested(), Closing::Held, "the next close asks the page again");
-        let (_, close, about) = asked(page.next());
+        let (_, close, about) = heard(&leaving, &page);
         assert_eq!(about, About::Close);
         assert_eq!(leaving.answer(close, true), Answered::Heard);
         assert!(page.quiet());
     }
 
     #[test]
-    fn a_stay_the_page_cant_be_sent_goes_with_the_next_thing_it_is_sent() {
+    fn a_receipt_for_a_question_asked_again_settles_nothing() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Query);
+        let (_, stale) = page.dispatched();
+        assert_eq!(leaving.watch(leaving.document(), 2, page.reach(8)), Ok(()));
+        let (_, id, _) = heard(&leaving, &page);
+        assert_eq!(leaving.delivered(stale.token, false), None);
+        assert_eq!(leaving.delivered(stale.token, false), None, "a receipt counts once");
+        assert_eq!(leaving.answer(id, false), Answered::Heard, "the question the newer page heard still stands");
+        assert_eq!(leaving.wait(asking).0, Verdict::Leaving);
+    }
+
+    #[test]
+    fn a_close_held_while_the_page_starts_offers_the_choice_when_its_registration_cant_be_reached() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        leaving.page_started();
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        assert_eq!(leaving.watch(leaving.document(), 1, page.reach(7)), Ok(()));
+        let (requests, offer) = page.misses(&leaving);
+        assert_eq!(asked(&requests).1, About::Close);
+        assert_eq!(offer, Some(Unanswered::Unreached), "the held close isn’t left waiting on a page that never heard it");
+    }
+
+    #[test]
+    fn every_question_carries_the_stays_the_page_has_not_confirmed_before_it() {
         let page = Page::default();
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Leave);
-        let (_, id, _) = asked(page.next());
+        let (_, id, _) = heard(&leaving, &page);
         leaving.answer(id, false);
-        page.queue_full(true);
         let failed = "The installer couldn’t be started: Windows refused to open it (code 2).";
         assert_eq!(leaving.leave_after(asking, || Err(failed.into())), Err(failed.into()));
-        assert!(page.quiet());
-        page.queue_full(false);
+        let (_, in_flight) = page.dispatched();
+        assert_eq!(in_flight.requests, [Request::Stay { id }]);
+
         assert_eq!(leaving.close_requested(), Closing::Held);
-        assert_eq!(page.next().1, Request::Stay { id }, "the page hears Stay first, so it can judge the close");
-        assert_eq!(asked(page.next()).2, About::Close);
+        let (requests, _) = page.misses(&leaving);
+        assert!(matches!(requests[..], [Request::Stay { id: stay }, Request::Ask { about: About::Close, .. }] if stay == id),
+            "a Stay not yet confirmed goes before the close, in one operation: {requests:?}");
+        leaving.chosen();
+        assert_eq!(leaving.delivered(in_flight.token, false), None);
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (_, requests) = page.hears(&leaving);
+        assert!(matches!(requests[..], [Request::Stay { id: stay }, Request::Ask { about: About::Close, .. }] if stay == id),
+            "a Stay that never ran goes with the next thing the page is sent: {requests:?}");
+
+        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close));
+        leaving.chosen();
+        let asking = leaving.pose(About::Query);
+        let (_, query, _) = heard(&leaving, &page);
+        assert_eq!(leaving.answer(query, true), Answered::Heard, "once confirmed, the Stay goes no further");
+        assert_eq!(leaving.wait(asking).0, Verdict::Staying);
+    }
+
+    #[test]
+    fn a_stay_asks_again_what_the_page_may_have_judged_while_still_committed() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Leave);
+        let (_, id, _) = heard(&leaving, &page);
+        leaving.answer(id, false);
+        let (verdict, _) = leaving.wait(asking);
+        assert_eq!(verdict, Verdict::Leaving);
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (_, committed, _) = heard(&leaving, &page);
+
+        leaving.stay(id);
+        let (_, requests) = page.hears(&leaving);
+        let [Request::Stay { id: stay }, Request::Ask { id: close, about: About::Close }] = requests[..] else {
+            panic!("expected the Stay and then the close asked again, got {requests:?}");
+        };
+        assert_eq!(stay, id);
+        assert_ne!(close, committed);
+        assert_eq!(leaving.answer(committed, false), Answered::Unknown, "a close judged before the Stay doesn’t close");
+        assert_eq!(leaving.answer(close, true), Answered::Heard, "the page judges it again after the Stay");
     }
 
     #[test]
@@ -527,11 +672,11 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Through, "before any page loads there is nothing to keep");
         watched(&leaving, &page, 7);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, unsaved, _) = asked(page.next());
+        let (_, unsaved, _) = heard(&leaving, &page);
         assert_eq!(leaving.answer(unsaved, true), Answered::Heard, "unsaved work keeps the window, and the page prompts");
         assert_eq!(leaving.answer(unsaved, false), Answered::Unknown, "an answered close can’t be answered again");
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, saved, _) = asked(page.next());
+        let (_, saved, _) = heard(&leaving, &page);
         assert_eq!(leaving.answer(saved, false), Answered::Leave);
     }
 
@@ -547,7 +692,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Held, "one choice at a time");
         leaving.chosen();
         assert_eq!(leaving.watch(leaving.document(), 1, page.reach(7)), Ok(()));
-        let (_, close, about) = asked(page.next());
+        let (_, close, about) = heard(&leaving, &page);
         assert_eq!(about, About::Close, "the held close is asked once the page subscribes");
         assert_eq!(leaving.answer(close, false), Answered::Leave);
     }
@@ -558,7 +703,7 @@ mod tests {
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, close, _) = asked(page.next());
+        let (_, close, _) = heard(&leaving, &page);
         assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close));
         assert!(page.quiet(), "the page isn’t asked twice");
         leaving.chosen();
@@ -576,7 +721,7 @@ mod tests {
         let leave = leaving.pose(About::Leave);
         let query = leaving.pose(About::Query);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let asks: Vec<u64> = (0..3).map(|_| asked(page.next()).1).collect();
+        let asks: Vec<u64> = (0..3).map(|_| heard(&leaving, &page).1).collect();
         assert!(leaving.page_unresponsive(), "the user is offered to close");
         assert_eq!(leaving.leave_after(leave, || unreachable!("nothing launches")), Err(Verdict::UNRESPONSIVE.to_owned()));
         assert_eq!(leaving.wait(query).0.refusal(), Some(Verdict::UNRESPONSIVE));
@@ -592,23 +737,49 @@ mod tests {
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Leave);
-        let (_, id, about) = asked(page.next());
+        let (_, id, about) = heard(&leaving, &page);
         assert_eq!(about, About::Leave);
         assert_eq!(leaving.answer(id, false), Answered::Heard);
         let failed = "The installer couldn’t be started: Windows refused to open it (code 2).";
         assert_eq!(leaving.leave_after(asking, || Err(failed.into())), Err(failed.into()));
-        assert_eq!(page.next().1, Request::Stay { id });
+        assert_eq!(page.hears(&leaving).1, [Request::Stay { id }]);
 
         let asking = leaving.pose(About::Leave);
-        let (_, id, _) = asked(page.next());
+        let (_, id, _) = heard(&leaving, &page);
         leaving.answer(id, false);
         assert_eq!(leaving.leave_after(asking, || Ok(())), Ok(()));
         assert!(page.quiet(), "a leave that happens says nothing more");
 
         let asking = leaving.pose(About::Leave);
-        let (_, id, _) = asked(page.next());
+        let (_, id, _) = heard(&leaving, &page);
         leaving.answer(id, true);
         assert_eq!(leaving.leave_after(asking, || unreachable!("unsaved work launches nothing")), Err(Verdict::STAYING.to_owned()));
+    }
+
+    #[test]
+    fn a_reload_is_refused_while_a_leave_stands_and_otherwise_replaces_the_page_at_once() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        assert!(leaving.navigating(), "the first page loads");
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Leave);
+        let (_, id, _) = heard(&leaving, &page);
+        leaving.answer(id, false);
+        assert_eq!(leaving.wait(asking).0, Verdict::Leaving);
+        let document = leaving.document();
+        assert!(!leaving.navigating(), "F5 can’t unlock a page while its installer starts");
+        assert_eq!(leaving.document(), document);
+        assert_eq!(leaving.answer(id, false), Answered::Heard, "the leave still stands");
+
+        leaving.stay(id);
+        page.hears(&leaving);
+        let asking = leaving.pose(About::Leave);
+        let (_, late, _) = heard(&leaving, &page);
+        assert!(leaving.navigating());
+        assert_ne!(leaving.document(), document, "the outgoing page can no longer subscribe");
+        assert_eq!(leaving.wait(asking).0.refusal(), Some(Verdict::RELOADED));
+        assert_eq!(leaving.answer(late, false), Answered::Unknown, "nor commit the new page to leaving");
+        assert!(leaving.navigating());
     }
 
     #[test]
@@ -617,7 +788,7 @@ mod tests {
         let leaving = Leaving::default();
         watched(&leaving, &page, 7);
         let asking = leaving.pose(About::Leave);
-        let (_, id, _) = asked(page.next());
+        let (_, id, _) = heard(&leaving, &page);
         leaving.page_started();
         assert_eq!(leaving.wait(asking).0.refusal(), Some(Verdict::RELOADED));
         assert_eq!(leaving.answer(id, false), Answered::Unknown, "the replaced page’s answer settles nothing");
@@ -625,8 +796,8 @@ mod tests {
         assert_eq!(leaving.watch(leaving.document(), 1, page.reach(8)), Ok(()));
         let asking = leaving.pose(About::Query);
         assert_eq!(leaving.close_requested(), Closing::Held);
-        let (_, query, _) = asked(page.next());
-        page.next();
+        let (_, query, _) = heard(&leaving, &page);
+        page.hears(&leaving);
         leaving.page_gone();
         assert_eq!(leaving.wait(asking).0, Verdict::Leaving, "nothing a dead page held can be saved");
         assert_eq!(leaving.answer(query, true), Answered::Unknown);

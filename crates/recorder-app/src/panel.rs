@@ -56,11 +56,14 @@ impl Prompts {
         self.asked.clear();
     }
 
-    pub fn follow(&mut self, session_key: u64) {
-        self.asked.retain(|prompt| prompt.quitting);
-        for prompt in &mut self.asked {
-            prompt.session_key = session_key;
-        }
+    pub fn issued(&self) -> u64 {
+        self.next
+    }
+
+    pub fn follow(&mut self, session_key: u64) -> Option<u64> {
+        let quitting = self.asked.iter().any(|prompt| prompt.quitting);
+        self.asked.clear();
+        quitting.then(|| self.ask(session_key, true).id)
     }
 }
 
@@ -498,9 +501,10 @@ mod tests {
         let mut prompts = Prompts::default();
         let quit = prompts.ask(1, true);
         prompts.ask(1, false);
-        prompts.follow(2);
+        let asked_again = prompts.follow(2).expect("the Quit is asked again");
+        assert_ne!(asked_again, quit.id, "with a fresh id, so the panel’s report of showing it about the old session doesn’t count");
         assert_eq!(prompts.pending(Some(1)), None);
-        assert_eq!(prompts.pending(Some(2)), Some(Prompt { session_key: 2, ..quit }));
+        assert_eq!(prompts.pending(Some(2)), Some(Prompt { id: asked_again, session_key: 2, ..quit }));
     }
 
     #[test]

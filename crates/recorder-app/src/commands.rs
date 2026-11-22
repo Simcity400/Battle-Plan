@@ -85,10 +85,13 @@ pub async fn close_panel(
     recorder: State<'_, Arc<Recorder>>,
     revision: u64,
 ) -> Result<bool, String> {
-    if !recorder.dismissible(revision) {
+    if !recorder.dismiss(revision) {
         return Ok(false);
     }
-    window.destroy().map_err(|error| error.to_string())?;
+    window.destroy().map_err(|error| {
+        recorder.dismissal_failed();
+        error.to_string()
+    })?;
     Ok(true)
 }
 

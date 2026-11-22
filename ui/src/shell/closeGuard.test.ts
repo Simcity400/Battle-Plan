@@ -18,7 +18,7 @@ function desktop(judge?: () => boolean) {
     watchFails: false,
     answerFails: false,
     leaveFails: false,
-    subscriptions: [] as ((request: CloseRequest) => void)[],
+    subscriptions: [] as ((requests: readonly CloseRequest[]) => void)[],
     watched: [] as number[],
     answers: [] as [number, boolean][],
     leaves: 0,
@@ -26,7 +26,7 @@ function desktop(judge?: () => boolean) {
     leaving: [] as (LeavingFor | null)[],
     reports: [] as (readonly CloseGuardFailure[])[],
   };
-  const watcher = new Map<number, (request: CloseRequest) => void>();
+  const watcher = new Map<number, (requests: readonly CloseRequest[]) => void>();
   const start = () => closeGuard({
     requests: onRequest => {
       const subscription = host.subscriptions.push(onRequest) - 1;
@@ -53,11 +53,12 @@ function desktop(judge?: () => boolean) {
     prompt: () => { host.prompts++; },
     leaving: leaving => { host.leaving.push(leaving); },
   }, failures => { host.reports.push(failures); });
-  const ask = (id: number, about: CloseAbout) => watcher.get(0)?.({ kind: 'ask', id, about });
-  const stay = (id: number) => watcher.get(0)?.({ kind: 'stay', id });
+  const send = (...requests: CloseRequest[]) => watcher.get(0)?.(requests);
+  const ask = (id: number, about: CloseAbout) => send({ kind: 'ask', id, about });
+  const stay = (id: number) => send({ kind: 'stay', id });
   const shown = () => host.reports.at(-1) ?? [];
   const locked = () => host.leaving.at(-1) ?? null;
-  return { host, start, ask, stay, shown, locked };
+  return { host, start, send, ask, stay, shown, locked };
 }
 
 test('a close is judged by the page’s work at that moment, and saved work locks editing before it leaves', async () => {
@@ -124,6 +125,19 @@ test('Discard and restart lets the update leave only while its confirmation stan
   assert.equal(locked(), null, 'an install that couldn’t start lets the page go on');
   stay(3);
   assert.deepEqual(host.leaving, ['update', null], 'a stay sent again changes nothing');
+});
+
+test('a Stay and the close sent with it are taken in order, so the close is judged after the page stops leaving', async () => {
+  const { host, start, send, ask, locked } = desktop();
+  start();
+  await flush();
+  host.unsaved = true;
+  host.confirmed = true;
+  ask(1, 'leave');
+  assert.equal(locked(), 'update');
+  host.confirmed = false;
+  send({ kind: 'stay', id: 1 }, { kind: 'ask', id: 2, about: 'close' });
+  assert.deepEqual([host.answers.at(-1), host.prompts, locked()], [[2, true], 1, null], 'the failed restart no longer speaks for the unsaved work');
 });
 
 test('a leave whose answer was lost stays locked until the host says stay, and the stay clears that answer’s Try again', async () => {
@@ -201,10 +215,9 @@ test('a superseded guard’s subscription is inert', async () => {
   start();
   await flush();
   host.unsaved = true;
-  host.subscriptions[0]!({ kind: 'ask', id: 1, about: 'close' });
-  host.subscriptions[0]!({ kind: 'ask', id: 2, about: 'query' });
+  host.subscriptions[0]!([{ kind: 'ask', id: 1, about: 'close' }, { kind: 'ask', id: 2, about: 'query' }]);
   assert.deepEqual([host.prompts, host.answers.length, host.leaves], [0, 0, 0]);
-  host.subscriptions[1]!({ kind: 'ask', id: 3, about: 'close' });
+  host.subscriptions[1]!([{ kind: 'ask', id: 3, about: 'close' }]);
   assert.equal(host.prompts, 1);
 });
 

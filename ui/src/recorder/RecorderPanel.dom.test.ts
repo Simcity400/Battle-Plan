@@ -5,6 +5,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { canvasPage } from '../../../tools/canvas-page.ts';
+import { withNativePage } from '../../../tools/native-page.ts';
 import type { PanelActions, PanelViewProps } from './RecorderPanel';
 import type { RecorderSettings, Snapshot } from './status';
 
@@ -56,4 +57,18 @@ try {
   assert.ok(at.unscrolledTop >= 0 && at.unscrolledBottom <= 320, `footer ${at.unscrolledTop}–${at.unscrolledBottom}`);
   assert.ok(at.scrolledTop >= 0 && at.scrolledBottom <= 320, `footer ${at.scrolledTop}–${at.scrolledBottom}`);
   assert.ok(at.lastBottom <= at.scrolledTop + 0.5, `last section ends ${at.lastBottom}, footer starts ${at.scrolledTop}`);
+});
+
+test('the panel reports a prompt shown only once the prompt itself is on screen', async () => {
+  await withNativePage('recorder-prompt', '/ui/src/recorder/RecorderPanel.dom.fixture.tsx', page => page.stage('recorder prompt', async () => {
+    const act = <T,>(expression: string) => page.evaluate<T>(`window.recorderPanelFixture.${expression}`);
+    await act('render("settings", 4)');
+    assert.deepEqual(await act('shown()'), [], 'a panel on Settings hasn’t shown the Quit yet');
+    await act('render("main", 4)');
+    assert.deepEqual(await act('shown()'), [4]);
+    await act('render("main", 4)');
+    assert.deepEqual(await act('shown()'), [4], 'one report for each prompt');
+    await act('render("main", 5, true)');
+    assert.deepEqual(await act('shown()'), [4, 5], 'a prompt reissued for a new session is reported again');
+  }, 60_000));
 });

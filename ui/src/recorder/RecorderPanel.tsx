@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, ReactNode, Ref } from 'react';
 import BrandMark from '../components/BrandMark';
 import { CountryFlag } from '../components/CountryFlag';
@@ -70,7 +70,14 @@ export interface PanelViewProps {
   confirmingWaiting?: string | null;
   promptBusy?: boolean;
   promptFailure?: PromptFailure | null;
+  shownPrompt?: number | null;
+  onPromptShown?: (prompt: number) => void;
   update?: PanelUpdate;
+}
+
+function PromptShown({ prompt, onShown }: { prompt: number; onShown(prompt: number): void }) {
+  useEffect(() => { onShown(prompt); }, [prompt, onShown]);
+  return null;
 }
 
 export interface PanelUpdate {
@@ -157,7 +164,7 @@ export function PanelPending({ failure, title = PANEL_UNOPENED, retry, root }: {
 const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
 
 export function PanelView({ snapshot, settings, view, asking, error, errorDetail = null, errorCaveat = false, now, actions, root, compact = false, recordings = null, relisting = false, quitting = false,
-  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, update }: PanelViewProps) {
+  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, shownPrompt = null, onPromptShown, update }: PanelViewProps) {
   const [disclosed, setDisclosed] = useState<string | null>(null);
   const shown = head(snapshot);
   const files = snapshot.session != null && snapshot.problem?.failed === true;
@@ -180,8 +187,10 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
     : <p className="recorder-note" role="status"><Icon name="info" /><span>{preparation.text}</span></p>);
   const prompt = stopPromptVisible(asking, snapshot);
   const length = sessionLength(snapshot.startedAt, now);
-  const promptActions = <>{promptFailure && <FailureLine className="recorder-failure" message={promptFailure.text} detail={promptFailure.detail}
-    onRetry={promptFailure.retry} retryDisabled={promptBusy} />}
+  const promptFailureLine = promptFailure && <FailureLine className="recorder-failure" message={promptFailure.text} detail={promptFailure.detail}
+    onRetry={promptFailure.retry} retryDisabled={promptBusy} />;
+  const promptActions = <>{promptFailureLine}
+    {shownPrompt !== null && onPromptShown && <PromptShown prompt={shownPrompt} onShown={onPromptShown} />}
     <div className="recorder-prompt-actions">{discarding ? <>
     <button key="cancel-discard" type="button" className="button small quiet" autoFocus disabled={promptBusy} onClick={actions.cancelDiscard}>Cancel</button>
     <button key="confirm-discard" type="button" className="button small is-danger" disabled={promptBusy} onClick={() => actions.stop(true)}>Discard</button>
@@ -193,6 +202,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
 
   if (compact) return <div ref={root} className="recorder recorder-compact">
     {error && notice}
+    {!prompt && promptFailureLine}
     {prompt && <div className="recorder-prompt" role="alertdialog" aria-labelledby="recorder-prompt-title"
       aria-describedby={discarding ? 'recorder-prompt-question recorder-prompt-consequence' : 'recorder-prompt-question'}>
       <strong id="recorder-prompt-title">{promptTitle(quitting, discarding)}</strong>
@@ -329,6 +339,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
         {promptActions}
       </div>}
       <div className={`recorder-under${prompt ? ' is-covered' : ''}`} inert={prompt}>
+      {!prompt && promptFailureLine}
       {notice}
       {preparationNotice}
       {shown.busy && <div className="recorder-bar" role="progressbar" aria-label={shown.label ?? undefined}><i /></div>}
@@ -620,9 +631,8 @@ export default function RecorderPanel() {
     askedSession.current = sessionKey;
   }, [sessionKey]);
 
-  useEffect(() => { if (!prompting) setPromptFailure(null); }, [prompting]);
-  const promptOnScreen = compact != null && stage !== 'pending' && hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
-  useEffect(() => { if (promptOnScreen !== null) void api.promptShown(promptOnScreen).catch(() => {}); }, [promptOnScreen]);
+  const shownPrompt = hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
+  const promptShown = useCallback((prompt: number) => { void api.promptShown(prompt).catch(() => {}); }, []);
   const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
     if (compact && snapshot && settled) void api.closePanel(snapshot.revision);
@@ -697,5 +707,5 @@ export default function RecorderPanel() {
   return <PanelView snapshot={snapshot} settings={settings} view={view} asking={prompting} error={failure?.text ?? null} errorDetail={failure?.detail}
     errorCaveat={failure?.caveat} now={Date.now()}
     actions={actions} root={root} compact={compact} recordings={recordings} relisting={relisting} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting}
-    promptBusy={promptAction} promptFailure={promptFailure} update={updatesAvailable ? update : undefined} />;
+    promptBusy={promptAction} promptFailure={promptFailure} shownPrompt={shownPrompt} onPromptShown={promptShown} update={updatesAvailable ? update : undefined} />;
 }

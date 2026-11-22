@@ -9,7 +9,7 @@ export interface CloseRequests {
 }
 
 export interface CloseGuardHost {
-  requests(onRequest: (request: CloseRequest) => void): CloseRequests;
+  requests(onRequests: (requests: readonly CloseRequest[]) => void): CloseRequests;
   answer(id: number, stays: boolean): Promise<boolean>;
   leave(): Promise<void>;
 }
@@ -84,12 +84,14 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     host.leave().catch(cause => fail('close', UNCLOSED, cause, leave));
   };
 
-  const requests = host.requests(request => {
-    if (ended) return;
-    if (request.kind === 'ask') answer(request.id, request.about);
-    else {
-      clear(`answer:${request.id}`);
-      release(request.id);
+  const requests = host.requests(batch => {
+    for (const request of batch) {
+      if (ended) return;
+      if (request.kind === 'ask') answer(request.id, request.about);
+      else {
+        clear(`answer:${request.id}`);
+        release(request.id);
+      }
     }
   });
   const watch = () => {

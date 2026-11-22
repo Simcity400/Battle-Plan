@@ -376,6 +376,9 @@ test('the Stop prompt beside the tray icon asks one question with Save focused, 
     assert.match(discarding, /aria-describedby="recorder-prompt-question recorder-prompt-consequence"/);
     assert.match(text(render({ discarding: true, quitting: true })), /^ ?Discard and quit\?/);
     assert.equal(text(render({ snapshot: { ...recording, stopping: true } })).trim(), '');
+    const lost = { text: 'Couldn’t save the recording.', detail: 'the reply was lost', retry() {} };
+    assert.match(text(render({ snapshot: { ...recording, stopping: true }, promptFailure: lost })), /Couldn’t save the recording\. .*Try again/,
+      'a failed reply outlives the prompt the status already retired, so the panel it keeps open isn’t blank');
   } finally { await vite.close(); }
 });
 

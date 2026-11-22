@@ -705,13 +705,13 @@ impl Undiscarded {
 
 fn discard_target<'a>(
     ending: Option<&'a Stop>,
-    current: Option<&str>,
+    read_at_stop: Option<&str>,
 ) -> Option<Result<&'a str, Undiscarded>> {
     let Some(Stop::Discard(asked)) = ending else {
         return None;
     };
-    Some(match current {
-        Some(current) if current == asked => Ok(asked.as_str()),
+    Some(match read_at_stop {
+        Some(read) if read == asked => Ok(asked.as_str()),
         Some(_) => Err(Undiscarded::Another),
         None => Err(Undiscarded::Unread),
     })
@@ -763,10 +763,38 @@ pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLEPLAN_VERSION"
     _ => env!("CARGO_PKG_VERSION"),
 };
 
-static CONSOLE: Control = Control::new();
+struct Console {
+    quit: AtomicBool,
+    capture: Control,
+}
+
+impl Console {
+    const fn new() -> Self {
+        Self {
+            quit: AtomicBool::new(false),
+            capture: Control::new(),
+        }
+    }
+
+    fn interrupt(&self) {
+        self.quit.store(true, Ordering::Release);
+        self.capture.stop(Stop::Save);
+    }
+
+    fn quitting(&self) -> bool {
+        self.quit.load(Ordering::Acquire)
+    }
+
+    fn next_capture(&self) -> Option<&Control> {
+        self.capture.reset();
+        (!self.quitting()).then_some(&self.capture)
+    }
+}
+
+static CONSOLE: Console = Console::new();
 unsafe extern "system" fn console_control(kind: u32) -> i32 {
     if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
-        CONSOLE.stop(Stop::Save);
+        CONSOLE.interrupt();
         1
     } else {
         0
@@ -1621,7 +1649,7 @@ fn record(options: Options) -> Result<(), String> {
     println!("Waiting for hoi4.exe. Recording is passive; Ctrl+C detaches and finalizes.");
     let mut several_named = None;
     loop {
-        if CONSOLE.stopping() {
+        if CONSOLE.quitting() {
             return Ok(());
         }
         let game = match discover_game()? {
@@ -1644,14 +1672,17 @@ fn record(options: Options) -> Result<(), String> {
         let Some(process) = Process::open_selected(&game, true)? else {
             continue;
         };
-        let outcome = capture(process, &cli_capture(&options, &user), &CONSOLE, &|stage| {
+        let Some(control) = CONSOLE.next_capture() else {
+            return Ok(());
+        };
+        let outcome = capture(process, &cli_capture(&options, &user), control, &|stage| {
             if let Stage::Unloading(observation) = stage {
                 if let Err(error) = observation.finish() {
                     eprintln!("Collector warning: {error}");
                 }
             }
         })?;
-        if outcome.detach_requested || options.once || CONSOLE.stopping() {
+        if outcome.detach_requested || options.once || CONSOLE.quitting() {
             return Ok(());
         }
         println!("Waiting for the next game process.");
@@ -2295,7 +2326,7 @@ pub(crate) fn capture(
     control.accept_requests();
     let mut admitted: Option<(String, i64)> =
         opening.map(|(campaign, load)| (campaign.to_owned(), load));
-    let mut stop_read = None;
+    let mut read_at_stop: Option<Option<String>> = None;
     let mut closing = Vec::new();
     let capture_ended = Arc::new(AtomicBool::new(false));
     loop {
@@ -2306,7 +2337,7 @@ pub(crate) fn capture(
             stop_load = system_times();
             if control.stopping() && admit_staged.is_some() {
                 let now = loaded.and_then(|loaded| loaded());
-                stop_read = Some(now.is_some());
+                read_at_stop = Some(now.as_ref().map(|(campaign, _)| campaign.clone()));
                 if let Some((campaign, load)) = now {
                     if let Some((left, _)) = admitted
                         .replace((campaign.clone(), load))
@@ -2457,12 +2488,8 @@ pub(crate) fn capture(
                     end.describe(&directory)
                 );
                 let ending = control.seal();
-                let current = in_progress(
-                    admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
-                    stop_read,
-                    status_campaign(&status_path),
-                );
-                let discarded = match discard_target(ending.as_ref(), current.as_deref()) {
+                let read = read_at_stop.as_ref().and_then(Option::as_deref);
+                let discarded = match discard_target(ending.as_ref(), read) {
                     None => {
                         return Err(format!("{timed_out}; spool retained and not finalized"));
                     }
@@ -2526,10 +2553,10 @@ pub(crate) fn capture(
     }
     let current = in_progress(
         admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
-        stop_read,
+        read_at_stop.as_ref().map(Option::is_some),
         status_campaign(&status_path),
     );
-    if stop_read == Some(false) && admitted.is_some() && current.is_none() {
+    if read_at_stop == Some(None) && admitted.is_some() && current.is_none() {
         println!(
             "The campaign in progress could not be read when Stop was chosen, so Stop neither saves nor discards one."
         );
@@ -2572,7 +2599,7 @@ pub(crate) fn capture(
             .issues
             .push(format!("incomplete status publication failed: {error}"));
     }
-    let discard = discard_target(ending.as_ref(), current.as_deref());
+    let discard = discard_target(ending.as_ref(), read_at_stop.flatten().as_deref());
     let discarding = discard.is_some();
     let discarded = discard.and_then(Result::ok);
     let undiscarded = discard.and_then(Result::err);
@@ -5919,6 +5946,22 @@ mod tests {
     }
 
     #[test]
+    fn a_discard_whose_stop_time_read_failed_keeps_the_campaign_it_last_saw() {
+        let confirmed = Stop::Discard("a".into());
+        let failed_read = None;
+        assert_eq!(
+            in_progress(Some("a"), Some(false), Some("a".into())).as_deref(),
+            Some("a"),
+            "a Save still keeps the campaign the recorder last saw"
+        );
+        assert_eq!(
+            discard_target(Some(&confirmed), failed_read),
+            Some(Err(Undiscarded::Unread)),
+            "but deleting its hours needs the game to name it at Stop"
+        );
+    }
+
+    #[test]
     fn stop_acts_on_no_campaign_when_it_cannot_read_the_one_the_game_left_for() {
         let written = |campaign: &str| Some(campaign.to_owned());
         assert_eq!(
@@ -7792,6 +7835,22 @@ mod tests {
         );
         let completed = json!({"partial":false,"issues":[],"detach_requested":false,"detached":false,"process_exited":true,"drain_complete":null});
         assert!(!completed_detach(&completed).unwrap());
+    }
+
+    #[test]
+    fn ctrl_c_quits_the_command_line_recorder_after_a_capture_sealed_its_ending_and_between_games() {
+        let console = Console::new();
+        let first = console.next_capture().expect("nothing asked to quit yet");
+        assert_eq!(first.seal(), None, "the game exited by itself");
+        console.interrupt();
+        assert!(console.quitting(), "Ctrl+C during finalization is kept for after it");
+        assert!(console.next_capture().is_none(), "and no next game is recorded");
+
+        let console = Console::new();
+        let first = console.next_capture().unwrap();
+        console.interrupt();
+        assert_eq!(first.seal(), Some(Stop::Save), "Ctrl+C while recording saves the capture");
+        assert!(console.next_capture().is_none());
     }
 
     #[test]

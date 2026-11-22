@@ -86,10 +86,13 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
 
 let closeWatches = 0;
 
-export function closeRequests(onRequest: (request: CloseRequest) => void): CloseRequests {
+export function closeRequests(onRequests: (requests: readonly CloseRequest[]) => void): CloseRequests {
   if (!desktopAvailable) return { watch: () => Promise.resolve() };
   const seq = ++closeWatches;
-  const callback = transformCallback<CloseRequest>(onRequest);
+  const callback = transformCallback<readonly CloseRequest[]>(requests => {
+    onRequests(requests);
+    return true;
+  });
   return {
     watch: async () => {
       const document = await invoke<number>('close_watch_document');

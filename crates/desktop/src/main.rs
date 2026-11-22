@@ -16,7 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use leaving::{Answered, Closing, Leaving, Reach, Request, Unanswered};
+use leaving::{Answered, Batch, Closing, Leaving, Reach, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -208,12 +208,47 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
     }
 }
 
+struct Receipt {
+    app: tauri::AppHandle,
+    token: u64,
+    reported: bool,
+}
+
+impl Receipt {
+    fn report(&mut self, reached: bool) {
+        if std::mem::replace(&mut self.reported, true) {
+            return;
+        }
+        if !reached {
+            eprintln!("BattlePlan’s page didn’t run its close questions.");
+        }
+        if let Some(why) = self.app.state::<Leaving>().delivered(self.token, reached) {
+            offer_to_close(&self.app, why);
+        }
+    }
+}
+
+impl Drop for Receipt {
+    fn drop(&mut self) {
+        self.report(false);
+    }
+}
+
 fn reach(webview: tauri::Webview, callback: u32) -> Reach {
-    Box::new(move |request: &Request| {
-        let request = serde_json::to_string(request).map_err(|error| error.to_string())?;
-        webview
-            .eval(format!("window.__TAURI_INTERNALS__.runCallback({callback}, {request})"))
-            .map_err(|error| error.to_string())
+    Arc::new(move |batch: Batch| {
+        let receipt = std::sync::Mutex::new(Receipt { app: webview.app_handle().clone(), token: batch.token, reported: false });
+        let requests = match serde_json::to_string(&batch.requests) {
+            Ok(requests) => requests,
+            Err(error) => {
+                eprintln!("BattlePlan couldn’t write its close questions for its page: {error}");
+                return;
+            }
+        };
+        let script = format!("window.__TAURI_INTERNALS__.callbacks.get({callback})?.({requests}) === true");
+        let ran = move |result: String| receipt.lock().unwrap_or_else(std::sync::PoisonError::into_inner).report(result == "true");
+        if let Err(error) = webview.eval_with_callback(script, ran) {
+            eprintln!("BattlePlan couldn’t pass its close questions to its page: {error}");
+        }
     })
 }
 
@@ -375,6 +410,11 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())
         })
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("leaving")
+                .on_navigation(|webview, _| webview.label() != "main" || webview.state::<Leaving>().navigating())
+                .build(),
+        )
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<Leaving>().page_started();
