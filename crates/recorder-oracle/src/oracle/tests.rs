@@ -616,6 +616,8 @@ fn division_camouflage_oracle_decides_again_from_the_saved_block() {
                 career_counter: Some(0).into(),
                 camouflage,
                 supply: Recorded::NotRecorded,
+                supply_ratio_exact: Recorded::Value(Some(0)),
+                supply_grace_exact: Recorded::Value(Some(0)),
                 ..Default::default()
             }]));
         let mut report = Report::default();
@@ -721,9 +723,12 @@ fn division_supply_grace_compares_at_display_precision() {
             pending_template: Recorded::Value(Some(0)),
             officer_experience: Some(0).into(),
             career_counter: Some(0).into(),
+            supply_ratio: Some(0),
             supply_grace_maximum: Recorded::Value(7_200_000),
             supply_grace_remaining: Recorded::Value(3_600_000),
             supply: Recorded::NotRecorded,
+            supply_ratio_exact: Recorded::NotRecorded,
+            supply_grace_exact: Recorded::NotRecorded,
             ..Default::default()
         }]));
     let tokens = BTreeMap::new();
@@ -787,9 +792,12 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_at_display_pr
         pending_template: Recorded::Value(Some(0)),
         officer_experience: Some(0).into(),
         career_counter: Some(0).into(),
+        supply_ratio: Some(0),
         supply_grace_maximum: Recorded::Value(9_007_199_254_740_993),
         supply_grace_remaining: Recorded::Value(-1_234_000),
         supply: Recorded::NotRecorded,
+        supply_ratio_exact: Recorded::NotRecorded,
+        supply_grace_exact: Recorded::NotRecorded,
         ..Default::default()
     };
     *frame.tables[TableId::DivisionStatus.index()] =
@@ -877,6 +885,8 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
                 career_counter: Some(0).into(),
                 naming,
                 supply: Recorded::NotRecorded,
+                supply_ratio_exact: Recorded::Value(Some(0)),
+                supply_grace_exact: Recorded::Value(Some(0)),
                 ..Default::default()
             }]));
     };

@@ -178,6 +178,578 @@ fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted
 }
 
 #[test]
+fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical_glyph() {
+    content_reader_core::test_game::enter();
+    let guis = layout_gui(
+        br#"guiTypes={
+        containerWindowType={name=unit_counter_navy}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=low_supply spriteType=GFX_synthetic_actions position={x=5 y=6}}
+        }}"#,
+    );
+    let off_grid = counter_status::SupplyThresholds {
+        very_low: 20_500,
+        low: 35_500,
+        show: 50_500,
+    };
+    let draw_row = |row: replay_data::rows::DivisionStatusRow,
+                    thresholds: counter_status::SupplyThresholds,
+                    coarse: bool| {
+        let mut frame = viewer_foundation::map::test_support::test_frame(1);
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionStatus(vec![row]),
+        );
+        let mut panel = replay_data::rows::DivisionPanelStatsRow {
+            division: 1,
+            ..Default::default()
+        };
+        panel.panel_stats[0] = Some(1_000_000);
+        panel.panel_stats[1] = Some(1_000_000);
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionPanelStats(vec![panel]),
+        );
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionMovement(vec![replay_data::rows::DivisionMovementRow {
+                division: 1,
+                naval_transfer: 0,
+                ..Default::default()
+            }]),
+        );
+        let statuses = land::DivisionStatuses::read(&frame).unwrap();
+        let status = statuses.get(1);
+        let mut unit = land_unit(1, 1, 10, 10, true);
+        unit.bars = statuses.recorded(1);
+        unit.status_recorded = status.recorded;
+        unit.status = counter_status::Member {
+            supply_ratio: status.supply_ratio,
+            naval_transfer: status.naval_transfer,
+            entrenchment: status.entrenchment,
+            entrenchment_cap: status.entrenchment_cap,
+            attrition: status.attrition,
+            exercising: status.exercising,
+            grouped: false,
+            own: true,
+            has_order: status.has_order,
+            invalid_orders: status.invalid_orders,
+        };
+        with_counter_inputs_fixture(
+            guis.clone(),
+            |_| {},
+            |content| {
+                content.defines.supply = thresholds;
+            },
+            |inputs| {
+                let countries = Arc::new(Countries::default());
+                let templates = Arc::new(TemplateIcons::default());
+                let vision = Arc::new(Vision::sharing(1, []));
+                let abilities = AbilityInputs::default();
+                let tables = CounterTables {
+                    type_tints: &Default::default(),
+                    countries: &countries,
+                    icons: &templates,
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: &Default::default(),
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &abilities,
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let members = [&unit];
+                let stack = land::land_stack(
+                    &members,
+                    &tables,
+                    &Default::default(),
+                    false,
+                    &|_| false,
+                    coarse,
+                );
+                let style = land::stack_style(&inputs, &stack);
+                let mut prepared = PreparedLand {
+                    stacks: vec![stack],
+                    styles: vec![style],
+                    sprites: vec![None],
+                    plans: vec![None],
+                    flotillas: Vec::new(),
+                    positions: Vec::new(),
+                    units: Vec::new(),
+                    layout: counter_move::DrawnLayout::new(inputs.hour),
+                    icons: Vec::new(),
+                    source_kinds: Vec::new(),
+                    groups: Vec::new(),
+                    items: Vec::new(),
+                    hovered: Vec::new(),
+                    levels: Vec::new(),
+                    extents: Default::default(),
+                    countries,
+                    templates,
+                    vision,
+                    order: Vec::new(),
+                    pointer: None,
+                    exits: Vec::new(),
+                    exits_running: Default::default(),
+                    time: 0.0,
+                    pointer_running: Default::default(),
+                    pointer_refused: Default::default(),
+                    pointer_drawn: Default::default(),
+                };
+                let mut report = CounterReport::default();
+                let batch = prepared
+                    .land_plate(
+                        &inputs,
+                        &mut report,
+                        &mut Vec::new(),
+                        0,
+                        [100.0, 200.0],
+                        [81.0, 29.0],
+                        inputs
+                            .content
+                            .defines
+                            .stack_priority(inputs.camera.height, PriorityTable::Default),
+                        &[false, true].map(|gun| super::land::PlateStyle::read(&inputs, gun)),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .batch
+                    .clone();
+                let supply_uvs: Vec<_> = batch
+                    .quads
+                    .iter()
+                    .filter(|quad| quad.texture == 2)
+                    .map(|quad| quad.uv)
+                    .collect();
+                (supply_uvs, report.land_counter_gaps)
+            },
+        )
+    };
+    let supply_sheet = sheet("GFX_synthetic_actions", 12, [144, 13]);
+    let exact_above = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_ratio_exact: replay_data::rows::Recorded::Value(Some(35_500)),
+        ..Default::default()
+    };
+    let (uvs, gaps) = draw_row(exact_above, off_grid, false);
+    assert_eq!(uvs, [supply_sheet.frame_uv(0)], "exact 35.5% is not below 35.5% low threshold");
+    assert!(gaps.is_empty(), "{gaps:?}");
+    let exact_below = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_ratio_exact: replay_data::rows::Recorded::Value(Some(35_499)),
+        ..Default::default()
+    };
+    let (uvs, gaps) = draw_row(exact_below, off_grid, false);
+    assert_eq!(uvs, [supply_sheet.frame_uv(1)], "exact 35.499% is below 35.5% low threshold");
+    assert!(gaps.is_empty(), "{gaps:?}");
+    let historical_ambiguous = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: Some(35_000),
+        supply_ratio_exact: replay_data::rows::Recorded::Value(None),
+        ..Default::default()
+    };
+    for coarse in [false, true] {
+        let (uvs, gaps) = draw_row(historical_ambiguous.clone(), off_grid, coarse);
+        assert!(uvs.is_empty(), "ambiguous historical supply must withhold glyph (coarse={coarse})");
+        assert!(
+            gaps.keys().any(|why| why.contains("low_supply")),
+            "coarse={coarse}: {gaps:?}"
+        );
+    }
+    let (uvs, gaps) = draw_row(historical_ambiguous, CounterDefines::VANILLA.supply, false);
+    assert_eq!(uvs, [supply_sheet.frame_uv(0)], "vanilla thresholds stay decided for historical rows");
+    assert!(gaps.is_empty(), "{gaps:?}");
+}
+
+#[test]
+fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement() {
+    content_reader_core::test_game::enter();
+    let guis = layout_gui(
+        br#"guiTypes={
+        containerWindowType={name=unit_counter_navy}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=low_supply spriteType=GFX_synthetic_actions position={x=5 y=6}}
+        }}"#,
+    );
+    let off_grid = counter_status::SupplyThresholds {
+        very_low: 20_500,
+        low: 35_500,
+        show: 50_500,
+    };
+    let draw_case = |row: replay_data::rows::DivisionStatusRow,
+                     with_maxima: bool,
+                     with_movement: bool,
+                     coarse: bool| {
+        let mut frame = viewer_foundation::map::test_support::test_frame(1);
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionStatus(vec![row]),
+        );
+        if with_maxima {
+            let mut panel = replay_data::rows::DivisionPanelStatsRow {
+                division: 1,
+                ..Default::default()
+            };
+            panel.panel_stats[0] = Some(1_000_000);
+            panel.panel_stats[1] = Some(1_000_000);
+            viewer_foundation::map::test_support::test_put(
+                &mut frame,
+                TableRows::DivisionPanelStats(vec![panel]),
+            );
+        }
+        if with_movement {
+            viewer_foundation::map::test_support::test_put(
+                &mut frame,
+                TableRows::DivisionMovement(vec![replay_data::rows::DivisionMovementRow {
+                    division: 1,
+                    naval_transfer: 0,
+                    ..Default::default()
+                }]),
+            );
+        }
+        let statuses = land::DivisionStatuses::read(&frame).unwrap();
+        let status = statuses.get(1);
+        let mut unit = land_unit(1, 1, 10, 10, true);
+        unit.bars = statuses.recorded(1);
+        unit.status_recorded = status.recorded;
+        unit.status = counter_status::Member {
+            supply_ratio: status.supply_ratio,
+            naval_transfer: status.naval_transfer,
+            entrenchment: status.entrenchment,
+            entrenchment_cap: status.entrenchment_cap,
+            attrition: status.attrition,
+            exercising: status.exercising,
+            grouped: false,
+            own: true,
+            has_order: status.has_order,
+            invalid_orders: status.invalid_orders,
+        };
+        with_counter_inputs_fixture(
+            guis.clone(),
+            |_| {},
+            |content| {
+                content.defines.supply = off_grid;
+            },
+            |inputs| {
+                let countries = Arc::new(Countries::default());
+                let templates = Arc::new(TemplateIcons::default());
+                let vision = Arc::new(Vision::sharing(1, []));
+                let abilities = AbilityInputs::default();
+                let tables = CounterTables {
+                    type_tints: &Default::default(),
+                    countries: &countries,
+                    icons: &templates,
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: &Default::default(),
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &abilities,
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let members = [&unit];
+                let stack = land::land_stack(
+                    &members,
+                    &tables,
+                    &Default::default(),
+                    false,
+                    &|_| false,
+                    coarse,
+                );
+                let style = land::stack_style(&inputs, &stack);
+                let mut prepared = PreparedLand {
+                    stacks: vec![stack],
+                    styles: vec![style],
+                    sprites: vec![None],
+                    plans: vec![None],
+                    flotillas: Vec::new(),
+                    positions: Vec::new(),
+                    units: Vec::new(),
+                    layout: counter_move::DrawnLayout::new(inputs.hour),
+                    icons: Vec::new(),
+                    source_kinds: Vec::new(),
+                    groups: Vec::new(),
+                    items: Vec::new(),
+                    hovered: Vec::new(),
+                    levels: Vec::new(),
+                    extents: Default::default(),
+                    countries,
+                    templates,
+                    vision,
+                    order: Vec::new(),
+                    pointer: None,
+                    exits: Vec::new(),
+                    exits_running: Default::default(),
+                    time: 0.0,
+                    pointer_running: Default::default(),
+                    pointer_refused: Default::default(),
+                    pointer_drawn: Default::default(),
+                };
+                let mut report = CounterReport::default();
+                let batch = prepared
+                    .land_plate(
+                        &inputs,
+                        &mut report,
+                        &mut Vec::new(),
+                        0,
+                        [100.0, 200.0],
+                        [81.0, 29.0],
+                        inputs
+                            .content
+                            .defines
+                            .stack_priority(inputs.camera.height, PriorityTable::Default),
+                        &[false, true].map(|gun| super::land::PlateStyle::read(&inputs, gun)),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .batch
+                    .clone();
+                let supply_uvs: Vec<_> = batch
+                    .quads
+                    .iter()
+                    .filter(|quad| quad.texture == 2)
+                    .map(|quad| quad.uv)
+                    .collect();
+                (supply_uvs, report.land_counter_gaps)
+            },
+        )
+    };
+    let supply_sheet = sheet("GFX_synthetic_actions", 12, [144, 13]);
+    let exact_below = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_ratio_exact: replay_data::rows::Recorded::Value(Some(35_499)),
+        ..Default::default()
+    };
+    let historical_ambiguous = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: Some(35_000),
+        supply_ratio_exact: replay_data::rows::Recorded::Value(None),
+        ..Default::default()
+    };
+    let exact_full = replay_data::rows::DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_ratio_exact: replay_data::rows::Recorded::Value(Some(80_000)),
+        ..Default::default()
+    };
+    for coarse in [false, true] {
+        let (uvs, gaps) = draw_case(exact_below.clone(), false, true, coarse);
+        assert_eq!(
+            uvs,
+            [supply_sheet.frame_uv(1)],
+            "missing maxima must not suppress exact supply crate (coarse={coarse})"
+        );
+        assert!(gaps.is_empty(), "coarse={coarse}: {gaps:?}");
+        let (uvs, gaps) = draw_case(historical_ambiguous.clone(), false, true, coarse);
+        assert!(uvs.is_empty(), "coarse={coarse}");
+        assert!(
+            gaps.keys().any(|why| why.contains("low_supply")),
+            "missing maxima must not drop ambiguous supply gap (coarse={coarse}): {gaps:?}"
+        );
+        let (uvs, gaps) = draw_case(exact_below.clone(), true, false, coarse);
+        assert!(
+            uvs.is_empty(),
+            "missing DivisionMovement must withhold low supply crate (coarse={coarse})"
+        );
+        assert!(
+            gaps.keys().any(|why| why.contains("DivisionMovement")),
+            "missing DivisionMovement must report named gap (coarse={coarse}): {gaps:?}"
+        );
+        let (uvs, gaps) = draw_case(exact_full.clone(), true, false, coarse);
+        assert!(uvs.is_empty(), "full supply agrees with transferring fallback (coarse={coarse})");
+        assert!(gaps.is_empty(), "full supply without movement needs no gap (coarse={coarse}): {gaps:?}");
+    }
+
+    let draw_stack = |statuses_rows: Vec<replay_data::rows::DivisionStatusRow>,
+                      movements_rows: Vec<replay_data::rows::DivisionMovementRow>,
+                      order: &[u64]| {
+        let mut frame = viewer_foundation::map::test_support::test_frame(1);
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionStatus(statuses_rows),
+        );
+        viewer_foundation::map::test_support::test_put(
+            &mut frame,
+            TableRows::DivisionMovement(movements_rows),
+        );
+        let statuses = land::DivisionStatuses::read(&frame).unwrap();
+        let units: Vec<_> = order
+            .iter()
+            .map(|&id| {
+                let status = statuses.get(id);
+                let mut unit = land_unit(id, 1, 10, 10, true);
+                unit.bars = statuses.recorded(id);
+                unit.status_recorded = status.recorded;
+                unit.status = counter_status::Member {
+                    supply_ratio: status.supply_ratio,
+                    naval_transfer: status.naval_transfer,
+                    entrenchment: status.entrenchment,
+                    entrenchment_cap: status.entrenchment_cap,
+                    attrition: status.attrition,
+                    exercising: status.exercising,
+                    grouped: false,
+                    own: true,
+                    has_order: status.has_order,
+                    invalid_orders: status.invalid_orders,
+                };
+                unit
+            })
+            .collect();
+        with_counter_inputs_fixture(
+            guis.clone(),
+            |_| {},
+            |content| {
+                content.defines.supply = off_grid;
+            },
+            |inputs| {
+                let countries = Arc::new(Countries::default());
+                let templates = Arc::new(TemplateIcons::default());
+                let vision = Arc::new(Vision::sharing(1, []));
+                let abilities = AbilityInputs::default();
+                let tables = CounterTables {
+                    type_tints: &Default::default(),
+                    countries: &countries,
+                    icons: &templates,
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: &Default::default(),
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &abilities,
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let refs: Vec<&LandUnit<'_>> = units.iter().collect();
+                let stack = land::land_stack(
+                    &refs,
+                    &tables,
+                    &Default::default(),
+                    false,
+                    &|_| false,
+                    false,
+                );
+                let style = land::stack_style(&inputs, &stack);
+                let mut prepared = PreparedLand {
+                    stacks: vec![stack],
+                    styles: vec![style],
+                    sprites: vec![None],
+                    plans: vec![None],
+                    flotillas: Vec::new(),
+                    positions: Vec::new(),
+                    units: Vec::new(),
+                    layout: counter_move::DrawnLayout::new(inputs.hour),
+                    icons: Vec::new(),
+                    source_kinds: Vec::new(),
+                    groups: Vec::new(),
+                    items: Vec::new(),
+                    hovered: Vec::new(),
+                    levels: Vec::new(),
+                    extents: Default::default(),
+                    countries,
+                    templates,
+                    vision,
+                    order: Vec::new(),
+                    pointer: None,
+                    exits: Vec::new(),
+                    exits_running: Default::default(),
+                    time: 0.0,
+                    pointer_running: Default::default(),
+                    pointer_refused: Default::default(),
+                    pointer_drawn: Default::default(),
+                };
+                let mut report = CounterReport::default();
+                let batch = prepared
+                    .land_plate(
+                        &inputs,
+                        &mut report,
+                        &mut Vec::new(),
+                        0,
+                        [100.0, 200.0],
+                        [81.0, 29.0],
+                        inputs
+                            .content
+                            .defines
+                            .stack_priority(inputs.camera.height, PriorityTable::Default),
+                        &[false, true].map(|gun| super::land::PlateStyle::read(&inputs, gun)),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .batch
+                    .clone();
+                let supply_uvs: Vec<_> = batch
+                    .quads
+                    .iter()
+                    .filter(|quad| quad.texture == 2)
+                    .map(|quad| quad.uv)
+                    .collect();
+                (supply_uvs, report.land_counter_gaps)
+            },
+        )
+    };
+
+    let low_div2 = replay_data::rows::DivisionStatusRow {
+        division: 2,
+        supply_ratio: None,
+        supply_ratio_exact: replay_data::rows::Recorded::Value(Some(35_499)),
+        ..Default::default()
+    };
+    let on_land_1 = replay_data::rows::DivisionMovementRow {
+        division: 1,
+        naval_transfer: 0,
+        ..Default::default()
+    };
+    let on_land_2 = replay_data::rows::DivisionMovementRow {
+        division: 2,
+        naval_transfer: 0,
+        ..Default::default()
+    };
+    let at_sea_1 = replay_data::rows::DivisionMovementRow {
+        division: 1,
+        naval_transfer: 1,
+        ..Default::default()
+    };
+
+    let (uvs, gaps) = draw_stack(vec![low_div2.clone()], vec![on_land_1.clone(), on_land_2.clone()], &[1, 2]);
+    assert_eq!(uvs, [supply_sheet.frame_uv(1)], "missing status first must not suppress last member's supply crate");
+    assert!(gaps.is_empty(), "{gaps:?}");
+
+    let (uvs, gaps) = draw_stack(vec![low_div2.clone()], vec![on_land_1, on_land_2.clone()], &[2, 1]);
+    assert!(uvs.is_empty(), "missing status last on land must withhold supply crate");
+    assert!(
+        gaps.keys().any(|why| why.contains("DivisionStatus")),
+        "missing status last on land must report named supply gap: {gaps:?}"
+    );
+
+    let (uvs, gaps) = draw_stack(vec![low_div2], vec![at_sea_1, on_land_2], &[2, 1]);
+    assert_eq!(uvs, [supply_sheet.frame_uv(1)], "missing status last at sea is skipped in favour of land member");
+    assert!(gaps.is_empty(), "{gaps:?}");
+}
+
+#[test]
 fn dump_census_excludes_combat_window_quads() {
     content_reader_core::test_game::enter();
     let shared = Arc::new(ResolvedLayers::from_folders(&[]).unwrap());
@@ -1372,10 +1944,15 @@ fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
             recorded.status.attrition = true;
             let mut unrecorded = land_unit(2, 1, 10, 10, true);
             unrecorded.bars = false;
+            unrecorded.status_recorded = false;
+            unrecorded.status.supply_ratio = counter_status::SupplyRatio::Missing;
             assert!(glyphs(&[&recorded]).attrition);
             assert_eq!(
                 glyphs(&[&recorded, &unrecorded]),
-                counter_status::Glyphs::default()
+                counter_status::Glyphs {
+                    supply: counter_status::SupplyFrame::Uncertain,
+                    ..Default::default()
+                }
             );
             let mut witnessed = unrecorded.clone();
             witnessed.status.exercising = Some(true);
@@ -1383,6 +1960,7 @@ fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
             assert_eq!(
                 glyphs(&[&unrecorded, &witnessed]),
                 counter_status::Glyphs {
+                    supply: counter_status::SupplyFrame::Uncertain,
                     training: Some(true),
                     ..Default::default()
                 }
@@ -2134,6 +2712,7 @@ fn land_unit(
         hp: counter_status::FIXED,
         org: counter_status::FIXED,
         bars: true,
+        status_recorded: true,
         status: counter_status::Member::default(),
         movement: None,
         action: Ok(1),
@@ -3082,16 +3661,16 @@ fn lead_type_and_supply_follow_different_ends_of_the_admitted_members() {
         ..Default::default()
     };
     let mut a = land_unit(1, 1, 10, 20, true);
-    a.status.supply_ratio = 25_000;
+    a.status.supply_ratio = counter_status::SupplyRatio::exact(25_000);
     let mut b = land_unit(2, 1, 20, 10, true);
-    b.status.supply_ratio = 75_000;
+    b.status.supply_ratio = counter_status::SupplyRatio::exact(75_000);
     let mut sea = land_unit(3, 1, 30, 20, true);
-    sea.status.naval_transfer = true;
+    sea.status.naval_transfer = Some(true);
     let mut partial = land_unit(4, 1, 30, 20, true);
     partial.sight = Sight::Partial;
     for (order, icon, supply) in [
-        ([&a, &b, &sea, &partial], &plain_b, 75_000),
-        ([&b, &a, &sea, &partial], &plain_a, 25_000),
+        ([&a, &b, &sea, &partial], &plain_b, counter_status::SupplyRatio::exact(75_000)),
+        ([&b, &a, &sea, &partial], &plain_a, counter_status::SupplyRatio::exact(25_000)),
     ] {
         let fitted = land_fit(order, &icons, &countries, rules(true), &mut BTreeMap::new());
         assert_eq!(fitted.len(), 1);

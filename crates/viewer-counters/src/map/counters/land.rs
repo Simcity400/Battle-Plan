@@ -839,6 +839,7 @@ pub(super) struct Stack {
     pub(super) hit_points: Vec<i64>,
     pub(super) organisation: Vec<i64>,
     pub(super) bars: bool,
+    pub(super) status_recorded: bool,
     pub(super) members: Vec<counter_status::Member>,
     pub(super) divisions: Arc<[u64]>,
     pub(super) timing: Arc<[viewer_foundation::map::counter_hovers::land::Timing]>,
@@ -884,38 +885,48 @@ pub(super) struct CounterTables<'a> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DivisionStatus {
+    pub recorded: bool,
     pub maxima: Option<[i64; 2]>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub supply_ratio: i64,
+    pub supply_ratio: counter_status::SupplyRatio,
     pub attrition: bool,
     pub exercising: Option<bool>,
     pub has_order: Option<bool>,
     pub invalid_orders: u8,
-    pub naval_transfer: bool,
+    pub naval_transfer: Option<bool>,
     pub strength_factor: i64,
 }
 
 impl DivisionStatus {
     pub const MISSING: Self = Self {
+        recorded: false,
         maxima: None,
         entrenchment: 0,
         entrenchment_cap: 0,
-        supply_ratio: counter_status::FIXED,
+        supply_ratio: counter_status::SupplyRatio::Missing,
         attrition: false,
         exercising: None,
         has_order: None,
         invalid_orders: 0,
-        naval_transfer: false,
+        naval_transfer: None,
         strength_factor: counter_status::FIXED,
     };
 
-    pub fn recorded(row: StatusFields, maxima: Option<[i64; 2]>, naval_transfer: bool) -> Self {
+    pub fn recorded(
+        row: StatusFields,
+        maxima: Option<[i64; 2]>,
+        naval_transfer: Option<bool>,
+    ) -> Self {
         Self {
+            recorded: true,
             maxima,
             entrenchment: row.entrenchment,
             entrenchment_cap: row.entrenchment_cap,
-            supply_ratio: row.supply_ratio.unwrap_or(counter_status::FIXED),
+            supply_ratio: row.supply_ratio.map_or(
+                counter_status::SupplyRatio::Missing,
+                counter_status::SupplyRatio::from_bounds,
+            ),
             attrition: row.attrition,
             exercising: Some(row.exercising != 0),
             has_order: Some(row.has_order != 0),
@@ -930,7 +941,7 @@ impl DivisionStatus {
 pub struct StatusFields {
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub supply_ratio: Option<i64>,
+    pub supply_ratio: Option<[i64; 2]>,
     pub attrition: bool,
     pub exercising: u8,
     pub has_order: u8,
@@ -967,6 +978,7 @@ pub(super) struct LandUnit<'m> {
     pub(super) hp: i64,
     pub(super) org: i64,
     pub(super) bars: bool,
+    pub(super) status_recorded: bool,
     pub(super) status: counter_status::Member,
     pub(super) movement: Option<&'m Movement>,
     pub(super) action: counter_action::Action,
@@ -1323,13 +1335,14 @@ impl Movements {
 pub(super) struct DivisionStatuses {
     pub(super) by_division: BTreeMap<u64, DivisionStatus>,
     pub(super) witnessed: BTreeMap<u64, Option<bool>>,
+    pub(super) transfers: BTreeMap<u64, bool>,
     by_key: Option<Arc<KeyedStatuses>>,
 }
 
 struct KeyedStatuses {
     frame: Arc<DecodedFrame>,
     recorded: bool,
-    looked: std::sync::Mutex<std::collections::HashMap<u64, Option<DivisionStatus>>>,
+    looked: std::sync::Mutex<std::collections::HashMap<u64, DivisionStatus>>,
     lookups: super::Lookups,
 }
 
@@ -1337,13 +1350,22 @@ impl DivisionStatuses {
     const MISSING: DivisionStatus = DivisionStatus::MISSING;
 
     pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
+        let movements: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
+            .rows()
+            .iter()
+            .map(|row| (row.division, row))
+            .collect();
+        let transfers: BTreeMap<u64, bool> = movements
+            .iter()
+            .map(|(&division, row)| (division, row.naval_transfer != 0))
+            .collect();
         if !frame.recorded(replay_data::rows::TableId::DivisionStatus) {
             let witnessed = rows::<tables::DivisionModelInputs>(frame)?
                 .rows()
                 .iter()
                 .map(|row| (row.division, row.exercising.map(|value| value != 0)))
                 .collect();
-            return Ok(Self { witnessed, ..Self::default() });
+            return Ok(Self { witnessed, transfers, ..Self::default() });
         }
         let panels: BTreeMap<u64, _> = rows::<tables::DivisionPanelStats>(frame)?
             .rows()
@@ -1351,24 +1373,19 @@ impl DivisionStatuses {
             .map(|row| (row.division, row))
             .collect();
         let statuses = rows::<tables::DivisionStatus>(frame)?.rows();
-        let movements: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
-            .rows()
-            .iter()
-            .map(|row| (row.division, row))
-            .collect();
         let by_division = statuses
             .iter()
             .map(|row| (row.division, status_of(row, panels.get(&row.division).copied(), movements.get(&row.division).copied())))
             .collect();
-        Ok(Self { by_division, ..Self::default() })
+        Ok(Self { by_division, transfers, ..Self::default() })
     }
 
     pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
         let recorded = frame.recorded(replay_data::rows::TableId::DivisionStatus);
+        rows::<tables::DivisionMovement>(frame)?;
         if recorded {
             rows::<tables::DivisionPanelStats>(frame)?;
             rows::<tables::DivisionStatus>(frame)?;
-            rows::<tables::DivisionMovement>(frame)?;
         } else {
             rows::<tables::DivisionModelInputs>(frame)?;
         }
@@ -1381,36 +1398,24 @@ impl DivisionStatuses {
     pub(super) fn get(&self, division: u64) -> DivisionStatus {
         match &self.by_key {
             Some(keyed) => keyed.get(division),
-            None => self.by_division.get(&division).copied(),
-        }
-        .unwrap_or(DivisionStatus {
-            exercising: self.witnessed(division),
-            ..Self::MISSING
-        })
-    }
-
-    fn witnessed(&self, division: u64) -> Option<bool> {
-        match &self.by_key {
-            Some(keyed) if !keyed.recorded => keyed.witnessed(division),
-            Some(_) => None,
-            None => self.witnessed.get(&division).copied().flatten(),
+            None => self.by_division.get(&division).copied().unwrap_or_else(|| DivisionStatus {
+                exercising: self.witnessed.get(&division).copied().flatten(),
+                naval_transfer: self.transfers.get(&division).copied(),
+                ..Self::MISSING
+            }),
         }
     }
 
     pub(super) fn recorded(&self, division: u64) -> bool {
         match &self.by_key {
-            Some(keyed) => keyed.get(division),
-            None => self.by_division.get(&division).copied(),
+            Some(keyed) => keyed.get(division).maxima.is_some(),
+            None => self.by_division.get(&division).is_some_and(|status| status.maxima.is_some()),
         }
-        .is_some_and(|status| status.maxima.is_some())
     }
 }
 
 impl KeyedStatuses {
-    fn get(&self, division: u64) -> Option<DivisionStatus> {
-        if !self.recorded {
-            return None;
-        }
+    fn get(&self, division: u64) -> DivisionStatus {
         let mut looked = self.looked.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(&status) = looked.get(&division) {
             self.lookups.kept();
@@ -1418,18 +1423,29 @@ impl KeyedStatuses {
         }
         self.lookups.made();
         let frame = &*self.frame;
-        let status = keyed::<tables::DivisionStatus>(frame, division, |row| row.division).map(|row| {
-            let panel = keyed::<tables::DivisionPanelStats>(frame, division, |row| row.division);
-            let movement = keyed::<tables::DivisionMovement>(frame, division, |row| row.division);
-            status_of(row, panel, movement)
-        });
+        let movement = keyed::<tables::DivisionMovement>(frame, division, |row| row.division);
+        let status = if self.recorded {
+            match keyed::<tables::DivisionStatus>(frame, division, |row| row.division) {
+                Some(row) => {
+                    let panel = keyed::<tables::DivisionPanelStats>(frame, division, |row| row.division);
+                    status_of(row, panel, movement)
+                }
+                None => DivisionStatus {
+                    naval_transfer: movement.map(|row| row.naval_transfer != 0),
+                    ..DivisionStatus::MISSING
+                },
+            }
+        } else {
+            let exercising = keyed::<tables::DivisionModelInputs>(frame, division, |row| row.division)
+                .and_then(|row| row.exercising.map(|value| value != 0));
+            DivisionStatus {
+                exercising,
+                naval_transfer: movement.map(|row| row.naval_transfer != 0),
+                ..DivisionStatus::MISSING
+            }
+        };
         looked.insert(division, status);
         status
-    }
-
-    fn witnessed(&self, division: u64) -> Option<bool> {
-        self.lookups.made();
-        keyed::<tables::DivisionModelInputs>(&self.frame, division, |row| row.division).and_then(|row| row.exercising.map(|value| value != 0))
     }
 }
 
@@ -1479,18 +1495,15 @@ fn status_of(
     let fields = StatusFields {
         entrenchment: row.entrenchment,
         entrenchment_cap: row.entrenchment_cap,
-        supply_ratio: row.displayed_supply_ratio(),
+        supply_ratio: row.recorded_supply_ratio_bounds(),
         attrition: row.has_attrition(),
         exercising: row.exercising,
         has_order: row.has_order,
         invalid_orders: row.invalid_orders,
         strength_factor: row.strength_factor,
     };
-    let mut status = DivisionStatus::recorded(fields, maxima, false);
-    if let Some(movement) = movement {
-        status.naval_transfer = movement.naval_transfer != 0;
-    }
-    status
+    let naval_transfer = movement.map(|movement| movement.naval_transfer != 0);
+    DivisionStatus::recorded(fields, maxima, naval_transfer)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2376,6 +2389,7 @@ pub(super) fn land_stack(
         hit_points: Vec::new(),
         organisation: Vec::new(),
         bars: true,
+        status_recorded: true,
         members: Vec::new(),
         divisions: item.iter().map(|unit| unit.id).collect(),
         timing: item
@@ -2464,6 +2478,7 @@ pub(super) fn land_stack(
             stack.hit_points.push(unit.hp);
             stack.organisation.push(unit.org);
             stack.bars &= unit.bars;
+            stack.status_recorded &= unit.status_recorded;
             stack.members.push(unit.status);
         }
     }
@@ -2481,8 +2496,8 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
             organisation: 0.0,
             strength: counter_status::stack_fill(&stack.hit_points),
             glyphs: counter_status::Glyphs {
-                supply: counter_status::supply_frame(
-                    counter_status::stack_supply(&stack.members),
+                supply: counter_status::stack_supply_frame(
+                    &stack.members,
                     inputs.content.defines.supply,
                 ),
                 no_orders: gun.location_warning,
@@ -2493,10 +2508,14 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         None => StackStyle {
             organisation: counter_status::stack_fill(&stack.organisation),
             strength: counter_status::stack_fill(&stack.hit_points),
-            glyphs: if stack.bars {
+            glyphs: if stack.status_recorded {
                 counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
             } else {
                 counter_status::Glyphs {
+                    supply: counter_status::stack_supply_frame(
+                        &stack.members,
+                        inputs.content.defines.supply,
+                    ),
                     training: counter_status::stack_training(&stack.members),
                     ..Default::default()
                 }
@@ -2674,12 +2693,23 @@ fn draw_land_children(
                 plate_drawn,
             },
         )?;
-        if !stack.hidden
-            && let Some(frame) = style.glyphs.supply
-            && let Some(sheet) = assets.sheet(&layout.supply.sprite)
-        {
-            batch.at_layer(u64::from(layout.supply.order));
-            draw_child(batch, sheet, &layout.supply, origin, frame, [1.0; 4]);
+        let mut refused = Vec::new();
+        if !stack.hidden {
+            match style.glyphs.supply {
+                counter_status::SupplyFrame::Frame(frame) => {
+                    if let Some(sheet) = assets.sheet(&layout.supply.sprite) {
+                        batch.at_layer(u64::from(layout.supply.order));
+                        draw_child(batch, sheet, &layout.supply, origin, frame, [1.0; 4]);
+                    }
+                }
+                counter_status::SupplyFrame::Uncertain => {
+                    refused.push(
+                        uncertain_supply_gap(&stack.members, inputs.content.defines.supply)
+                            .to_owned(),
+                    );
+                }
+                counter_status::SupplyFrame::Hidden => {}
+            }
         }
         if stack.selected
             && let Some(sheet) = assets.sheet(&layout.selected.sprite)
@@ -2694,7 +2724,7 @@ fn draw_land_children(
                 [1.0; 4],
             );
         }
-        return Ok(Vec::new());
+        return Ok(refused);
     }
     let mut refused = Vec::new();
     let hq_sprite = stack.hq.then_some("GFX_onmap_unit_counter_empty");
@@ -2809,6 +2839,11 @@ fn draw_land_children(
             .map(|side| inputs.content.defines.type_colors.of(side)),
     );
     if !stack.hidden {
+        if style.glyphs.supply == counter_status::SupplyFrame::Uncertain {
+            refused.push(
+                uncertain_supply_gap(&stack.members, inputs.content.defines.supply).to_owned(),
+            );
+        }
         draw_glyphs(
             inputs,
             batch,
@@ -2977,7 +3012,7 @@ fn draw_gun_children(
             draw_child(batch, sheet, child, origin, frame, tint);
         }
     };
-    if let Some(frame) = style.glyphs.supply {
+    if let counter_status::SupplyFrame::Frame(frame) = style.glyphs.supply {
         draw(&layout.supply, frame, [1.0; 4]);
     }
     if stack.coarse {
@@ -3128,6 +3163,36 @@ pub(super) struct GlyphStack {
     pub(super) defending_area: bool,
 }
 
+fn uncertain_supply_gap(
+    members: &[counter_status::Member],
+    thresholds: counter_status::SupplyThresholds,
+) -> &'static str {
+    let mut straddles = false;
+    for member in members.iter().rev() {
+        match member.naval_transfer {
+            Some(true) => continue,
+            Some(false) | None => {
+                if member.supply_ratio == counter_status::SupplyRatio::Missing {
+                    return "low_supply is undecided: the stack's supply ratio (DivisionStatus) is not recorded";
+                }
+                if counter_status::supply_frame_for(member.supply_ratio, thresholds)
+                    == counter_status::SupplyFrame::Uncertain
+                {
+                    straddles = true;
+                }
+                if member.naval_transfer == Some(false) {
+                    break;
+                }
+            }
+        }
+    }
+    if straddles {
+        "low_supply is undecided: the stack's supply ratio (DivisionStatus) is recorded only at its display step and straddles a supply threshold"
+    } else {
+        "low_supply is undecided: whether a stack member is in naval transfer (DivisionMovement) is not recorded"
+    }
+}
+
 pub(super) fn draw_glyphs(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -3167,7 +3232,7 @@ pub(super) fn draw_glyphs(
     if glyphs.invalid_orders == Some(true) {
         draw_shifted(&layout.invalid_orders);
     }
-    if let Some(frame) = glyphs.supply {
+    if let counter_status::SupplyFrame::Frame(frame) = glyphs.supply {
         draw(&layout.supply, frame, [1.0; 4]);
     }
     if let Some(frame) = glyphs.digin {

@@ -463,6 +463,10 @@ impl Lane {
         self.next.map(|next| self.game(next) - 1)
     }
 
+    pub fn withheld(&self) -> Option<&str> {
+        self.pages.withheld_at(self.run, self.table, self.head()?)
+    }
+
     pub fn time(&mut self, timed: bool) {
         self.timed = timed;
         if let Some(under) = &mut self.under {

@@ -14,7 +14,7 @@ mod state;
 mod step;
 
 pub use boundary::Crossed;
-pub use clock::{Clock, PageTime};
+pub use clock::{Clock, FRAME_RATES, PageTime, frame_period};
 pub use lane::log::{LiveSet, LogState, Ordinal, Read, Rows, Wanted};
 pub use playhead::{Asked, Consumer, Counters, Declared, Hook, Lanes, Lead, LeadHeld, LogReads, Piece, Playhead, Reader, Report, Settings, Thread, Timeline};
 pub use state::{Rebuild, State};
