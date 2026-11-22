@@ -18,7 +18,7 @@ export default function NavyManagement({ runtime, widget, track, tag, hour, foll
   return <details className="navy-management" ref={head.root} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Repairs, refits and reinforcement</summary>
     {open && <div className="navy-management-content">{head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
-      : !data ? <WidgetState kind="loading" label="Loading naval orders…" />
+      : !data ? <WidgetState kind="loading" label="Loading naval orders…" read={head} />
       : <><p>Standing orders for fleets held by this country on {dayLabel(hour)}.</p>
         {data.warnings.length > 0 && <p role="status">Some naval details are unavailable. {data.warnings.join(' ')}</p>}
         {data.sections.map(section => <section key={section.key}><h4>{section.title}</h4>

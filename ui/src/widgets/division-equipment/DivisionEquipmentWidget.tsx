@@ -19,7 +19,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useIdentityHour } from '../../dashboard/atHead';
+import { useWidgetIdentityHour } from '../../dashboard/atHead';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS, VIEWS } from './definition';
@@ -48,10 +48,8 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [storedDrill, setStoredDrill] = useState<{ owner: object; drill: Drill } | null>(null);
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
-  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
-    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
-  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const hour = useWidgetIdentityHour(runtime, widget, chosen, active);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
@@ -135,6 +133,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see division equipment." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (state.outside) main = <WidgetState kind="outside" read={state} />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its division equipment." />;
   else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;

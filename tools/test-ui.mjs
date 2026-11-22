@@ -21,6 +21,7 @@ export const browserTests = [
   'ui/src/components/PlaybackSpeed.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/dashboard/atHead.dom.test.ts',
+  'ui/src/dashboard/outsideRecording.dom.test.ts',
   'ui/src/dashboard/follow/follow.dom.test.ts',
   'ui/src/dashboard/playbackBars.dom.test.ts',
   'ui/src/test-support/recordedPages.dom.test.ts',

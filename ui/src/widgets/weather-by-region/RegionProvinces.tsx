@@ -31,7 +31,7 @@ export default function RegionProvinces({ runtime, widget, region, hour, active,
       render: row => row.mud === null ? '—' : row.mud ? 'Mud' : '' },
   ], []);
   if (read.error) return <div ref={read.root}><WidgetState kind="error" what="the region’s provinces" failure={read.error} onRetry={read.retry} /></div>;
-  if (!read.data) return <div ref={read.root}><WidgetState kind="loading" label="Loading provinces…" /></div>;
+  if (!read.data) return <div ref={read.root}><WidgetState kind="loading" label="Loading provinces…" read={read} /></div>;
   if (!read.data.provinces.length) return <p ref={read.root} className="drill-empty">No provinces are recorded for this region at this date.</p>;
   return <div ref={read.root}><Table label="Provinces of this region" rows={read.data.provinces} columns={columns} rowKey={rowKey}
     sort={{ column: 'temperature', direction: 'ascending' }} /></div>;

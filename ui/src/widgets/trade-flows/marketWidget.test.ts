@@ -25,6 +25,7 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
         return { data: params ? { branchId: '1', offers: [], contracts: [], agreements: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [], warnings: [] } : undefined,
           at, live: { read: () => ({ get() {}, missing: () => 'Not read yet' }), subscribe: () => () => {} }, retry() {}, root() {} };
       };`,
+    '/dashboard/readCoverage.ts': 'export const useReadCoverage = () => ({ outside: false });',
     '/dashboard/MarketOccurrences.tsx': 'export default () => null;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',

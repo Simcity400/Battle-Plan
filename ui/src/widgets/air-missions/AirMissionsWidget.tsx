@@ -19,6 +19,8 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { headRead, useHeadProduct } from '../../dashboard/headProduct';
+import type { ReadCoverage } from '../../dashboard/widgetTime';
+
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -113,13 +115,13 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
       title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)}
       following={drill.follow} canFollow={following} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       <div ref={wings.root} className="air-missions">
-        <WingTable reply={wings.data} error={wings.error} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
+        <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
       </div>
     </DrillHost>
   </div>;
 }
 
-function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: AirMissionWingsReply; error?: Failure; missions: readonly { id: string; name: string }[];
+function WingTable({ reply, error, read, missions, live, hoursPerSecond }: { reply?: AirMissionWingsReply; error?: Failure; read: ReadCoverage; missions: readonly { id: string; name: string }[];
   live: Live<LiveValues<number>>; hoursPerSecond: number | undefined }) {
   const names = useMemo(() => new Map(missions.map(mission => [mission.id, mission.name])), [missions]);
   const missionText = useCallback((row: AirMissionWing) => row.missions.map(id => names.get(id) ?? `Mission ${id}`).join(', '), [names]);
@@ -144,7 +146,7 @@ function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: A
     ] };
   }, [live, missionText]);
   if (error) return <WidgetState kind="error" what="the region’s wings" failure={error} />;
-  if (!reply) return <WidgetState kind="loading" label="Loading wings…" />;
+  if (!reply) return <WidgetState kind="loading" label="Loading wings…" read={read} />;
   if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
   if (!reply.wings.length) return <WidgetState kind="empty" message="No wings are assigned here at this date." />;
   return <Table rowRevision={row => [row, columns]} label="Wings in this region" rows={reply.wings} columns={columns} rowKey={wingKey}

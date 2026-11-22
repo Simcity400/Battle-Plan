@@ -9,10 +9,11 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import type { Failure } from '../../dashboard/queryError';
 import type { CountryFuelReply, HourSpan } from '../../generated/dashboard';
+import type { ReadCoverage } from '../../dashboard/widgetTime';
 import { useMeasureSeries } from '../country-measure/measureSeries';
 import { COUNTRY_FUEL, validateCountryFuel } from './fuelData';
 
-export interface FuelAt {
+export interface FuelAt extends ReadCoverage {
   data?: CountryFuelReply;
   error?: Failure;
   retry: () => void;
@@ -32,9 +33,10 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: Bou
   const asked = useProduct<CountryFuelReply>(runtime.client, !follows && tag && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
     product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null, active && !follows, validateCountryFuel, track.source);
   useEffect(() => { live.set(follows ? head.data : asked.data); }, [live, follows, head.data, asked.data]);
+  const askedOutside = hour !== null && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   return follows
-    ? { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: true, shownAt: head.shownAt }
-    : { data: asked.data, error: asked.error, retry: asked.retry, live, root: NO_ROOT, followed: false, shownAt: () => asked.data ? hour : null };
+    ? { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: true, shownAt: head.shownAt, outside: head.outside }
+    : { data: asked.data, error: asked.error, retry: asked.retry, live, root: NO_ROOT, followed: false, shownAt: () => asked.data ? hour : null, outside: askedOutside };
 }
 
 const NO_ROOT = () => {};

@@ -21,7 +21,7 @@ import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useIdentityHour } from '../../dashboard/atHead';
+import { useWidgetIdentityHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -47,10 +47,8 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const shown = useShownHour();
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const following = widget.time.mode === 'follow';
-  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && following,
-    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
-  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const hour = useWidgetIdentityHour(runtime, widget, chosen, active);
   const hourAt = useCallback((position: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? hour),
     [track, widget, runtime.tracks, hour]);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
@@ -161,6 +159,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   let main, charted = false;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (state.outside) main = <WidgetState kind="outside" read={state} />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its army losses." />;
   else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;

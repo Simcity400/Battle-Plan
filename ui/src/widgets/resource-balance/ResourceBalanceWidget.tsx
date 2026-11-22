@@ -139,7 +139,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
 
   const detail = breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
     : breakdown.read === 'off' && !drillData ? <WidgetState kind="unavailable" message="This time is outside the recording." />
-      : !drillData ? <WidgetState kind="loading" label="Loading resources…" />
+      : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
             : <ResourceBreakdown runtime={runtime} track={track} active={active} tag={tag} resource={picked} data={drillData} live={breakdown.live}
@@ -394,7 +394,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   }, [atHead.data, atHead.live, report]);
 
   if (atHead.error) return <WidgetState kind="error" failure={atHead.error} onRetry={atHead.retry} />;
-  if (!atHead.data) return <WidgetState kind="loading" label="Loading resources…" />;
+  if (!atHead.data) return <WidgetState kind="loading" label="Loading resources…" read={atHead} />;
   if (!lines.length) return <WidgetState kind="empty" icon="layers" message="This recording names no resources." />;
   const error = supply.error ?? demand.error;
   if (error && !supply.summaryByKey.size) return <WidgetState kind="error" failure={error} onRetry={() => { supply.retry(); demand.retry(); }} />;

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, resolve, sep } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
+import { createServer, type PluginOption } from 'vite';
 import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
 
 function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -59,7 +59,7 @@ export interface NativePage {
   stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
 }
 
-export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>): Promise<void> {
+export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = []): Promise<void> {
   const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
@@ -69,7 +69,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
   const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../', import.meta.url)),
     cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
-    plugins: [{ name: `${name}-page`, configureServer(server) {
+    plugins: [...plugins, { name: `${name}-page`, configureServer(server) {
       server.middlewares.use('/recorded-replies', (request, response) => {
         recordedReplies((request.url ?? '/').split('?')[0]!, response).catch(error => { response.statusCode = 500; response.end(String(error)); });
       });

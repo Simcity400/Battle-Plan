@@ -114,7 +114,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, country(row))], viewportHeight), [country, viewportHeight]);
   const body = () => {
     if (!track) return <WidgetState kind="empty" message="Load a campaign to see its leaders." />;
-    if (head.outside) return <WidgetState kind="outside" />;
+    if (head.outside) return <WidgetState kind="outside" read={head} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
     if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;

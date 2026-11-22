@@ -129,7 +129,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
 
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
-  else if (head.outside) body = <WidgetState kind="outside" />;
+  else if (head.outside) body = <WidgetState kind="outside" read={head} />;
   else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;

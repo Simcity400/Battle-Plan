@@ -149,7 +149,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const data = head.data;
   let body;
   if (!track) body = <WidgetState kind="empty" icon="shield" message="Load a campaign and choose a country to see its operatives." />;
-  else if (head.outside) body = <WidgetState kind="outside" />;
+  else if (head.outside) body = <WidgetState kind="outside" read={head} />;
   else if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;

@@ -86,6 +86,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see divisions." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (state.outside) main = <WidgetState kind="outside" read={state} />;
   else if (selection.group.error) main = <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
   else if (selection.selectionReason) main = <WidgetState kind="unavailable" message={selection.selectionReason} />;
   else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;

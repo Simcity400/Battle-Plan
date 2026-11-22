@@ -90,7 +90,7 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
 
   return <div ref={at.root}>
     {at.error && <WidgetState kind="error" what="consumption" failure={at.error} onRetry={at.retry} />}
-    {!reply && !at.error && <WidgetState kind="loading" label="Loading current consumption…" />}
+    {!reply && !at.error && <WidgetState kind="loading" label="Loading current consumption…" read={at} />}
     {reply && <DrillParts positiveBars showShares={false} active={chart.active} parts={familyRows(reply, digits)} live={follows ? families : undefined}
       format={String} onPick={key => chooseLevel(`family:${key}`)} />}
     {demand.error && <WidgetState kind="error" what="consumers" failure={demand.error} onRetry={demand.retry} />}
@@ -104,7 +104,7 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
         label="Individual current consumption required per day" />
     </> : <>
       {demandHour === null ? <p className="drill-empty">{follows ? 'Individual consumers are listed for the day shown once playback stops.' : 'Individual consumption was not recorded for this moment.'}</p>
-        : !data && !demand.error ? <WidgetState kind="loading" label="Loading individual consumers…" /> : null}
+        : !data && !demand.error ? <WidgetState kind="loading" label="Loading individual consumers…" read={at} /> : null}
       {levelName !== 'all' && <button type="button" className="button small quiet" onClick={() => chooseLevel('all')}>All current consumers</button>}
       {data && !available && <p className="drill-empty">Not recorded at this moment.</p>}
       {data && available && <DrillParts virtual active={chart.active} positiveBars signedShares parts={inventory}

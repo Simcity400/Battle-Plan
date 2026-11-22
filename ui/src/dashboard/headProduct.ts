@@ -14,7 +14,7 @@ import { canonical } from './follow/canonical.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
-import { WidgetTimeContext } from './widgetTime.ts';
+import { outsideDetail, readsHostTime, WidgetTimeContext, type ReadCoverage } from './widgetTime.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
 import type { PlaybackController } from './playback';
@@ -112,14 +112,13 @@ export interface HeadProductOptions<T> {
   hoverHour?: number | null;
 }
 
-export interface HeadProduct<T> extends ProductState<T> {
+export interface HeadProduct<T> extends ProductState<T>, ReadCoverage {
   exactRead?: (hour: number) => Promise<unknown>;
   held?: HeldReading<T>;
   workerFollow?: number;
   root: (element: Element | null) => void;
   read: 'followed' | 'asked' | 'fallback' | 'off';
   reason?: string;
-  outside: boolean;
   hour: number | null;
   at: number | null;
   atNow: () => number | null;
@@ -188,7 +187,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
   const outside = useOutsideTime(runtime.clock, !!track, hourAt);
-  const heads = useContext(WidgetTimeContext)?.heads;
+  const host = useContext(WidgetTimeContext);
+  const heads = readsHostTime(host, widget, hoverHour) ? host!.heads : null;
   const [token] = useState(() => ({}));
   useLayoutEffect(() => {
     if (!heads || !active) return;
@@ -242,7 +242,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);
   return {
-    data, error, retry: asked.retry, root, hour, live, outside,
+    data, error, retry: asked.retry, root, hour, live, outside, outsideDetail: outside ? outsideDetail(widget, hoverHour) : undefined,
     exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,

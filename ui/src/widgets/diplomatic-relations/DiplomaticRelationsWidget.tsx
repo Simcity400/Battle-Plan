@@ -162,6 +162,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   useDiagnostics(onDiagnostics, diagnostics);
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="handshake" message="Load a campaign to see opinions." />;
+    if (options.show !== PAIR.id && opinions.outside) return <WidgetState kind="outside" read={opinions} />;
     if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
     if (groupFailure && !groups.data) return groupFailure;

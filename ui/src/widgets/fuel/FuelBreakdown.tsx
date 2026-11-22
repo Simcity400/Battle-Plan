@@ -126,13 +126,13 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
       <strong>{consumerName}</strong>
       {!basis ? <p className="drill-empty">Breakdown unavailable: the applied updates of this day are not known.</p>
         : awards.error ? <WidgetState kind="error" what="recipients" failure={awards.error} onRetry={awards.retry} />
-          : !recipients || consumerTotal === null ? <WidgetState kind="loading" label="Loading actual fuel recipients…" />
+          : !recipients || consumerTotal === null ? <WidgetState kind="loading" label="Loading actual fuel recipients…" read={at} />
             : <DrillParts virtual active={chart.active} positiveBars signedShares parts={recipientParts}
               total={Number(consumerTotal) / Number(gain)} format={String} unattributed={unattributed}
               totalRow={{ label: consumerName, value: formatFuelPart(consumerTotal, gain, digits) }}
               onPick={key => { const part: FuelAwardPart | undefined = listed.find(row => row.key === key); if (part && basis) onSelection(selectFuelRecipient(campaign, basis, part)); }} />}
     </> : <>
-      {!reply ? (at.error ? null : <WidgetState kind="loading" label="Loading the day's fuel…" />)
+      {!reply ? (at.error ? null : <WidgetState kind="loading" label="Loading the day's fuel…" read={at} />)
         : !reply.read ? <p className="drill-empty">{reply.missing ?? 'No daily accounting was recorded for this moment.'}</p>
           : rows && hour !== null || rows && follows ? <DrillParts positiveBars signedShares active={chart.active} parts={rows.parts} live={follows ? live : undefined}
             total={rows.total} format={String} totalRow={{ label: measure === 'gain' ? 'Fuel gained (own production)' : 'Fuel burned', value: rows.totalText }}

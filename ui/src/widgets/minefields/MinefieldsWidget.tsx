@@ -28,6 +28,8 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import type { ReadCoverage } from '../../dashboard/widgetTime';
+
 import { useProduct } from '../../dashboard/products';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -155,7 +157,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
         hour={reports.at} lines={lines} active={active} revision={lines} hoursPerSecond={hoursPerSecond}
         formatValue={value => value.toLocaleString('en-US', { maximumFractionDigits: 2 })} empty="Mines not recorded" onPick={hour => onPick(Math.floor(hour))}
         onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, at)])} />}</div>
-    <ReportTable reply={reports.data} error={reports.error} hoursPerSecond={hoursPerSecond} name={reportName} />
+    <ReportTable reply={reports.data} error={reports.error} read={reports} hoursPerSecond={hoursPerSecond} name={reportName} />
     {menu.menu}
   </div>;
 }
@@ -173,7 +175,7 @@ function regionTooltip(row: RegionRow, values: LiveValues<number>, name: (tag: s
   };
 }
 
-function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: MinefieldReportsReply; error?: import('../../dashboard/queryError').Failure; name: (tag: string) => string; hoursPerSecond: number | undefined }) {
+function ReportTable({ reply, error, read, name, hoursPerSecond }: { reply?: MinefieldReportsReply; error?: import('../../dashboard/queryError').Failure; read: ReadCoverage; name: (tag: string) => string; hoursPerSecond: number | undefined }) {
   const country = useCallback((tag: string | null) => tag === null ? 'Country unresolved' : name(tag), [name]);
   const columns = useMemo<readonly TableColumn<MineReport>[]>(() => [
     { key: 'ship', header: 'Ship', label: 'Ship', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.ship, render: row => row.ship ?? 'Ship name unavailable', renderMissing: true },
@@ -182,7 +184,7 @@ function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: Minefield
     { key: 'sunk', header: 'Sunk', label: 'Sunk', width: 'max-content', value: row => row.sunk ? 'Sunk' : 'Damaged' },
   ], [country]);
   if (error) return <WidgetState kind="error" what="the region’s reports" failure={error} />;
-  if (!reply) return <WidgetState kind="loading" label="Loading reports…" />;
+  if (!reply) return <WidgetState kind="loading" label="Loading reports…" read={read} />;
   if (!reply.reports.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="Standing reports in this region were not recorded at this date." />
     : <p className="drill-empty">No standing reports in this region at this date.</p>;
   return <div className="minefields-reports"><Table rowRevision={row => [row, columns]} label="Standing reports in this region" rows={reply.reports} columns={columns} rowKey={reportKey}

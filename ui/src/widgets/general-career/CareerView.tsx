@@ -12,6 +12,8 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useAtHead } from '../../dashboard/atHead';
+import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -41,7 +43,9 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
   const data = career.data;
   const now = head.data;
   const first = track?.branch.firstHour ?? 0;
-  const hour = head.at ?? track?.branch.lastHour ?? first;
+  const before = useAtHead(runtime.clock, active && head.outside && !!track,
+    at => !!track && (resolveWindow(widget, track, runtime.tracks, at)?.lastHour ?? Infinity) < track.branch.firstHour);
+  const hour = head.outside ? before ? first - 1 : track?.branch.lastHour ?? first : head.at ?? track?.branch.lastHour ?? first;
   const shown = useShownHour();
   const options = resolveOptions(OPTIONS, widget.options);
   const grow = options.growWithPlayback === true;
@@ -91,7 +95,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
         <span>{recordedSince(data.runs[0]?.firstHour ?? null, first)}</span>
         <span><strong><LiveText live={head.live} cell={liveKey(reference, 'experience')} onPaint={report}
           format={(value, missing) => value === undefined ? missing : experienceText(String(value), progress?.nextRequiredRaw ?? null)} /></strong>commander XP</span>
-      </div></div> : <p className="career-note">{now?.missing ?? 'Leader details unavailable at this time.'}</p>}
+      </div></div> : head.outside ? <WidgetState kind="outside" read={head} /> : <p className="career-note">{now?.missing ?? 'Leader details unavailable at this time.'}</p>}
     {progress && <div className="career-training">
       <strong>Trait training</strong>
       {progress.training === null ? <p>Unavailable</p> : progress.training.length === 0 ? <p>No traits in training</p>
@@ -109,7 +113,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
         return <li key={trait.token}>{trait.name ?? trait.token}: {traitDateText(now.traitDates[i] ?? null)}</li>; })}</ul>
     </div>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
-      [first, Math.max(first + 1, track.branch.lastHour + 1)], hour + 1, 0, 1)} playhead={hour + 1} labelHour={hour}
+      [first, Math.max(first + 1, track.branch.lastHour + 1)], hour + 1, 0, 1)} playhead={head.outside ? null : hour + 1} labelHour={head.outside ? undefined : hour}
       preserveZoomOnExtentChange={grow}
       lanes={lanes} showIcons showNames emptyLabel="Not recorded" active={active} revision={[data, labelAt]} tooltip={tooltip}
       description={`${leaderName(data)}: skill, traits, commands and battles.`}

@@ -49,7 +49,8 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     setLocal({ owner, selection });
     setOption?.('country', datedCountryToken(selection));
   };
-  const fresh = !bySlot && !held && chosen && track && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
+  const recorded = !!track && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const fresh = !bySlot && !held && chosen && track && recorded && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
   const selection = bySlot ? null : held ?? fresh;
   const resolved = useMemo(() => selection && histories && track
     ? resolveChoice(histories, groups.complete, selection, track.branch.firstHour, track.branch.lastHour, hour) : null,
@@ -61,8 +62,8 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   }, [kept]);
   const slotTag = typeof slot === 'number' && slots ? slots.tagAt(slot, hour) : null;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
-    : bySlot ? track && (hour < track.branch.firstHour || hour > track.branch.lastHour) ? outsideCountry(chosen)
-      : { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
+    : track && !recorded ? outsideCountry(chosen)
+    : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
     : resolved?.country ?? { chosen, tag: null, absent: false, reason: null };
   return { ...country, holders: resolved?.holders ?? null,
     pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)

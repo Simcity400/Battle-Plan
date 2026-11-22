@@ -33,7 +33,7 @@ export default function RecordView({ runtime, widget, trackId, division, hour, s
   const rows = useMemo(() => data ? recordRows(data, show) : [], [data, show]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a division’s record." />;
   if (state.error) return <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading the record…" />;
+  if (!data) return <WidgetState kind="loading" label="Loading the record…" read={state} />;
   if (data.absent) return <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const name = divisionName(data.name);
   const renderRow = ({ item }: LogRow<RecordItem>) => <><span className="log-art" aria-hidden="true">

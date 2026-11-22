@@ -35,6 +35,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useReadCoverage } from '../../dashboard/readCoverage';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition';
@@ -60,6 +61,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const coverage = useReadCoverage(runtime, widget);
   const lastHour = track?.branch.lastHour ?? 0;
   const registryResult = useScoreboardColumns(runtime, track, active);
   const registryData = registryResult.data;
@@ -275,6 +277,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const hour = followedHead ? Math.floor(headAt(structureHour) ?? lastHour) : moment;
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
+    if (coverage.outside) return <WidgetState kind="outside" read={coverage} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (registryResult.error) return <WidgetState kind="error" failure={registryResult.error} onRetry={registryResult.retry} />;
     if (result.error && !followedHead) return <WidgetState kind="error" failure={result.error} onRetry={result.retry} />;

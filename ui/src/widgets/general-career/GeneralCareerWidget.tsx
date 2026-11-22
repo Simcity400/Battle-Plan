@@ -41,6 +41,7 @@ function TopGeneralCareer(props: WidgetProps) {
   const nameDetail = dashboard && country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : undefined;
   const body = () => {
     if (dashboard && !tag) return <WidgetState kind="empty" message="Choose a dashboard country or a leader in the widget settings." />;
+    if (head.outside) return <WidgetState kind="outside" read={head} />;
     if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
     if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;

@@ -97,7 +97,9 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const catalogue = useCountryGroups(runtime, track, active);
   const origin = requestedView ? followView ? hourAt(runtime.clock.getSnapshot().position) : requestedView.hour : null;
   const originRef = useRef<{ owner: unknown; hour: number } | null>(null);
-  if (originRef.current?.owner !== bindingOwner) originRef.current = origin === null ? null : { owner: bindingOwner, hour: origin };
+  const recorded = (hour: number) => !!track && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  if (originRef.current?.owner !== bindingOwner || !recorded(originRef.current.hour)) originRef.current = origin === null ? null : { owner: bindingOwner, hour: origin };
+  const originHour = originRef.current?.hour ?? null;
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.lossCountry, track, widget.countries),
     [widget.options?.lossCountry, track, widget.countries]);
   const bySlot = !!tag && isSlotKey(tag);
@@ -105,9 +107,9 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const slotsPending = bySlot && !slots;
   const selectedCountry = useMemo(() => {
     if (savedCountry || hasSavedCountry) return savedCountry;
-    const originTag = tag && originRef.current ? countryTagAt(slots, countryFromKey(tag), originRef.current.hour) : null;
-    return catalogue.data && track && originTag && originRef.current ? chooseDrillCountry(catalogue.data.countryIdentities, track, originTag, originRef.current.hour) : null;
-  }, [savedCountry, hasSavedCountry, catalogue.data, track, tag, slots, bindingOwner]);
+    const originTag = tag && originHour !== null ? countryTagAt(slots, countryFromKey(tag), originHour) : null;
+    return catalogue.data && track && originTag && originHour !== null ? chooseDrillCountry(catalogue.data.countryIdentities, track, originTag, originHour) : null;
+  }, [savedCountry, hasSavedCountry, catalogue.data, track, tag, slots, bindingOwner, originHour]);
   const actorSpans = useMemo(() => selectedCountry && catalogue.data && track ? drillCountrySpans(catalogue.data.countryIdentities, selectedCountry, track) : null,
     [selectedCountry, catalogue.data, track]);
   const selection: LossSelection | null = useMemo(() => track && selectedCountry && actorSpans ? {
@@ -246,6 +248,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
 
   const unavailable = !track || !tag ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its equipment losses." />
     : !view ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+      : following && head.outside ? <WidgetState kind="outside" read={head} />
       : selectionPick === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
         : (hasSavedCountry && !savedCountry) || (catalogue.data && !slotsPending && (!selectedCountry || !actorSpans))
           ? <WidgetState kind="unavailable" message={actorReason!} />
@@ -267,7 +270,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>
     {limitations.map(item => <p key={item.id}>{item.label}</p>)}</details> : <span className="equipment-losses-completeness">{status}</span>;
   const readHourOf = (at: readonly LossRow[]) => at.reduce<number | null>((latest, row) => row.readHour === null ? latest : Math.max(latest ?? row.readHour, row.readHour), null);
-  const main = followView && head.outside ? <WidgetState kind="outside" /> : <div className="equipment-losses-main">
+  const main = followView && head.outside ? <WidgetState kind="outside" read={head} /> : <div className="equipment-losses-main">
     <p className="chart-line-key">{total.incomplete ? 'Subtotal' : 'Losses'}: {total.exact === null ? 'Not known' : formatLosses(total.value ?? 0, total.exact, scale)}
       {view.since != null && <span className="equipment-losses-since"> ({sinceLabel(view.since)})</span>}</p>
     <Sunburst label="Equipment losses" items={items} root={ROOT} levels={levelsShown(options, LEVELS)} text={text} settings={settings}

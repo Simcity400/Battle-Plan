@@ -23,7 +23,7 @@ export default function MarketDrill({ runtime, widget, hour, following, tags, se
     return () => onAnswered?.(undefined);
   }, [onAnswered, head.at]);
   if (head.error && !head.data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (!head.data || !track) return <WidgetState kind="loading" label="Loading the market…" />;
+  if (!head.data || !track) return <WidgetState kind="loading" label="Loading the market…" read={head} />;
   const data = { ...head.data, hour: head.at ?? hour };
   const follows = following && widget.time.mode === 'follow';
   return <div ref={head.root} style={{ display: 'contents' }}><TradeMarketView data={data} selected={selected} values={head.live.read()}

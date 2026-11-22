@@ -38,9 +38,8 @@ test('Equipment losses following playback past its track\'s end keeps no earlier
       export const useLossHistory = () => ({ data: globalThis.__losses, retry() {}, onSummaryView() {}, onHover() {}, navigate() {}, exactAt: async () => undefined });`,
     '/dashboard/headProduct.ts': `const live = { read: () => ({ get: () => undefined, missing: () => 'Not recorded' }), subscribe: () => () => {} };
       export const useHeadProduct = () => ({ ...globalThis.__lossHead, data: undefined, root() {}, live, at: null, atNow: () => null, shownAt: () => null, current: () => undefined, read: 'off', hour: null, retry() {} });`,
-    '/dashboard/useCountryGroups.ts': `const data = { countryIdentities: [] }; export const useCountryGroups = () => ({ data, retry() {} });`,
-    '/widgets/country-measure/drillCountry.ts': `export const readDrillCountry = () => null; export const chooseDrillCountry = () => ({ tag: 'GER', slot: 1, countryId: 1 });
-      export const drillCountrySpans = () => new Map([['GER', [{ firstHour: 100, lastHour: 109 }]]]); export const drillCountryCoverage = () => [{ firstHour: 100, lastHour: 109 }];`,
+    '/dashboard/useCountryGroups.ts': `const data = { countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] };
+      export const useCountryGroups = () => ({ data, retry() {} });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => () => ({ name: 'Germany' }) });`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#808080'] }); export const useViewportHeight = () => 800;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

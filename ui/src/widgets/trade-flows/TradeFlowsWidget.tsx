@@ -39,6 +39,8 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions } from '../../dashboard/options';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useReadCoverage } from '../../dashboard/readCoverage';
+import { followingWidget } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
 import { mix, toHex } from '../../shell/appearance/color';
 import type { MarketLendLeaseReply } from './types';
@@ -309,7 +311,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const known = useMemo(() => observedTradeSpans(data?.known ?? [], scope?.kind === 'countries' ? scope.unobserved : undefined), [data, scope]);
   const effectiveDrill = drill.breakdown ? drill : pinnedView ? { breakdown: 'contributions', follow: following, hour: moment } : CLOSED;
   const drillFollows = effectiveDrill.breakdown !== null && effectiveDrill.follow && !!track;
-  const drillAt = effectiveDrill.breakdown === null ? null : drillFollows ? clampHour(lookHourNow + axisOffset) : effectiveDrill.hour;
+  const followed = useMemo(() => followingWidget(widget), [widget]);
+  const mainRead = useReadCoverage(runtime, widget);
+  const drillRead = useReadCoverage(runtime, drillFollows && !pinnedView ? followed : widget, pinnedView || drillFollows ? null : effectiveDrill.hour);
+  const drillAt = effectiveDrill.breakdown === null || drillRead.outside ? null : drillFollows ? clampHour(lookHourNow + axisOffset) : effectiveDrill.hour;
 
   const countryHolder = chosenSelection?.kind === 'country' ? chosenSelection.holder : null;
   const requested = all ? null : resolved ? [...resolved.tags] : [];
@@ -358,9 +363,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const marketFilter = marketView ? worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, moment, lastHour) : null;
   const marketReason = (marketView ? marketLendLeaseWaits() : null) ?? marketFilter?.reason ?? (marketView && !all && groups.data && marketFilter?.known && !marketTags.length ? 'Selected countries are unavailable at this time.' : null);
   const marketReady = !!track && marketView && !marketReason && (all || !!groups.data && marketTags.length > 0);
-  const market = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease', marketReady ? { countries: (marketTags).map(countryFromKey)} : null,
-    { active: active && marketView, validate: validateMarketReply, hoverHour: !marketView || drill.breakdown === null ? null
-      : drill.follow ? following ? null : clampHour(lookHourNow + axisOffset) : drill.hour });
+  const marketFollows = marketView && drill.breakdown !== null && drill.follow;
+  const market = useHeadProduct<MarketLendLeaseReply>(runtime, marketFollows ? followed : widget, 'market-lendlease', marketReady ? { countries: (marketTags).map(countryFromKey)} : null,
+    { active: active && marketView, validate: validateMarketReply, hoverHour: !marketView || drill.breakdown === null || drill.follow ? null : drill.hour });
 
   useEffect(() => {
     const warnings = [...(marketView ? market.data?.warnings ?? [] : data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
@@ -377,8 +382,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [data, shown, nodeName, amount, measure, moment, from]);
 
   if (!track) return <>{pinnedHeader}<WidgetState kind="empty" icon="flows" message="Load a campaign to see who trades with whom." /></>;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
+  if (marketView && market.outside) return <WidgetState kind="outside" read={market} />;
+  if (!marketView && mainRead.outside && (pinnedView || effectiveDrill.breakdown === null)) return <>{pinnedHeader}<WidgetState kind="outside" read={mainRead} /></>;
   const groupFailure = (widget.countries.kind === 'group' || marketView && !all) && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return <>{pinnedHeader}{groupFailure}</>;
   if (marketView) {
@@ -422,7 +427,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const caption = texts ? <LiveText live={texts} at="caption" /> : measure === 'current' ? 'Per day'
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
   const coverage = texts ? <LiveText live={texts} at="coverage" /> : separated(coverageAt(moment));
-  const main = <div className="trade-main">
+  const main = mainRead.outside ? <WidgetState kind="outside" read={mainRead} /> : <div className="trade-main">
     <p className="trade-caption">{caption}{coverage}</p>
     <Legend always label="Resources" items={resourceLegend} windowed={shownResources.length > tokens.categories.length} />
     {options.colour === 'seller' ? <p className="chart-line-key">Ribbons in each seller’s map colour</p> : null}
@@ -450,7 +455,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         : { type: 'open', breakdown: 'contributions', hour: moment, playing: true, playhead: headAt(runtime.clock.getSnapshot().position) })}
       onPin={chosenSelection && drillAt != null ? () => runtime.addWidgetBelow(widget.id,
         pinContributions(widget, track, chosenSelection, drillLive ? drillLive.hour() : drillAt, effectiveDrill.follow, extent, countryFact?.tag ?? null)) : undefined} main={main}>
-      {countryHolder ? countryReply.error && countryTags ? <WidgetState kind="error" failure={countryReply.error} onRetry={countryReply.retry} />
+      {drillRead.outside ? <WidgetState kind="outside" read={drillRead} />
+        : countryHolder ? countryReply.error && countryTags ? <WidgetState kind="error" failure={countryReply.error} onRetry={countryReply.retry} />
         : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
         : <TradeCountryView holder={countryHolder} trade={countryData} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
           hour={drillAt} live={drillLive} extent={extent} colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}

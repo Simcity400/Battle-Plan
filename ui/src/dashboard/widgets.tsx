@@ -10,7 +10,7 @@ import WidgetState from '../components/WidgetState';
 import { scopeReason } from './widgetAvailability';
 import { DEFAULT_MAP_OPTIONS } from './mapPicker';
 import { ActiveHeads, WidgetTimeContext } from './widgetTime';
-import { headRead, useOutsideTime } from './headProduct';
+import { useReadCoverage } from './readCoverage';
 
 export type { WidgetRuntime } from './definitions';
 
@@ -25,12 +25,9 @@ export function WidgetBody({ widget, runtime, active = true, mapOptions, headerS
   const Render = definition?.render;
   const readPlaying = useCallback(() => runtime.clock.getSnapshot().playing, [runtime.clock]);
   const playing = useSyncExternalStore(runtime.clock.subscribe, readPlaying, readPlaying);
-  const track = runtime.tracks.find(item => item.id === resolved.trackIds[0]);
-  const { hourAt } = useMemo(() => headRead(resolved, track, runtime.tracks, null), [resolved, track, runtime.tracks]);
-  const outside = useOutsideTime(runtime.clock, !!track, hourAt);
+  const { outside, outsideDetail } = useReadCoverage(runtime, resolved);
   const [heads] = useState(() => new ActiveHeads());
-  const pinned = resolved.time.mode !== 'follow';
-  const time = useMemo(() => ({ heads, outside, detail: pinned ? 'Choose another time in widget settings.' : undefined }), [heads, outside, pinned]);
+  const time = useMemo(() => ({ heads, outside, detail: outsideDetail, reads: resolved }), [heads, outside, outsideDetail, resolved]);
   if (unavailable || !definition || !Render) return <div className="dash-empty" role="status">{unavailable ?? 'Widget renderer unavailable.'}</div>;
   if (playing && !definition.playsBackDated) return <div className="dash-empty" role="status">{widget.title} isn't playing back yet</div>;
   const scoped = runtime.tracks.filter(track => resolved.trackIds.includes(track.id))
