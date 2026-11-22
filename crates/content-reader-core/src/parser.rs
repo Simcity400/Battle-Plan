@@ -133,7 +133,7 @@ pub struct Item {
     pub kind: Kind,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Operator {
     #[default]
     Equals,

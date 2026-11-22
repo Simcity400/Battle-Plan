@@ -213,8 +213,12 @@ unsafe extern "system-unwind" fn before(
                 retain();
                 return;
             }
-            context.tick =
-                engine_production::line_output_sites::read_rocket_spending(&memory, base, receiver);
+            context.tick = engine_production::line_output_sites::read_rocket_spending(
+                &memory,
+                base,
+                receiver,
+                &collector_observers::variant_stat_witness::ObserverStatWitness,
+            );
             if SCOPE
                 .try_with(|scope| {
                     scope.set(Scope {

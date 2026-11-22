@@ -3213,12 +3213,12 @@ impl Processor {
         {
             return Ok(());
         }
-        let drained =
         // SAFETY: The sole spool drains its current installation, with hooks quiet for a final
         // drain.
-        unsafe { self.command_drain.take(final_drain) }?;
-        engine_allocation::reserve(&mut self.command_pending, drained.len())?;
-        self.command_pending.extend(drained);
+        unsafe {
+            self.command_drain
+                .take_into(final_drain, &mut self.command_pending)
+        }?;
         self.command_last_flush = std::time::Instant::now();
         if !self.session_verified {
             return if final_drain && !self.command_pending.is_empty() {
@@ -3348,7 +3348,7 @@ impl Processor {
     }
 
     fn submit_commands(&mut self) -> io::Result<()> {
-        let keys: Vec<_> = self.command_ready.keys().copied().collect();
+        let keys = engine_allocation::collect_vec(self.command_ready.keys().copied())?;
         for key in keys {
             let Some(write) = self.command_ready.get(&key) else {
                 continue;
@@ -3385,26 +3385,43 @@ impl Processor {
             {
                 continue;
             }
-            let mut write = self
+            let write = self
                 .command_ready
-                .remove(&key)
+                .get(&key)
                 .ok_or_else(|| invalid("command write disappeared"))?;
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
                 campaign_id: write.id.as_bytes().try_into().ok(),
                 ..Default::default()
             });
             let campaign_id = engine_allocation::string(&write.id)?;
-            let campaign = self.campaigns.get_mut(&write.id).unwrap();
-            if !write.attempted {
-                if let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
-                    &mut write.record
-                    && let Some(phase) = &mut packet.phase
-                {
-                    phase.start = campaign
+            let branch_start = if !write.attempted
+                && let Record::Control(ControlRecord::PlayerCommands { packet, .. }) = &write.record
+                && packet.phase.is_some()
+            {
+                Some(
+                    self.campaigns
+                        .get_mut(&write.id)
+                        .ok_or_else(|| invalid("command campaign context disappeared"))?
                         .tracker
                         .branch_start(packet.branch)
                         .ok_or_else(|| invalid("command branch context is missing"))?
-                        .clone();
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            let mut write = self
+                .command_ready
+                .remove(&key)
+                .ok_or_else(|| invalid("command write disappeared"))?;
+            let campaign = self.campaigns.get_mut(&write.id).unwrap();
+            if !write.attempted {
+                if let Some(start) = branch_start
+                    && let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
+                        &mut write.record
+                    && let Some(phase) = &mut packet.phase
+                {
+                    phase.start = start;
                 }
                 write.attempted = true;
             }
@@ -4920,6 +4937,121 @@ mod tests {
                 vec![(100, 105, 10), (110, 115, 12)]
             );
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn command_submit_allocation_failure_retains_packet_for_exact_once_retry() {
+        use replay::commands::{Batch, Event, Origin, Packet, Phase, Recording, Span};
+        let directory = std::env::temp_dir().join(format!(
+            "hoi4-command-submit-retry-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let mut verified = session();
+        verified.identity.verification = replay_data::identity::Verification::Verified {
+            launcher: Default::default(),
+            memory: Default::default(),
+        };
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        processor.set_verified_session(verified).unwrap();
+        let campaign_id = std::str::from_utf8(ID).unwrap();
+        let (branch, start) = {
+            let campaign = processor.campaign(campaign_id).unwrap();
+            let branch = campaign
+                .tracker
+                .observe_commands(10, replay::commands::load_marker(1234))
+                .unwrap()
+                .branch;
+            let start = campaign.tracker.branch_start(branch).unwrap().clone();
+            (branch, start)
+        };
+        let batch = Batch {
+            events: vec![Event {
+                paused: false,
+                qpc: 150,
+                hour: 10,
+                actor: 0,
+                player: 1,
+                kind: 0,
+                command_country: None,
+                origin: Origin::Unresolved,
+                sequence: 1,
+            }],
+            spans: vec![Span {
+                paused: false,
+                hour: 10,
+                from_qpc: 100,
+                to_qpc: 200,
+                complete: true,
+            }],
+            ..Default::default()
+        };
+        let mut packet = Packet::pack(branch, 1, 1, 0, 100, 200, 0, &batch).unwrap();
+        packet.phase = Some(Phase {
+            start,
+            campaign: ID.try_into().unwrap(),
+            qpc: 100,
+            hour: 10,
+            load_signal: 1234,
+        });
+        processor.command_ready.insert(
+            (1, 0),
+            CommandWrite {
+                id: campaign_id.to_owned(),
+                world: 1,
+                ordinal: 0,
+                record: Record::Control(ControlRecord::PlayerCommands {
+                    session: processor.session.id,
+                    packet,
+                }),
+                attempted: false,
+                storage: None,
+            },
+        );
+        let denied = {
+            let _deny = collector_test_support::NullGuard::new(2);
+            processor.submit_commands()
+        };
+        assert!(denied.is_err());
+        assert!(processor.command_ready.contains_key(&(1, 0)));
+        // SAFETY: The isolated test owns the spool and has no live command callbacks.
+        unsafe { processor.flush_commands(true) }.unwrap();
+        // SAFETY: The isolated test owns the spool through detach.
+        unsafe { processor.detach() }.unwrap();
+        drop(processor);
+        let campaign = directory.join(campaign_id);
+        let mut files: Vec<_> = fs::read_dir(&campaign)
+            .unwrap()
+            .flatten()
+            .filter(|file| file.file_name().to_string_lossy().starts_with("spool."))
+            .collect();
+        files.sort_by_key(|file| file.file_name());
+        let segments: Vec<_> = files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| {
+                (
+                    index as u32,
+                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                )
+            })
+            .collect();
+        let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+        let row_path = directory.join("submit-retry.battleplan");
+        replay.write_atomic(&row_path).unwrap();
+        let recording = Recording::open_path(&row_path).unwrap();
+        let ordinals: Vec<_> = recording
+            .controls
+            .iter()
+            .filter_map(|control| match control {
+                ControlRecord::PlayerCommands { packet, .. } => Some(packet.ordinal),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ordinals, vec![0]);
         fs::remove_dir_all(directory).unwrap();
     }
 

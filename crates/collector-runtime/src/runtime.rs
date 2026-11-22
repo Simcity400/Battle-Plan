@@ -2934,6 +2934,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "intel_sources": collector_intel::source_changes::status(),
         "combat_log_history": collector_combat_log::history_events::refusals(),
         "politics_changes": collector_politics::politics_changes::refusals(),
+        "variant_stat_witness": collector_production::production::design_changes::stat_witness_status(),
+        "supply_truck_demand_witness": collector_supply_trains::supply_trains::truck_demand_witness_status(),
         "certificate_registries": collector_certificates::watch_registry::status(collector_division_parts::army_stat_changes::registries()),
     });
     #[cfg(feature = "order_membership_oracle")]

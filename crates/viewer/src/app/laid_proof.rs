@@ -142,7 +142,7 @@ mod tests {
             rect: [0.; 4],
             uv: [0.; 4],
             color: [1.; 4],
-            rotation: 0.,
+            rotation: None,
             layer,
             shade: 0.,
             exact: None,

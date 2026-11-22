@@ -321,6 +321,7 @@ fn train_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     bytes.resize(0x20000, 0);
     let companion = 0x6000 + supply_companion::STRIDE;
+    let companion_two = 0x6000 + 2 * supply_companion::STRIDE;
     put(
         &mut bytes,
         0x5000 + ALLOCATED_TRUCKS,
@@ -329,13 +330,48 @@ fn train_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         companion + supply_companion::REQUIRED_TRUCKS_RAW,
-        &i64::MAX.to_le_bytes(),
+        &0_i64.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        companion + supply_companion::TRUCK_FULFILLMENT_RATIO,
+        &100_000_i64.to_le_bytes(),
     );
     put(
         &mut bytes,
         companion + supply_companion::REQUIRED_TRAINS,
         &i32::MAX.to_le_bytes(),
     );
+    put(
+        &mut bytes,
+        companion_two + supply_companion::TRUCK_FULFILLMENT_RATIO,
+        &100_000_i64.to_le_bytes(),
+    );
+    header(
+        &mut bytes,
+        ROOT + csupply_system::FOREIGN_SOURCE_DATA,
+        0x2800,
+        3,
+        3,
+    );
+    header(
+        &mut bytes,
+        0x2800 + csupply_system::FOREIGN_SOURCE_STRIDE + csupply_system::FOREIGN_SOURCE_RELATED_COUNTRIES,
+        0x2980,
+        1,
+        1,
+    );
+    put(&mut bytes, 0x2980, &1_u32.to_le_bytes());
+    header(
+        &mut bytes,
+        0x2800
+            + 2 * csupply_system::FOREIGN_SOURCE_STRIDE
+            + csupply_system::FOREIGN_SOURCE_RELATED_COUNTRIES,
+        0x2990,
+        1,
+        1,
+    );
+    put(&mut bytes, 0x2990, &7_u32.to_le_bytes());
     header(
         &mut bytes,
         companion + supply_companion::NODES,
@@ -439,6 +475,7 @@ struct TrainMemory<'a> {
     calls: std::cell::Cell<usize>,
     copied: std::cell::Cell<usize>,
     reject: Option<usize>,
+    truck_cost: Option<i64>,
 }
 impl Memory for TrainMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -449,6 +486,15 @@ impl Memory for TrainMemory<'_> {
             .is_some_and(|p| p >= address && p < address.saturating_add(destination.len()))
         {
             return false;
+        }
+        if address == supply_companion::SUPPLY_HUB_FULL_MOTORIZATION_TRUCK_COST_RVA.0
+            && destination.len() == 8
+        {
+            let Some(cost) = self.truck_cost else {
+                return false;
+            };
+            destination.copy_from_slice(&cost.to_le_bytes());
+            return true;
         }
         if address == crate::supply_route::EMPTY_RVA.0 + crate::supply_route::FROM {
             destination.fill(0);
@@ -472,6 +518,7 @@ impl<'a> TrainMemory<'a> {
             calls: 0.into(),
             copied: 0.into(),
             reject: None,
+            truck_cost: Some(6_000_000),
         }
     }
 }
@@ -1142,7 +1189,7 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
             row.required_trains,
         )).collect::<Vec<_>>(),
         [
-            (Some(i32::MIN), Some(i64::MAX), Some(i32::MAX)),
+            (Some(i32::MIN), Some(0), Some(i32::MAX)),
             (Some(0), Some(0), Some(0)),
         ]
     );
@@ -1700,4 +1747,211 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
             .count(),
         2
     );
+}
+
+#[test]
+fn required_trucks_witness_withholds_reset_and_unverified_cache() {
+    use crate::supply_node as node;
+    let mut bytes = train_fixture();
+    let companion_one = 0x6000 + supply_companion::STRIDE;
+    let companion_two = 0x6000 + 2 * supply_companion::STRIDE;
+
+    header(&mut bytes, GAME + cgame_state::PROVINCES, 0x18000, 6, 6);
+    for (id, controller) in [(4_u32, 7_u32), (5_u32, 1_u32)] {
+        let p = 0x19000 + id as usize * 0x400;
+        put(&mut bytes, 0x18000 + id as usize * 8, &(p as u64).to_le_bytes());
+        put(&mut bytes, p, &(crate::cprovince::VTABLE_RVA.0 as u64).to_le_bytes());
+        put(&mut bytes, p + crate::cprovince::ID, &id.to_le_bytes());
+        put(&mut bytes, p + crate::cprovince::CONTROLLER, &controller.to_le_bytes());
+    }
+
+    header(&mut bytes, 0x5000 + HUB_SETTINGS_DATA, 0x7000, 2, 2);
+    put(&mut bytes, 0x7000 + supply_node_record::PROVINCE, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x7000 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    header(&mut bytes, 0x7000 + supply_node_record::MOTORIZATION_DATA, 0x8000, 1, 1);
+    put(&mut bytes, 0x8000, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x8004, &[1_u8]);
+
+    put(&mut bytes, 0x7028 + supply_node_record::PROVINCE, &2_u32.to_le_bytes());
+    put(&mut bytes, 0x7028 + supply_node_record::NODE_TYPE, &node::KIND_NAVAL_BASE.to_le_bytes());
+    header(&mut bytes, 0x7028 + supply_node_record::MOTORIZATION_DATA, 0x8020, 1, 1);
+    put(&mut bytes, 0x8020, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x8024, &[0_u8]);
+
+    header(&mut bytes, 0xa000 + node::STRIDE + node::MOTORIZATION_OVERRIDES, 0x16000, 1, 1);
+    put(&mut bytes, 0x16000, &1_i32.to_le_bytes());
+    put(&mut bytes, 0x16004, &2_i32.to_le_bytes());
+
+    header(&mut bytes, companion_two + supply_companion::NODES, 0x16200, 2, 2);
+    for (idx, (prov, kind)) in [(4_u32, node::KIND_SUPPLY_HUB), (5, node::KIND_SUPPLY_HUB)]
+        .into_iter()
+        .enumerate()
+    {
+        let at = 0x16200 + idx * node::STRIDE;
+        put(&mut bytes, at, &(idx as u32).to_le_bytes());
+        put(&mut bytes, at + node::PROVINCE, &prov.to_le_bytes());
+        put(&mut bytes, at + node::KIND, &kind.to_le_bytes());
+    }
+    header(&mut bytes, 0x5300 + HUB_SETTINGS_DATA, 0x16500, 1, 1);
+    put(&mut bytes, 0x16500 + supply_node_record::PROVINCE, &4_u32.to_le_bytes());
+    put(&mut bytes, 0x16500 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    header(&mut bytes, 0x16500 + supply_node_record::MOTORIZATION_DATA, 0x16600, 1, 1);
+    put(&mut bytes, 0x16600, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x16604, &[2_u8]);
+
+    header(
+        &mut bytes,
+        0x2800 + csupply_system::FOREIGN_SOURCE_STRIDE + csupply_system::FOREIGN_SOURCE_RELATED_COUNTRIES,
+        0x2980,
+        2,
+        2,
+    );
+    put(&mut bytes, 0x2980, &1_u32.to_le_bytes());
+    put(&mut bytes, 0x2984, &7_u32.to_le_bytes());
+
+    let expected_required = 15_000_000_i64;
+    put(&mut bytes, 0x5000 + ALLOCATED_TRUCKS, &100_i32.to_le_bytes());
+    put(
+        &mut bytes,
+        companion_one + supply_companion::REQUIRED_TRUCKS_RAW,
+        &expected_required.to_le_bytes(),
+    );
+    let partial_ratio = (100_i64 * 10_000_000_000) / expected_required;
+    put(
+        &mut bytes,
+        companion_one + supply_companion::TRUCK_FULFILLMENT_RATIO,
+        &partial_ratio.to_le_bytes(),
+    );
+
+    let run = |memory: &TrainMemory<'_>| {
+        let mut rows = vec![TrainRow::default(); 2];
+        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut access = vec![0; 3];
+        let mut runs = vec![[0; 2]; 2];
+        let report = walk_trains(memory, 0, GAME, &mut rows, &mut entries, &mut access, &mut runs);
+        (report, rows, entries)
+    };
+
+    let (report, rows, entries) = run(&TrainMemory::new(&bytes));
+    assert_eq!(report.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].required_trucks_raw, Some(expected_required));
+    assert_eq!(rows[1].required_trucks_raw, Some(0));
+    assert_eq!(rows[0].allocated_trucks, Some(100));
+    assert_eq!(rows[0].required_trains, Some(i32::MAX));
+    assert_eq!(report.vehicle_failures, [0, 0, 0]);
+    assert_eq!(report.required_trucks_withheld, None);
+    assert_eq!(entries.len(), 2);
+
+    let mut full_ratio = bytes.clone();
+    put(&mut full_ratio, 0x5000 + ALLOCATED_TRUCKS, &200_i32.to_le_bytes());
+    put(
+        &mut full_ratio,
+        companion_one + supply_companion::TRUCK_FULFILLMENT_RATIO,
+        &100_000_i64.to_le_bytes(),
+    );
+    let (report, rows, _) = run(&TrainMemory::new(&full_ratio));
+    assert_eq!(rows[0].required_trucks_raw, Some(expected_required));
+    assert_eq!(report.vehicle_failures, [0, 0, 0]);
+
+    let mut reset_zero = bytes.clone();
+    put(&mut reset_zero, companion_two + supply_companion::TRUCK_FULFILLMENT_RATIO, &0_i64.to_le_bytes());
+    let (report, rows, _) = run(&TrainMemory::new(&reset_zero));
+    assert_eq!(rows[0].required_trucks_raw, Some(expected_required));
+    assert_eq!(rows[1].required_trucks_raw, None);
+    assert_eq!(report.vehicle_failures, [0, 1, 0]);
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply truck fulfillment ratio witness mismatch")
+    );
+
+    let mut tampered = bytes.clone();
+    put(
+        &mut tampered,
+        companion_one + supply_companion::REQUIRED_TRUCKS_RAW,
+        &11_000_000_i64.to_le_bytes(),
+    );
+    let (report, rows, _) = run(&TrainMemory::new(&tampered));
+    assert_eq!(rows[0].required_trucks_raw, None);
+    assert_eq!(rows[0].allocated_trucks, Some(100));
+    assert_eq!(rows[0].required_trains, Some(i32::MAX));
+    assert_eq!(rows[1].required_trucks_raw, Some(0));
+    assert_eq!(report.vehicle_failures, [0, 1, 0]);
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply required trucks witness mismatch")
+    );
+
+    let mut bad_level = bytes.clone();
+    put(&mut bad_level, 0x16004, &3_i32.to_le_bytes());
+    let (report, rows, _) = run(&TrainMemory::new(&bad_level));
+    assert_eq!(rows[0].required_trucks_raw, None);
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply hub motorization level unsupported")
+    );
+
+    let mut no_define = TrainMemory::new(&bytes);
+    no_define.truck_cost = None;
+    let (report, rows, _) = run(&no_define);
+    assert_eq!(rows[0].required_trucks_raw, None);
+    assert_eq!(rows[1].required_trucks_raw, None);
+    assert_eq!(rows[0].allocated_trucks, Some(100));
+    assert_eq!(rows[0].required_trains, Some(i32::MAX));
+    assert_eq!(report.vehicle_failures, [0, 2, 0]);
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply truck cost define unreadable")
+    );
+
+    let overflow_base = usize::MAX - 0x0330_0000;
+    let mut taint_bytes = bytes.clone();
+    put(
+        &mut taint_bytes,
+        ROOT,
+        &((overflow_base.wrapping_add(csupply_system::VTABLE_RVA.0)) as u64).to_le_bytes(),
+    );
+    put(
+        &mut taint_bytes,
+        ROOT + 8,
+        &((overflow_base.wrapping_add(csupply_system::SECONDARY_VTABLE_RVA.0)) as u64).to_le_bytes(),
+    );
+    for (country, system) in [(0x3000_usize, 0x5000_usize), (0x4000, 0x5300)] {
+        put(
+            &mut taint_bytes,
+            country,
+            &((overflow_base.wrapping_add(ccountry::VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+        put(
+            &mut taint_bytes,
+            system,
+            &((overflow_base.wrapping_add(VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+        put(
+            &mut taint_bytes,
+            system + SECONDARY_BASE,
+            &((overflow_base.wrapping_add(SECONDARY_VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+    }
+    let _ = engine_sites::take_taint();
+    let mut rows = vec![TrainRow::default(); 2];
+    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut access = vec![0; 3];
+    let mut runs = vec![[0; 2]; 2];
+    let report = walk_trains(
+        &TrainMemory::new(&taint_bytes),
+        overflow_base,
+        GAME,
+        &mut rows,
+        &mut entries,
+        &mut access,
+        &mut runs,
+    );
+    assert_eq!(report.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].required_trucks_raw, None);
+    assert_eq!(rows[0].allocated_trucks, Some(100));
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply truck cost define site unlocated")
+    );
+    assert_eq!(engine_sites::take_taint(), None);
 }

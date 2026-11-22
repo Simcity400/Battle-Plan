@@ -149,6 +149,23 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
                 true,
             );
         }
+        let required_trucks_present = report
+            .recorded(
+                &row.required_trucks_raw,
+                "TrainInventory.required_trucks_raw",
+                format!("country {}", row.country),
+            )
+            .map(|value| {
+                if let Some(raw) = value {
+                    equal(
+                        report,
+                        &format!("TrainInventory {} required_trucks_raw non-negative", row.country),
+                        *raw >= 0,
+                        true,
+                    );
+                }
+                value.is_some()
+            });
         for (index, (field, present)) in [
             (
                 "allocated_trucks",
@@ -160,16 +177,7 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
                     )
                     .map(Option::is_some),
             ),
-            (
-                "required_trucks_raw",
-                report
-                    .recorded(
-                        &row.required_trucks_raw,
-                        "TrainInventory.required_trucks_raw",
-                        format!("country {}", row.country),
-                    )
-                    .map(Option::is_some),
-            ),
+            ("required_trucks_raw", required_trucks_present),
             (
                 "required_trains",
                 report
@@ -236,7 +244,7 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         ),
         (
             "required_trucks_raw",
-            "the game does not serialize the required-truck fixed5 cache. Reset is known; its nonzero accumulation behavior remains unestablished",
+            "the game does not serialize the required-truck fixed5 cache; capture verifies it against same-hour supply nodes, motorization settings, overrides, defines and fulfillment ratio and withholds unverified rows",
         ),
         (
             "required_trains",

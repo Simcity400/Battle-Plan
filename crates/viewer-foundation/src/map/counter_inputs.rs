@@ -309,8 +309,9 @@ pub fn reserve_of(first: Option<u64>, mission_of: impl Fn(u64) -> Option<u32>) -
     }
 }
 
-pub fn color(red: u32, green: u32, blue: u32, alpha: u32) -> [f32; 4] {
-    [red, green, blue, alpha].map(f32::from_bits)
+pub fn color(red: u32, green: u32, blue: u32, alpha: u32) -> Option<[f32; 4]> {
+    let rgba = [red, green, blue, alpha].map(f32::from_bits);
+    rgba.iter().all(|value| value.is_finite()).then_some(rgba)
 }
 
 pub fn parent_branch(
@@ -448,7 +449,7 @@ impl AssignedOrders {
 pub struct OrdersIndex {
     pub groups: BTreeMap<u64, GroupFacts>,
     pub has_child: BTreeMap<(u64, u32), bool>,
-    pub colors: BTreeMap<u64, [f32; 4]>,
+    pub colors: BTreeMap<u64, Option<[f32; 4]>>,
     pub order_types: BTreeMap<(u64, u32), i32>,
     pub area_groups: BTreeSet<u64>,
     pub orders_complete: bool,
@@ -533,16 +534,26 @@ impl OrdersIndex {
         }
     }
 
-    pub fn marker(&self, orders_group: u64, branch: Option<bool>) -> Option<[f32; 4]> {
+    pub fn marker(&self, orders_group: u64, branch: Option<bool>) -> Result<Option<[f32; 4]>, u64> {
         if orders_group == 0 {
-            return None;
+            return Ok(None);
         }
-        let group = if branch? {
-            self.groups.get(&orders_group)?.parent
+        let Some(branch) = branch else {
+            return Ok(None);
+        };
+        let group = if branch {
+            let Some(facts) = self.groups.get(&orders_group) else {
+                return Ok(None);
+            };
+            facts.parent
         } else {
             orders_group
         };
-        self.colors.get(&group).copied()
+        match self.colors.get(&group) {
+            None => Ok(None),
+            Some(Some(rgba)) => Ok(Some(*rgba)),
+            Some(None) => Err(group),
+        }
     }
 }
 

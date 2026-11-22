@@ -17,7 +17,7 @@ export type Availability = { available: true } | { available: false; reason: str
 
 export interface FollowEntry {
   readonly id: number;
-  values?: Map<string, number | string>;
+  values?: Map<string, number | bigint | string>;
   coverage?: { start: number; through: number };
   status: 'pending' | 'followed' | 'unavailable';
   reason?: string;

@@ -13,7 +13,7 @@ use replay::commands::{Actor, Batch, Category, Event, Kind, Origin, Span};
 use std::{
     borrow::Cow,
     cell::UnsafeCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{HashMap, HashSet},
     io,
     ops::Range,
     sync::{
@@ -28,6 +28,7 @@ const EVENT_ALLOCATION: &str = "command event allocation failed";
 const WORLD_CONTEXT_ALLOCATION: &str = "command world context allocation failed";
 const PLAYER_STORAGE_ALLOCATION: &str = "command player storage allocation failed";
 const OVERLAP: &str = "command observation overlapped another";
+const ADMISSION_GAP: &str = "command observer coverage interrupted";
 
 #[derive(Clone, Copy, Default)]
 struct Entry {
@@ -152,6 +153,9 @@ struct Live {
     closed_world: AtomicU64,
     failed: AtomicU64,
     failed_qpc: AtomicU64,
+    coverage_uncertain: AtomicBool,
+    coverage_uncertain_until: AtomicU64,
+    transition_epoch: AtomicU64,
     first_failure: FirstReason,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
@@ -317,6 +321,9 @@ impl Live {
             closed_world: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            coverage_uncertain: AtomicBool::new(false),
+            coverage_uncertain_until: AtomicU64::new(0),
+            transition_epoch: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
@@ -330,39 +337,38 @@ impl Live {
         unsafe { &*self.metadata.get() }
     }
 
-    fn grow(&self) -> io::Result<(bool, bool)> {
-        let slots = self
+    fn grow(&self) -> (bool, bool) {
+        let events = self.events();
+        let event_capacity = events.required_entries().max(events.len());
+        let next_events = (event_capacity > events.len())
+            .then(|| engine_allocation::advisory(|| SharedLane::new(event_capacity, 0)).ok())
+            .flatten();
+        let actors = self.metadata();
+        let actor_capacity = self
             .capacity_demand
             .load(Ordering::Relaxed)
             .max(1)
             .checked_next_power_of_two()
-            .ok_or_else(engine_allocation::oom)?;
-        let events = self.events();
-        let event_capacity = events.required_entries().max(events.len());
-        let next_events = (event_capacity > events.len())
-            .then(|| SharedLane::new(event_capacity, 0))
-            .transpose()?;
-        let actors = self.metadata();
-        let actor_capacity = actors
-            .required_entries()
-            .max(actors.len())
-            .max(slots.checked_mul(2).ok_or_else(engine_allocation::oom)?);
+            .and_then(|slots| slots.checked_mul(2))
+            .map(|slots| actors.required_entries().max(actors.len()).max(slots));
         let stride = self
             .name_demand
             .load(Ordering::Relaxed)
             .max(actors.stride());
-        let next_actors = (actor_capacity > actors.len() || stride > actors.stride())
-            .then(|| SharedLane::new(actor_capacity, stride))
-            .transpose()?;
+        let next_actors = actor_capacity
+            .filter(|&capacity| capacity > actors.len() || stride > actors.stride())
+            .and_then(|capacity| {
+                engine_allocation::advisory(|| SharedLane::new(capacity, stride)).ok()
+            });
         if next_events.is_none() && next_actors.is_none() {
-            return Ok((false, false));
+            return (false, false);
         }
         if self
             .occupied
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            return Ok((false, false));
+            return (false, false);
         }
         self.version.fetch_add(1, Ordering::AcqRel);
         let mut retired_events = None;
@@ -383,7 +389,7 @@ impl Live {
         self.version.fetch_add(1, Ordering::Release);
         self.occupied.store(false, Ordering::Release);
         drop((retired_events, retired_actors));
-        Ok(changed)
+        changed
     }
 
     fn fail(&self, reason: &'static str) {
@@ -969,16 +975,58 @@ pub struct Drained {
 pub struct Drain {
     events: Vec<(u64, u64)>,
     actors: Vec<(u64, u64)>,
-    windows: BTreeMap<u64, Option<Span>>,
+    committed: Vec<(u64, u64)>,
+    windows: HashMap<u64, Option<Span>>,
     failure: u64,
     loss_until: u64,
-    event_refused: u64,
-    actor_refused: u64,
     last_qpc: u64,
     last_world: u64,
-    known_actors: BTreeMap<(u64, u64), Actor>,
-    retired: BTreeSet<(u64, u64)>,
-    contexts: BTreeMap<u64, WorldContext>,
+    known_actors: HashMap<(u64, u64), Actor>,
+    retired: HashSet<(u64, u64)>,
+    contexts: HashMap<u64, WorldContext>,
+}
+
+fn copy_actor(entry: ActorEntry, bytes: &[u8]) -> io::Result<Actor> {
+    let user_end = entry.user_len;
+    let name_end = user_end + entry.name_len;
+    let tag_end = name_end + entry.tag_len;
+    Ok(Actor {
+        id: entry.actor,
+        player: entry.player,
+        country: entry.country,
+        since_qpc: entry.since_qpc,
+        at_qpc: entry.at_qpc,
+        user: engine_allocation::copy_vec(&bytes[..user_end])?,
+        name: engine_allocation::copy_vec(&bytes[user_end..name_end])?,
+        tag: engine_allocation::copy_vec(&bytes[name_end..tag_end])?,
+    })
+}
+
+fn group_for<'a>(
+    groups: &'a mut Vec<Drained>,
+    index: &mut HashMap<u64, usize>,
+    world: u64,
+    from: u64,
+    to: u64,
+    capture: u64,
+) -> io::Result<&'a mut Drained> {
+    if let Some(&slot) = index.get(&world) {
+        return Ok(&mut groups[slot]);
+    }
+    engine_allocation::reserve(groups, 1)?;
+    engine_allocation::reserve_map(index, 1)?;
+    let slot = groups.len();
+    groups.push(Drained {
+        capture,
+        world,
+        from,
+        to,
+        lost: 0,
+        context: None,
+        batch: Batch::default(),
+    });
+    index.insert(world, slot);
+    Ok(&mut groups[slot])
 }
 
 impl Drain {
@@ -986,15 +1034,51 @@ impl Drain {
     /// Only the originating installation's spool consumer may drain these lanes. Keep that
     /// installation live, and use a final drain only after command callbacks are quiet.
     pub unsafe fn take(&mut self, final_drain: bool) -> io::Result<Vec<Drained>> {
-        let pointer = LIVE.load(Ordering::Acquire);
-        if pointer.is_null() {
-            return Ok(Vec::new());
-        }
-        let live = unsafe { &*pointer };
-        self.take_live(live, final_drain)
+        let mut out = Vec::new();
+        // SAFETY: The caller holds the same installation and final-drain guarantees.
+        unsafe { self.take_into(final_drain, &mut out) }?;
+        Ok(out)
     }
 
+    /// # Safety
+    /// Only the originating installation's spool consumer may drain these lanes. Keep that
+    /// installation live, and use a final drain only after command callbacks are quiet.
+    pub unsafe fn take_into(
+        &mut self,
+        final_drain: bool,
+        out: &mut Vec<Drained>,
+    ) -> io::Result<()> {
+        let pointer = LIVE.load(Ordering::Acquire);
+        if pointer.is_null() {
+            return Ok(());
+        }
+        let live = unsafe { &*pointer };
+        self.take_live_into(live, final_drain, out)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     fn take_live(&mut self, live: &Live, final_drain: bool) -> io::Result<Vec<Drained>> {
+        let mut out = Vec::new();
+        self.take_live_into(live, final_drain, &mut out)?;
+        Ok(out)
+    }
+
+    fn take_live_into(
+        &mut self,
+        live: &Live,
+        final_drain: bool,
+        out: &mut Vec<Drained>,
+    ) -> io::Result<()> {
+        let transition = live.transition_epoch.load(Ordering::Acquire);
+        if transition & 1 != 0 {
+            return if final_drain {
+                Err(io::Error::other(
+                    "command observer transition is still pending at final drain",
+                ))
+            } else {
+                Ok(())
+            };
+        }
         let version = live.version.load(Ordering::Acquire);
         if version & 1 != 0 {
             return if final_drain {
@@ -1002,7 +1086,7 @@ impl Drain {
                     "command observer is still active at final drain",
                 ))
             } else {
-                Ok(Vec::new())
+                Ok(())
             };
         }
         let (time, order, world) = (
@@ -1017,27 +1101,49 @@ impl Drain {
                     "command observer changed during final drain",
                 ))
             } else {
-                Ok(Vec::new())
+                Ok(())
+            };
+        }
+        let failed = live.failed.load(Ordering::Acquire);
+        let failed_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let uncertain = live.coverage_uncertain.load(Ordering::Acquire);
+        let uncertain_until = live.coverage_uncertain_until.load(Ordering::Acquire);
+        fence(Ordering::Acquire);
+        if transition != live.transition_epoch.load(Ordering::Relaxed) {
+            return if final_drain {
+                Err(io::Error::other(
+                    "command observer transition changed during final drain",
+                ))
+            } else {
+                Ok(())
             };
         }
         if time == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         live.events()
             .published_into(&mut self.events, |entry| entry.order)
-            .map_err(io::Error::other)?;
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         live.metadata()
             .published_into(&mut self.actors, Metadata::order)
-            .map_err(io::Error::other)?;
-        let mut groups: BTreeMap<u64, Drained> = BTreeMap::new();
-        let committed: BTreeSet<_> = self
-            .events
-            .iter()
-            .filter_map(|&(_, index)| {
-                let (entry, _) = live.events().record(index);
-                (entry.order <= order && entry.code == 4).then_some((entry.world, entry.order))
-            })
-            .collect();
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        self.committed.clear();
+        for &(_, index) in &self.events {
+            let (entry, _) = live.events().record(index);
+            if entry.order <= order && entry.code == 4 {
+                engine_allocation::reserve(&mut self.committed, 1)?;
+                self.committed.push((entry.world, entry.order));
+            }
+        }
+        self.committed.sort_unstable();
+        self.committed.dedup();
+        let mut groups = Vec::new();
+        let mut group_index = HashMap::new();
+        let mut staged_contexts = HashMap::new();
+        let mut staged_actors: Vec<(u64, Actor)> = Vec::new();
+        let mut staged_known = HashMap::new();
+        let mut staged_windows = HashMap::new();
+        let mut staged_retired = HashSet::new();
         for &(_, index) in &self.actors {
             let (entry, bytes) = live.metadata().record(index);
             if entry.order() > order {
@@ -1045,93 +1151,102 @@ impl Drain {
             }
             let entry = match entry {
                 Metadata::World {
-                    order,
+                    order: world_order,
                     world,
                     context,
                 } => {
-                    if self.events.iter().any(|&(_, index)| {
-                        let (entry, _) = live.events().record(index);
-                        entry.order == order && entry.world == world && entry.code == 1
-                    }) {
-                        self.contexts.entry(world).or_insert(context);
+                    if !self.contexts.contains_key(&world) && !staged_contexts.contains_key(&world) {
+                        let start = self
+                            .events
+                            .partition_point(|&(entry_order, _)| entry_order < world_order);
+                        if self.events[start..]
+                            .iter()
+                            .take_while(|&&(entry_order, _)| entry_order == world_order)
+                            .any(|&(_, event_index)| {
+                                let (entry, _) = live.events().record(event_index);
+                                entry.world == world && entry.code == 1
+                            })
+                        {
+                            engine_allocation::reserve_map(&mut staged_contexts, 1)?;
+                            staged_contexts.insert(world, context);
+                        }
                     }
-                    live.metadata().release(index);
                     continue;
                 }
                 Metadata::Actor(entry) => entry,
             };
-            if !committed.contains(&(entry.world, entry.order)) {
-                live.metadata().release(index);
-                continue;
-            }
             if self
-                .known_actors
-                .get(&(entry.world, entry.actor))
-                .is_some_and(|old| {
-                    old.player == entry.player
-                        && old.country == entry.country
-                        && old.since_qpc == entry.since_qpc
-                        && old.user == bytes[..entry.user_len]
-                        && old.name == bytes[entry.user_len..entry.user_len + entry.name_len]
-                        && old.tag
-                            == bytes[entry.user_len + entry.name_len
-                                ..entry.user_len + entry.name_len + entry.tag_len]
-                })
+                .committed
+                .binary_search(&(entry.world, entry.order))
+                .is_err()
             {
-                live.metadata().release(index);
                 continue;
             }
-            let group = groups.entry(entry.world).or_insert_with(|| Drained {
-                capture: live.capture,
-                world: entry.world,
-                from: self.last_qpc.min(time),
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
-            let actor = Actor {
-                id: entry.actor,
-                player: entry.player,
-                country: entry.country,
-                since_qpc: entry.since_qpc,
-                at_qpc: entry.at_qpc,
-                user: engine_allocation::copy_vec(&bytes[..entry.user_len])?,
-                name: engine_allocation::copy_vec(
-                    &bytes[entry.user_len..entry.user_len + entry.name_len],
-                )?,
-                tag: engine_allocation::copy_vec(
-                    &bytes[entry.user_len + entry.name_len
-                        ..entry.user_len + entry.name_len + entry.tag_len],
-                )?,
-            };
-            self.known_actors
-                .insert((entry.world, entry.actor), actor.clone());
-            group.batch.actors.push(actor);
-            live.metadata().release(index);
+            let key = (entry.world, entry.actor);
+            let existing = staged_known
+                .get(&key)
+                .map(|&slot: &usize| &staged_actors[slot].1)
+                .or_else(|| self.known_actors.get(&key));
+            if existing.is_some_and(|old| {
+                old.player == entry.player
+                    && old.country == entry.country
+                    && old.since_qpc == entry.since_qpc
+                    && old.user == bytes[..entry.user_len]
+                    && old.name == bytes[entry.user_len..entry.user_len + entry.name_len]
+                    && old.tag
+                        == bytes[entry.user_len + entry.name_len
+                            ..entry.user_len + entry.name_len + entry.tag_len]
+            }) {
+                continue;
+            }
+            let batch_actor = copy_actor(entry, bytes)?;
+            let known_actor = copy_actor(entry, bytes)?;
+            let group = group_for(
+                &mut groups,
+                &mut group_index,
+                entry.world,
+                self.last_qpc.min(time),
+                time,
+                live.capture,
+            )?;
+            engine_allocation::reserve(&mut group.batch.actors, 1)?;
+            engine_allocation::reserve(&mut staged_actors, 1)?;
+            let slot = staged_actors.len();
+            if let Some(existing_slot) = staged_known.get_mut(&key) {
+                *existing_slot = slot;
+            } else {
+                engine_allocation::reserve_map(&mut staged_known, 1)?;
+                staged_known.insert(key, slot);
+            }
+            staged_actors.push((entry.world, known_actor));
+            group.batch.actors.push(batch_actor);
         }
         for &(_, index) in &self.events {
             let (entry, _) = live.events().record(index);
             if entry.order > order {
                 continue;
             }
-            let group = groups.entry(entry.world).or_insert_with(|| Drained {
-                capture: live.capture,
-                world: entry.world,
-                from: if self.last_qpc == 0 {
-                    entry.qpc
-                } else {
-                    self.last_qpc
-                },
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
+            let from = if self.last_qpc == 0 {
+                entry.qpc
+            } else {
+                self.last_qpc
+            };
+            let group = group_for(
+                &mut groups,
+                &mut group_index,
+                entry.world,
+                from,
+                time,
+                live.capture,
+            )?;
             match entry.code {
                 4 => {}
                 3 => {
-                    if self.retired.insert((entry.world, entry.actor)) {
+                    let key = (entry.world, entry.actor);
+                    if !self.retired.contains(&key) && !staged_retired.contains(&key) {
+                        engine_allocation::reserve_set(&mut staged_retired, 1)?;
+                        engine_allocation::reserve(&mut group.batch.departures, 1)?;
+                        staged_retired.insert(key);
                         group.batch.departures.push((entry.actor, entry.qpc));
                     }
                 }
@@ -1143,7 +1258,17 @@ impl Drain {
                         hour: entry.hour,
                         paused: entry.paused,
                     });
-                    if let Some(Some(previous)) = self.windows.insert(entry.world, next) {
+                    let previous = match staged_windows.get_mut(&entry.world) {
+                        Some(slot) => std::mem::replace(slot, next),
+                        None => {
+                            engine_allocation::reserve_map(&mut staged_windows, 1)?;
+                            let previous = self.windows.get(&entry.world).copied().flatten();
+                            staged_windows.insert(entry.world, next);
+                            previous
+                        }
+                    };
+                    if let Some(previous) = previous {
+                        engine_allocation::reserve(&mut group.batch.spans, 1)?;
                         group.batch.spans.push(Span {
                             from_qpc: previous.from_qpc.max(group.from),
                             to_qpc: entry.qpc,
@@ -1151,27 +1276,34 @@ impl Drain {
                         });
                     }
                 }
-                _ => group.batch.events.push(Event {
-                    qpc: entry.qpc,
-                    hour: entry.hour,
-                    actor: entry.actor,
-                    player: entry.player,
-                    kind: entry.kind,
-                    command_country: entry.target_present.then_some(entry.country),
-                    origin: match entry.origin {
-                        1 => Origin::PlayerOrder,
-                        2 => Origin::AutonomousCountry,
-                        _ => Origin::Unresolved,
-                    },
-                    sequence: entry.sequence,
-                    paused: entry.paused,
-                }),
+                _ => {
+                    engine_allocation::reserve(&mut group.batch.events, 1)?;
+                    group.batch.events.push(Event {
+                        qpc: entry.qpc,
+                        hour: entry.hour,
+                        actor: entry.actor,
+                        player: entry.player,
+                        kind: entry.kind,
+                        command_country: entry.target_present.then_some(entry.country),
+                        origin: match entry.origin {
+                            1 => Origin::PlayerOrder,
+                            2 => Origin::AutonomousCountry,
+                            _ => Origin::Unresolved,
+                        },
+                        sequence: entry.sequence,
+                        paused: entry.paused,
+                    });
+                }
             }
-            live.events().release(index);
         }
-        let failed = live.failed.load(Ordering::Acquire);
-        if failed != self.failure {
-            self.loss_until = self.loss_until.max(live.failed_qpc.load(Ordering::Relaxed));
+        let mut loss_until = if failed != self.failure {
+            self.loss_until.max(failed_qpc)
+        } else {
+            self.loss_until
+        }
+        .max(uncertain_until);
+        if uncertain {
+            loss_until = loss_until.max(time);
         }
         let event_refused = live.events().rejected();
         let actor_refused = live.metadata().rejected();
@@ -1182,51 +1314,102 @@ impl Drain {
             world
         };
         if world != 0 {
-            groups.entry(world).or_insert_with(|| Drained {
-                capture: live.capture,
+            group_for(
+                &mut groups,
+                &mut group_index,
                 world,
-                from: self.last_qpc.min(time),
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
+                self.last_qpc.min(time),
+                time,
+                live.capture,
+            )?;
         }
-        for group in groups.values_mut() {
-            group.context = self.contexts.get(&group.world).copied();
-            if let Some(Some(window)) = self.windows.get_mut(&group.world) {
+        groups.sort_unstable_by_key(|group| group.world);
+        for group in &mut groups {
+            group.context = staged_contexts
+                .get(&group.world)
+                .or_else(|| self.contexts.get(&group.world))
+                .copied();
+            let current_window = staged_windows
+                .get(&group.world)
+                .copied()
+                .or_else(|| self.windows.get(&group.world).copied())
+                .flatten();
+            let incomplete =
+                uncertain || lost != 0 || (loss_until != 0 && loss_until >= group.from);
+            if let Some(mut window) = current_window {
+                engine_allocation::reserve(&mut group.batch.spans, 1)?;
                 group.batch.spans.push(Span {
                     from_qpc: window.from_qpc.max(group.from),
                     to_qpc: time,
-                    complete: lost == 0 && (self.loss_until == 0 || self.loss_until < group.from),
-                    ..*window
+                    complete: !incomplete,
+                    ..window
                 });
                 window.from_qpc = time;
+                if let Some(slot) = staged_windows.get_mut(&group.world) {
+                    *slot = Some(window);
+                } else {
+                    engine_allocation::reserve_map(&mut staged_windows, 1)?;
+                    staged_windows.insert(group.world, Some(window));
+                }
             }
-            if lost != 0 || (self.loss_until != 0 && self.loss_until >= group.from) {
+            if incomplete {
                 for span in &mut group.batch.spans {
                     span.complete = false;
                 }
             }
         }
-        if let Some(mut latest) = groups.last_entry() {
-            latest.get_mut().lost = lost;
-            self.last_world = *latest.key();
+        if let Some(latest) = groups.last_mut() {
+            latest.lost = lost;
+        }
+        engine_allocation::reserve_map(&mut self.contexts, staged_contexts.len())?;
+        engine_allocation::reserve_map(&mut self.known_actors, staged_actors.len())?;
+        engine_allocation::reserve_set(&mut self.retired, staged_retired.len())?;
+        engine_allocation::reserve_map(&mut self.windows, staged_windows.len())?;
+        engine_allocation::reserve(out, groups.len())?;
+        for (world, context) in staged_contexts {
+            if !self.contexts.contains_key(&world) {
+                self.contexts.insert(world, context);
+            }
+        }
+        for (world, actor) in staged_actors {
+            let key = (world, actor.id);
+            if let Some(slot) = self.known_actors.get_mut(&key) {
+                *slot = actor;
+            } else {
+                self.known_actors.insert(key, actor);
+            }
+        }
+        for key in staged_retired {
+            self.retired.insert(key);
+        }
+        for (world, window) in staged_windows {
+            if let Some(slot) = self.windows.get_mut(&world) {
+                *slot = window;
+            } else {
+                self.windows.insert(world, window);
+            }
+        }
+        self.loss_until = loss_until;
+        if let Some(latest) = groups.last() {
+            self.last_world = latest.world;
             self.last_qpc = time;
             self.failure = failed;
         }
-        self.event_refused = event_refused;
-        self.actor_refused = actor_refused;
+        for &(_, index) in &self.actors {
+            if live.metadata().record(index).0.order() <= order {
+                live.metadata().release(index);
+            }
+        }
+        for &(_, index) in &self.events {
+            if live.events().record(index).0.order <= order {
+                live.events().release(index);
+            }
+        }
         live.events().advance(event_refused);
         live.metadata().advance(actor_refused);
-        let changed = live.grow()?;
-        if changed.0 {
-            self.event_refused = 0;
-        }
-        if changed.1 {
-            self.actor_refused = 0;
-        }
-        Ok(groups.into_values().collect())
+        out.extend(groups);
+        let _ = live.grow();
+        Ok(())
     }
 
     /// # Safety
@@ -1253,7 +1436,11 @@ impl Drain {
 
 pub struct Hooks {
     taps: Vec<Tap>,
+    live: *const Live,
+    owns_live: bool,
     publication_attempted: bool,
+    was_enabled: bool,
+    transition_open: bool,
 }
 
 impl Hooks {
@@ -1268,6 +1455,7 @@ impl Hooks {
         base: usize,
         sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> Self {
+        let mut live_pointer: *const Live = std::ptr::null();
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
             for (site, slot) in native::SITES.iter().zip(&mut located) {
@@ -1283,6 +1471,7 @@ impl Hooks {
             )
             .map_err(|_| "command observer storage allocation failed")?;
             let pointer = std::ptr::from_ref(&*live).cast_mut();
+            live_pointer = pointer;
             *STORE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
@@ -1297,6 +1486,7 @@ impl Hooks {
                 })
                 .collect::<Result<Vec<_>, _>>()
         })();
+        let owns_live = !live_pointer.is_null();
         Self {
             taps: result.unwrap_or_else(|reason| {
                 collector_hooks::hook::installation::refused(
@@ -1306,31 +1496,156 @@ impl Hooks {
                 );
                 Vec::new()
             }),
+            live: live_pointer,
+            owns_live,
             publication_attempted: false,
+            was_enabled: false,
+            transition_open: false,
         }
+    }
+
+    fn live(&self) -> Option<&Live> {
+        (!self.live.is_null()).then(|| unsafe { &*self.live })
+    }
+
+    fn begin_transition(&mut self) {
+        if !self.transition_open {
+            if let Some(live) = self.live() {
+                live.transition_epoch.fetch_add(1, Ordering::SeqCst);
+            }
+            self.transition_open = true;
+        }
+    }
+
+    fn end_transition(&mut self) {
+        if self.transition_open {
+            self.transition_open = false;
+            if let Some(live) = self.live() {
+                live.transition_epoch.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn record_coverage_loss(&self, reason: &'static str) {
+        if let Some(live) = self.live() {
+            live.fail(reason);
+        }
+    }
+
+    fn mark_coverage_uncertain(&self, reason: &'static str) {
+        if let Some(live) = self.live()
+            && !live.coverage_uncertain.swap(true, Ordering::AcqRel)
+        {
+            live.fail(reason);
+        }
+    }
+
+    fn coverage_uncertain(&self) -> bool {
+        self.live()
+            .is_some_and(|live| live.coverage_uncertain.load(Ordering::Acquire))
+    }
+
+    fn clear_coverage_uncertain(&self) {
+        if let Some(live) = self.live()
+            && live.coverage_uncertain.load(Ordering::Acquire)
+        {
+            let until = (qpc().max(0) as u64).max(live.closed_qpc.load(Ordering::Relaxed));
+            live.coverage_uncertain_until
+                .fetch_max(until, Ordering::Release);
+            live.coverage_uncertain.store(false, Ordering::Release);
+        }
+    }
+
+    fn taps_published(&self) -> bool {
+        !self.taps.is_empty() && self.taps.iter().all(Tap::is_published)
+    }
+
+    fn any_tap_enabled(&self) -> bool {
+        self.taps.iter().any(Tap::is_enabled)
     }
 
     /// # Safety
     /// Only the owning runtime may toggle these taps in attach or detach order. Keep them alive
     /// until any shared publication round finishes and all admitted callbacks are quiet.
     pub unsafe fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        if !collector_hooks::hook::shared::defer_preparation(|| {
-            ENABLED.store(false, Ordering::SeqCst)
-        }) {
-            ENABLED.store(false, Ordering::SeqCst);
+        let outcome = if enabled {
+            collector_hooks::hook::shared::attach_outcome()
+        } else {
+            None
+        };
+        if enabled && outcome.is_none() && self.taps_published() && ENABLED.load(Ordering::Acquire)
+        {
+            return Ok(true);
         }
-        let result = match collector_hooks::hook::shared::attach_outcome() {
-            Some(outcome) => outcome.map_err(|_| "command observer publication failed")?,
+        let previous = ENABLED.load(Ordering::Acquire);
+        self.begin_transition();
+        if enabled && outcome.is_none() && !previous {
+            let _ = collector_hooks::hook::shared::defer_preparation(|| {
+                ENABLED.store(false, Ordering::SeqCst);
+            });
+        }
+        let result = match outcome {
+            Some(outcome) => outcome.map_err(|_| "command observer publication failed"),
             None => {
                 self.publication_attempted |= enabled;
-                Hook::set_enabled_iter(self.taps.iter_mut().map(Tap::publication_hook), enabled)
-                    .map_err(|_| "command observer publication failed")?
+                Hook::set_enabled_iter(
+                    self.taps.iter_mut().map(Tap::publication_hook),
+                    enabled,
+                )
+                .map_err(|_| "command observer publication failed")
             }
         };
-        if result {
-            ENABLED.store(enabled && !self.taps.is_empty(), Ordering::Release);
+        let deferred = (collector_hooks::hook::shared::attach_collecting()
+            && (enabled || !collector_hooks::hook::restoration::active())
+            && matches!(result, Ok(true)))
+            || (!enabled
+                && collector_hooks::hook::restoration::collecting()
+                && matches!(result, Ok(false)));
+        if deferred {
+            return result;
         }
-        Ok(result)
+        match result {
+            Ok(true) => {
+                if enabled {
+                    if self.taps_published() {
+                        let was_uncertain = self.coverage_uncertain();
+                        if self.was_enabled && !was_uncertain {
+                            self.record_coverage_loss(ADMISSION_GAP);
+                        }
+                        self.clear_coverage_uncertain();
+                        self.was_enabled = true;
+                        ENABLED.store(true, Ordering::Release);
+                    }
+                } else if !self.any_tap_enabled() {
+                    ENABLED.store(false, Ordering::SeqCst);
+                    self.clear_coverage_uncertain();
+                }
+                self.end_transition();
+                Ok(true)
+            }
+            Ok(false) => {
+                if previous {
+                    if self.taps_published() {
+                        self.clear_coverage_uncertain();
+                    } else {
+                        self.mark_coverage_uncertain(ADMISSION_GAP);
+                    }
+                }
+                self.end_transition();
+                Ok(false)
+            }
+            Err(error) => {
+                if previous {
+                    if self.taps_published() {
+                        self.clear_coverage_uncertain();
+                    } else {
+                        self.mark_coverage_uncertain(ADMISSION_GAP);
+                    }
+                }
+                self.end_transition();
+                Err(error)
+            }
+        }
     }
 
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -1342,17 +1657,23 @@ impl Hooks {
     /// handle before any new player-command installation can publish or it can clear that
     /// installation's store.
     pub unsafe fn release_after_quiet(&mut self) {
+        self.end_transition();
         self.publication_attempted = false;
-        LIVE.store(std::ptr::null_mut(), Ordering::Release);
-        STORE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.live = std::ptr::null();
+        if self.owns_live {
+            self.owns_live = false;
+            LIVE.store(std::ptr::null_mut(), Ordering::Release);
+            STORE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+        }
     }
 }
 
 impl Drop for Hooks {
     fn drop(&mut self) {
+        self.end_transition();
         if !self.publication_attempted {
             // SAFETY: The owning hook handle has no published taps or live callbacks here.
             unsafe { self.release_after_quiet() };
@@ -1363,6 +1684,7 @@ impl Drop for Hooks {
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     fn live() -> Live {
         Live {
             base: 0,
@@ -1394,6 +1716,9 @@ pub mod tests {
             closed_world: AtomicU64::new(1),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            coverage_uncertain: AtomicBool::new(false),
+            coverage_uncertain_until: AtomicU64::new(0),
+            transition_epoch: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
@@ -2498,5 +2823,590 @@ pub mod tests {
         assert!(!groups[0].batch.spans[0].complete);
         live.closed_qpc.store(140, Ordering::Relaxed);
         assert!(drain.take_live(&live, true).unwrap()[0].batch.spans[0].complete);
+    }
+
+    #[cfg(test)]
+    fn make_test_hooks(code: &collector_hooks::hook::TestCode, live: &Live) -> (Hooks, usize) {
+        unsafe extern "system" fn target() -> usize {
+            7
+        }
+        let (site, sentinel) = code.stub(0, target as *const () as usize);
+        let tap = unsafe { Tap::new(site, observe, 0, sentinel) }.unwrap();
+        (
+            Hooks {
+                taps: vec![tap],
+                live: std::ptr::from_ref(live),
+                owns_live: false,
+                publication_attempted: false,
+                was_enabled: false,
+                transition_open: false,
+            },
+            site,
+        )
+    }
+
+    #[cfg(test)]
+    fn build_actor_update_burst_live() -> (Live, Vec<(i32, u32, Vec<u8>, Vec<u8>)>, u32) {
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let initial_actors = [
+            (1_u64, 1_i32, 1_u32, b"alpha-user".as_slice(), b"alpha-name".as_slice()),
+            (2_u64, 2_i32, 2_u32, b"bravo-user".as_slice(), b"bravo-name".as_slice()),
+            (3_u64, 3_i32, 3_u32, b"charlie-user".as_slice(), b"charlie-name".as_slice()),
+        ];
+        let publish_actor = |order: u64, actor: u64, player: i32, country: u32, user: &[u8], name: &[u8]| {
+            let needed = user.len() + name.len();
+            let mut reservation = live.metadata().reserve_bytes(needed).unwrap();
+            let bytes = unsafe { std::slice::from_raw_parts_mut(reservation.bytes(), needed) };
+            bytes[..user.len()].copy_from_slice(user);
+            bytes[user.len()..].copy_from_slice(name);
+            reservation.publish(Metadata::Actor(ActorEntry {
+                order,
+                world: 1,
+                actor,
+                player,
+                country,
+                since_qpc: 101,
+                at_qpc: 100 + order,
+                user_len: user.len(),
+                name_len: name.len(),
+                tag_len: 0,
+            }));
+        };
+        for &(actor, player, country, user, name) in &initial_actors {
+            publish_actor(2, actor, player, country, user, name);
+        }
+        live.publish(Entry {
+            order: 2,
+            world: 1,
+            qpc: 101,
+            code: 4,
+            ..Entry::default()
+        })
+        .unwrap();
+        publish_actor(3, 1, 1, 9, b"alpha-user", b"alpha-renamed");
+        live.publish(Entry {
+            order: 3,
+            world: 1,
+            qpc: 102,
+            code: 4,
+            ..Entry::default()
+        })
+        .unwrap();
+        live.publish(Entry {
+            order: 4,
+            world: 1,
+            qpc: 103,
+            hour: 10,
+            paused: false,
+            code: 5,
+            ..Entry::default()
+        })
+        .unwrap();
+        let expected_actors = vec![
+            (1, 1, b"alpha-user".to_vec(), b"alpha-name".to_vec()),
+            (2, 2, b"bravo-user".to_vec(), b"bravo-name".to_vec()),
+            (3, 3, b"charlie-user".to_vec(), b"charlie-name".to_vec()),
+            (1, 9, b"alpha-user".to_vec(), b"alpha-renamed".to_vec()),
+        ];
+        let burst = 2 * live.events().len() as u32 + 3;
+        for sequence in 0..burst {
+            live.publish(Entry {
+                order: 5 + u64::from(sequence),
+                world: 1,
+                qpc: 104 + u64::from(sequence),
+                hour: 10,
+                actor: 1,
+                player: 1,
+                sequence,
+                kind: 1,
+                origin: 1,
+                ..Entry::default()
+            })
+            .unwrap();
+        }
+        live.closed_order
+            .store(4 + u64::from(burst), Ordering::Relaxed);
+        live.closed_qpc.store(200, Ordering::Relaxed);
+        (live, expected_actors, burst)
+    }
+
+    #[test]
+    fn failed_lane_grow_and_metadata_copy_never_drop_drained_commands_or_actors() {
+        let (baseline_live, _, _) = build_actor_update_burst_live();
+        let mut baseline_drain = Drain::default();
+        let total_attempts = {
+            let _guard = collector_test_support::NullGuard::new(usize::MAX);
+            baseline_drain.take_live(&baseline_live, false).unwrap();
+            collector_test_support::ATTEMPTS.load(Ordering::Relaxed)
+        };
+        assert!(total_attempts > 0);
+        let mut saw_grow_denial = false;
+        for ordinal in 1..=total_attempts {
+            let (live, expected_actors, burst) = build_actor_update_burst_live();
+            let initial_events_len = live.events().len();
+            let mut drain = Drain::default();
+            let first = {
+                let _deny = collector_test_support::NullGuard::new(ordinal);
+                drain.take_live(&live, false)
+            };
+            if first.is_ok() && live.events().len() == initial_events_len {
+                saw_grow_denial = true;
+            }
+            let mut groups = first.unwrap_or_default();
+            live.closed_qpc.store(210, Ordering::Relaxed);
+            groups.extend(drain.take_live(&live, true).unwrap());
+            let actors: Vec<_> = groups
+                .iter()
+                .flat_map(|group| &group.batch.actors)
+                .map(|actor| {
+                    (
+                        actor.player,
+                        actor.country,
+                        actor.user.clone(),
+                        actor.name.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                actors, expected_actors,
+                "lost or duplicated actor when allocation ordinal {ordinal} failed"
+            );
+            let events: Vec<_> = groups
+                .iter()
+                .flat_map(|group| &group.batch.events)
+                .map(|event| (event.sequence, event.qpc))
+                .collect();
+            let expected_events: Vec<_> = (0..burst)
+                .map(|sequence| (sequence, 104 + u64::from(sequence)))
+                .collect();
+            assert_eq!(
+                events, expected_events,
+                "lost or duplicated commands when allocation ordinal {ordinal} failed"
+            );
+            assert!(
+                live.events().len() > burst as usize,
+                "lane did not expand on retry after allocation ordinal {ordinal} failed"
+            );
+        }
+        assert!(saw_grow_denial);
+    }
+
+    #[test]
+    fn reenabling_enabled_taps_is_idempotent_without_closing_admission() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        collector_hooks::hook::fail_flushes(1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        collector_hooks::hook::fail_flushes(0);
+        {
+            let mut round = collector_hooks::hook::shared::Round::collect_attach().unwrap();
+            collector_hooks::hook::publication::select_family(Some("player_commands"));
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+            assert!(ENABLED.load(Ordering::Acquire));
+            round.publish();
+            assert!(ENABLED.load(Ordering::Acquire));
+            collector_hooks::hook::publication::select_family(Some("player_commands"));
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+            assert!(ENABLED.load(Ordering::Acquire));
+            collector_hooks::hook::publication::select_family(None);
+        }
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn refused_disable_keeps_admission_open_and_real_disable_reenable_records_loss() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let first = drain.take_live(&live, false).unwrap();
+        assert_eq!(first[0].lost, 0);
+        assert!(first[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        collector_hooks::hook::fail_flushes(1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(false) }.is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        let loss_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(loss_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        collector_hooks::hook::fail_flushes(2);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(false) }.is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 2);
+        let rollback_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let t1 = rollback_qpc.max(loss_qpc + 20) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let uncertain_one = drain.take_live(&live, false).unwrap();
+        assert_eq!(uncertain_one[0].lost, 1);
+        assert!(
+            uncertain_one[0]
+                .batch
+                .spans
+                .iter()
+                .all(|span| !span.complete)
+        );
+        let t2 = t1 + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let uncertain_two = drain.take_live(&live, false).unwrap();
+        assert!(
+            uncertain_two[0]
+                .batch
+                .spans
+                .iter()
+                .all(|span| !span.complete)
+        );
+        let t3 = t2 + 10;
+        live.closed_qpc.store(t3, Ordering::Relaxed);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+        let detached = drain.take_live(&live, true).unwrap();
+        assert!(detached[0].batch.spans.iter().all(|span| !span.complete));
+    }
+
+    #[test]
+    fn detected_tap_mismatch_records_loss_and_blocks_idempotent_fast_path() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let _ = drain.take_live(&live, false).unwrap();
+        let (mut hooks, site) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        let saved = unsafe { std::ptr::read(site as *const u8) };
+        unsafe { std::ptr::write(site as *mut u8, saved ^ 0xff) };
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        let result = unsafe { hooks.set_enabled(false) };
+        assert!(result.is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(true) }.is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        let mismatch_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let t1 = mismatch_qpc.max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let d1 = drain.take_live(&live, false).unwrap();
+        assert!(d1[0].batch.spans.iter().all(|span| !span.complete));
+        let t2 = t1 + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let d2 = drain.take_live(&live, false).unwrap();
+        assert!(d2[0].batch.spans.iter().all(|span| !span.complete));
+        unsafe { std::ptr::write(site as *mut u8, saved) };
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn batched_restore_defers_drain_until_report_records_refusal() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        let _scratch = collector_hooks::hook::restoration::Scratch::prepare(4)
+            .unwrap()
+            .enter();
+        {
+            let mut batch = collector_hooks::hook::restoration::Batch::collect().unwrap();
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
+            collector_hooks::hook::fail_flushes(2);
+            assert_eq!(batch.publish(), 0);
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let between = drain.take_live(&live, false).unwrap();
+            assert!(between.is_empty());
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
+        }
+        let reported_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(reported_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn verified_rollback_closes_prior_coverage_uncertainty() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        collector_hooks::hook::fail_flushes(2);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(false) }.is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        let t1 = live.failed_qpc.load(Ordering::Relaxed).max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let uncertain = drain.take_live(&live, false).unwrap();
+        assert_eq!(uncertain[0].lost, 1);
+        assert!(uncertain[0].batch.spans.iter().all(|span| !span.complete));
+        collector_hooks::hook::fail_flushes(1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(false) }.is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        let closed_until = live.coverage_uncertain_until.load(Ordering::Acquire);
+        let t2 = closed_until.max(t1) + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let straddling = drain.take_live(&live, false).unwrap();
+        assert!(straddling[0].batch.spans.iter().all(|span| !span.complete));
+        let t3 = t2 + 10;
+        live.closed_qpc.store(t3, Ordering::Relaxed);
+        let healthy = drain.take_live(&live, false).unwrap();
+        assert_eq!(healthy[0].lost, 0);
+        assert!(healthy[0].batch.spans.iter().all(|span| span.complete));
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn batched_restore_other_family_rollback_preserves_command_byte_mismatch() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        unsafe extern "system" fn other_target() -> usize {
+            11
+        }
+        unsafe extern "system" fn other_callback() -> usize {
+            13
+        }
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, site) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        let (other_site, other_bytes) = code.stub(64, other_target as *const () as usize);
+        let mut other =
+            unsafe { Hook::new(other_site, other_callback as *const () as usize, other_bytes) }
+                .unwrap();
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { other.set_enabled(true) }, Ok(true));
+        let saved = unsafe { std::ptr::read(site as *const u8) };
+        unsafe { std::ptr::write(site as *mut u8, saved ^ 0xff) };
+        {
+            let _scratch = collector_hooks::hook::restoration::Scratch::prepare(8)
+                .unwrap()
+                .enter();
+            {
+                let mut batch = collector_hooks::hook::restoration::Batch::collect().unwrap();
+                // SAFETY: The fixture owns the taps and keeps them live through publication.
+                assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
+                // SAFETY: The fixture owns the taps and keeps them live through publication.
+                assert_eq!(unsafe { other.set_enabled(false) }, Ok(false));
+                collector_hooks::hook::fail_flushes(1);
+                assert_eq!(batch.publish(), 0);
+                // SAFETY: The fixture owns the taps and keeps them live through publication.
+                assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
+                // SAFETY: The fixture owns the taps and keeps them live through publication.
+                assert_eq!(unsafe { other.set_enabled(false) }, Ok(false));
+            }
+        }
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert!(unsafe { hooks.set_enabled(true) }.is_err());
+        let t1 = live.failed_qpc.load(Ordering::Relaxed).max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        unsafe { std::ptr::write(site as *mut u8, saved) };
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { other.set_enabled(false) }, Ok(true));
+    }
+
+    #[test]
+    fn shared_attach_disable_defers_drain_until_report_records_refusal() {
+        let _guard = collector_hooks::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                collector_hooks::hook::fail_flushes(0);
+                collector_hooks::hook::publication::select_family(None);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = collector_hooks::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(true) }, Ok(true));
+        {
+            let mut round = collector_hooks::hook::shared::Round::collect_attach().unwrap();
+            collector_hooks::hook::publication::select_family(Some("player_commands"));
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+            collector_hooks::hook::fail_flushes(2);
+            round.publish();
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let between = drain.take_live(&live, false).unwrap();
+            assert!(between.is_empty());
+            collector_hooks::hook::publication::select_family(Some("player_commands"));
+            // SAFETY: The fixture owns the taps and keeps them live through publication.
+            assert!(unsafe { hooks.set_enabled(false) }.is_err());
+            collector_hooks::hook::publication::select_family(None);
+        }
+        let reported_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(reported_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        // SAFETY: The fixture owns the taps and keeps them live through publication.
+        assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
     }
 }

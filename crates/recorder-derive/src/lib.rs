@@ -67,11 +67,25 @@ pub fn writers() -> Writers {
     Writers::new(all_writers())
 }
 
-pub fn writers_within(tables: usize) -> Writers {
+pub fn writers_within(columns: &[usize], current: &[usize]) -> Writers {
     Writers::new(
         all_writers()
             .into_iter()
-            .filter(|writer| writer.tables().iter().all(|output| output.table().index() < tables) && writer.reads().iter().all(|read| read.table.index() < tables))
+            .filter(|writer| {
+                writer.tables().iter().all(|output| {
+                    let index = output.table().index();
+                    columns.get(index).is_some_and(|&held| held == current[index])
+                }) && writer.reads().iter().all(|read| {
+                    let index = read.table.index();
+                    let Some(&held) = columns.get(index) else {
+                        return false;
+                    };
+                    match read.columns {
+                        framework::Columns::Every => true,
+                        framework::Columns::These(needed) => needed.iter().all(|&col| col < held),
+                    }
+                })
+            })
             .collect(),
     )
 }
