@@ -347,6 +347,7 @@ method:set
 method:set_command_drain
 method:set_enabled
 method:set_helper
+method:set_tick_idle
 method:shared
 method:shutdown
 method:signaled

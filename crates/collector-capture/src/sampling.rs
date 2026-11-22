@@ -721,15 +721,15 @@ impl Captured {
 }
 
 #[cfg(feature = "callback_profile")]
-pub struct ProfilePhases {
-    pub frame_grow_ns: AtomicU64,
-    pub setup_ns: AtomicU64,
-    pub parallel_ns: AtomicU64,
-    pub residual_ns: AtomicU64,
-    pub calls: AtomicU64,
-    pub dispatch_ns: AtomicU64,
-    pub segments: [AtomicU64; SEGMENTS],
-    pub join_wait: [AtomicU64; collector_workers::roles::ROLE_COUNT],
+struct ProfilePhases {
+    frame_grow_ns: AtomicU64,
+    setup_ns: AtomicU64,
+    parallel_ns: AtomicU64,
+    residual_ns: AtomicU64,
+    calls: AtomicU64,
+    dispatch_ns: AtomicU64,
+    segments: [AtomicU64; SEGMENTS],
+    join_wait: [AtomicU64; collector_workers::roles::ROLE_COUNT],
 }
 
 #[cfg(feature = "callback_profile")]
@@ -755,14 +755,14 @@ pub struct FrameCapacities {
     pub extended: extended::Capacities,
 }
 
-pub struct WaitCounter {
+struct WaitCounter {
     calls: AtomicU64,
     ns: AtomicU64,
     max_ns: AtomicU64,
 }
 
 impl WaitCounter {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
             calls: AtomicU64::new(0),
             ns: AtomicU64::new(0),
@@ -770,7 +770,7 @@ impl WaitCounter {
         }
     }
 
-    pub fn add(&self, ns: u64) {
+    fn add(&self, ns: u64) {
         if ns == 0 {
             return;
         }
@@ -779,7 +779,7 @@ impl WaitCounter {
         self.max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
-    pub fn read(&self) -> [u64; 3] {
+    fn read(&self) -> [u64; 3] {
         [&self.calls, &self.ns, &self.max_ns].map(|value| value.load(Ordering::Relaxed))
     }
 }
@@ -920,19 +920,19 @@ pub struct Shared {
     acquisition: OnceLock<acquisition::Pool>,
     acquisition_panics: AtomicU64,
     #[cfg(feature = "callback_profile")]
-    pub profile: ProfilePhases,
-    pub native_tick_ns: AtomicU64,
-    pub native_tick_calls: AtomicU64,
+    profile: ProfilePhases,
+    native_tick_ns: AtomicU64,
+    native_tick_calls: AtomicU64,
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
     pub game_score_enabled: bool,
     pub capture_mode: replay_data::scope::CaptureMode,
-    pub tick_idle: Option<collector_workers::event::Event>,
+    tick_idle: Option<collector_workers::event::Event>,
     pub(crate) frames: crate::frame_pool::FramePool,
     frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     history_frames: collector_workers::frame_fence::Frames,
-    pub heap_waits: WaitCounter,
+    heap_waits: WaitCounter,
     pub(crate) frame_priority:
         engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
     dropped: AtomicU64,
@@ -1125,6 +1125,32 @@ impl Shared {
 
     pub fn dropped_frames(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn native_tick_ns(&self) -> u64 {
+        self.native_tick_ns.load(Ordering::Relaxed)
+    }
+
+    pub fn native_tick_calls(&self) -> u64 {
+        self.native_tick_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_native_tick_calls_for_test(&self, calls: u64) {
+        self.frames.assert_test_access();
+        self.native_tick_calls.store(calls, Ordering::Relaxed);
+    }
+
+    pub fn heap_waits(&self) -> [u64; 3] {
+        self.heap_waits.read()
+    }
+
+    pub fn set_tick_idle(
+        &mut self,
+        _owner: &collector_workers::Owner,
+        event: collector_workers::event::Event,
+    ) {
+        self.tick_idle = Some(event);
     }
 
     pub fn pool_accounting(

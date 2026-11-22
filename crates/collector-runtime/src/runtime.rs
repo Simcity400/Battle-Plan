@@ -1326,7 +1326,7 @@ fn run(
     }
     .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
     shared.capture_mode = session.capture_mode;
-    shared.tick_idle = Some(idle);
+    shared.set_tick_idle(lifecycle, idle);
     shared.prepare_roster(&memory);
     shared.prepare_clock_capture(&memory);
     let shared = engine_allocation::shared(shared)
@@ -2978,8 +2978,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let shared = shared.map(|shared| {
         status!({
             "native_tick_work": {
-                "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
-                "calls": shared.native_tick_calls.load(Ordering::Relaxed),
+                "elapsed_ns": shared.native_tick_ns(),
+                "calls": shared.native_tick_calls(),
             },
             "acquisition_work": acquisition_work(shared),
             "hour_stages": collector_workers::hour_stages::status(),
@@ -3027,7 +3027,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     // SAFETY: this fixture owns the unpublished pool and shuts it down below.
     let pool = unsafe { shared.install_acquisition(pool) }
         .map_err(|_| io::Error::from(io::ErrorKind::AlreadyExists))?;
-    shared.native_tick_calls.store(3, Ordering::Relaxed);
+    shared.set_native_tick_calls_for_test(3);
     let decode = with_allocations_denied(|| decode_status_from(Some(&shared)));
     let value = collector_status::status::status!({"decode": decode});
     let mut count = Count(0);
@@ -3035,7 +3035,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut bytes = Vec::new();
     engine_allocation::reserve_exact(&mut bytes, count.0)?;
-    shared.native_tick_calls.store(30, Ordering::Relaxed);
+    shared.set_native_tick_calls_for_test(30);
     with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     assert_eq!(bytes.len(), count.0);
@@ -4215,7 +4215,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
 }
 
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
-    let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits.read();
+    let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits();
     let calls = |calls: collector_workers::private_heap::Calls| {
         collector_status::status::status!({
             "calls": calls.calls,
