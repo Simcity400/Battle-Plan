@@ -39,7 +39,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'resource-balance', version: 1, title: 'Resource balance', icon: 'layers',
   description: 'Where a country’s resources come from and where they go, per day, with its trade partners.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Resources over time'),

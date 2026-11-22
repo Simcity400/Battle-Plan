@@ -17,7 +17,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'equipment-losses', version: 1, title: 'Equipment losses', icon: 'sunburst',
   description: 'Equipment losses by cause, type and design.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
   variants: breakdownVariants('Equipment losses', OPTIONS),

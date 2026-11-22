@@ -14,7 +14,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'market-ledger', version: 1, title: 'Market ledger', icon: 'history', category: 'Economy',
   description: 'Every market contract event for a country: deals, deliveries and payments.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'selected' }, options: OPTIONS,
 } as const satisfies WidgetMeta;

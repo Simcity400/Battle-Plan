@@ -7,7 +7,9 @@ import { useDrawnPanel } from '../dashboard/DrawnPanel';
 import { panelFeed } from '../dashboard/panelFeed';
 import type { PanelFeed } from '../dashboard/panelFeed';
 import { useHeadProduct, withHeld } from '../dashboard/headProduct';
+import { registerWidgets } from '../dashboard/definitions';
 import type { WidgetProps, WidgetRuntime } from '../dashboard/definitions';
+import { WidgetBody } from '../dashboard/widgets';
 import type { WidgetSpec } from '../dashboard/model';
 import { clockGeneration, inspectFollow, onDraw } from '../dashboard/pulled';
 import { followStore } from '../dashboard/follow/connection';
@@ -21,6 +23,8 @@ import { FrameEngine } from '../engine/frame';
 import AcesWidget from '../widgets/aces/AcesWidget';
 import DoctrineMasteryWidget from '../widgets/doctrine-mastery/DoctrineMasteryWidget';
 import NuclearArsenalWidget from '../widgets/nuclear-arsenal/NuclearArsenalWidget';
+import WarGoalsWidget from '../widgets/war-goals/WarGoalsWidget';
+import { definition as warGoals } from '../widgets/war-goals/definition';
 import { arsenalNotice, arsenalStructure, validateNuclearArsenal } from '../widgets/nuclear-arsenal/nuclearArsenalData';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import type { Present } from './notifications';
@@ -38,7 +42,9 @@ const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null,
   tracks: [{ ordinal: 0, name: 'Infantry', sub: { id: 'sub_a', name: 'Sub A', icon: null }, unlocked: 1, rewards: [{ id: 'r1', name: 'First', threshold: '5000000' }] }] }], warnings: [] };
 const replies: Record<string, (hour: number, query: Record<string, unknown>) => unknown> = { 'nuclear-arsenal': arsenalAt,
   'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
-  'doctrine-mastery': (_hour, query) => query.country === 'ENG' ? { folders: [], warnings: [] } : doctrine };
+  'doctrine-mastery': (_hour, query) => query.country === 'ENG' ? { folders: [], warnings: [] } : doctrine,
+  wargoals: (_hour, query) => ({ asked: query.country, branchId: query.branchId, tag: query.country, warnings: [], stateNames: [], standings: [], goals: [], justifications: [] }) };
+registerWidgets([{ ...warGoals, render: WarGoalsWidget }]);
 const date = { since: 0, through: HOURS - 1 };
 const feed: PanelFeed = { view: 'nuclear-arsenal', offset: 0, structure: arsenalStructure(reply), reply, date };
 const clock = new PlaybackController(new FrameEngine({ request() {} }));
@@ -128,6 +134,8 @@ const aces = widgetProps(spec('aces', 'aces', { kind: 'all' }));
 const shortAces = widgetProps(spec('short-aces', 'aces', { kind: 'all' }, {}, shortTrack.id));
 const doctrines = widgetProps(spec('doctrine', 'doctrine-mastery', { kind: 'tags', tags: ['GER'] }));
 const noDoctrines = widgetProps(spec('no-doctrines', 'doctrine-mastery', { kind: 'tags', tags: ['ENG'] }));
+const goals = widgetProps(spec('goals', 'war-goals', { kind: 'tags', tags: ['GER'] }));
+const shortGoals = widgetProps(spec('short-goals', 'war-goals', { kind: 'tags', tags: ['GER'] }, {}, shortTrack.id));
 const arsenalWarnings = { told: [] as string[] };
 const arsenal = { ...widgetProps(spec('arsenal', 'nuclear-arsenal', { kind: 'tags', tags: ['GER'] }, { view: 'race' })),
   onDiagnostics: (warnings: string[]) => { arsenalWarnings.told = warnings; wake(); } };
@@ -235,6 +243,13 @@ function surface(canvas: HTMLCanvasElement | null, region: Element | null, visib
   return { visible, opacity: opacity(canvas), busy: region?.getAttribute('aria-busy') === 'true', hour: hour ?? null };
 }
 const stateOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.state ?? null;
+function framed(id: string) {
+  const root = document.getElementById(id);
+  if (!root) return null;
+  if ([...root.querySelectorAll('.war-goals')].some(element => element.checkVisibility())) return 'content';
+  const state = [...root.querySelectorAll<HTMLElement>('.widget-state')].find(element => element.checkVisibility());
+  return state ? `${state.dataset.state}: ${state.textContent}` : null;
+}
 function tip() {
   const open = tooltipStore.get();
   return open?.owner === DOCTRINE_TIPS ? open.content.rows?.find(row => row.label === 'As of')?.value ?? '' : null;
@@ -243,7 +258,7 @@ function shown() {
   const ink1 = inkOf('panel'), ink2 = inkOf('headed'), race = raceCanvas();
   return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks, listedRead,
     listed: document.querySelector('#listed')?.textContent ?? null, warned: arsenalWarnings.told.filter(warning => warning.startsWith('read at ')),
-    aces: stateOf('#aces .widget-state'), shortAces: stateOf('#short-aces .widget-state'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
+    aces: stateOf('#aces .widget-state'), shortAces: stateOf('#short-aces .widget-state'), goals: framed('goals'), shortGoals: framed('short-goals'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
     raceDescribed: !!raceCanvas()?.getAttribute('aria-describedby'), raceRanking: document.querySelector('#race p[id$="-ranking"]')?.textContent ?? '',
     raceLive: document.querySelector('#race p[aria-live]')?.textContent ?? '',
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
@@ -368,12 +383,14 @@ export const fixture = {
   heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent()) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => landed(clock.getHour()))),
   async pastShortEnd() {
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<div style={{ display: 'flex', gap: '8px' }}>
+      <div id="goals" style={{ ...box, display: 'flex', flexDirection: 'column' }}><WidgetBody {...goals} /></div>
+      <div id="short-goals" style={{ ...box, display: 'flex', flexDirection: 'column' }}><WidgetBody {...shortGoals} /></div></div>);
     clock.seek(SHORT_END);
-    await until(() => landed(SHORT_END) && shown().shortAces === 'empty');
+    await until(() => landed(SHORT_END) && shown().shortAces === 'empty' && shown().goals === 'content' && shown().shortGoals === 'content');
     const before = shown();
-    clock.step(1);
-    await until(() => landed(SHORT_END + 1));
-    return { before, after: shown() };
+    const seen = await watch(() => clock.step(1), () => until(() => landed(SHORT_END + 1) && shown().goals === 'content'));
+    return { before, seen, after: seen.at(-1)! };
   },
   staleStep,
   async playFor(milliseconds: number) {

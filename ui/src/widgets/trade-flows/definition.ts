@@ -28,7 +28,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'trade-flows', version: 1, title: 'Trade flows', icon: 'flows',
   description: 'Resource flows, market offers and lend-lease agreements.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,

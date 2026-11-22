@@ -5,7 +5,7 @@ import { withNativePage } from '../../../tools/native-page.ts';
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
-  warned: string[]; aces: string | null; shortAces: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
+  warned: string[]; aces: string | null; shortAces: string | null; goals: string | null; shortGoals: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
   panel: Surface; race: Surface; headed: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
@@ -90,8 +90,13 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     mounts = back.mounts;
     assert.ok(at(back, 30) && back.strict === 30 && back.listed === '30', `30:00 is painted at full strength: ${show(back)}`);
     assert.equal(back.asks, asks, 'every move after the first push was read from pushes: no widget dropped its follow while it had nothing to show');
-    const { before: atEnd, after: pastEnd } = await act<{ before: Shown; after: Shown }>('pastShortEnd()');
+    const { before: atEnd, seen: stepping, after: pastEnd } = await act<{ before: Shown; seen: Shown[]; after: Shown }>('pastShortEnd()');
     assert.ok(atEnd.shortAces === 'empty' && pastEnd.aces === 'empty' && pastEnd.shortAces === 'unavailable',
       `a step past the end of one track's branch, while another runs on, shows that track's Aces outside the recording, never loading: ${show(pastEnd)}`);
+    assert.ok(atEnd.goals === 'content' && atEnd.shortGoals === 'content' && pastEnd.goals === 'content'
+      && pastEnd.shortGoals === 'unavailable: This time is outside the recording.',
+      `the widget host shows War goals stepped past its track's end outside the recording, while the main track's War goals shows 101: ${show(pastEnd)}`);
+    assert.equal(stepping.find(state => state.shortGoals !== 'content' && state.shortGoals !== pastEnd.shortGoals), undefined,
+      'stepping War goals past its track\'s end never shows loading');
   }, 120_000));
 });

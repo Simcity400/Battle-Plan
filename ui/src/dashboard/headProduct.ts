@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
@@ -14,6 +14,7 @@ import { canonical } from './follow/canonical.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
+import { OutsideHeadsContext } from './outsideHeads.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
 
@@ -149,6 +150,10 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const watchClock = useCallback((changed: () => void) => bounded ? runtime.clock.subscribe(changed) : () => {}, [bounded, runtime.clock]);
   const outsideNow = () => bounded && hourAt(runtime.clock.getHour()) === null;
   const outside = useSyncExternalStore(watchClock, outsideNow, outsideNow);
+  const heads = useContext(OutsideHeadsContext);
+  const [token] = useState(() => ({}));
+  useLayoutEffect(() => { heads?.set(token, bounded ? outside : null); }, [heads, token, bounded, outside]);
+  useLayoutEffect(() => () => heads?.set(token, null), [heads, token]);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
   const idle = source === 'idle';

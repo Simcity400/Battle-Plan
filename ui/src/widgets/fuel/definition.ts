@@ -38,7 +38,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'fuel', version: 1, title: 'Fuel', icon: 'droplet',
   description: 'A country’s fuel against its capacity over time, with each day’s gain and burn.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
   variants: breakdownVariants('Fuel', OPTIONS),
