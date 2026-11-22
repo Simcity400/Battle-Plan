@@ -280,7 +280,7 @@ pub struct ExpansionScopes<'e, 'a> {
     session: std::cell::RefCell<Option<crate::triggers::VariableSession>>,
     active: std::cell::RefCell<Vec<entries::ActiveEntry>>,
     prev_distance: std::cell::RefCell<Vec<Option<usize>>>,
-    valid_links: bool,
+    valid_links: std::cell::Cell<bool>,
     fresh_depth: std::cell::Cell<usize>,
     on_large_stack: bool,
     pub(crate) world: Option<&'e crate::triggers::World<'a>>,
@@ -336,11 +336,11 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             session: std::cell::RefCell::new(None),
             active: std::cell::RefCell::new(Vec::new()),
             prev_distance: std::cell::RefCell::new(prev_distance),
-            valid_links: scopes.scopes.iter().all(|scope| {
+            valid_links: std::cell::Cell::new(scopes.scopes.iter().all(|scope| {
                 [scope.root, scope.from, scope.prev]
                     .iter()
                     .all(|link| !matches!(link, Link::Scope(to) if *to >= scopes.scopes.len()))
-            }),
+            })),
             fresh_depth: std::cell::Cell::new(0),
             on_large_stack: false,
             world: None,
@@ -357,10 +357,6 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         &'s self,
         scopes: &EventScopes,
     ) -> Result<DescriptionScopeGuard<'s, 'e, 'a>, String> {
-        let next = Self::new(scopes);
-        if !next.valid_links {
-            return Err("scripted text event scope link is not given".into());
-        }
         for (kind, targets) in [
             ("tooltip target", &scopes.tooltip_targets),
             ("saved target", &scopes.saved_targets),
@@ -373,24 +369,33 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         }
         let offset = self.scopes.borrow().len();
         let rebase = |link| match link {
-            Link::Scope(at) => Link::Scope(at + offset),
-            other => other,
+            Link::Scope(at) => at
+                .checked_add(offset)
+                .map(Link::Scope)
+                .ok_or_else(|| format!("scripted text event scope link {at} overflows when rebased")),
+            other => Ok(other),
         };
-        let appended: Vec<_> = scopes
+        let appended = scopes
             .scopes
             .iter()
-            .map(|scope| EventScope {
-                root: rebase(scope.root),
-                from: rebase(scope.from),
-                prev: rebase(scope.prev),
-                ..*scope
+            .map(|scope| {
+                Ok(EventScope {
+                    root: rebase(scope.root)?,
+                    from: rebase(scope.from)?,
+                    prev: rebase(scope.prev)?,
+                    ..*scope
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
+        let next = Self::new(scopes);
         self.scopes.borrow_mut().extend(appended);
         self.prev_distance
             .borrow_mut()
             .extend(next.prev_distance.into_inner());
         let variables = self.variables.replace(scopes.variables);
+        let valid_links = self
+            .valid_links
+            .replace(self.valid_links.get() && next.valid_links.get());
         let mut targets = self.targets.borrow_mut();
         for (at, values) in &scopes.tooltip_targets {
             targets.tooltip_targets.insert(at + offset, values.clone());
@@ -406,6 +411,7 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             expanded: self,
             offset,
             variables,
+            valid_links,
             globals,
         })
     }
@@ -444,6 +450,7 @@ struct DescriptionScopeGuard<'s, 'e, 'a> {
     expanded: &'s ExpansionScopes<'e, 'a>,
     offset: usize,
     variables: ScopeVariables,
+    valid_links: bool,
     globals: Vec<(Vec<u8>, EventObject)>,
 }
 
@@ -455,6 +462,7 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
             .borrow_mut()
             .truncate(self.offset);
         self.expanded.variables.set(self.variables);
+        self.expanded.valid_links.set(self.valid_links);
         let mut targets = self.expanded.targets.borrow_mut();
         targets.tooltip_targets.retain(|at, _| *at < self.offset);
         targets.saved_targets.retain(|at, _| *at < self.offset);
