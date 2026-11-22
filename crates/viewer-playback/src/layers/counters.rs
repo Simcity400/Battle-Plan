@@ -563,7 +563,12 @@ impl MemberJoins for Joins<'_> {
             invalid_orders: byte(columns.invalid_orders),
             strength_factor: number(columns.strength_factor),
         };
-        let naval_transfer = self.movement().is_some_and(|(movement, slot)| movement.number(columns.naval_transfer, slot).value().unwrap_or(0) != 0);
+        let naval_transfer = self.movement().and_then(|(movement, slot)| {
+            movement
+                .number(columns.naval_transfer, slot)
+                .value()
+                .map(|value| value != 0)
+        });
         DivisionStatus::recorded(fields, self.maxima(), naval_transfer)
     }
 

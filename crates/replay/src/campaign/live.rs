@@ -768,6 +768,7 @@ impl LiveWriter {
         for run in log.directories()? {
             self.branches.entry(run.branch).or_default().admit = Some(true);
         }
+        let empty_log = log.run_count() == 0;
         drop(log);
         if self.finished {
             return Ok(());
@@ -779,6 +780,13 @@ impl LiveWriter {
             writer.compress_on(encoder.frames());
         }
         writer.container().section(SectionKey::FACTS, sections::FACTS)?;
+        if empty_log {
+            for (table, version) in self.writers.table_versions() {
+                if table < self.kinds.len() {
+                    writer.container().section(SectionKey::derived(table as u32), version)?;
+                }
+            }
+        }
         for part in &mut self.parts {
             let owner = |entry: &&StateEntry| !matches!(entry.owner.kind, SectionKind::WorldLog | SectionKind::Records);
             part.open(writer.container(), entries.iter().find(owner))?;
@@ -1386,6 +1394,11 @@ impl LiveWriter {
                 writer.compress_on(encoder.frames());
             }
             writer.container().section(SectionKey::FACTS, sections::FACTS)?;
+            for (table, version) in self.writers.table_versions() {
+                if table < self.kinds.len() {
+                    writer.container().section(SectionKey::derived(table as u32), version)?;
+                }
+            }
             for part in &mut self.parts {
                 part.open(writer.container(), None)?;
             }

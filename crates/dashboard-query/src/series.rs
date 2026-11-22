@@ -476,6 +476,10 @@ impl<'q, 'a> Line<'q, 'a> {
         self.series
     }
 
+    fn withheld(&self) -> Option<&str> {
+        self.query.replay.recording().withheld_reason(self.series.table.index())
+    }
+
     fn part_of(&self, text: Option<&str>) -> io::Result<u128> {
         match (self.series.parts, text) {
             (None, None) => Ok(0),
@@ -570,6 +574,9 @@ impl<'q, 'a> Line<'q, 'a> {
 
     pub fn rank_at_by(&self, hour: i32, n: usize, least: bool) -> io::Result<Vec<String>> {
         self.owners_only("a rank at an hour")?;
+        if self.withheld().is_some() {
+            return Ok(Vec::new());
+        }
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(Vec::new());
         };
@@ -601,6 +608,9 @@ impl<'q, 'a> Line<'q, 'a> {
 
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {
         self.owners_only("a ranked view")?;
+        if self.withheld().is_some() {
+            return Ok(Vec::new());
+        }
         let hours = i64::from(to) - i64::from(from) + 1;
         let six = replay_columnar::summary::bucket_hours(0);
         if hours < six {
@@ -769,7 +779,7 @@ impl<'q, 'a> Line<'q, 'a> {
         match self.query.holders.at(country, hour) {
             None => Some(self.absent(country, hour)),
             Some(run) if run.holder == Holder::Unresolved => Some(format!("No link resolves the country holding {name}")),
-            Some(_) => None,
+            Some(_) => self.withheld().map(str::to_owned),
         }
     }
 
@@ -1004,6 +1014,9 @@ impl<'q, 'a> Line<'q, 'a> {
 
     pub(crate) fn hourly_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
         let (held, parts) = self.drawn_parts(drawn, from, to);
+        if self.withheld().is_some() {
+            return Ok(held.into_iter().map(|parts| (Vec::new(), parts)).collect());
+        }
         let mut by_run: HashMap<u32, (Vec<u128>, i32, i32)> = HashMap::new();
         for part in parts.iter().flatten() {
             let held = by_run.entry(part.run).or_insert((Vec::new(), part.first, part.last));
@@ -1065,6 +1078,12 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+        if self.withheld().is_some() {
+            let (held, _) = self.drawn_parts(drawn, from, to);
+            let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+            let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
+            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
+        }
         if dashboard_declare::read_by_key(self.series.table) {
             return self.binned_from_runs(drawn, from, to, bin_hours);
         }
@@ -1392,6 +1411,10 @@ impl<'q, 'a> Line<'q, 'a> {
         if first > last {
             return Ok(complete);
         }
+        if let Some(reason) = self.withheld() {
+            out.push(MissingSpan { first_hour: first, last_hour: last, reason: reason.to_owned() });
+            return Ok(complete);
+        }
         for held in self.statuses(part.run, from, to)?.iter().filter(|held| held.last >= first && held.first <= last) {
             let (a, b) = (held.first.max(first), held.last.min(last));
             match status_reason(self.series.table, &held.status) {
@@ -1533,6 +1556,9 @@ impl<'q, 'a> Line<'q, 'a> {
     pub fn change_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
         if bounds.0 > bounds.1 {
             return Err(invalid("Invalid navigation bounds"));
+        }
+        if self.withheld().is_some() {
+            return Ok(None);
         }
         let forward = matches!(key, NavigationKey::ArrowRight | NavigationKey::Home);
         let at: i64 = match key {
@@ -1683,23 +1709,25 @@ impl<'q, 'a> Line<'q, 'a> {
             let mut found: BTreeMap<u128, (i32, i32)> = BTreeMap::new();
             let country: Country = tag.clone().into();
             let held = self.parts(&country, from, to);
-            for part in &held {
-                if !lives.contains_key(&part.run) {
-                    let mut read = crate::cost::lifetimes(recording, part.run, self.series.table)?;
-                    read.sort_unstable_by_key(|(key, ..)| *key);
-                    lives.insert(part.run, read);
-                }
-                let (lo, hi) = parts.range(parts.owner(part.key));
-                let run = &lives[&part.run];
-                let start = run.partition_point(|(key, ..)| *key < lo);
-                for &(key, first, last) in run[start..].iter().take_while(|(key, ..)| *key <= hi) {
-                    let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
-                    if first > last {
-                        continue;
+            if self.withheld().is_none() {
+                for part in &held {
+                    if !lives.contains_key(&part.run) {
+                        let mut read = crate::cost::lifetimes(recording, part.run, self.series.table)?;
+                        read.sort_unstable_by_key(|(key, ..)| *key);
+                        lives.insert(part.run, read);
                     }
-                    let span = found.entry(parts.part(key)).or_insert((first as i32, last as i32));
-                    span.0 = span.0.min(first as i32);
-                    span.1 = span.1.max(last as i32);
+                    let (lo, hi) = parts.range(parts.owner(part.key));
+                    let run = &lives[&part.run];
+                    let start = run.partition_point(|(key, ..)| *key < lo);
+                    for &(key, first, last) in run[start..].iter().take_while(|(key, ..)| *key <= hi) {
+                        let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
+                        if first > last {
+                            continue;
+                        }
+                        let span = found.entry(parts.part(key)).or_insert((first as i32, last as i32));
+                        span.0 = span.0.min(first as i32);
+                        span.1 = span.1.max(last as i32);
+                    }
                 }
             }
             let mut missing = self.unheld(&country, from, to, &held);

@@ -357,8 +357,15 @@ mod hours {
             Self::with_schema(file, level, settings, kinds, writers)
         }
 
-        fn with_schema(file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: recorder_derive::Writers) -> io::Result<Self> {
+        fn with_schema(mut file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: recorder_derive::Writers) -> io::Result<Self> {
             let tables = kinds.len();
+            if file.container().section_of(replay_columnar::container::SectionKey::WORLD_LOG).is_none_or(replay_columnar::container::Section::is_empty) {
+                for (table, version) in writers.table_versions() {
+                    if table < tables {
+                        file.container().section(replay_columnar::container::SectionKey::derived(table as u32), version)?;
+                    }
+                }
+            }
             let columns = kinds.iter().map(Vec::len).collect();
             let mut store = Store::new(kinds.clone(), crate::columnar_frames::keeps_last()[..tables].to_vec());
             store.declare_logs(&crate::rows::logs()[..tables])?;
@@ -371,6 +378,11 @@ mod hours {
 
         pub fn file(&mut self) -> &mut FileWriter<W> {
             &mut self.file
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        pub fn define(&mut self, definitions: recorder_derive::Definitions) {
+            self.writers.define(definitions);
         }
 
         pub fn frame(&self, tables: &[crate::rows::TableId], (branch, hour): (u64, i32), mode: crate::scope::CaptureMode) -> io::Result<crate::frame::DecodedFrame> {

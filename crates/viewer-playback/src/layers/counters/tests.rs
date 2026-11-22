@@ -983,3 +983,36 @@ fn moved_hours_are_read_against_the_mirrors_before_each_step_across_a_pack_and_a
     assert_eq!(moves, [(1, 717, 21), (1, 800, 31), (2, 718, 22), (2, 810, 32)], "each move is its own division's at the hour it moved");
     assert!(moved.task_forces.is_empty());
 }
+
+#[test]
+fn status_recorded_and_naval_transfer_stay_distinct_from_bar_maxima() {
+    let units = record(4, |_, _| Status::Complete, |at, store| {
+        if at != 0 {
+            return;
+        }
+        world(store);
+        insert(store, TableId::DivisionStatus, 1, 101);
+        write(store, TableId::DivisionStatus, 1, "supply_ratio", Cell::OptionalI64(Some(20)));
+        insert(store, TableId::DivisionMovement, 0, 101);
+        write(store, TableId::DivisionMovement, 0, "naval_transfer", Cell::U8(1));
+        insert(store, TableId::DivisionMovement, 1, 102);
+        write(store, TableId::DivisionMovement, 1, "naval_transfer", Cell::U8(0));
+    });
+    let mut side = side_for(units);
+    reach(&mut side, 2);
+
+    let (_, with_maxima_no_movement) = member(&side, 100).unwrap();
+    assert!(with_maxima_no_movement.bars);
+    assert!(with_maxima_no_movement.status_recorded);
+    assert_eq!(with_maxima_no_movement.status.naval_transfer, None);
+
+    let (_, without_maxima_at_sea) = member(&side, 101).unwrap();
+    assert!(!without_maxima_at_sea.bars);
+    assert!(without_maxima_at_sea.status_recorded);
+    assert_eq!(without_maxima_at_sea.status.naval_transfer, Some(true));
+
+    let (_, without_status) = member(&side, 102).unwrap();
+    assert!(!without_status.bars);
+    assert!(!without_status.status_recorded);
+    assert_eq!(without_status.status.naval_transfer, None);
+}

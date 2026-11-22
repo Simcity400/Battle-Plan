@@ -123,7 +123,7 @@ impl Thresholds {
         }
         if eff_low < self.low {
             let [r_low, r_high] = division.received;
-            let low_r_high = if division.maximum_grace <= 0 {
+            let low_r_high = if division.maximum_grace <= 0 || self.low > ONE {
                 r_high
             } else {
                 r_high.min(self.low.saturating_sub(1))
@@ -303,6 +303,10 @@ impl Writer for SupplyHealth {
 
     fn version(&self) -> u32 {
         2
+    }
+
+    fn accepts_version(&self, version: u32) -> bool {
+        matches!(version, 1 | 2)
     }
 
     fn tables(&self) -> &'static [Output] {

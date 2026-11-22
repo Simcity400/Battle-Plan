@@ -839,6 +839,7 @@ pub(super) struct Stack {
     pub(super) hit_points: Vec<i64>,
     pub(super) organisation: Vec<i64>,
     pub(super) bars: bool,
+    pub(super) status_recorded: bool,
     pub(super) members: Vec<counter_status::Member>,
     pub(super) divisions: Arc<[u64]>,
     pub(super) timing: Arc<[viewer_foundation::map::counter_hovers::land::Timing]>,
@@ -884,6 +885,7 @@ pub(super) struct CounterTables<'a> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DivisionStatus {
+    pub recorded: bool,
     pub maxima: Option<[i64; 2]>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
@@ -892,12 +894,13 @@ pub struct DivisionStatus {
     pub exercising: Option<bool>,
     pub has_order: Option<bool>,
     pub invalid_orders: u8,
-    pub naval_transfer: bool,
+    pub naval_transfer: Option<bool>,
     pub strength_factor: i64,
 }
 
 impl DivisionStatus {
     pub const MISSING: Self = Self {
+        recorded: false,
         maxima: None,
         entrenchment: 0,
         entrenchment_cap: 0,
@@ -906,12 +909,17 @@ impl DivisionStatus {
         exercising: None,
         has_order: None,
         invalid_orders: 0,
-        naval_transfer: false,
+        naval_transfer: None,
         strength_factor: counter_status::FIXED,
     };
 
-    pub fn recorded(row: StatusFields, maxima: Option<[i64; 2]>, naval_transfer: bool) -> Self {
+    pub fn recorded(
+        row: StatusFields,
+        maxima: Option<[i64; 2]>,
+        naval_transfer: Option<bool>,
+    ) -> Self {
         Self {
+            recorded: true,
             maxima,
             entrenchment: row.entrenchment,
             entrenchment_cap: row.entrenchment_cap,
@@ -970,6 +978,7 @@ pub(super) struct LandUnit<'m> {
     pub(super) hp: i64,
     pub(super) org: i64,
     pub(super) bars: bool,
+    pub(super) status_recorded: bool,
     pub(super) status: counter_status::Member,
     pub(super) movement: Option<&'m Movement>,
     pub(super) action: counter_action::Action,
@@ -1489,11 +1498,8 @@ fn status_of(
         invalid_orders: row.invalid_orders,
         strength_factor: row.strength_factor,
     };
-    let mut status = DivisionStatus::recorded(fields, maxima, false);
-    if let Some(movement) = movement {
-        status.naval_transfer = movement.naval_transfer != 0;
-    }
-    status
+    let naval_transfer = movement.map(|movement| movement.naval_transfer != 0);
+    DivisionStatus::recorded(fields, maxima, naval_transfer)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2379,6 +2385,7 @@ pub(super) fn land_stack(
         hit_points: Vec::new(),
         organisation: Vec::new(),
         bars: true,
+        status_recorded: true,
         members: Vec::new(),
         divisions: item.iter().map(|unit| unit.id).collect(),
         timing: item
@@ -2467,6 +2474,7 @@ pub(super) fn land_stack(
             stack.hit_points.push(unit.hp);
             stack.organisation.push(unit.org);
             stack.bars &= unit.bars;
+            stack.status_recorded &= unit.status_recorded;
             stack.members.push(unit.status);
         }
     }
@@ -2484,8 +2492,8 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
             organisation: 0.0,
             strength: counter_status::stack_fill(&stack.hit_points),
             glyphs: counter_status::Glyphs {
-                supply: counter_status::supply_frame_for(
-                    counter_status::stack_supply(&stack.members),
+                supply: counter_status::stack_supply_frame(
+                    &stack.members,
                     inputs.content.defines.supply,
                 ),
                 no_orders: gun.location_warning,
@@ -2496,7 +2504,7 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         None => StackStyle {
             organisation: counter_status::stack_fill(&stack.organisation),
             strength: counter_status::stack_fill(&stack.hit_points),
-            glyphs: if stack.bars {
+            glyphs: if stack.status_recorded {
                 counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
             } else {
                 counter_status::Glyphs {
@@ -2687,7 +2695,10 @@ fn draw_land_children(
                     }
                 }
                 counter_status::SupplyFrame::Uncertain => {
-                    refused.push(uncertain_supply_gap(&stack.members).to_owned());
+                    refused.push(
+                        uncertain_supply_gap(&stack.members, inputs.content.defines.supply)
+                            .to_owned(),
+                    );
                 }
                 counter_status::SupplyFrame::Hidden => {}
             }
@@ -2821,7 +2832,9 @@ fn draw_land_children(
     );
     if !stack.hidden {
         if style.glyphs.supply == counter_status::SupplyFrame::Uncertain {
-            refused.push(uncertain_supply_gap(&stack.members).to_owned());
+            refused.push(
+                uncertain_supply_gap(&stack.members, inputs.content.defines.supply).to_owned(),
+            );
         }
         draw_glyphs(
             inputs,
@@ -3142,14 +3155,33 @@ pub(super) struct GlyphStack {
     pub(super) defending_area: bool,
 }
 
-fn uncertain_supply_gap(members: &[counter_status::Member]) -> &'static str {
-    match counter_status::stack_supply(members) {
-        counter_status::SupplyRatio::Missing => {
-            "low_supply is undecided: the stack's supply ratio (DivisionStatus) is not recorded"
+fn uncertain_supply_gap(
+    members: &[counter_status::Member],
+    thresholds: counter_status::SupplyThresholds,
+) -> &'static str {
+    let mut straddles = false;
+    for member in members.iter().rev() {
+        match member.naval_transfer {
+            Some(true) => continue,
+            Some(false) | None => {
+                if member.supply_ratio == counter_status::SupplyRatio::Missing {
+                    return "low_supply is undecided: the stack's supply ratio (DivisionStatus) is not recorded";
+                }
+                if counter_status::supply_frame_for(member.supply_ratio, thresholds)
+                    == counter_status::SupplyFrame::Uncertain
+                {
+                    straddles = true;
+                }
+                if member.naval_transfer == Some(false) {
+                    break;
+                }
+            }
         }
-        _ => {
-            "low_supply is undecided: the stack's supply ratio (DivisionStatus) is recorded only at its display step and straddles a supply threshold"
-        }
+    }
+    if straddles {
+        "low_supply is undecided: the stack's supply ratio (DivisionStatus) is recorded only at its display step and straddles a supply threshold"
+    } else {
+        "low_supply is undecided: whether a stack member is in naval transfer (DivisionMovement) is not recorded"
     }
 }
 

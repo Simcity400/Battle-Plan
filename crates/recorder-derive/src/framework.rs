@@ -753,6 +753,9 @@ impl<'a> Rows<'a> {
 pub trait Writer: Send {
     fn name(&self) -> &'static str;
     fn version(&self) -> u32;
+    fn accepts_version(&self, version: u32) -> bool {
+        version == self.version()
+    }
     fn tables(&self) -> &'static [Output];
     fn reads(&self) -> &'static [Read];
     fn hourly(&self) -> bool {
@@ -1272,14 +1275,25 @@ impl Writers {
             writer.start();
             let fresh = fresh_given(&**writer);
             (self.withheld[at], self.ran[at], self.given[at]) = match saved.remove(writer.name()) {
-                Some((version, ran, withheld, blob, given)) if version == writer.version() && given.len() == fresh.len() => {
+                Some((version, ran, withheld, blob, given)) if writer.accepts_version(version) && given.len() == fresh.len() => {
                     writer.load(blob)?;
-                    (withheld, ran, given)
+                    (withheld, ran && version == writer.version(), given)
                 }
                 _ => (Some(OTHER_VERSION.to_owned()), false, fresh),
             };
         }
         Ok(())
+    }
+
+    pub fn table_versions(&self) -> Vec<(usize, u32)> {
+        self.writers
+            .iter()
+            .filter(|writer| writer.version() > 1)
+            .flat_map(|writer| {
+                let version = writer.version();
+                writer.tables().iter().map(move |output| (output.table().index(), version))
+            })
+            .collect()
     }
 }
 

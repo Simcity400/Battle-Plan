@@ -69,6 +69,27 @@ pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
     Ok(withheld)
 }
 
+const REQUIRED_DERIVED_VERSIONS: &[(TableId, u32, &str)] = &[(
+    TableId::SupplyHealth,
+    2,
+    "SupplyHealth was derived by version 1 (from rounded display supply ratios) and cannot decide off-grid supply thresholds",
+)];
+
+pub(crate) fn derived_withheld(root: &replay_columnar::container::Root, tables: usize, withheld: &mut Vec<(usize, String)>) {
+    for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
+        let index = table.index();
+        if index < tables
+            && !withheld.iter().any(|(held, _)| *held == index)
+            && root
+                .section(replay_columnar::container::SectionKey::derived(index as u32))
+                .map_or(1, |section| section.version)
+                < required
+        {
+            withheld.push((index, reason.to_owned()));
+        }
+    }
+}
+
 pub fn view_heap_bytes(view: &TableView) -> usize {
     match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.heap_bytes(),

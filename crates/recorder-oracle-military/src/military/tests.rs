@@ -2345,8 +2345,37 @@ fn division_status_accepts_always_exact_supply_at_zero_days_and_historical_absen
     assert!(historical.differences.is_empty(), "{:?}", historical.differences);
     let partial = run(DivisionStatusRow {
         supply_grace_exact: Recorded::Value(None),
-        ..base
+        ..base.clone()
     });
     assert_eq!(partial.differences.len(), 1, "{:?}", partial.differences);
     assert!(partial.differences[0].contains("supply_exact"));
+    let missing_all = run(DivisionStatusRow {
+        supply_ratio: None,
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..base.clone()
+    });
+    assert_eq!(missing_all.differences.len(), 1, "{:?}", missing_all.differences);
+    assert!(missing_all.differences[0].contains("supply_exact"));
+    let half_recorded = run(DivisionStatusRow {
+        supply_ratio_exact: Recorded::NotRecorded,
+        ..base.clone()
+    });
+    assert_eq!(half_recorded.differences.len(), 1, "{:?}", half_recorded.differences);
+    assert!(half_recorded.differences[0].contains("supply_exact"));
+    let pre_format = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        supply_ratio_exact: Recorded::NotRecorded,
+        supply_grace_exact: Recorded::NotRecorded,
+        ..base
+    });
+    assert!(pre_format.differences.is_empty(), "{:?}", pre_format.differences);
+    assert!(
+        pre_format
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("DivisionStatus.supply_ratio_exact")),
+        "{:?}",
+        pre_format.limitations
+    );
 }

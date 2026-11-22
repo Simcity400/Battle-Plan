@@ -673,49 +673,57 @@ pub fn compare_division_status(
                 None => report.difference(label, "unavailable", "a recorded value"),
             }
         }
-        if report
-            .recorded(
-                &row.supply_ratio_exact,
-                "DivisionStatus.supply_ratio_exact",
-                format!("division status {}.supply_ratio_exact", row.division),
-            )
-            .is_some()
-        {
-            let label = format!("division status {}", row.division);
-            let days = match &row.out_of_supply_days {
-                Recorded::Value(days) => *days,
-                Recorded::NotRecorded => None,
-            };
-            let exact = match (&row.supply_ratio_exact, &row.supply_grace_exact) {
-                (Recorded::Value(ratio), Recorded::Value(grace)) => Some((*ratio, *grace)),
-                _ => None,
-            };
-            match (exact, days) {
-                (Some((Some(_), Some(grace))), _) => {
-                    report.scalar(
-                        &label,
-                        "supply_exact.grace_remaining",
-                        Some(grace),
-                        saved.presentation.army_current_supply_ratio.as_ref(),
+        match (&row.supply_ratio_exact, &row.supply_grace_exact) {
+            (Recorded::NotRecorded, Recorded::NotRecorded) => {
+                let _ = report.recorded(
+                    &row.supply_ratio_exact,
+                    "DivisionStatus.supply_ratio_exact",
+                    format!("division status {}.supply_ratio_exact", row.division),
+                );
+            }
+            (Recorded::Value(Some(_)), Recorded::Value(Some(grace))) => {
+                let label = format!("division status {}", row.division);
+                report.scalar(
+                    &label,
+                    "supply_exact.grace_remaining",
+                    Some(*grace),
+                    saved.presentation.army_current_supply_ratio.as_ref(),
+                );
+                report.scalar_checks += 1;
+                if row.supply_ratio.is_some() {
+                    report.difference(
+                        format!("{label}.supply_exact shown"),
+                        format!("{:?}", row.supply_ratio),
+                        "derived from the exact ratio",
                     );
-                    report.scalar_checks += 1;
-                    if row.supply_ratio.is_some() {
-                        report.difference(
-                            format!("{label}.supply_exact shown"),
-                            format!("{:?}", row.supply_ratio),
-                            "derived from the exact ratio",
-                        );
-                    }
                 }
-                (Some((None, None)), Some(0) | None) => report.scalar_checks += 1,
-                (exact, days) => {
-                    report.scalar_checks += 1;
+            }
+            (Recorded::Value(None), Recorded::Value(None)) => {
+                let label = format!("division status {}", row.division);
+                let days = match &row.out_of_supply_days {
+                    Recorded::Value(days) => *days,
+                    Recorded::NotRecorded => None,
+                };
+                report.scalar_checks += 1;
+                if !matches!(days, Some(0) | None) || row.supply_ratio.is_none() {
                     report.difference(
                         format!("{label}.supply_exact"),
-                        format!("{exact:?}"),
-                        format!("complete exact pair, or absent only at zero days out of supply ({days:?})"),
+                        format!(
+                            "exact=(None, None), supply_ratio={:?}, days={days:?}",
+                            row.supply_ratio
+                        ),
+                        "complete exact pair, or absent with recorded supply_ratio only at zero days out of supply",
                     );
                 }
+            }
+            (ratio_exact, grace_exact) => {
+                let label = format!("division status {}", row.division);
+                report.scalar_checks += 1;
+                report.difference(
+                    format!("{label}.supply_exact"),
+                    format!("({ratio_exact:?}, {grace_exact:?})"),
+                    "both exact columns recorded together or both omitted before format support",
+                );
             }
         }
         if let Some(supply) = report.recorded(

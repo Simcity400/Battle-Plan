@@ -101,10 +101,10 @@ pub enum SupplyFrame {
     Uncertain,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member {
     pub supply_ratio: SupplyRatio,
-    pub naval_transfer: bool,
+    pub naval_transfer: Option<bool>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
     pub attrition: bool,
@@ -113,6 +113,23 @@ pub struct Member {
     pub own: bool,
     pub has_order: Option<bool>,
     pub invalid_orders: u8,
+}
+
+impl Default for Member {
+    fn default() -> Self {
+        Self {
+            supply_ratio: SupplyRatio::default(),
+            naval_transfer: Some(false),
+            entrenchment: 0,
+            entrenchment_cap: 0,
+            attrition: false,
+            exercising: None,
+            grouped: false,
+            own: false,
+            has_order: None,
+            invalid_orders: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,10 +178,48 @@ pub fn supply_frame_for(ratio: SupplyRatio, thresholds: SupplyThresholds) -> Sup
 pub fn stack_supply(members: &[Member]) -> SupplyRatio {
     members
         .iter()
-        .filter(|member| !member.naval_transfer)
+        .filter(|member| member.naval_transfer != Some(true))
         .map(|member| member.supply_ratio)
         .next_back()
         .unwrap_or(SupplyRatio::Exact(FIXED))
+}
+
+pub fn stack_supply_frame(members: &[Member], thresholds: SupplyThresholds) -> SupplyFrame {
+    let mut decided: Option<SupplyFrame> = None;
+    let mut observe = |candidate: SupplyFrame| -> bool {
+        if candidate == SupplyFrame::Uncertain {
+            return false;
+        }
+        match decided {
+            None => {
+                decided = Some(candidate);
+                true
+            }
+            Some(existing) => existing == candidate,
+        }
+    };
+    let mut guaranteed = false;
+    for member in members.iter().rev() {
+        match member.naval_transfer {
+            Some(true) => continue,
+            Some(false) => {
+                if !observe(supply_frame_for(member.supply_ratio, thresholds)) {
+                    return SupplyFrame::Uncertain;
+                }
+                guaranteed = true;
+                break;
+            }
+            None => {
+                if !observe(supply_frame_for(member.supply_ratio, thresholds)) {
+                    return SupplyFrame::Uncertain;
+                }
+            }
+        }
+    }
+    if !guaranteed && !observe(supply_frame_for(SupplyRatio::Exact(FIXED), thresholds)) {
+        return SupplyFrame::Uncertain;
+    }
+    decided.unwrap_or(SupplyFrame::Hidden)
 }
 
 pub fn digin_frame(members: &[Member]) -> Option<u32> {
@@ -239,7 +294,7 @@ pub fn glyphs(members: &[Member], thresholds: Option<SupplyThresholds>) -> Glyph
     let (no_orders, invalid_orders) = order_glyphs(members);
     Glyphs {
         supply: thresholds.map_or(SupplyFrame::Hidden, |limits| {
-            supply_frame_for(stack_supply(members), limits)
+            stack_supply_frame(members, limits)
         }),
         digin: match training {
             Some(false) => digin_frame(members),
@@ -355,7 +410,7 @@ mod tests {
             SupplyRatio::exact(FIXED)
         );
         let at_sea = Member {
-            naval_transfer: true,
+            naval_transfer: Some(true),
             ..member(0)
         };
         assert_eq!(
@@ -363,6 +418,34 @@ mod tests {
             SupplyRatio::exact(10_000)
         );
         assert_eq!(stack_supply(&[at_sea]), SupplyRatio::exact(FIXED));
+        let unknown_low = Member {
+            naval_transfer: None,
+            ..member(10_000)
+        };
+        let unknown_full = Member {
+            naval_transfer: None,
+            ..member(80_000)
+        };
+        assert_eq!(
+            stack_supply_frame(&[unknown_low], VANILLA_SUPPLY),
+            SupplyFrame::Uncertain
+        );
+        assert_eq!(
+            stack_supply_frame(&[unknown_full], VANILLA_SUPPLY),
+            SupplyFrame::Hidden
+        );
+        assert_eq!(
+            stack_supply_frame(&[unknown_low, member(10_000)], VANILLA_SUPPLY),
+            SupplyFrame::Frame(2)
+        );
+        assert_eq!(
+            stack_supply_frame(&[member(10_000), unknown_low], VANILLA_SUPPLY),
+            SupplyFrame::Frame(2)
+        );
+        assert_eq!(
+            stack_supply_frame(&[member(80_000), unknown_low], VANILLA_SUPPLY),
+            SupplyFrame::Uncertain
+        );
         assert_eq!(
             glyphs(&[at_sea], Some(VANILLA_SUPPLY)).supply,
             SupplyFrame::Hidden

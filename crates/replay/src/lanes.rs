@@ -553,7 +553,21 @@ pub fn log_span(
     Ok(LogSpan { columns: columns.to_vec(), texts: sink.texts, gaps })
 }
 
+fn check_withheld(recording: &Recording, table: TableId) -> io::Result<()> {
+    let index = table.index();
+    if recording.predates(index).is_none()
+        && let Some(reason) = recording.withheld_reason(index)
+    {
+        return Err(crate::columnar_frames::Damage::wrap(
+            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+            invalid(reason.to_owned()),
+        ));
+    }
+    Ok(())
+}
+
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
+    check_withheld(recording, table)?;
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
@@ -612,6 +626,7 @@ pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i3
 }
 
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<StatusRun>> {
+    check_withheld(recording, table)?;
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
@@ -930,6 +945,7 @@ pub fn chart_at(
     level: u8,
     bin_hours: i64,
 ) -> io::Result<Chart> {
+    check_withheld(recording, table)?;
     let first_bin_hour = i64::from(from).div_euclid(bin_hours) * bin_hours;
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
     let (first, last) = (ordinal_of(recording, run, from)?, ordinal_of(recording, run, to)?);
@@ -1032,6 +1048,7 @@ pub fn chart_at(
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
+    check_withheld(recording, table)?;
     let held = recording.run(run)?;
     let blocks = held.pages() as u32;
     let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;

@@ -641,3 +641,194 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
     assert!(ranked_both > 0);
     assert!(answer(&query, "series-state", &ask(FIRST, 0)).is_err());
 }
+
+#[test]
+fn v1_published_supply_health_is_withheld_by_dashboard_query() {
+    use recorder_derive::framework::{
+        Definitions,
+        definitions::{Define, Form},
+    };
+    use replay::{
+        campaign::{Records, Replay},
+        columnar_file::{FileWriter, HourWriter, Settings},
+        columnar_frames::{
+            schema,
+            synthetic::{Input, Sample, Synthetic},
+        },
+    };
+    use replay_columnar::{
+        container::{self, SectionKey, Tags},
+        envelope::{self, Kind},
+    };
+    use replay_data::{
+        format::FormatVersion,
+        identity::{CaptureMode, Identity, IdentityCodec, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{
+            CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+            Recorded, TABLE_COUNT,
+        },
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use std::io::Cursor;
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let first = 100;
+    let last = first + 11;
+    let branch = BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: None,
+        first_hour: first,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    };
+    let records = Records { sessions: vec![session.clone()], branches: vec![branch], ..Records::default() };
+    let kinds = schema().unwrap();
+    let mut content = Vec::new();
+    session.identity.encode(&mut content).unwrap();
+    let identity = envelope::Identity {
+        schema: envelope::schema_digest(&kinds),
+        campaign: b"v1-supply".to_vec(),
+        content,
+        capture_mode: CaptureMode::Full.byte(),
+    };
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1).unwrap();
+    writer.define(
+        Definitions::read_none()
+            .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
+            .with_define(Define { section: "NMilitary", name: "LOW_SUPPLY", form: Form::Fixed5 }, Ok(50_000))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(15_500))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(35_000)),
+    );
+    writer.start_run(1, envelope::epoch::START, first).unwrap();
+    let mut synthetic = Synthetic::new(1, first).unwrap();
+    let campaign = [CampaignRow { id: b"v1-supply".to_vec() }];
+    let countries = [CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() }];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }];
+    let divisions = [DivisionRow { id: 1, roster_owner: 9001, logical_owner: 9001, province: 1, ..Default::default() }];
+    let land = [DivisionLandInputsRow { division: 1, naval_transfer: false, ..Default::default() }];
+    let statuses = [DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_grace_maximum: Recorded::Value(7_200_000),
+        supply_grace_remaining: Recorded::Value(0),
+        supply_ratio_exact: Recorded::Value(Some(15_000)),
+        supply_grace_exact: Recorded::Value(Some(0)),
+        ..Default::default()
+    }];
+    for hour in first..=last {
+        synthetic.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..Default::default() }], partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::Campaign, Input::Snapshot { rows: &campaign, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::Divisions, Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::DivisionLandInputs, Input::Snapshot { rows: &land, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::DivisionStatus, Input::Snapshot { rows: &statuses, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.end_encoded(|manifest, sections| writer.hour(manifest, sections)).unwrap().unwrap();
+    }
+    let mut file = writer.finish().unwrap();
+    let encoded = records.encode(FormatVersion::CURRENT).unwrap();
+    let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &encoded, 1).unwrap();
+    file.container().append(SectionKey::RECORDS, extent).unwrap();
+    let v2_bytes = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+
+    let v2_replay = Replay::open(v2_bytes.clone()).unwrap();
+    let v2_timeline = Arc::new(crate::timeline::Timeline {
+        id: 1,
+        first,
+        last,
+        stretches: vec![crate::timeline::Stretch { run: 0, first, last, join: crate::timeline::Join::Start }],
+        unheld: Vec::new(),
+    });
+    let v2_holders = Arc::new(crate::identity::holders(v2_replay.recording(), &v2_timeline).unwrap());
+    let v2_query = Query { replay: &v2_replay, timeline: v2_timeline, holders: v2_holders };
+    let series = dashboard_declare::series("supply-health").unwrap();
+    let v2_line = Line::new(&v2_query, series, series.measure("noSupply").unwrap()).unwrap();
+    let v2_states = v2_line.states(&[read("GER", first + 2, None)], None).unwrap();
+    assert_eq!(v2_states[0].missing, None, "v2 published SupplyHealth stays readable: {:?}", v2_states[0]);
+    assert_eq!(v2_states[0].run.as_ref().map(|run| run.value_raw.as_str()), Some("1"));
+
+    let (extent, length) = container::locate(v2_bytes.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let mut root = container::read_root(v2_bytes.as_slice(), &extent).unwrap();
+    let key = SectionKey::derived(TableId::SupplyHealth.index() as u32);
+    assert!(root.section(key).is_some_and(|section| section.version == 2));
+    root.sections.retain(|section| section.key != key);
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let mut rewritten = container::ContainerWriter::resume(Cursor::new(v2_bytes), root, at, 1, None).unwrap();
+    rewritten.commit(None, true, |_| Ok(())).unwrap();
+    let v1_bytes = rewritten.into_inner().into_inner();
+
+    let replay = Replay::open(v1_bytes).unwrap();
+    let timeline = Arc::new(crate::timeline::Timeline {
+        id: 1,
+        first,
+        last,
+        stretches: vec![crate::timeline::Stretch { run: 0, first, last, join: crate::timeline::Join::Start }],
+        unheld: Vec::new(),
+    });
+    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let query = Query { replay: &replay, timeline, holders };
+    let line = Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap();
+
+    let states = line.states(&[read("GER", first + 2, None)], None).unwrap();
+    assert_eq!(states.len(), 1);
+    assert!(states[0].run.is_none(), "v1 SupplyHealth must not report definitive count: {:?}", states[0]);
+    assert!(
+        states[0].missing.as_deref().is_some_and(|why| why.contains("SupplyHealth")),
+        "{:?}",
+        states[0]
+    );
+
+    let (summary, missing) = line.summary("GER", first, last, 2).unwrap();
+    assert!(summary.buckets.iter().all(Option::is_none), "binned summary must withhold v1 counts: {:?}", summary.buckets);
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!((missing[0].first_hour, missing[0].last_hour), (first, last));
+    assert!(missing[0].reason.contains("SupplyHealth"), "{missing:?}");
+
+    let tile_hourly = tile::tile(&line, "1", &[Ask::whole("GER")], None, 1, i64::from(first).div_euclid(BINS as i64), false).unwrap();
+    let flags = unbase64(&tile_hourly.bins);
+    assert!(flags[..BINS].iter().all(|&flag| flag & PRESENT == 0), "hourly tile must withhold v1 counts");
+    assert!(tile_hourly.lines[0].missing.iter().any(|span| span.reason.contains("SupplyHealth")), "{:?}", tile_hourly.lines[0].missing);
+
+    let tile_binned = tile::tile(&line, "1", &[Ask::whole("GER")], None, 6, i64::from(first).div_euclid(BINS as i64 * 6), false).unwrap();
+    let flags = unbase64(&tile_binned.bins);
+    assert!(flags[..BINS].iter().all(|&flag| flag & PRESENT == 0), "binned tile must withhold v1 counts");
+    assert!(tile_binned.lines[0].missing.iter().any(|span| span.reason.contains("SupplyHealth")), "{:?}", tile_binned.lines[0].missing);
+
+    assert!(line.rank_at_by(first + 2, 5, false).unwrap().is_empty());
+
+    let board = board::at(
+        &[board::Column { line: Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap(), partial: None }],
+        board::Rows::Countries(&["GER".into()]),
+        first + 2,
+    )
+    .unwrap();
+    assert_eq!(board.rows.len(), 1);
+    assert_eq!(board.rows[0].cells[0].value_raw, None, "{:?}", board.rows[0]);
+    assert!(
+        board.rows[0].cells[0].missing.as_deref().is_some_and(|why| why.contains("SupplyHealth")),
+        "{:?}",
+        board.rows[0]
+    );
+}

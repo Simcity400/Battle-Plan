@@ -1,6 +1,6 @@
 
 use super::{
-    Segment, columns_at,
+    Segment, columns_at, derived_withheld,
     input::{Held, Source},
     invalid, schema, withheld_at,
 };
@@ -160,7 +160,9 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
         if root.identity.schema != ours {
             return Err(differs(""));
         }
-        return Ok(Framing { columns: schema.iter().map(Vec::len).collect(), withheld: Vec::new(), tables: TABLE_COUNT, format });
+        let mut withheld = Vec::new();
+        derived_withheld(root, TABLE_COUNT, &mut withheld);
+        return Ok(Framing { columns: schema.iter().map(Vec::len).collect(), withheld, tables: TABLE_COUNT, format });
     }
     let mut columns = columns_at(format)?;
     let tables = columns.len();
@@ -168,7 +170,9 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
         return Err(differs(""));
     }
     columns.resize(TABLE_COUNT, 0);
-    Ok(Framing { columns, withheld: withheld_at(format)?, tables, format })
+    let mut withheld = withheld_at(format)?;
+    derived_withheld(root, tables, &mut withheld);
+    Ok(Framing { columns, withheld, tables, format })
 }
 
 pub struct Recording {

@@ -95,7 +95,7 @@ impl Synthetic {
         Ok(())
     }
 
-    pub(crate) fn end_encoded<T>(&mut self, visit: impl FnOnce(&[u8], &[u8]) -> T) -> io::Result<T> {
+    pub fn end_encoded<T>(&mut self, visit: impl FnOnce(&[u8], &[u8]) -> T) -> io::Result<T> {
         self.sections.sort_by_key(|(section, _)| section.table);
         self.samples.sort_unstable_by_key(|&(table, _)| table);
         let appends = self.strings.take_appended();
