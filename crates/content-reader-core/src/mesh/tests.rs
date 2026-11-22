@@ -2179,7 +2179,16 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
                     entity = { name = "inherited" clone = "base" }
                     entity = { name = "overridden" clone = "base" scale = @override_scale }
                     entity = { name = "forward" clone = "base" scale = @after_clone }
-                    @after_clone = 5.0"#,
+                    @after_clone = 5.0
+                    entity = { name = "nested_state" pdxmesh = "var_mesh" state = { name = "idle" @factor = 3 } scale = @factor }
+                    entity = { name = "before_nested" pdxmesh = "var_mesh" scale = @late_nested state = { name = "idle" @late_nested = 4.0 } }
+                    entity = { name = "after_nested" pdxmesh = "var_mesh" scale = @late_nested }
+                    entity = { name = "orphan" clone = "missing_parent" @from_orphan = 1.2 state = { name = "idle" @from_orphan_state = 2.0 } }
+                    entity = { name = "uses_orphan" pdxmesh = "var_mesh" scale = @from_orphan }
+                    entity = { name = "uses_orphan_state" pdxmesh = "var_mesh" scale = @from_orphan_state }
+                    entity = { name = "versioned" pdxmesh = "var_mesh" version = 2 }
+                    entity = { name = "versioned" pdxmesh = "var_mesh" version = 1 @from_older = 0.8 }
+                    entity = { name = "uses_older" pdxmesh = "var_mesh" scale = @from_older }"#,
             ),
         ],
         &[],
@@ -2192,4 +2201,10 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
     assert!((resolve("inherited") - 1.0).abs() < 1e-6);
     assert!((resolve("overridden") - 4.0).abs() < 1e-6);
     assert!((resolve("forward") - 2.5).abs() < 1e-6);
+    assert!((resolve("nested_state") - 7.5).abs() < 1e-6);
+    assert!((resolve("before_nested") - 2.5).abs() < 1e-6);
+    assert!((resolve("after_nested") - 10.0).abs() < 1e-6);
+    assert!((resolve("uses_orphan") - 3.0).abs() < 1e-6);
+    assert!((resolve("uses_orphan_state") - 5.0).abs() < 1e-6);
+    assert!((resolve("uses_older") - 2.0).abs() < 1e-6);
 }

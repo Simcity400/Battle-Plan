@@ -67,12 +67,7 @@ impl Database {
 
     fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
         for field in body.iter().filter(|field| field.keyword_is("color")) {
-            if let Some(message) = self.colors[index].get_or_insert_default().read(field) {
-                self.notes.push(format!(
-                    "state category {}: {message}",
-                    String::from_utf8_lossy(&self.names[index])
-                ));
-            }
+            self.colors[index].get_or_insert_default().read(field);
         }
     }
 
@@ -255,8 +250,9 @@ mod tests {
             Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0])
         );
         assert_eq!(packed.color(b"zero").unwrap(), Some([0.0; 4]));
-        assert!(
-            packed.notes.iter().any(|note| note.contains("0xg")),
+        assert_eq!(
+            packed.notes.iter().filter(|note| note.contains("0xg")).count(),
+            1,
             "{:?}",
             packed.notes
         );

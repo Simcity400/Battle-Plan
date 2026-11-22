@@ -602,17 +602,34 @@ struct FileVars(BTreeMap<Vec<u8>, Vec<u8>>);
 
 impl FileVars {
     fn define(&mut self, item: &parser::Item) {
-        if item.key_quoted {
+        if item.operator != parser::Operator::Equals {
             return;
         }
         let Some(key) = item.key.as_deref().filter(|key| key.starts_with(b"@")) else {
             return;
         };
-        let Some(value) = item.value.scalar() else {
-            return;
+        let resolved = match item.value.scalar() {
+            Some(value) => self.resolve_bytes(value, item.quoted()).to_vec(),
+            None => b"{".to_vec(),
         };
-        let resolved = self.resolve_bytes(value, item.quoted()).to_vec();
         self.0.entry(key[1..].to_vec()).or_insert(resolved);
+    }
+
+    fn visit_item(&mut self, item: &parser::Item) {
+        self.define(item);
+        if let Some(items) = item.value.items() {
+            for child in items {
+                self.visit_item(child);
+            }
+        }
+    }
+
+    fn visit_value(&mut self, value: &parser::Value) {
+        if let Some(items) = value.items() {
+            for child in items {
+                self.visit_item(child);
+            }
+        }
     }
 
     fn resolve_bytes<'a>(&'a self, value: &'a [u8], quoted: bool) -> &'a [u8] {
@@ -636,16 +653,17 @@ fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Ve
     let mut replaced = Vec::new();
     let mut vars = FileVars::default();
     for item in &document.items {
-        vars.define(item);
         match item.key.as_deref() {
             Some(b"objectTypes") => {
                 for block in item.value.items().unwrap_or(&[]) {
-                    vars.define(block);
-                    if block.key.as_deref() == Some(b"pdxmesh")
-                        && let Some(definition) = mesh_definition(&block.value, &mut vars)
-                        && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
-                    {
-                        replaced.push(old.name);
+                    if block.key.as_deref() == Some(b"pdxmesh") {
+                        if let Some(definition) = mesh_definition(&block.value, &mut vars)
+                            && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
+                        {
+                            replaced.push(old.name);
+                        }
+                    } else {
+                        vars.visit_item(block);
                     }
                 }
             }
@@ -657,13 +675,14 @@ fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Ve
                 }
             }
             Some(b"animation") => {
+                vars.visit_item(item);
                 if let Some(definition) = animation_definition(&item.value, directory)
                     && let Some(old) = out.animations.insert(definition.name.clone(), definition)
                 {
                     replaced.push(old.name);
                 }
             }
-            _ => {}
+            _ => vars.visit_item(item),
         }
     }
     replaced
@@ -748,8 +767,8 @@ impl Roster {
             let directory = file.folder_text();
             let mut vars = FileVars::default();
             for item in &document.items {
-                vars.define(item);
                 if item.keyword_is("animation") {
+                    vars.visit_item(item);
                     let Some(animation) =
                         animation_definition(&item.value, directory.unwrap_or_default())
                     else {
@@ -776,6 +795,7 @@ impl Roster {
                 } else if item.keyword_is("light")
                     && let Some(fields) = item.value.items()
                 {
+                    vars.visit_item(item);
                     let name = last_text(fields, "name").unwrap_or_default();
                     if name.len() > ANIMATION_NAME {
                         return Err(invalid(format!(
@@ -783,6 +803,8 @@ impl Roster {
                         )));
                     }
                     roster.lights.insert(name, fields.to_vec());
+                } else {
+                    vars.visit_item(item);
                 }
             }
         }
@@ -924,23 +946,25 @@ fn add_objects(
 ) {
     let mut vars = FileVars::default();
     for item in &document.items {
-        vars.define(item);
         if !item.keyword_is("objectTypes") {
+            vars.visit_item(item);
             continue;
         }
         for object in item.value.items().unwrap_or(&[]) {
-            vars.define(object);
             if object.keyword_is(OBJECTS[0]) {
                 if let Some(mesh) = mesh_definition(&object.value, &mut vars) {
                     objects.insert(mesh.name.clone(), Some(mesh));
                 }
-            } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
-                && let Some(name) = object
-                    .value
-                    .items()
-                    .and_then(|fields| last_text(fields, "name"))
-            {
-                objects.insert(name, None);
+            } else {
+                vars.visit_item(object);
+                if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
+                    && let Some(name) = object
+                        .value
+                        .items()
+                        .and_then(|fields| last_text(fields, "name"))
+                {
+                    objects.insert(name, None);
+                }
             }
         }
     }
@@ -994,6 +1018,7 @@ impl Entities {
             return Ok(());
         };
         let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) else {
+            vars.visit_value(value);
             return Ok(());
         };
         let clone = last_text(fields, "clone").filter(|parent| !parent.is_empty());
@@ -1011,6 +1036,7 @@ impl Entities {
             .find(|item| item.keyword_is("version"))
             .and_then(|item| item.value.scalar())
             .map_or(0, crate::fixed5::decimal_i32);
+        let definition = entity_definition(value, vars);
         if let Some(file) = clone
             .as_ref()
             .and_then(|parent| roster.unreadable_names.get(parent))
@@ -1035,7 +1061,7 @@ impl Entities {
         if stored.is_some_and(|stored| version < stored) {
             return Ok(());
         }
-        let Some(mut definition) = entity_definition(value, vars) else {
+        let Some(mut definition) = definition else {
             return Ok(());
         };
         roster
@@ -1206,6 +1232,16 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
 
 fn mesh_definition(value: &parser::Value, vars: &mut FileVars) -> Option<MeshDefinition> {
     let items = value.items()?;
+    let mut scale = 1.0;
+    for item in items {
+        if item.keyword_is("scale") {
+            scale = vars
+                .resolve_item(item)
+                .and_then(crt::scan_f32)
+                .unwrap_or(scale);
+        }
+        vars.visit_item(item);
+    }
     let name = unquote(text(items, b"name")?);
     let file = unquote(text(items, b"file")?)
         .trim_start_matches('/')
@@ -1237,16 +1273,6 @@ fn mesh_definition(value: &parser::Value, vars: &mut FileVars) -> Option<MeshDef
                 .unwrap_or(squared);
             distance * distance
         });
-    let mut scale = 1.0;
-    for item in items {
-        vars.define(item);
-        if item.keyword_is("scale") {
-            scale = vars
-                .resolve_item(item)
-                .and_then(crt::scan_f32)
-                .unwrap_or(scale);
-        }
-    }
     Some(MeshDefinition {
         name,
         file,
@@ -1284,6 +1310,17 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
 
 fn entity_definition(value: &parser::Value, vars: &mut FileVars) -> Option<EntityDefinition> {
     let items = value.items()?;
+    let mut scale = None;
+    for item in items {
+        if item.keyword_is("scale") {
+            scale = Some(
+                vars.resolve_item(item)
+                    .and_then(crt::scan_f32)
+                    .unwrap_or_else(|| scale.unwrap_or(1.0)),
+            );
+        }
+        vars.visit_item(item);
+    }
     let name = unquote(text(items, b"name")?);
     if name.is_empty() {
         return None;
@@ -1370,17 +1407,6 @@ fn entity_definition(value: &parser::Value, vars: &mut FileVars) -> Option<Entit
             })
         })
         .collect();
-    let mut scale = None;
-    for item in items {
-        vars.define(item);
-        if item.keyword_is("scale") {
-            scale = Some(
-                vars.resolve_item(item)
-                    .and_then(crt::scan_f32)
-                    .unwrap_or_else(|| scale.unwrap_or(1.0)),
-            );
-        }
-    }
     Some(EntityDefinition {
         name,
         game_data: entity_game_data(items),

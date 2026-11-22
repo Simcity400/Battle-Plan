@@ -209,7 +209,7 @@ fn a_group_that_is_not_text_stops_the_file() {
         &"".into(),
         &BTreeMap::new(),
     );
-    let (found, cause, _) = groups(&read.items);
+    let (found, cause) = groups(&read.items);
     assert_eq!(found.len(), 1);
     assert_eq!(
         cause.as_deref(),
@@ -226,7 +226,7 @@ fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
         &"".into(),
         &BTreeMap::new(),
     );
-    let (groups, _, _) = groups(&read.items);
+    let (groups, _) = groups(&read.items);
     assert_eq!(groups[0].token, "fascism");
     assert_eq!(groups[0].color, Ok([1.0; 4]));
     assert!(groups[0].types.is_empty());
@@ -258,7 +258,7 @@ fn the_replay_classes_hold_for_ideologies() {
             &"".into(),
             &BTreeMap::new(),
         );
-    let (found, _, _) = groups(&read.items);
+    let (found, _) = groups(&read.items);
     assert_eq!(found[0].color, Ok([0.0, 0.0, 1.0, 1.0]));
     assert_eq!(found[0].types, ["x"]);
     assert_eq!(
@@ -404,6 +404,7 @@ fn malformed_packed_colour_keeps_previous_channels_and_emits_diagnostic() {
             "ideologies = { \
                 bad_hex = { color = { 10 20 30 } color = 0xg } \
                 bad_dot = { color = { 10 20 30 } color = .5 } \
+                outer = { color = { 10 20 30 } types = { inner = { color = 0xg } ok_zero = { color = 0x } } } \
                 zero_hex = { color = { 10 20 30 } color = 0x } \
                 zero_minus = { color = { 10 20 30 } color = - } \
              }",
@@ -412,9 +413,18 @@ fn malformed_packed_colour_keeps_previous_channels_and_emits_diagnostic() {
     let kept = [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0];
     assert_eq!(color(&db, "bad_hex"), Ok(kept));
     assert_eq!(color(&db, "bad_dot"), Ok(kept));
+    assert_eq!(color(&db, "outer"), Ok(kept));
     assert_eq!(color(&db, "zero_hex"), Ok([0.0; 4]));
     assert_eq!(color(&db, "zero_minus"), Ok([0.0; 4]));
-    assert_eq!(warnings.len(), 2, "{warnings:?}");
-    assert!(warnings.iter().any(|w| w.contains("0xg")), "{warnings:?}");
-    assert!(warnings.iter().any(|w| w.contains(".5")), "{warnings:?}");
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert_eq!(
+        warnings.iter().filter(|w| w.contains("0xg")).count(),
+        2,
+        "{warnings:?}"
+    );
+    assert_eq!(
+        warnings.iter().filter(|w| w.contains(".5")).count(),
+        1,
+        "{warnings:?}"
+    );
 }

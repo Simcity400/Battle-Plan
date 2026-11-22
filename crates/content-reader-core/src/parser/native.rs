@@ -1758,6 +1758,19 @@ impl<'n> Reader<'n> {
     fn color(&mut self, key: &Token) -> Value {
         let current = self.current();
         if current.kind == Kind::Bare && super::number_token(&current.text, false) {
+            if matches!(
+                crate::crt::scan_x32(&current.text),
+                crate::crt::Scanned::NoMatch
+            ) {
+                self.misread(
+                    key.line,
+                    format!(
+                        "field {} has {} where the colour reader reads a packed hexadecimal colour: it is reported and the previous colour is kept",
+                        key.shown(),
+                        current.shown()
+                    ),
+                );
+            }
             return Value::Scalar(current.text);
         }
         if current.kind != Kind::Open {
