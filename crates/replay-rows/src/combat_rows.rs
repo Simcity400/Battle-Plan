@@ -1068,6 +1068,56 @@ typed_codec!(LandCombatSideRow, 64, |row| row.combat as u128,
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct CombatEngagementRefreshRow {
+    pub kind: u8,
+    pub target: u64,
+    pub side: u8,
+    pub triggers: u8,
+}
+
+impl CombatEngagementRefreshRow {
+    pub const LAND_SIDE: u8 = 0;
+    pub const NAVAL_SIDE: u8 = 1;
+    pub const CONTROLLER_TARGET: u8 = 2;
+    pub const LOCAL_ALL_SIDES: u8 = 3;
+    pub const TRIGGER_RECORDED: u8 = 1;
+    pub const TRIGGER_UNITS: u8 = 2;
+}
+
+typed_codec!(
+    CombatEngagementRefreshRow,
+    67,
+    |row| {
+        (((row.kind & 3) as u128) << 65)
+            | ((row.target as u128) << 1)
+            | ((row.side & 1) as u128)
+    },
+    |key| Self {
+        kind: (key >> 65) as u8,
+        target: (key >> 1) as u64,
+        side: (key & 1) as u8,
+        ..Default::default()
+    },
+    { 0 => (triggers): U8 },
+    |row, mask| {
+        if row.kind > CombatEngagementRefreshRow::LOCAL_ALL_SIDES {
+            return Err(invalid("invalid combat engagement refresh kind"));
+        }
+        if row.side > 1 {
+            return Err(invalid("invalid combat engagement refresh side"));
+        }
+        if row.kind >= CombatEngagementRefreshRow::CONTROLLER_TARGET && row.side != 0 {
+            return Err(invalid("invalid combat engagement refresh side for kind"));
+        }
+        if mask & 1 != 0 && (row.triggers == 0 || (row.triggers & !3) != 0) {
+            return Err(invalid("invalid combat engagement refresh triggers"));
+        }
+        Ok(())
+    }
+);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatDetailsRow {
     pub combat: u64,
     pub province: u32,

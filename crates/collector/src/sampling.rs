@@ -1747,6 +1747,7 @@ fn lost_observer_interval() {
     collector_land_events::land_events::fail();
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
+    crate::combat_engagement_refreshes::lost_drain();
     crate::nuclear_strikes::lost_drain();
     crate::market_changes::lost_drain();
     crate::map_events::interval::lost_output();
@@ -2003,6 +2004,9 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     crate::air_losses::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     crate::fuel_awards::boundary();
     crate::building_bombing::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
+    crate::combat_engagement_refreshes::boundary(
+        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+    );
     crate::nuclear_strikes::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     let entry_ticks = qpc() - clock_start;
     #[cfg(feature = "callback_profile")]

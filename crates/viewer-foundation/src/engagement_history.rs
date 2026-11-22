@@ -151,6 +151,7 @@ pub fn combats(
             links,
             relations,
             controllers: None,
+            refreshes: engaged::RefreshWitness::Unavailable,
             sides: sides.sides,
             complete: sides.complete,
             removal: sides.removal,

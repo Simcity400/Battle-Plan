@@ -30,6 +30,7 @@ pub mod building_mutations;
 pub mod census_mutations;
 pub mod character_role_mutations;
 pub mod character_roster_mutations;
+pub mod combat_engagement_mutations;
 pub mod country_input_mutations;
 pub mod division_panel_mutations;
 pub mod doctrine_mutations;

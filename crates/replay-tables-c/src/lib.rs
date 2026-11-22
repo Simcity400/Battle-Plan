@@ -4,6 +4,7 @@ replay_rows::row_ops! {
     DivisionRetreatBans => DivisionRetreatBanRow,
     InvasionPreparations => InvasionPreparationRow,
     LandCombatSides => LandCombatSideRow,
+    CombatEngagementRefreshes => CombatEngagementRefreshRow,
     AirRegionalMissions => AirRegionalMissionRow,
     AirCountryRelations => AirCountryRelationRow,
     AirReferenceWitnesses => AirReferenceWitnessRow,

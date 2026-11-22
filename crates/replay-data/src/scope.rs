@@ -83,6 +83,7 @@ const fn map_records(table: TableId) -> bool {
             | CountryCivilWars
             | LandCombats
             | LandCombatSides
+            | CombatEngagementRefreshes
             | NavalCombats
             | NavalResults
             | NavalResultMembers

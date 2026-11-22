@@ -185,6 +185,14 @@ fn sample<'a>(
     defended(links, relations, units, primary, &[9])
 }
 
+fn complete_witness() -> RefreshWitness {
+    RefreshWitness::Complete {
+        sides: BTreeMap::new(),
+        controller_targets: Vec::new(),
+        local_all_sides: false,
+    }
+}
+
 fn defended<'a>(
     links: &'a BTreeMap<u32, u32>,
     relations: &'a Relations,
@@ -197,6 +205,7 @@ fn defended<'a>(
         links,
         relations: Ok(relations),
         controllers: Some(Controllers::default()),
+        refreshes: complete_witness(),
         sides: BTreeMap::from([
             ((62, 0), side(units, primary)),
             ((62, 1), side(defenders, &[5])),
@@ -219,8 +228,18 @@ fn a_land_removal_may_rebuild_the_other_side() {
     history.advance(defended(&links, &allied, &[7], &[2], &[8, 9]), next);
     assert_eq!(history.side(62, 0), Engaged::No);
     history.advance(defended(&links, &allied, &[7], &[2], &[9]), next);
-    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+    assert_eq!(history.side(62, 0), Engaged::No);
     assert_eq!(history.side(62, 1), Engaged::No);
+    let witnessed = Sample {
+        refreshes: RefreshWitness::Complete {
+            sides: BTreeMap::from([((62, 0), UNITS)]),
+            controller_targets: Vec::new(),
+            local_all_sides: false,
+        },
+        ..defended(&links, &allied, &[7], &[2], &[9])
+    };
+    history.advance(witnessed, next);
+    assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(defended(&links, &allied, &[6, 7], &[2], &[9]), next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(defended(&links, &allied, &[6, 7], &[2], &[]), next);
@@ -315,45 +334,67 @@ fn added<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations, added: Add
 fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
     let (apart, allied) = (relations(false), relations(true));
+    fn unavailable<'a>(
+        links: &'a BTreeMap<u32, u32>,
+        relations: &'a Relations,
+        a: Added,
+    ) -> Sample<'a> {
+        Sample {
+            refreshes: RefreshWitness::Unavailable,
+            ..added(links, relations, a)
+        }
+    }
     let mut history = History::default();
     history.advance(
-        added(&links, &apart, Added::Observed(vec![3])),
+        unavailable(&links, &apart, Added::Observed(vec![3])),
         Continuity::Load,
     );
     history.advance(
-        added(&links, &allied, Added::Observed(vec![3])),
+        unavailable(&links, &allied, Added::Unavailable),
         Continuity::Next,
     );
-    assert_eq!(history.side(62, 0), Engaged::No);
-    history.advance(added(&links, &allied, Added::Unavailable), Continuity::Next);
-    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
     history.advance(
-        added(&links, &allied, Added::Observed(vec![3])),
+        unavailable(&links, &allied, Added::Observed(vec![3])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
     history.advance(
-        added(&links, &allied, Added::Observed(vec![3, 4])),
+        unavailable(&links, &allied, Added::Observed(vec![3, 4])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Yes);
 
     let mut history = History::default();
     history.advance(
-        added(&links, &apart, Added::Observed(vec![3])),
+        unavailable(&links, &apart, Added::Observed(vec![3])),
         Continuity::Load,
     );
-    history.advance(added(&links, &apart, Added::Unavailable), Continuity::Next);
+    history.advance(
+        unavailable(&links, &apart, Added::Unavailable),
+        Continuity::Next,
+    );
     assert_eq!(history.side(62, 0), Engaged::No);
     history.advance(
-        added(&links, &allied, Added::Observed(vec![3, 4])),
+        unavailable(&links, &allied, Added::Observed(vec![3, 4])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
-    let mut land = History::default();
-    land.advance(added(&links, &apart, Added::NoTrigger), Continuity::Load);
-    land.advance(added(&links, &allied, Added::NoTrigger), Continuity::Next);
-    assert_eq!(land.side(62, 0), Engaged::No);
+
+    let mut witnessed = History::default();
+    witnessed.advance(added(&links, &apart, Added::Observed(vec![3])), Continuity::Load);
+    witnessed.advance(added(&links, &allied, Added::Unavailable), Continuity::Next);
+    assert_eq!(witnessed.side(62, 0), Engaged::No);
+    let transfer = Sample {
+        refreshes: RefreshWitness::Complete {
+            sides: BTreeMap::from([((62, 0), RECORDED)]),
+            controller_targets: Vec::new(),
+            local_all_sides: false,
+        },
+        ..added(&links, &allied, Added::Unavailable)
+    };
+    witnessed.advance(transfer, Continuity::Next);
+    assert_eq!(witnessed.side(62, 0), Engaged::Yes);
 }
 
 #[test]
@@ -420,41 +461,69 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
         links: &'a BTreeMap<u32, u32>,
         relations: &'a Relations,
         controllers: Option<Controllers>,
+        refreshes: RefreshWitness,
     ) -> Sample<'a> {
         Sample {
             controllers,
+            refreshes,
             ..sample(links, relations, &[7], &[2])
         }
     }
     let away = Some(rosters(&links, &[(40, 5)], 1));
-    let run = |relations: &Relations, controllers: Option<Controllers>| {
+    let run = |relations: &Relations, controllers: Option<Controllers>, refreshes: RefreshWitness| {
         let mut history = History::default();
-        history.advance(at(&links, &apart, away.clone()), Continuity::Load);
-        history.advance(at(&links, relations, away.clone()), Continuity::Next);
-        history.advance(at(&links, relations, controllers), Continuity::Next);
+        history.advance(at(&links, &apart, away.clone(), complete_witness()), Continuity::Load);
+        history.advance(at(&links, relations, away.clone(), complete_witness()), Continuity::Next);
+        history.advance(at(&links, relations, controllers, refreshes), Continuity::Next);
         history.side(62, 0)
     };
     let joined = Some(rosters(&links, &[(40, 1)], 2));
-    assert_eq!(run(&allied, away.clone()), Engaged::No);
+    assert_eq!(run(&allied, away.clone(), complete_witness()), Engaged::No);
     assert_eq!(
-        run(&allied, joined.clone()),
-        Engaged::Ambiguous(Ambiguity::Scope)
+        run(
+            &allied,
+            away.clone(),
+            RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: vec![1],
+                local_all_sides: false,
+            }
+        ),
+        Engaged::Yes
     );
-    for rosters in [
-        rosters(&links, &[(40, 5), (41, 1)], 1),
-        rosters(&links, &[(40, 5)], 2),
-    ] {
-        assert_eq!(
-            run(&allied, Some(rosters)),
-            Engaged::Ambiguous(Ambiguity::Scope)
-        );
-    }
-    assert_eq!(run(&allied, None), Engaged::Ambiguous(Ambiguity::Scope));
-    assert_eq!(run(&apart, joined), Engaged::No);
     assert_eq!(
-        run(&allied, Some(rosters(&links, &[(40, 2)], 1))),
+        run(
+            &allied,
+            away.clone(),
+            RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: vec![5],
+                local_all_sides: false,
+            }
+        ),
         Engaged::No
     );
+    assert_eq!(
+        run(
+            &allied,
+            away.clone(),
+            RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: vec![99],
+                local_all_sides: false,
+            }
+        ),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+    assert_eq!(
+        run(&allied, joined.clone(), RefreshWitness::Unavailable),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+    assert_eq!(
+        run(&allied, None, RefreshWitness::Unavailable),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+    assert_eq!(run(&apart, joined, RefreshWitness::Unavailable), Engaged::No);
 }
 
 #[test]
@@ -504,4 +573,118 @@ fn history_lags_diplomacy_until_the_unit_set_changes() {
     started.advance(empty, Continuity::Load);
     started.advance(sample(&links, &allied, &[7], &[2]), Continuity::Next);
     assert_eq!(started.combat(62), Engaged::Yes);
+}
+
+#[test]
+fn without_refresh_witness_diplomacy_change_is_ambiguous() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let (apart, allied) = (relations(false), relations(true));
+    let mut history = History::default();
+    fn without<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations) -> Sample<'a> {
+        Sample {
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(links, relations, &[7], &[2])
+        }
+    }
+    history.advance(without(&links, &apart), Continuity::Load);
+    assert_eq!(history.side(62, 0), Engaged::No);
+    history.advance(without(&links, &apart), Continuity::Next);
+    assert_eq!(history.side(62, 0), Engaged::No);
+    history.advance(without(&links, &allied), Continuity::Next);
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+    history.advance(without(&links, &allied), Continuity::Next);
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+    let joined = Sample {
+        refreshes: RefreshWitness::Unavailable,
+        ..sample(&links, &allied, &[7, 8], &[2])
+    };
+    history.advance(joined, Continuity::Next);
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+}
+
+#[test]
+fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let (apart, allied) = (relations(false), relations(true));
+
+    let mut readd = History::default();
+    readd.advance(sample(&links, &apart, &[7], &[2]), Continuity::Load);
+    assert_eq!(readd.side(62, 0), Engaged::No);
+    readd.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                controller_targets: Vec::new(),
+                local_all_sides: false,
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(readd.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+    readd.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                controller_targets: Vec::new(),
+                local_all_sides: false,
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(readd.side(62, 0), Engaged::Yes);
+
+    let mut bounce = History::default();
+    let mut naval_side = side(&[7], &[1]);
+    naval_side.unit_lists = Some((vec![2], vec![]));
+    fn naval_at<'a>(
+        links: &'a BTreeMap<u32, u32>,
+        relations: &'a Relations,
+        naval_side: &Side,
+        refreshes: RefreshWitness,
+    ) -> Sample<'a> {
+        Sample {
+            refreshes,
+            sides: BTreeMap::from([((62, 0), naval_side.clone()), ((62, 1), side(&[9], &[5]))]),
+            removal: Removal::BothSides,
+            ..sample(links, relations, &[7], &[1])
+        }
+    }
+    bounce.advance(
+        naval_at(&links, &apart, &naval_side, complete_witness()),
+        Continuity::Load,
+    );
+    assert_eq!(bounce.side(62, 0), Engaged::Yes);
+    bounce.advance(
+        naval_at(
+            &links,
+            &apart,
+            &naval_side,
+            RefreshWitness::Complete {
+                sides: BTreeMap::from([((62, 0), UNITS)]),
+                controller_targets: Vec::new(),
+                local_all_sides: false,
+            },
+        ),
+        Continuity::Next,
+    );
+    assert_eq!(bounce.side(62, 0), Engaged::No);
+
+    let mut local = History::default();
+    local.advance(sample(&links, &apart, &[7], &[2]), Continuity::Load);
+    local.advance(sample(&links, &allied, &[7], &[2]), Continuity::Next);
+    assert_eq!(local.side(62, 0), Engaged::No);
+    local.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_all_sides: true,
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(local.side(62, 0), Engaged::Yes);
 }

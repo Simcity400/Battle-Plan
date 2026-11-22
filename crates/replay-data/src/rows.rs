@@ -189,23 +189,22 @@ impl<T> fmt::Debug for Shown<'_, T> {
 }
 
 macro_rules! define_tables {
-    (
-        recorded { $($recorded:ident = $recorded_id:literal => $recorded_variant:ident($recorded_row:ident)),+ $(,)? }
-        derived { $($derived:ident = $derived_id:literal => $derived_variant:ident($derived_row:ident)),+ $(,)? }
-        $(recorded { $($later:ident = $later_id:literal => $later_variant:ident($later_row:ident)),+ $(,)? })?
-        $(derived { $($later_derived:ident = $later_derived_id:literal => $later_derived_variant:ident($later_derived_row:ident)),+ $(,)? })?
-    ) => {
-        define_tables! {
-            $($recorded = $recorded_id => $recorded_variant($recorded_row)),+,
-            $($derived = $derived_id => $derived_variant($derived_row)),+
-            $($(, $later = $later_id => $later_variant($later_row))+)?
-            $($(, $later_derived = $later_derived_id => $later_derived_variant($later_derived_row))+)?
-        }
+    (@acc [$($all:tt)*] [$($derived:ident)*]) => {
+        define_tables! { $($all)* }
         impl TableId {
             pub const fn is_derived(self) -> bool {
-                matches!(self, $(Self::$derived)|+ $($( | Self::$later_derived)+)?)
+                matches!(self, $(Self::$derived)|*)
             }
         }
+    };
+    (@acc [$($all:tt)*] [$($derived:ident)*] recorded { $($t:ident = $id:literal => $v:ident($r:ident)),+ $(,)? } $($rest:tt)*) => {
+        define_tables! { @acc [$($all)* $($t = $id => $v($r),)+] [$($derived)*] $($rest)* }
+    };
+    (@acc [$($all:tt)*] [$($derived:ident)*] derived { $($t:ident = $id:literal => $v:ident($r:ident)),+ $(,)? } $($rest:tt)*) => {
+        define_tables! { @acc [$($all)* $($t = $id => $v($r),)+] [$($derived)* $($t)+] $($rest)* }
+    };
+    (recorded { $($first:tt)* } $($rest:tt)*) => {
+        define_tables! { @acc [] [] recorded { $($first)* } $($rest)* }
     };
     ($($table:ident = $id:literal => $variant:ident($row:ident)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1095,6 +1094,9 @@ StateBuildingInputs = 517 => StateBuildingInput(StateBuildingInputRow),
 }
 derived {
 PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
+}
+recorded {
+CombatEngagementRefreshes = 519 => CombatEngagementRefresh(CombatEngagementRefreshRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [

@@ -2427,6 +2427,25 @@ impl Fixture for LandCombatDivisionModifierRow {
         row
     }
 }
+impl Fixture for CombatEngagementRefreshRow {
+    fn largest_key() -> u128 {
+        (u128::from(Self::LOCAL_ALL_SIDES) << 65) | (u128::from(u64::MAX) << 1)
+    }
+    fn fixture(key: u128, tick: usize) -> Self {
+        let kind = ((key >> 65) & 3) as u8;
+        let side = if kind >= Self::CONTROLLER_TARGET {
+            0
+        } else {
+            (key & 1) as u8
+        };
+        Self {
+            kind,
+            target: (key >> 1) as u64,
+            side,
+            triggers: ((tick % 3) + 1) as u8,
+        }
+    }
+}
 impl Fixture for LandCombatSideRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let positive = |offset: usize| {
@@ -4290,6 +4309,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::LandCombatProgress(rows::<LandCombatProgressRow>(tick))
         }
         TableId::LandCombatSides => TableRows::LandCombatSides(rows::<LandCombatSideRow>(tick)),
+        TableId::CombatEngagementRefreshes => {
+            TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
+        }
         TableId::ThreatSources => TableRows::ThreatSources(rows::<ThreatSourceRow>(tick)),
         TableId::ThreatCountryAggregates => {
             TableRows::ThreatCountryAggregates(rows::<ThreatCountryAggregateRow>(tick))
@@ -6503,6 +6525,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<DivisionEtaInputsRow>(TableId::DivisionEtaInputs);
     check_table::<LandCombatProgressRow>(TableId::LandCombatProgress);
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
+    check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);

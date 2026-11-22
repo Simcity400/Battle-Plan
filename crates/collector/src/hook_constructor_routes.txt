@@ -89,6 +89,8 @@ call:crate::capture_point::drain
 call:crate::capture_point::set_beside
 call:crate::capture_point::take_unread
 call:crate::clock::qpc
+call:crate::combat_engagement_refreshes::capacity
+call:crate::combat_engagement_refreshes::presize
 call:crate::combat_log_prune::release_storage
 call:crate::command_batch::enabled
 call:crate::country_input_changes::presize_countries
@@ -225,7 +227,7 @@ call:world_restore_ready
 call:write_status
 call:write_status_bytes
 macro-definition:refuse_detach:9d440c9e26d76929
-macro-definition:retain_detach:37aeea4165fbff39
+macro-definition:retain_detach:5e0511b8720a18c3
 macro:crate::status::status
 macro:format
 macro:format_args

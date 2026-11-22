@@ -874,6 +874,11 @@ fn run(
     let mut bombing_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { crate::building_bombing::Hooks::new(&memory, base) })
     })?;
+    let mut engagement_refresh_hooks = FamilyHooks::construct(base, || {
+        Ok::<_, &'static str>(unsafe {
+            crate::combat_engagement_refreshes::Hooks::new(&memory, base)
+        })
+    })?;
     let mut nuclear_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) })
     })?;
@@ -1005,10 +1010,12 @@ fn run(
     sizing.extended.naval_result_sources = collector_naval_results::naval_result_sources::demand();
     crate::air_losses::prepare(&memory, base, slots);
     crate::building_bombing::prepare(&memory, base, slots);
+    crate::combat_engagement_refreshes::presize(slots.max(64));
     crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
     crate::map_events::presize(slots)?;
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
+    sizing.extended.combat_engagement_refreshes = crate::combat_engagement_refreshes::capacity();
     sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
     crate::market_changes::presize(slots, slots);
     sizing.extended.market = crate::market_changes::capacity();
@@ -1207,6 +1214,7 @@ fn run(
     ranges.extend(command_hooks.executable_ranges());
     ranges.extend(air_loss_hooks.executable_ranges());
     ranges.extend(bombing_hooks.executable_ranges());
+    ranges.extend(engagement_refresh_hooks.executable_ranges());
     ranges.extend(nuclear_hooks.executable_ranges());
     ranges.extend(market_hooks.executable_ranges());
     ranges.extend(map_event_hooks.executable_ranges());
@@ -1499,6 +1507,9 @@ fn run(
                     }),
                     ("air_losses", &mut || air_loss_hooks.set_enabled(true)),
                     ("building_bombing", &mut || bombing_hooks.set_enabled(true)),
+                    ("combat_engagement_refreshes", &mut || {
+                        engagement_refresh_hooks.set_enabled(true)
+                    }),
                     ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
                     ("market_changes", &mut || market_hooks.set_enabled(true)),
                     ("map_events", &mut || map_event_hooks.set_enabled(true)),
@@ -1627,7 +1638,7 @@ fn run(
                 std::mem::forget((
                     $workers, capture_thread, hook, batch_hooks, portrait_hooks, advisor_hooks, relation_hooks,
                     history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, membership_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
-                    air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
+                    air_loss_hooks, bombing_hooks, engagement_refresh_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, command_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
                     peace_hooks, shared, output_lock, _payload_pools, decode_panic_hook, worker_panic,
@@ -1751,6 +1762,7 @@ fn run(
             RestoreFamily::NavalResultSources => naval_result_hooks.set_enabled(false),
             RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
             RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
+            RestoreFamily::CombatEngagementRefreshes => engagement_refresh_hooks.set_enabled(false),
             RestoreFamily::NuclearStrikes => nuclear_hooks.set_enabled(false),
             RestoreFamily::Market => market_hooks.set_enabled(false),
             RestoreFamily::MapEvents => map_event_hooks.set_enabled(false),
@@ -2037,6 +2049,7 @@ fn run(
             naval_result_hooks,
             air_loss_hooks,
             bombing_hooks,
+            engagement_refresh_hooks,
             nuclear_hooks,
             market_hooks,
             map_event_hooks,
@@ -2369,6 +2382,10 @@ impl ObserverState for RestoreFamily {
                 crate::building_bombing::active() != 0,
                 "building bombing callbacks did not quiesce; collector retained",
             ),
+            Self::CombatEngagementRefreshes => (
+                crate::combat_engagement_refreshes::active() != 0,
+                "combat engagement refresh callbacks did not quiesce; collector retained",
+            ),
             Self::NuclearStrikes => (
                 crate::nuclear_strikes::active() != 0,
                 "nuclear strike callbacks did not quiesce; collector retained",
@@ -2437,6 +2454,7 @@ impl ObserverState for RestoreFamily {
                 | Self::ProvinceCombats
                 | Self::AirBaseCarry
                 | Self::AirLosses
+                | Self::CombatEngagementRefreshes
                 | Self::NuclearStrikes
                 | Self::Market
         )
@@ -2495,6 +2513,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::NavalResultSources => "naval_result_sources",
         RestoreFamily::AirLosses => "air_losses",
         RestoreFamily::BuildingBombing => "building_bombing",
+        RestoreFamily::CombatEngagementRefreshes => "combat_engagement_refreshes",
         RestoreFamily::NuclearStrikes => "nuclear_strikes",
         RestoreFamily::MapEvents => "map_events",
         RestoreFamily::EventFeed => "event_feed_observer",
@@ -3082,6 +3101,7 @@ fn wait_quiet(
     }
     crate::air_losses::mark_stranded();
     crate::building_bombing::mark_stranded();
+    crate::combat_engagement_refreshes::mark_stranded();
     crate::nuclear_strikes::mark_stranded();
     crate::market_changes::mark_stranded();
     loop {
@@ -4420,6 +4440,7 @@ fn spool_loop(
                         collector_land_events::land_events::fail();
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
+                        crate::combat_engagement_refreshes::lost_drain();
                         crate::nuclear_strikes::lost_drain();
                         crate::market_changes::lost_drain();
                         crate::map_events::interval::lost_output();
@@ -4438,6 +4459,7 @@ fn spool_loop(
                     collector_land_events::land_events::fail();
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
+                    crate::combat_engagement_refreshes::lost_drain();
                     crate::nuclear_strikes::lost_drain();
                     crate::market_changes::lost_drain();
                     crate::map_events::interval::lost_output();
@@ -4475,6 +4497,7 @@ fn spool_loop(
                 collector_land_events::land_events::fail();
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
+                crate::combat_engagement_refreshes::lost_drain();
                 crate::nuclear_strikes::lost_drain();
                 crate::market_changes::lost_drain();
                 crate::map_events::interval::lost_output();
@@ -4516,6 +4539,7 @@ fn spool_loop(
             collector_land_events::land_events::fail();
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
+            crate::combat_engagement_refreshes::lost_drain();
             crate::nuclear_strikes::lost_drain();
             crate::market_changes::lost_drain();
             crate::map_events::interval::lost_output();
@@ -5202,6 +5226,7 @@ fn sizing_pass(
     crate::politics_changes::prepare();
     crate::air_losses::presize(0);
     crate::building_bombing::presize(0);
+    crate::combat_engagement_refreshes::presize(0);
     crate::nuclear_strikes::presize(0);
     crate::market_changes::presize(0, collector_primitives::country_slots::census_rows(0));
     if let Err(reason) =
@@ -5213,12 +5238,16 @@ fn sizing_pass(
     collector_combat_log::history_events::prepare(0);
     let air_loss_capacity = crate::air_losses::capacity();
     let bombing_capacity = crate::building_bombing::capacity();
+    let engagement_refresh_capacity = crate::combat_engagement_refreshes::capacity();
     let nuclear_capacity = crate::nuclear_strikes::capacity();
     let land_event_capacity = collector_land_events::land_events::capacity();
     sizing.raise(shared, |capacities| {
         let extended = &mut capacities.extended;
         extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
         extended.building_bombing = extended.building_bombing.max(bombing_capacity);
+        extended.combat_engagement_refreshes = extended
+            .combat_engagement_refreshes
+            .max(engagement_refresh_capacity);
         extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
         extended.land_events.words = extended.land_events.words.max(land_event_capacity);
     });
@@ -5355,6 +5384,7 @@ fn sizing_pass(
         }
         crate::air_losses::prepare(&live, base, registry.slots);
         crate::building_bombing::prepare(&live, base, registry.slots);
+        crate::combat_engagement_refreshes::presize(registry.slots.max(64));
         crate::nuclear_strikes::presize(
             crate::building_bombing::buildings().saturating_add(registry.slots),
         );
@@ -5365,6 +5395,7 @@ fn sizing_pass(
         );
         let air_loss_capacity = crate::air_losses::capacity();
         let bombing_capacity = crate::building_bombing::capacity();
+        let engagement_refresh_capacity = crate::combat_engagement_refreshes::capacity();
         crate::market_changes::presize(0, registry.slots);
         let market_capacity = crate::market_changes::capacity();
         let nuclear_capacity = crate::nuclear_strikes::capacity();
@@ -5372,6 +5403,9 @@ fn sizing_pass(
             let extended = &mut capacities.extended;
             extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
             extended.building_bombing = extended.building_bombing.max(bombing_capacity);
+            extended.combat_engagement_refreshes = extended
+                .combat_engagement_refreshes
+                .max(engagement_refresh_capacity);
             extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
             extended.market = extended.market.max(market_capacity);
             if let Ok(Some(demand)) = &source {

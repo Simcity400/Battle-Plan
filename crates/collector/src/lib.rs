@@ -60,6 +60,7 @@ pub(crate) use collector_observers::building_bombing;
 mod callback_profile;
 pub(crate) use collector_combat_log::combat_log_prune;
 pub(crate) use collector_observers::census_changes;
+pub(crate) use collector_observers::combat_engagement_refreshes;
 pub(crate) use collector_observers::character_changes;
 pub(crate) use collector_observers::country_input_changes;
 pub(crate) use collector_output::construction_ic;

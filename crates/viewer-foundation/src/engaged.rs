@@ -35,7 +35,7 @@ impl Ambiguity {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Scope => {
-                "engaged flag ambiguous (the recording cannot prove whether a refresh ran: an other-side removal that may be one-sided or unrecorded, or a controller change)"
+                "engaged flag ambiguous (the recording cannot prove whether a refresh ran: engagement refresh witnesses were unavailable or not recorded, an other-side removal may be one-sided or unrecorded, or a controller change target could not be resolved)"
             }
             Self::Order => {
                 "engaged flag ambiguous (the recording cannot order a refresh against a membership or relation change between two samples)"
@@ -106,15 +106,26 @@ pub enum Removal {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Lists {
-    pub(crate) recorded: bool,
-    pub(crate) units: bool,
+pub struct Lists {
+    pub recorded: bool,
+    pub units: bool,
 }
 
 impl Lists {
-    fn any(self) -> bool {
+    pub fn any(self) -> bool {
         self.recorded || self.units
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RefreshWitness {
+    #[default]
+    Unavailable,
+    Complete {
+        sides: BTreeMap<(u64, u8), Lists>,
+        controller_targets: Vec<u32>,
+        local_all_sides: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +207,7 @@ pub struct Sample<'a> {
     pub links: &'a BTreeMap<u32, u32>,
     pub relations: Result<&'a Relations, &'static str>,
     pub controllers: Option<Controllers>,
+    pub refreshes: RefreshWitness,
     pub sides: BTreeMap<(u64, u8), Side>,
     pub complete: bool,
     pub removal: Removal,
@@ -254,13 +266,33 @@ struct EverySide {
 
 impl Previous {
     fn every_side(&self, sample: &Sample<'_>) -> EverySide {
-        EverySide {
-            proven: self.viewer != sample.viewer,
-            possible: match (&self.controllers, &sample.controllers) {
-                (Some(was), Some(now)) => now.may_have_joined(was, sample.viewer),
-                _ => true,
-            },
+        let mut proven = self.viewer != sample.viewer;
+        let mut possible = false;
+        match &sample.refreshes {
+            RefreshWitness::Complete {
+                controller_targets,
+                local_all_sides,
+                ..
+            } => {
+                proven |= *local_all_sides;
+                for &raw in controller_targets {
+                    let now = sample.links.get(&raw).copied();
+                    let before = self.links.get(&raw).copied();
+                    if now == Some(sample.viewer) || before == Some(sample.viewer) {
+                        proven = true;
+                    } else if now.is_none() || before.is_none() {
+                        possible = true;
+                    }
+                }
+            }
+            RefreshWitness::Unavailable => {
+                possible = match (&self.controllers, &sample.controllers) {
+                    (Some(was), Some(now)) => now.may_have_joined(was, sample.viewer),
+                    _ => true,
+                };
+            }
         }
+        EverySide { proven, possible }
     }
 
     fn refresh(
@@ -292,19 +324,53 @@ impl Previous {
         key: (u64, u8),
         side: &Side,
     ) -> Option<(Lists, Lists)> {
-        let Some(before) = self.sides.get(&key) else {
-            return self.complete.then_some((
-                Lists {
-                    recorded: true,
-                    units: false,
-                },
-                Lists::default(),
-            ));
+        let witnessed = match &sample.refreshes {
+            RefreshWitness::Complete { sides, .. } => Some(sides.get(&key).copied().unwrap_or_default()),
+            RefreshWitness::Unavailable => None,
         };
+        let Some(before) = self.sides.get(&key) else {
+            return self.complete.then(|| {
+                let extra = witnessed.unwrap_or_default();
+                (
+                    Lists {
+                        recorded: true,
+                        units: extra.units,
+                    },
+                    Lists::default(),
+                )
+            });
+        };
+        if let Some(witnessed) = witnessed {
+            let mut proven = witnessed;
+            if let (Some(was), Some(now)) = (before.units.as_deref(), side.units.as_deref()) {
+                let (added, _) = before.added.refresh(&side.added);
+                proven.recorded |= gained(was, now) || added;
+                proven.units |= gained(now, was);
+                if sample.removal == Removal::BothSides {
+                    let other = (key.0, 1 - key.1);
+                    let other_lost = match (
+                        self.sides
+                            .get(&other)
+                            .and_then(|kept| kept.units.as_deref()),
+                        sample
+                            .sides
+                            .get(&other)
+                            .and_then(|side| side.units.as_deref()),
+                    ) {
+                        (Some(was), Some(now)) => Some(gained(now, was)),
+                        _ => None,
+                    };
+                    if other_lost == Some(true) {
+                        proven.units = true;
+                    }
+                }
+            }
+            return Some((proven, Lists::default()));
+        }
         let (Some(was), Some(now)) = (before.units.as_deref(), side.units.as_deref()) else {
             return None;
         };
-        let (added, may_have_added) = before.added.refresh(&side.added);
+        let (added, _) = before.added.refresh(&side.added);
         let proven = Lists {
             recorded: gained(was, now) || added,
             units: gained(now, was),
@@ -339,7 +405,10 @@ impl Previous {
                 },
             ),
         };
-        possible.recorded |= may_have_added;
+        possible.recorded = true;
+        if side.unit_lists != side.lists {
+            possible.units = true;
+        }
         Some((proven, possible))
     }
 }

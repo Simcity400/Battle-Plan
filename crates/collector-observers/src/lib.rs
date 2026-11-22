@@ -18,6 +18,7 @@ pub mod area_changes;
 pub mod building_bombing;
 pub mod census_changes;
 pub mod character_changes;
+pub mod combat_engagement_refreshes;
 pub mod country_input_changes;
 pub mod doctrine_changes;
 pub mod crew_changes;

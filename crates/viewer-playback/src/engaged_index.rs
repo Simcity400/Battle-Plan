@@ -37,7 +37,7 @@ const ICON_TABLES: [TableId; 5] = [
     TableId::NavalCombatDetails,
 ];
 
-const VIEWER_TABLES: [TableId; 9] = [
+const VIEWER_TABLES: [TableId; 10] = [
     TableId::Campaign,
     TableId::CountryLinks,
     TableId::Countries,
@@ -47,12 +47,24 @@ const VIEWER_TABLES: [TableId; 9] = [
     TableId::FactionMembers,
     TableId::WarRelations,
     TableId::Subjects,
+    TableId::CombatEngagementRefreshes,
 ];
+
+enum Witness {
+    Unavailable,
+    Complete {
+        land: BTreeMap<(u64, u8), engaged::Lists>,
+        naval: BTreeMap<(u64, u8), engaged::Lists>,
+        controller_targets: Vec<u32>,
+        local_all_sides: bool,
+    },
+}
 
 struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
     controllers: Option<engaged::Controllers>,
+    witness: Witness,
 }
 
 impl Inputs {
@@ -60,8 +72,54 @@ impl Inputs {
         let links: BTreeMap<u32, u32> = whole_core::<tables::CountryLinks, F>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
         let relations = Relations::read_tables(frame, &links);
         let controllers = controllers(frame, &links)?;
-        Ok(Self { links, relations, controllers })
+        let witness = witness(frame)?;
+        Ok(Self { links, relations, controllers, witness })
     }
+}
+
+fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
+    use replay_data::rows::CombatEngagementRefreshRow;
+    let Available::Complete(rows) = available::<tables::CombatEngagementRefreshes, F>(frame)? else {
+        return Ok(Witness::Unavailable);
+    };
+    let mut land = BTreeMap::<(u64, u8), engaged::Lists>::new();
+    let mut naval = BTreeMap::<(u64, u8), engaged::Lists>::new();
+    let mut controller_targets = Vec::new();
+    let mut local_all_sides = false;
+    for row in rows {
+        let recorded = (row.triggers & CombatEngagementRefreshRow::TRIGGER_RECORDED) != 0;
+        let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
+        match row.kind {
+            CombatEngagementRefreshRow::LAND_SIDE => {
+                let entry = land.entry((row.target, row.side)).or_default();
+                entry.recorded |= recorded;
+                entry.units |= units;
+            }
+            CombatEngagementRefreshRow::NAVAL_SIDE => {
+                let entry = naval.entry((row.target, row.side)).or_default();
+                entry.recorded |= recorded;
+                entry.units |= units;
+            }
+            CombatEngagementRefreshRow::CONTROLLER_TARGET => {
+                let Ok(raw) = u32::try_from(row.target) else {
+                    return Ok(Witness::Unavailable);
+                };
+                if (raw as i32) > 0 {
+                    controller_targets.push(raw);
+                }
+            }
+            CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
+                local_all_sides = true;
+            }
+            _ => return Ok(Witness::Unavailable),
+        }
+    }
+    Ok(Witness::Complete {
+        land,
+        naval,
+        controller_targets,
+        local_all_sides,
+    })
 }
 
 struct Viewer {
@@ -145,12 +203,30 @@ impl Viewer {
         Some((Self { slot, inputs: Arc::clone(inputs) }, observing))
     }
 
-    fn sample(&self, sides: HourSides) -> engaged::Sample<'_> {
+    fn sample(&self, kind: usize, recording: bool, sides: HourSides) -> engaged::Sample<'_> {
+        let refreshes = match &self.inputs.witness {
+            Witness::Unavailable => engaged::RefreshWitness::Unavailable,
+            Witness::Complete {
+                land,
+                naval,
+                controller_targets,
+                local_all_sides,
+            } => engaged::RefreshWitness::Complete {
+                sides: if kind == NAVAL {
+                    naval.clone()
+                } else {
+                    land.clone()
+                },
+                controller_targets: controller_targets.clone(),
+                local_all_sides: recording && *local_all_sides,
+            },
+        };
         engaged::Sample {
             viewer: self.slot,
             links: &self.inputs.links,
             relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
             controllers: self.inputs.controllers.clone(),
+            refreshes,
             sides: sides.sides,
             complete: sides.complete,
             removal: sides.removal,
@@ -194,11 +270,11 @@ impl Track {
         self.ended.resize_with(SOURCES.len(), Vec::new);
     }
 
-    fn advance(&mut self, viewer: &Viewer, sides: Vec<HourSides>, continuity: Continuity) {
+    fn advance(&mut self, viewer: &Viewer, recording: bool, sides: Vec<HourSides>, continuity: Continuity) {
         self.sized();
         for (kind, sides) in sides.into_iter().enumerate() {
             self.histories[kind].advance_reporting(
-                viewer.sample(sides),
+                viewer.sample(kind, recording, sides),
                 continuity,
                 &mut self.changed[kind],
                 &mut self.ended[kind],
@@ -496,7 +572,7 @@ impl Pass {
         match (&sides, &player) {
             (Some((frame, sides)), Some((viewer, view))) => {
                 fold.recording
-                    .advance(viewer, sides.clone(), recording_continuity);
+                    .advance(viewer, true, sides.clone(), recording_continuity);
                 fold.recording_last = Some((hour, true));
                 fold.client_view = Some(*view);
                 let bytes = naval_check::recorded_bytes(frame).ok();
@@ -538,7 +614,7 @@ impl Pass {
         match (sides, viewer) {
             (Some((frame, sides)), Some(viewer)) => {
                 fold.perspective
-                    .advance(&viewer, sides, perspective_continuity);
+                    .advance(&viewer, false, sides, perspective_continuity);
                 fold.last = Some((hour, true));
                 advance_icons(
                     &mut fold.icons,

@@ -3735,6 +3735,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
         }],
     );
+    history[TableId::CombatEngagementRefreshes.index()] = LastChange {
+        introduced: ENGAGED_REFRESH_WITNESS_FORMAT,
+        ..table(
+            TableId::CombatEngagementRefreshes,
+            ENGAGED_REFRESH_WITNESS_FORMAT,
+            "combat engagement refresh witnesses",
+        )
+    };
     history
 };
 
@@ -4653,7 +4661,14 @@ mod tests {
         assert_eq!(POWER_LEDGER_DAY_LOG_FORMAT, 143);
         assert_eq!(VARIANT_STAT_WITNESS_FORMAT, 144);
         assert_eq!(EQUIPMENT_DESTRUCTION_STARTUP_FORMAT, 145);
-        assert_eq!(FORMAT_VERSION, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT);
+        assert_eq!(ENGAGED_REFRESH_WITNESS_FORMAT, 146);
+        assert_eq!(FORMAT_VERSION, ENGAGED_REFRESH_WITNESS_FORMAT);
+        let refreshes = TableId::CombatEngagementRefreshes.last_change();
+        assert_eq!(refreshes.introduced, ENGAGED_REFRESH_WITNESS_FORMAT);
+        assert_eq!(refreshes.format, ENGAGED_REFRESH_WITNESS_FORMAT);
+        assert_eq!(refreshes.kind, ChangeKind::Layout);
+        assert!(refreshes.table_gap(TableId::CombatEngagementRefreshes, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT).is_some());
+        assert!(refreshes.table_gap(TableId::CombatEngagementRefreshes, ENGAGED_REFRESH_WITNESS_FORMAT).is_none());
         assert_eq!(TableId::PowerSpendTotals.field_count(), 32);
         let spend_days = TableId::PowerSpendDays.last_change();
         assert_eq!(spend_days.introduced, POWER_LEDGER_DAY_LOG_FORMAT);

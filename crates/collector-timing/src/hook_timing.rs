@@ -59,6 +59,7 @@ pub enum Family {
     ShipModelChanges,
     ProvinceUnitChanges,
     ProvinceCombatChanges,
+    CombatEngagementRefreshes,
     AirBaseCarryChanges,
     ExperienceGains,
     FuelAwards,
@@ -154,6 +155,7 @@ impl Family {
         Self::ShipModelChanges,
         Self::ProvinceUnitChanges,
         Self::ProvinceCombatChanges,
+        Self::CombatEngagementRefreshes,
         Self::AirBaseCarryChanges,
         Self::ExperienceGains,
         Self::FuelAwards,
@@ -231,6 +233,7 @@ impl Family {
             Self::ShipModelChanges => "ship_model_changes",
             Self::ProvinceUnitChanges => "province_unit_changes",
             Self::ProvinceCombatChanges => "province_combat_changes",
+            Self::CombatEngagementRefreshes => "combat_engagement_refreshes",
             Self::AirBaseCarryChanges => "air_base_carry_changes",
             Self::ExperienceGains => "experience_gains",
             Self::FuelAwards => "fuel_awards",
@@ -294,6 +297,7 @@ impl Family {
             | Self::ShipModelChanges
             | Self::ProvinceUnitChanges
             | Self::ProvinceCombatChanges
+            | Self::CombatEngagementRefreshes
             | Self::AirBaseCarryChanges
             | Self::OperationOutcomes
             | Self::PoliticsCapture

@@ -1525,6 +1525,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         collector_naval_results::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
+        crate::combat_engagement_refreshes::lost_drain();
         crate::nuclear_strikes::lost_drain();
         collector_land_events::land_events::fail();
         error = Some(failure::joined(
@@ -1553,6 +1554,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         collector_naval_results::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
+        crate::combat_engagement_refreshes::lost_drain();
         crate::nuclear_strikes::lost_drain();
         collector_land_events::land_events::fail();
         let reason = failure::joined(

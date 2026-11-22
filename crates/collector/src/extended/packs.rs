@@ -2409,6 +2409,7 @@ pub(crate) struct FinalInputsReport {
     pub air_losses: [u64; super::air_losses::N],
     pub air_records: [u64; super::air_records::N],
     pub bombing: [u64; super::building_bombing::N],
+    pub engagement_refreshes: [u64; super::combat_engagement_refreshes::N],
     pub nuclear: [u64; super::nuclear_strikes::N],
     pub market: [u64; super::market::N],
     pub intel_delegated: [u64; super::intel::N],
@@ -2432,10 +2433,11 @@ pub(crate) struct FinalInputsRequest {
     air_losses: super::air_losses::Captured,
     air_records: super::air_records::Captured,
     bombing: super::building_bombing::Captured,
+    engagement_refreshes: super::combat_engagement_refreshes::Captured,
     nuclear: super::nuclear_strikes::Captured,
     market: super::market::Captured,
     intel: super::intel::Captured,
-    finished: [bool; 14],
+    finished: [bool; 15],
 }
 impl FinalInputsRequest {
     #[cfg(test)]
@@ -2452,6 +2454,7 @@ impl FinalInputsRequest {
             + self.air_losses.allocated_bytes()
             + self.air_records.allocated_bytes()
             + self.bombing.allocated_bytes()
+            + self.engagement_refreshes.allocated_bytes()
             + self.nuclear.allocated_bytes()
             + self.market.allocated_bytes()
             + self.intel.allocated_bytes()) as u64
@@ -2527,6 +2530,10 @@ impl FinalInputsRequest {
             self.market
                 .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[13] = true;
+        let engagement_refreshes =
+            self.engagement_refreshes
+                .capture(memory, self.base, self.state);
+        self.finished[14] = true;
         FinalInputsReport {
             snapshots: [new_divisions, experience],
             production,
@@ -2538,6 +2545,7 @@ impl FinalInputsRequest {
             air_losses,
             air_records,
             bombing,
+            engagement_refreshes,
             nuclear,
             market,
             intel_delegated,
@@ -2599,13 +2607,17 @@ impl Captured {
                 &mut self.building_bombing,
                 super::building_bombing::Captured::vacant(),
             ),
+            engagement_refreshes: std::mem::replace(
+                &mut self.combat_engagement_refreshes,
+                super::combat_engagement_refreshes::Captured::vacant(),
+            ),
             nuclear: std::mem::replace(
                 &mut self.nuclear_strikes,
                 super::nuclear_strikes::Captured::vacant(),
             ),
             intel: std::mem::replace(&mut self.intel, super::intel::Captured::vacant()),
             market: std::mem::replace(&mut self.market, super::market::Captured::vacant()),
-            finished: [false; 14],
+            finished: [false; 15],
         }
     }
     pub(crate) fn return_final_inputs_request(&mut self, request: FinalInputsRequest) {
@@ -2677,6 +2689,9 @@ impl Captured {
             if !request.finished[12] {
                 request.nuclear.fail(reason);
             }
+            if !request.finished[14] {
+                request.engagement_refreshes.fail(reason);
+            }
         }
         self.divisions = request.divisions;
         self.new_divisions = request.new_divisions;
@@ -2696,6 +2711,7 @@ impl Captured {
         self.air_losses = request.air_losses;
         self.air_records = request.air_records;
         self.building_bombing = request.bombing;
+        self.combat_engagement_refreshes = request.engagement_refreshes;
         self.nuclear_strikes = request.nuclear;
         self.market = request.market;
         self.intel = request.intel;

@@ -32,6 +32,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::Campaign,
             TableId::CharacterPortraits,
             TableId::Clock,
+            TableId::CombatEngagementRefreshes,
             TableId::CountryCommandPower,
             TableId::CountryGameScoreInputs,
             TableId::CountryIntel,

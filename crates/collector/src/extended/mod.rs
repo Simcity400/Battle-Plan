@@ -625,6 +625,7 @@ pub use collector_leaders::leader_paths;
 pub use collector_leaders::leader_portraits;
 pub use collector_ledger_tables::air_losses;
 pub use collector_ledger_tables::building_bombing;
+pub use collector_ledger_tables::combat_engagement_refreshes;
 pub use collector_ledger_tables::event_feed;
 pub use collector_ledger_tables::market;
 pub use collector_ledger_tables::nuclear_strikes;
@@ -699,6 +700,7 @@ packs!(
     air_losses,
     air_records,
     building_bombing,
+    combat_engagement_refreshes,
     nuclear_strikes,
     market,
     leader_paths,
@@ -3098,6 +3100,11 @@ impl Captured {
             scatter(&air_losses::TABLES, report.air_losses, ticks);
             scatter(&air_records::TABLES, report.air_records, ticks);
             scatter(&building_bombing::TABLES, report.bombing, ticks);
+            scatter(
+                &combat_engagement_refreshes::TABLES,
+                report.engagement_refreshes,
+                ticks,
+            );
             scatter(&nuclear_strikes::TABLES, report.nuclear, ticks);
             scatter(&market::TABLES, report.market, ticks);
             for (table, cost) in intel::TABLES.into_iter().zip(report.intel_delegated) {

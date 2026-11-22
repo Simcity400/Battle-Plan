@@ -56,7 +56,7 @@ fn hour_rows(hour: Hour) -> Vec<TableRows> {
 
 const NAMES: [&[u8]; 3] = [b"C1", b"C2", b"C3"];
 
-const EMPTY: [TableId; 9] = [
+const EMPTY: [TableId; 10] = [
     TableId::Players,
     TableId::HumanControllers,
     TableId::WarRelations,
@@ -66,6 +66,7 @@ const EMPTY: [TableId; 9] = [
     TableId::NavalCombatParticipants,
     TableId::NavalCombatShips,
     TableId::TaskForces,
+    TableId::CombatEngagementRefreshes,
 ];
 
 fn write<T: TableSchema>(store: &mut Store, rows: &[T::Row], held: &mut BTreeMap<u128, u32>) {
@@ -350,4 +351,64 @@ fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     odd_table.seek(0).unwrap();
     let odd = odd_table.step(1).expect_err("stepping into odd-length custom_sea fails validation on partial projection");
     assert!(odd.to_string().contains("odd custom sea i16 bytes"), "{odd}");
+}
+
+#[test]
+fn lane_fold_invalidates_cached_inputs_when_refresh_witness_changes() {
+    use replay_data::rows::CombatEngagementRefreshRow;
+    let witness_rows = |hour: Hour| -> Vec<CombatEngagementRefreshRow> {
+        if hour == 9 {
+            vec![CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 101,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            }]
+        } else {
+            Vec::new()
+        }
+    };
+    let mut held = HashMap::new();
+    let recording = record_runs(&[(0, 12)], &NAMES, |at, store| {
+        if at == 0 {
+            held.clear();
+        }
+        written(at, store, &mut held);
+        store
+            .status(
+                TableId::CombatEngagementRefreshes.index(),
+                Status::Complete,
+                true,
+                Some(at),
+                true,
+            )
+            .unwrap();
+        let entry = held.entry(TableId::CombatEngagementRefreshes).or_default();
+        write::<tables::CombatEngagementRefreshes>(store, &witness_rows(at), entry);
+    });
+    let units = units(recording, "engaged-witness");
+    let shared = Arc::new(History::default());
+    let started = |_: usize| PieceStart {
+        branch: 3,
+        load: false,
+        restart: false,
+    };
+    fold(
+        &units.pages,
+        &units.timeline,
+        &started,
+        None,
+        Country::Recorded,
+        Arc::clone(&shared),
+        None,
+        |_, _, _| {},
+    )
+    .unwrap();
+    let lookup = |hour: Hour| {
+        shared
+            .lookup(0, 3, hour, 1, &[101])
+            .map(|flags| flags[&101])
+    };
+    assert_eq!(lookup(8), Ok(Engaged::No));
+    assert_eq!(lookup(9), Ok(Engaged::Yes));
 }

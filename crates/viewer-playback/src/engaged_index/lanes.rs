@@ -33,9 +33,10 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::NavalCombatParticipants, Some(&["ship"])),
     (TableId::NavalCombatShips, Some(&["ship", "member_source", "group_index", "live_ship", "live_convoy", "formation_flags"])),
     (TableId::TaskForces, Some(&["roster_owner", "logical_owner"])),
+    (TableId::CombatEngagementRefreshes, None),
 ];
 
-const VIEWER: [TableId; 8] = [TableId::CountryLinks, TableId::Countries, TableId::LocalPlayer, TableId::Players, TableId::HumanControllers, TableId::FactionMembers, TableId::WarRelations, TableId::Subjects];
+const VIEWER: [TableId; 9] = [TableId::CountryLinks, TableId::Countries, TableId::LocalPlayer, TableId::Players, TableId::HumanControllers, TableId::FactionMembers, TableId::WarRelations, TableId::Subjects, TableId::CombatEngagementRefreshes];
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -60,7 +61,7 @@ macro_rules! open {
 impl Store {
     fn open(pages: &Arc<dyn Pages>, run: usize, branch: BranchId) -> io::Result<Self> {
         let mut held: Vec<Option<Box<dyn Kept>>> = (0..TableId::ALL.len()).map(|_| None).collect();
-        open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces);
+        open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces, CombatEngagementRefreshes);
         Ok(Self { tables: held, branch, hour: 0, metrics: Metrics::default() })
     }
 
