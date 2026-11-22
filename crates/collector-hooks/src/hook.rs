@@ -289,6 +289,10 @@ impl Hook {
         self.enabled || self.needs_flush
     }
 
+    pub fn is_published(&self) -> bool {
+        self.enabled && !self.needs_flush
+    }
+
     pub fn guard(&mut self, function: Option<Range<usize>>) {
         self.guard = function;
     }

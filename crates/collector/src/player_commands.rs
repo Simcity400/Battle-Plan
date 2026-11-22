@@ -13,7 +13,7 @@ use replay::commands::{Actor, Batch, Category, Event, Kind, Origin, Span};
 use std::{
     borrow::Cow,
     cell::UnsafeCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{HashMap, HashSet},
     io,
     ops::Range,
     sync::{
@@ -28,6 +28,7 @@ const EVENT_ALLOCATION: &str = "command event allocation failed";
 const WORLD_CONTEXT_ALLOCATION: &str = "command world context allocation failed";
 const PLAYER_STORAGE_ALLOCATION: &str = "command player storage allocation failed";
 const OVERLAP: &str = "command observation overlapped another";
+const ADMISSION_GAP: &str = "command observer coverage interrupted";
 
 #[derive(Clone, Copy, Default)]
 struct Entry {
@@ -324,39 +325,38 @@ impl Live {
         unsafe { &*self.metadata.get() }
     }
 
-    fn grow(&self) -> io::Result<(bool, bool)> {
-        let slots = self
+    fn grow(&self) -> (bool, bool) {
+        let events = self.events();
+        let event_capacity = events.required_entries().max(events.len());
+        let next_events = (event_capacity > events.len())
+            .then(|| engine_allocation::advisory(|| SharedLane::new(event_capacity, 0)).ok())
+            .flatten();
+        let actors = self.metadata();
+        let actor_capacity = self
             .capacity_demand
             .load(Ordering::Relaxed)
             .max(1)
             .checked_next_power_of_two()
-            .ok_or_else(engine_allocation::oom)?;
-        let events = self.events();
-        let event_capacity = events.required_entries().max(events.len());
-        let next_events = (event_capacity > events.len())
-            .then(|| SharedLane::new(event_capacity, 0))
-            .transpose()?;
-        let actors = self.metadata();
-        let actor_capacity = actors
-            .required_entries()
-            .max(actors.len())
-            .max(slots.checked_mul(2).ok_or_else(engine_allocation::oom)?);
+            .and_then(|slots| slots.checked_mul(2))
+            .map(|slots| actors.required_entries().max(actors.len()).max(slots));
         let stride = self
             .name_demand
             .load(Ordering::Relaxed)
             .max(actors.stride());
-        let next_actors = (actor_capacity > actors.len() || stride > actors.stride())
-            .then(|| SharedLane::new(actor_capacity, stride))
-            .transpose()?;
+        let next_actors = actor_capacity
+            .filter(|&capacity| capacity > actors.len() || stride > actors.stride())
+            .and_then(|capacity| {
+                engine_allocation::advisory(|| SharedLane::new(capacity, stride)).ok()
+            });
         if next_events.is_none() && next_actors.is_none() {
-            return Ok((false, false));
+            return (false, false);
         }
         if self
             .occupied
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            return Ok((false, false));
+            return (false, false);
         }
         self.version.fetch_add(1, Ordering::AcqRel);
         let mut retired_events = None;
@@ -377,7 +377,7 @@ impl Live {
         self.version.fetch_add(1, Ordering::Release);
         self.occupied.store(false, Ordering::Release);
         drop((retired_events, retired_actors));
-        Ok(changed)
+        changed
     }
 
     fn fail(&self, reason: &'static str) {
@@ -962,29 +962,93 @@ pub(crate) struct Drained {
 pub(crate) struct Drain {
     events: Vec<(u64, u64)>,
     actors: Vec<(u64, u64)>,
-    windows: BTreeMap<u64, Option<Span>>,
+    committed: Vec<(u64, u64)>,
+    windows: HashMap<u64, Option<Span>>,
     failure: u64,
     loss_until: u64,
-    event_refused: u64,
-    actor_refused: u64,
     last_qpc: u64,
     last_world: u64,
-    known_actors: BTreeMap<(u64, u64), Actor>,
-    retired: BTreeSet<(u64, u64)>,
-    contexts: BTreeMap<u64, WorldContext>,
+    known_actors: HashMap<(u64, u64), Actor>,
+    retired: HashSet<(u64, u64)>,
+    contexts: HashMap<u64, WorldContext>,
+}
+
+fn copy_actor(entry: ActorEntry, bytes: &[u8]) -> io::Result<Actor> {
+    let user_end = entry.user_len;
+    let name_end = user_end + entry.name_len;
+    let tag_end = name_end + entry.tag_len;
+    Ok(Actor {
+        id: entry.actor,
+        player: entry.player,
+        country: entry.country,
+        since_qpc: entry.since_qpc,
+        at_qpc: entry.at_qpc,
+        user: engine_allocation::copy_vec(&bytes[..user_end])?,
+        name: engine_allocation::copy_vec(&bytes[user_end..name_end])?,
+        tag: engine_allocation::copy_vec(&bytes[name_end..tag_end])?,
+    })
+}
+
+fn group_for<'a>(
+    groups: &'a mut Vec<Drained>,
+    index: &mut HashMap<u64, usize>,
+    world: u64,
+    from: u64,
+    to: u64,
+    capture: u64,
+) -> io::Result<&'a mut Drained> {
+    if let Some(&slot) = index.get(&world) {
+        return Ok(&mut groups[slot]);
+    }
+    engine_allocation::reserve(groups, 1)?;
+    engine_allocation::reserve_map(index, 1)?;
+    let slot = groups.len();
+    groups.push(Drained {
+        capture,
+        world,
+        from,
+        to,
+        lost: 0,
+        context: None,
+        batch: Batch::default(),
+    });
+    index.insert(world, slot);
+    Ok(&mut groups[slot])
 }
 
 impl Drain {
     pub(crate) fn take(&mut self, final_drain: bool) -> io::Result<Vec<Drained>> {
-        let pointer = LIVE.load(Ordering::Acquire);
-        if pointer.is_null() {
-            return Ok(Vec::new());
-        }
-        let live = unsafe { &*pointer };
-        self.take_live(live, final_drain)
+        let mut out = Vec::new();
+        self.take_into(final_drain, &mut out)?;
+        Ok(out)
     }
 
+    pub(crate) fn take_into(
+        &mut self,
+        final_drain: bool,
+        out: &mut Vec<Drained>,
+    ) -> io::Result<()> {
+        let pointer = LIVE.load(Ordering::Acquire);
+        if pointer.is_null() {
+            return Ok(());
+        }
+        let live = unsafe { &*pointer };
+        self.take_live_into(live, final_drain, out)
+    }
+
+    #[cfg(test)]
     fn take_live(&mut self, live: &Live, final_drain: bool) -> io::Result<Vec<Drained>> {
+        let mut out = Vec::new();
+        self.take_live_into(live, final_drain, &mut out)?;
+        Ok(out)
+    }
+
+    fn take_live_into(
+        &mut self,
+        live: &Live,
+        final_drain: bool,
+        out: &mut Vec<Drained>,
+    ) -> io::Result<()> {
         let version = live.version.load(Ordering::Acquire);
         if version & 1 != 0 {
             return if final_drain {
@@ -992,7 +1056,7 @@ impl Drain {
                     "command observer is still active at final drain",
                 ))
             } else {
-                Ok(Vec::new())
+                Ok(())
             };
         }
         let (time, order, world) = (
@@ -1007,27 +1071,35 @@ impl Drain {
                     "command observer changed during final drain",
                 ))
             } else {
-                Ok(Vec::new())
+                Ok(())
             };
         }
         if time == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         live.events()
             .published_into(&mut self.events, |entry| entry.order)
-            .map_err(io::Error::other)?;
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         live.metadata()
             .published_into(&mut self.actors, Metadata::order)
-            .map_err(io::Error::other)?;
-        let mut groups: BTreeMap<u64, Drained> = BTreeMap::new();
-        let committed: BTreeSet<_> = self
-            .events
-            .iter()
-            .filter_map(|&(_, index)| {
-                let (entry, _) = live.events().record(index);
-                (entry.order <= order && entry.code == 4).then_some((entry.world, entry.order))
-            })
-            .collect();
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        self.committed.clear();
+        for &(_, index) in &self.events {
+            let (entry, _) = live.events().record(index);
+            if entry.order <= order && entry.code == 4 {
+                engine_allocation::reserve(&mut self.committed, 1)?;
+                self.committed.push((entry.world, entry.order));
+            }
+        }
+        self.committed.sort_unstable();
+        self.committed.dedup();
+        let mut groups = Vec::new();
+        let mut group_index = HashMap::new();
+        let mut staged_contexts = HashMap::new();
+        let mut staged_actors: Vec<(u64, Actor)> = Vec::new();
+        let mut staged_known = HashMap::new();
+        let mut staged_windows = HashMap::new();
+        let mut staged_retired = HashSet::new();
         for &(_, index) in &self.actors {
             let (entry, bytes) = live.metadata().record(index);
             if entry.order() > order {
@@ -1035,93 +1107,100 @@ impl Drain {
             }
             let entry = match entry {
                 Metadata::World {
-                    order,
+                    order: world_order,
                     world,
                     context,
                 } => {
-                    if self.events.iter().any(|&(_, index)| {
-                        let (entry, _) = live.events().record(index);
-                        entry.order == order && entry.world == world && entry.code == 1
-                    }) {
-                        self.contexts.entry(world).or_insert(context);
+                    if !self.contexts.contains_key(&world) && !staged_contexts.contains_key(&world) {
+                        let start = self
+                            .events
+                            .partition_point(|&(entry_order, _)| entry_order < world_order);
+                        if self.events[start..]
+                            .iter()
+                            .take_while(|&&(entry_order, _)| entry_order == world_order)
+                            .any(|&(_, event_index)| {
+                                let (entry, _) = live.events().record(event_index);
+                                entry.world == world && entry.code == 1
+                            })
+                        {
+                            engine_allocation::reserve_map(&mut staged_contexts, 1)?;
+                            staged_contexts.insert(world, context);
+                        }
                     }
-                    live.metadata().release(index);
                     continue;
                 }
                 Metadata::Actor(entry) => entry,
             };
-            if !committed.contains(&(entry.world, entry.order)) {
-                live.metadata().release(index);
-                continue;
-            }
             if self
-                .known_actors
-                .get(&(entry.world, entry.actor))
-                .is_some_and(|old| {
-                    old.player == entry.player
-                        && old.country == entry.country
-                        && old.since_qpc == entry.since_qpc
-                        && old.user == bytes[..entry.user_len]
-                        && old.name == bytes[entry.user_len..entry.user_len + entry.name_len]
-                        && old.tag
-                            == bytes[entry.user_len + entry.name_len
-                                ..entry.user_len + entry.name_len + entry.tag_len]
-                })
+                .committed
+                .binary_search(&(entry.world, entry.order))
+                .is_err()
             {
-                live.metadata().release(index);
                 continue;
             }
-            let group = groups.entry(entry.world).or_insert_with(|| Drained {
-                capture: live.capture,
-                world: entry.world,
-                from: self.last_qpc.min(time),
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
-            let actor = Actor {
-                id: entry.actor,
-                player: entry.player,
-                country: entry.country,
-                since_qpc: entry.since_qpc,
-                at_qpc: entry.at_qpc,
-                user: engine_allocation::copy_vec(&bytes[..entry.user_len])?,
-                name: engine_allocation::copy_vec(
-                    &bytes[entry.user_len..entry.user_len + entry.name_len],
-                )?,
-                tag: engine_allocation::copy_vec(
-                    &bytes[entry.user_len + entry.name_len
-                        ..entry.user_len + entry.name_len + entry.tag_len],
-                )?,
-            };
-            self.known_actors
-                .insert((entry.world, entry.actor), actor.clone());
-            group.batch.actors.push(actor);
-            live.metadata().release(index);
+            let key = (entry.world, entry.actor);
+            let existing = staged_known
+                .get(&key)
+                .map(|&slot: &usize| &staged_actors[slot].1)
+                .or_else(|| self.known_actors.get(&key));
+            if existing.is_some_and(|old| {
+                old.player == entry.player
+                    && old.country == entry.country
+                    && old.since_qpc == entry.since_qpc
+                    && old.user == bytes[..entry.user_len]
+                    && old.name == bytes[entry.user_len..entry.user_len + entry.name_len]
+                    && old.tag
+                        == bytes[entry.user_len + entry.name_len
+                            ..entry.user_len + entry.name_len + entry.tag_len]
+            }) {
+                continue;
+            }
+            let batch_actor = copy_actor(entry, bytes)?;
+            let known_actor = copy_actor(entry, bytes)?;
+            let group = group_for(
+                &mut groups,
+                &mut group_index,
+                entry.world,
+                self.last_qpc.min(time),
+                time,
+                live.capture,
+            )?;
+            engine_allocation::reserve(&mut group.batch.actors, 1)?;
+            engine_allocation::reserve(&mut staged_actors, 1)?;
+            if !staged_known.contains_key(&key) {
+                engine_allocation::reserve_map(&mut staged_known, 1)?;
+            }
+            let slot = staged_actors.len();
+            staged_actors.push((entry.world, known_actor));
+            staged_known.insert(key, slot);
+            group.batch.actors.push(batch_actor);
         }
         for &(_, index) in &self.events {
             let (entry, _) = live.events().record(index);
             if entry.order > order {
                 continue;
             }
-            let group = groups.entry(entry.world).or_insert_with(|| Drained {
-                capture: live.capture,
-                world: entry.world,
-                from: if self.last_qpc == 0 {
-                    entry.qpc
-                } else {
-                    self.last_qpc
-                },
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
+            let from = if self.last_qpc == 0 {
+                entry.qpc
+            } else {
+                self.last_qpc
+            };
+            let group = group_for(
+                &mut groups,
+                &mut group_index,
+                entry.world,
+                from,
+                time,
+                live.capture,
+            )?;
             match entry.code {
                 4 => {}
                 3 => {
-                    if self.retired.insert((entry.world, entry.actor)) {
+                    let key = (entry.world, entry.actor);
+                    if !self.retired.contains(&key) && !staged_retired.contains(&key) {
+                        engine_allocation::reserve_set(&mut staged_retired, 1)?;
+                        engine_allocation::reserve(&mut group.batch.departures, 1)?;
+                        staged_retired.insert(key);
                         group.batch.departures.push((entry.actor, entry.qpc));
                     }
                 }
@@ -1133,7 +1212,17 @@ impl Drain {
                         hour: entry.hour,
                         paused: entry.paused,
                     });
-                    if let Some(Some(previous)) = self.windows.insert(entry.world, next) {
+                    let previous = match staged_windows.get_mut(&entry.world) {
+                        Some(slot) => std::mem::replace(slot, next),
+                        None => {
+                            engine_allocation::reserve_map(&mut staged_windows, 1)?;
+                            let previous = self.windows.get(&entry.world).copied().flatten();
+                            staged_windows.insert(entry.world, next);
+                            previous
+                        }
+                    };
+                    if let Some(previous) = previous {
+                        engine_allocation::reserve(&mut group.batch.spans, 1)?;
                         group.batch.spans.push(Span {
                             from_qpc: previous.from_qpc.max(group.from),
                             to_qpc: entry.qpc,
@@ -1141,28 +1230,32 @@ impl Drain {
                         });
                     }
                 }
-                _ => group.batch.events.push(Event {
-                    qpc: entry.qpc,
-                    hour: entry.hour,
-                    actor: entry.actor,
-                    player: entry.player,
-                    kind: entry.kind,
-                    command_country: entry.target_present.then_some(entry.country),
-                    origin: match entry.origin {
-                        1 => Origin::PlayerOrder,
-                        2 => Origin::AutonomousCountry,
-                        _ => Origin::Unresolved,
-                    },
-                    sequence: entry.sequence,
-                    paused: entry.paused,
-                }),
+                _ => {
+                    engine_allocation::reserve(&mut group.batch.events, 1)?;
+                    group.batch.events.push(Event {
+                        qpc: entry.qpc,
+                        hour: entry.hour,
+                        actor: entry.actor,
+                        player: entry.player,
+                        kind: entry.kind,
+                        command_country: entry.target_present.then_some(entry.country),
+                        origin: match entry.origin {
+                            1 => Origin::PlayerOrder,
+                            2 => Origin::AutonomousCountry,
+                            _ => Origin::Unresolved,
+                        },
+                        sequence: entry.sequence,
+                        paused: entry.paused,
+                    });
+                }
             }
-            live.events().release(index);
         }
         let failed = live.failed.load(Ordering::Acquire);
-        if failed != self.failure {
-            self.loss_until = self.loss_until.max(live.failed_qpc.load(Ordering::Relaxed));
-        }
+        let loss_until = if failed != self.failure {
+            self.loss_until.max(live.failed_qpc.load(Ordering::Relaxed))
+        } else {
+            self.loss_until
+        };
         let event_refused = live.events().rejected();
         let actor_refused = live.metadata().rejected();
         let lost = failed.saturating_sub(self.failure);
@@ -1172,51 +1265,83 @@ impl Drain {
             world
         };
         if world != 0 {
-            groups.entry(world).or_insert_with(|| Drained {
-                capture: live.capture,
+            group_for(
+                &mut groups,
+                &mut group_index,
                 world,
-                from: self.last_qpc.min(time),
-                to: time,
-                lost: 0,
-                context: None,
-                batch: Batch::default(),
-            });
+                self.last_qpc.min(time),
+                time,
+                live.capture,
+            )?;
         }
-        for group in groups.values_mut() {
-            group.context = self.contexts.get(&group.world).copied();
-            if let Some(Some(window)) = self.windows.get_mut(&group.world) {
+        groups.sort_unstable_by_key(|group| group.world);
+        for group in &mut groups {
+            group.context = staged_contexts
+                .get(&group.world)
+                .or_else(|| self.contexts.get(&group.world))
+                .copied();
+            let current_window = staged_windows
+                .get(&group.world)
+                .copied()
+                .or_else(|| self.windows.get(&group.world).copied())
+                .flatten();
+            if let Some(mut window) = current_window {
+                engine_allocation::reserve(&mut group.batch.spans, 1)?;
                 group.batch.spans.push(Span {
                     from_qpc: window.from_qpc.max(group.from),
                     to_qpc: time,
-                    complete: lost == 0 && (self.loss_until == 0 || self.loss_until < group.from),
-                    ..*window
+                    complete: lost == 0 && (loss_until == 0 || loss_until < group.from),
+                    ..window
                 });
                 window.from_qpc = time;
+                if !staged_windows.contains_key(&group.world) {
+                    engine_allocation::reserve_map(&mut staged_windows, 1)?;
+                }
+                staged_windows.insert(group.world, Some(window));
             }
-            if lost != 0 || (self.loss_until != 0 && self.loss_until >= group.from) {
+            if lost != 0 || (loss_until != 0 && loss_until >= group.from) {
                 for span in &mut group.batch.spans {
                     span.complete = false;
                 }
             }
         }
-        if let Some(mut latest) = groups.last_entry() {
-            latest.get_mut().lost = lost;
-            self.last_world = *latest.key();
+        if let Some(latest) = groups.last_mut() {
+            latest.lost = lost;
+        }
+        engine_allocation::reserve_map(&mut self.contexts, staged_contexts.len())?;
+        engine_allocation::reserve_map(&mut self.known_actors, staged_actors.len())?;
+        engine_allocation::reserve_set(&mut self.retired, staged_retired.len())?;
+        engine_allocation::reserve_map(&mut self.windows, staged_windows.len())?;
+        engine_allocation::reserve(out, groups.len())?;
+        for (world, context) in staged_contexts {
+            self.contexts.entry(world).or_insert(context);
+        }
+        for (world, actor) in staged_actors {
+            self.known_actors.insert((world, actor.id), actor);
+        }
+        self.retired.extend(staged_retired);
+        self.windows.extend(staged_windows);
+        self.loss_until = loss_until;
+        if let Some(latest) = groups.last() {
+            self.last_world = latest.world;
             self.last_qpc = time;
             self.failure = failed;
         }
-        self.event_refused = event_refused;
-        self.actor_refused = actor_refused;
+        for &(_, index) in &self.actors {
+            if live.metadata().record(index).0.order() <= order {
+                live.metadata().release(index);
+            }
+        }
+        for &(_, index) in &self.events {
+            if live.events().record(index).0.order <= order {
+                live.events().release(index);
+            }
+        }
         live.events().advance(event_refused);
         live.metadata().advance(actor_refused);
-        let changed = live.grow()?;
-        if changed.0 {
-            self.event_refused = 0;
-        }
-        if changed.1 {
-            self.actor_refused = 0;
-        }
-        Ok(groups.into_values().collect())
+        out.extend(groups);
+        let _ = live.grow();
+        Ok(())
     }
 
     pub(crate) fn catalog() -> io::Result<Vec<Kind>> {
@@ -1238,9 +1363,17 @@ impl Drain {
     }
 }
 
+fn record_coverage_loss(reason: &'static str) {
+    let pointer = LIVE.load(Ordering::Acquire);
+    if !pointer.is_null() {
+        unsafe { &*pointer }.fail(reason);
+    }
+}
+
 pub struct Hooks {
     taps: Vec<Tap>,
     publication_attempted: bool,
+    was_enabled: bool,
 }
 
 impl Hooks {
@@ -1286,28 +1419,73 @@ impl Hooks {
                 Vec::new()
             }),
             publication_attempted: false,
+            was_enabled: false,
         }
     }
 
+    fn taps_published(&self) -> bool {
+        !self.taps.is_empty() && self.taps.iter().all(Tap::is_published)
+    }
+
+    fn any_tap_enabled(&self) -> bool {
+        self.taps.iter().any(Tap::is_enabled)
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        if !crate::hook::shared::defer_preparation(|| ENABLED.store(false, Ordering::SeqCst)) {
-            ENABLED.store(false, Ordering::SeqCst);
+        let outcome = if enabled {
+            crate::hook::shared::attach_outcome()
+        } else {
+            None
+        };
+        if enabled && outcome.is_none() && self.taps_published() && ENABLED.load(Ordering::Acquire)
+        {
+            return Ok(true);
         }
-        let result = match crate::hook::shared::attach_outcome() {
-            Some(outcome) => outcome.map_err(|_| "command observer publication failed")?,
+        let previous = ENABLED.load(Ordering::Acquire);
+        if enabled && outcome.is_none() && !previous {
+            let _ = crate::hook::shared::defer_preparation(|| {
+                ENABLED.store(false, Ordering::SeqCst);
+            });
+        }
+        let result = match outcome {
+            Some(outcome) => outcome.map_err(|_| "command observer publication failed"),
             None => {
                 self.publication_attempted |= enabled;
                 Hook::set_enabled_iter(
                     self.taps.iter_mut().map(Tap::publication_hook),
                     enabled,
                 )
-                .map_err(|_| "command observer publication failed")?
+                .map_err(|_| "command observer publication failed")
             }
         };
-        if result {
-            ENABLED.store(enabled && !self.taps.is_empty(), Ordering::Release);
+        match result {
+            Ok(true) => {
+                if enabled {
+                    if self.taps_published() {
+                        if self.was_enabled {
+                            record_coverage_loss(ADMISSION_GAP);
+                        }
+                        self.was_enabled = true;
+                        ENABLED.store(true, Ordering::Release);
+                    }
+                } else if !self.any_tap_enabled() {
+                    ENABLED.store(false, Ordering::SeqCst);
+                }
+                Ok(true)
+            }
+            Ok(false) => {
+                if previous && !self.taps_published() {
+                    record_coverage_loss(ADMISSION_GAP);
+                }
+                Ok(false)
+            }
+            Err(error) => {
+                if previous && !self.taps_published() {
+                    record_coverage_loss(ADMISSION_GAP);
+                }
+                Err(error)
+            }
         }
-        Ok(result)
     }
 
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -1335,6 +1513,7 @@ impl Drop for Hooks {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     fn live() -> Live {
         Live {
             base: 0,
@@ -2463,5 +2642,242 @@ pub(crate) mod tests {
         assert!(!groups[0].batch.spans[0].complete);
         live.closed_qpc.store(140, Ordering::Relaxed);
         assert!(drain.take_live(&live, true).unwrap()[0].batch.spans[0].complete);
+    }
+
+    fn install_test_live(live: Live) -> &'static Live {
+        let boxed = Box::new(live);
+        let pointer = std::ptr::from_ref(&*boxed).cast_mut();
+        *STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(boxed);
+        LIVE.store(pointer, Ordering::Release);
+        unsafe { &*pointer }
+    }
+
+    fn clear_test_live() {
+        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.store(std::ptr::null_mut(), Ordering::Release);
+        STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    fn make_test_hooks(code: &crate::hook::TestCode) -> Hooks {
+        unsafe extern "system" fn target() -> usize {
+            7
+        }
+        let (site, sentinel) = code.stub(0, target as *const () as usize);
+        let tap = unsafe { Tap::new(site, observe, 0, sentinel) }.unwrap();
+        Hooks {
+            taps: vec![tap],
+            publication_attempted: false,
+            was_enabled: false,
+        }
+    }
+
+    fn build_two_actor_burst_live() -> (Live, Vec<(i32, Vec<u8>, Vec<u8>)>, u32) {
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let actors = vec![
+            (1, b"alpha-user".to_vec(), b"alpha-name".to_vec()),
+            (2, b"bravo-user".to_vec(), b"bravo-name".to_vec()),
+        ];
+        for (index, (player, user, name)) in actors.iter().enumerate() {
+            let needed = user.len() + name.len();
+            let mut reservation = live.metadata().reserve_bytes(needed).unwrap();
+            let bytes = unsafe { std::slice::from_raw_parts_mut(reservation.bytes(), needed) };
+            bytes[..user.len()].copy_from_slice(user);
+            bytes[user.len()..].copy_from_slice(name);
+            reservation.publish(Metadata::Actor(ActorEntry {
+                order: 2,
+                world: 1,
+                actor: index as u64 + 1,
+                player: *player,
+                country: index as u32 + 1,
+                since_qpc: 101,
+                at_qpc: 101,
+                user_len: user.len(),
+                name_len: name.len(),
+                tag_len: 0,
+            }));
+        }
+        live.publish(Entry {
+            order: 2,
+            world: 1,
+            qpc: 101,
+            code: 4,
+            ..Entry::default()
+        })
+        .unwrap();
+        let burst = 2 * live.events().len() as u32 + 3;
+        for sequence in 0..burst {
+            live.publish(Entry {
+                order: 3 + u64::from(sequence),
+                world: 1,
+                qpc: 102 + u64::from(sequence),
+                hour: 10,
+                actor: 1,
+                player: 1,
+                sequence,
+                kind: 1,
+                origin: 1,
+                ..Entry::default()
+            })
+            .unwrap();
+        }
+        live.closed_order
+            .store(2 + u64::from(burst), Ordering::Relaxed);
+        live.closed_qpc.store(200, Ordering::Relaxed);
+        (live, actors, burst)
+    }
+
+    #[test]
+    fn failed_lane_grow_and_metadata_copy_never_drop_drained_commands_or_actors() {
+        let (baseline_live, _, _) = build_two_actor_burst_live();
+        let mut baseline_drain = Drain::default();
+        let total_attempts = {
+            let _guard = crate::test_support::NullGuard::new(usize::MAX);
+            baseline_drain.take_live(&baseline_live, false).unwrap();
+            crate::test_support::ATTEMPTS.load(Ordering::Relaxed)
+        };
+        assert!(total_attempts > 0);
+        let mut saw_grow_denial = false;
+        for ordinal in 1..=total_attempts {
+            let (live, expected_actors, burst) = build_two_actor_burst_live();
+            let initial_events_len = live.events().len();
+            let mut drain = Drain::default();
+            let first = {
+                let _deny = crate::test_support::NullGuard::new(ordinal);
+                drain.take_live(&live, false)
+            };
+            if first.is_ok() && live.events().len() == initial_events_len {
+                saw_grow_denial = true;
+            }
+            let mut groups = first.unwrap_or_default();
+            live.closed_qpc.store(210, Ordering::Relaxed);
+            groups.extend(drain.take_live(&live, true).unwrap());
+            let actors: Vec<_> = groups
+                .iter()
+                .flat_map(|group| &group.batch.actors)
+                .map(|actor| (actor.player, actor.user.clone(), actor.name.clone()))
+                .collect();
+            assert_eq!(
+                actors, expected_actors,
+                "lost or duplicated actor when allocation ordinal {ordinal} failed"
+            );
+            let events: Vec<_> = groups
+                .iter()
+                .flat_map(|group| &group.batch.events)
+                .map(|event| (event.sequence, event.qpc))
+                .collect();
+            let expected_events: Vec<_> = (0..burst)
+                .map(|sequence| (sequence, 102 + u64::from(sequence)))
+                .collect();
+            assert_eq!(
+                events, expected_events,
+                "lost or duplicated commands when allocation ordinal {ordinal} failed"
+            );
+            assert!(
+                live.events().len() > burst as usize,
+                "lane did not expand on retry after allocation ordinal {ordinal} failed"
+            );
+        }
+        assert!(saw_grow_denial);
+    }
+
+    #[test]
+    fn reenabling_enabled_taps_is_idempotent_without_closing_admission() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                clear_test_live();
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live = install_test_live(live());
+        let mut hooks = make_test_hooks(&code);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        crate::hook::fail_flushes(1);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        crate::hook::fail_flushes(0);
+        {
+            let mut round = crate::hook::shared::Round::collect_attach().unwrap();
+            crate::hook::publication::select_family(Some("player_commands"));
+            assert_eq!(hooks.set_enabled(true), Ok(true));
+            assert!(ENABLED.load(Ordering::Acquire));
+            round.publish();
+            assert!(ENABLED.load(Ordering::Acquire));
+            crate::hook::publication::select_family(Some("player_commands"));
+            assert_eq!(hooks.set_enabled(true), Ok(true));
+            assert!(ENABLED.load(Ordering::Acquire));
+            crate::hook::publication::select_family(None);
+        }
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn refused_disable_keeps_admission_open_and_real_disable_reenable_records_loss() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                clear_test_live();
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live_state = live();
+        unsafe {
+            (*live_state.producer.get()).active = false;
+        }
+        attempt_mode(&live_state, &Fixture::new(), 1, 100, 1).unwrap();
+        let live = install_test_live(live_state);
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let first = drain.take_live(live, false).unwrap();
+        assert_eq!(first[0].lost, 0);
+        assert!(first[0].batch.spans.iter().all(|span| span.complete));
+        let mut hooks = make_test_hooks(&code);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        crate::hook::fail_flushes(1);
+        assert!(hooks.set_enabled(false).is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        let loss_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(loss_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(live, true).unwrap();
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        crate::hook::fail_flushes(2);
+        assert!(hooks.set_enabled(false).is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 2);
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
     }
 }

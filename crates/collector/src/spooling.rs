@@ -3117,9 +3117,8 @@ impl Processor {
         {
             return Ok(());
         }
-        let drained = self.command_drain.take(final_drain)?;
-        engine_allocation::reserve(&mut self.command_pending, drained.len())?;
-        self.command_pending.extend(drained);
+        self.command_drain
+            .take_into(final_drain, &mut self.command_pending)?;
         self.command_last_flush = std::time::Instant::now();
         if !self.session_verified {
             return if final_drain && !self.command_pending.is_empty() {
