@@ -487,6 +487,7 @@ mod tests {
                     bytes: &[],
                 };
                 let mut hooks = FamilyHooks::construct(0, || {
+                    // SAFETY: this fixture has no executable sites and cannot publish any taps.
                     Ok::<_, &'static str>(unsafe {
                         collector_player_commands::player_commands::Hooks::new(
                             &memory,

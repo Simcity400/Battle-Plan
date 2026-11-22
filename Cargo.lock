@@ -844,7 +844,6 @@ name = "collector-army-icons"
 version = "0.1.0"
 dependencies = [
  "collector-army-icons",
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -1040,7 +1039,6 @@ dependencies = [
 name = "collector-combat"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-combat",
  "collector-hooks",
  "collector-lifetime",
@@ -1298,7 +1296,6 @@ dependencies = [
 name = "collector-economy"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-economy",
  "collector-hooks",
  "collector-lifetime",
@@ -1442,7 +1439,6 @@ dependencies = [
 name = "collector-fuel-awards"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-fuel-awards",
  "collector-hooks",
@@ -1508,7 +1504,6 @@ dependencies = [
 name = "collector-hook-failures"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-hook-failures",
  "collector-hooks",
  "collector-naval-management",
@@ -1592,7 +1587,6 @@ dependencies = [
 name = "collector-land-events"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-combat-log",
  "collector-hooks",
  "collector-land-events",
@@ -1643,7 +1637,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-ledger-tables",
@@ -2225,7 +2218,6 @@ dependencies = [
 name = "collector-output"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -2363,7 +2355,6 @@ dependencies = [
 name = "collector-politics"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -2446,7 +2437,6 @@ dependencies = [
 name = "collector-production-daily"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-intel",
@@ -2802,7 +2792,6 @@ dependencies = [
 name = "collector-slow-tables"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
@@ -3077,7 +3066,6 @@ dependencies = [
 name = "collector-war-overview"
 version = "0.1.0"
 dependencies = [
- "collector-certificates",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",

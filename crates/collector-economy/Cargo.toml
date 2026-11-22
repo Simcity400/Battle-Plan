@@ -42,7 +42,6 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-collector-certificates = { workspace = true, features = ["test-support"] }
 collector-economy = { workspace = true, features = ["test-support"] }
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }

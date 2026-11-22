@@ -874,6 +874,8 @@ fn run(
         })
     })?;
     let mut command_hooks = FamilyHooks::construct(base, || {
+        // SAFETY: runtime owns the taps and publishes Shared before enabling them. Shared stays
+        // alive until the command callbacks have quiesced.
         Ok::<_, &'static str>(unsafe {
             collector_player_commands::player_commands::Hooks::new(
                 &memory,

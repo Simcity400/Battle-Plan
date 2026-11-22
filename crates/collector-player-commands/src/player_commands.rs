@@ -1254,9 +1254,10 @@ impl Hooks {
     /// # Safety
     /// `base` identifies the authenticated executable in this process. The caller owns these sites
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
-    /// The roster callback runs on the admitted game thread with live memory and the native state
-    /// from the command tap. The caller must establish its remaining preconditions before enabling
-    /// the taps and preserve them until all admitted calls have returned.
+    /// The roster callback is called only by an admitted command tap, with its live game state.
+    /// Publish any capture state the callback reads before enabling the taps and retain it until
+    /// all admitted taps have returned. The caller must uphold any other callback preconditions
+    /// for that same interval.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
