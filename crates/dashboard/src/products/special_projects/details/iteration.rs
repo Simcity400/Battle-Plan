@@ -60,7 +60,7 @@ pub struct SpecialProjectIteration {
 
 dashboard_base::reply_warnings!(SpecialProjectIteration);
 
-struct Listing {
+pub(super) struct Listing {
     project: ProjectRow,
     row: ProjectHistoryRow,
     history: Vec<ProjectHistoryRow>,
@@ -70,6 +70,7 @@ struct Listing {
 }
 
 const UNPROVEN_PROJECT: &str = "The project read at the choice hour is not proven to be this one";
+const UNREAD_AT_CHOICE: &str = "The project was not read at the choice hour, so its values then are not recorded";
 
 fn history_range(owner: u32, project: u32) -> Read {
     let first = u128::from(owner) << 64 | u128::from(project) << 32;
@@ -82,7 +83,7 @@ fn project_history(rows: &[ProjectHistoryRow], owner: u32, project: u32) -> &[Pr
     &rows[first..last]
 }
 
-fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterationParams, holder: Owner) -> io::Result<Result<Listing, String>> {
+pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterationParams, holder: Owner) -> io::Result<Result<Listing, String>> {
     let read = params.read;
     if read < at.hour {
         return Ok(Err("The iteration's choices were listed before its hour".into()));
@@ -121,10 +122,13 @@ fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterat
     Ok((|| Ok(Listing { project, row, history, definition: definition?, reward: reward?, option: option? }))())
 }
 
-fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing, listed: i32) -> io::Result<Result<(), String>> {
+pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing, listed: i32) -> io::Result<Result<(), String>> {
     let (owner, id, definition) = (listing.project.owner, listing.project.local_id, listing.project.definition_id);
     let found = (|| {
         let (row, read) = supplied_project(frame, reads, owner, id)?;
+        if read != reads.hour {
+            return Err(UNREAD_AT_CHOICE.to_owned());
+        }
         if row.definition_id != definition || owner_read(frame, TableId::ProjectHistory, owner)? != read {
             return Err(UNPROVEN_PROJECT.to_owned());
         }

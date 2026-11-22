@@ -10,7 +10,7 @@ use crate::{
         game_text::{GameRun, runs},
     },
 };
-use dashboard_query::{Index, Query, cost, identity::Holder};
+use dashboard_query::{Index, Query, cost};
 use replay::{campaign::Replay, lanes};
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -291,17 +291,7 @@ fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
 }
 
 fn held_since(query: &Query<'_>, tag: &Country, holder: Owner, read: i32, hour: i32) -> bool {
-    let mut at = hour;
-    while let Some(run) = query.holders.at(tag, at) {
-        if run.holder != (Holder::Found { slot: holder.slot, id: holder.id }) {
-            return false;
-        }
-        if run.first <= read {
-            return true;
-        }
-        at = run.first - 1;
-    }
-    false
+    super::held_from(query, tag, holder.slot, holder.id, hour).is_some_and(|since| since <= read)
 }
 
 struct Coverage {

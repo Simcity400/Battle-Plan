@@ -1,6 +1,6 @@
 
 use super::{ProjectDate, ProjectEpisode, ProjectState, SpecialProjectRun};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const COMPLETION_MARKER: u32 = 0x4c17;
 
@@ -82,6 +82,7 @@ pub struct Fold {
     pub looks: Vec<Look>,
     look_ids: HashMap<Look, u32>,
     open: BTreeMap<(u32, u32, u32), usize>,
+    ended: BTreeSet<(u32, u32, u32)>,
     holder: Option<(u32, u32)>,
     last_iterations: HashMap<usize, i32>,
     since: HashMap<usize, i32>,
@@ -116,13 +117,23 @@ impl Fold {
     fn hold(&mut self, holder: (u32, u32)) {
         if self.holder.is_some_and(|held| held != holder) {
             self.open.clear();
+            self.ended.clear();
         }
         self.holder = Some(holder);
     }
 
-    pub fn absent(&mut self, holder: (u32, u32), proven: impl Fn(u32) -> bool, present: &[(u32, u32, u32)]) {
+    pub fn absent(&mut self, holder: (u32, u32), proven: impl Fn(u32) -> bool, present: &[((u32, u32, u32), ProjectState)]) {
         self.hold(holder);
-        self.open.retain(|key, _| !proven(key.0) || present.contains(key));
+        for &(key, state) in present {
+            if terminal(state) {
+                self.ended.insert(key);
+            } else if resumed(state) && self.ended.remove(&key) {
+                self.open.remove(&key);
+            }
+        }
+        self.open.retain(|key, _| !proven(key.0) || present.iter().any(|(held, _)| held == key));
+        let open = &self.open;
+        self.ended.retain(|key| open.contains_key(key));
     }
 
     pub fn observe(&mut self, holder: (u32, u32), first: i32, last: i32, projects: &[Observed<'_>]) {
@@ -136,11 +147,8 @@ impl Fold {
                 continue;
             }
             let done = state == ProjectState::Completed;
-            let restarted = self.open.get(&key).is_some_and(|&index| {
-                self.episodes[index].runs.last().is_some_and(|run| {
-                    matches!(run.state, ProjectState::Completed | ProjectState::Cancelled) && matches!(state, ProjectState::Running | ProjectState::Paused)
-                })
-            });
+            let restarted = resumed(state)
+                && self.open.get(&key).is_some_and(|&index| self.ended.contains(&key) || self.episodes[index].runs.last().is_some_and(|run| terminal(run.state)));
             if restarted {
                 self.open.remove(&key);
             }
@@ -202,7 +210,16 @@ impl Fold {
             }
         }
         self.open = next;
+        self.ended.clear();
     }
+}
+
+fn terminal(state: ProjectState) -> bool {
+    matches!(state, ProjectState::Completed | ProjectState::Cancelled)
+}
+
+fn resumed(state: ProjectState) -> bool {
+    matches!(state, ProjectState::Running | ProjectState::Paused)
 }
 
 pub fn merge(held: &mut SpecialProjectRun, next: &SpecialProjectRun) {

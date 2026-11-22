@@ -25,6 +25,7 @@
 .entity-stats-list > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: 16px; padding: 4px 0; }
 .entity-stats-list > div + div { box-shadow: 0 -1px 0 color-mix(in srgb, var(--text) 7%, transparent); }
 .entity-stats-list dt { min-width: 0; color: var(--muted); }
+.entity-stats-source { display: block; color: var(--quiet); font-size: 0.6875rem; }
 .entity-stats-list dd { margin: 0; color: var(--text); text-align: end; white-space: nowrap; }
 .entity-stats-missing { margin: 0; color: var(--quiet); font-size: 0.75rem; }
 

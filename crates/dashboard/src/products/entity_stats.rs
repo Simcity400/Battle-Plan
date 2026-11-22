@@ -7,7 +7,7 @@ use super::{
 use crate::{Source, catalogue};
 use content_reader_core::{
     combat_tactics::Tactic,
-    equipment::{Database, ModuleDesign, STAT_COUNT, StatComponents, StatGroup},
+    equipment::{Amount, Database, Equipment, ModuleDesign, RELIABILITY_STAT, ResourcePool, STAT_COUNT, StatComponents, StatGroup},
     fixed5::format_fixed5,
 };
 use content_reader_localisation::localisation::{Argument, Localisation};
@@ -41,6 +41,8 @@ pub struct EntityStat {
     pub label: Vec<GameRun>,
     #[doc = " The value as the game formats it, coloured as the game colours it."]
     pub value: Vec<GameRun>,
+    #[doc = " Where the value comes from or when it applies; null for the entity's own stat."]
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -68,11 +70,12 @@ struct Sheet<'l> {
     localisation: &'l Localisation,
     stats: Vec<EntityStat>,
     refusals: BTreeMap<String, usize>,
+    source: Option<String>,
 }
 
 impl<'l> Sheet<'l> {
     fn new(localisation: &'l Localisation) -> Self {
-        Self { localisation, stats: Vec::new(), refusals: BTreeMap::new() }
+        Self { localisation, stats: Vec::new(), refusals: BTreeMap::new(), source: None }
     }
 
     fn text(&self, key: &str, args: &[(&str, Argument<'_>)]) -> Result<String, String> {
@@ -83,14 +86,40 @@ impl<'l> Sheet<'l> {
     }
 
     fn refuse(&mut self, why: String) {
+        let why = match &self.source {
+            Some(source) => format!("{source}: {why}"),
+            None => why,
+        };
         *self.refusals.entry(why).or_default() += 1;
     }
 
     fn push(&mut self, label: Result<String, String>, value: Result<String, String>) {
-        let line = label.and_then(|label| Ok(EntityStat { label: runs(&label)?, value: runs(&value?)? }));
+        let line = label.and_then(|label| Ok(EntityStat { label: runs(&label)?, value: runs(&value?)?, source: self.source.clone() }));
         match line {
             Ok(line) => self.stats.push(line),
             Err(why) => self.refuse(why),
+        }
+    }
+
+    fn from(&mut self, source: Option<String>) -> &mut Self {
+        self.source = source;
+        self
+    }
+
+    fn amount(&mut self, label: Result<String, String>, amount: &Amount) {
+        match amount {
+            Ok(value) => self.push(label, Ok(format_fixed5(*value, true, 5))),
+            Err(why) => self.refuse(why.clone()),
+        }
+    }
+
+    fn costs(&mut self, manpower: Option<&Amount>, resources: &ResourcePool) {
+        if let Some(manpower) = manpower {
+            self.amount(self.text("DESIGNER_MANPOWER", &[]), manpower);
+        }
+        for (resource, amount) in resources {
+            let key = format!("PRODUCTION_MATERIALS_{}", content_reader_localisation::localisation::crt_case_text(&lossy(resource), true, false));
+            self.amount(self.text(&key, &[]), amount);
         }
     }
 
@@ -106,13 +135,17 @@ impl<'l> Sheet<'l> {
         self.push(self.text(label, &[]), value);
     }
 
-    fn equipment(&mut self, metadata: &Metadata, stats: &[i64]) {
-        for (index, &value) in stats.iter().enumerate().filter(|(_, value)| **value != 0) {
+    fn equipment(&mut self, metadata: &Metadata, stats: &[i64], withheld: &BTreeMap<usize, String>) {
+        for (index, &value) in stats.iter().enumerate().filter(|(index, value)| **value != 0 && !withheld.contains_key(index)) {
             self.stat(metadata, index, value, &["{}_VALUE"]);
         }
+        withheld.values().for_each(|why| self.refuse(why.clone()));
     }
 
     fn module(&mut self, metadata: &Metadata, stats: &StatGroup) {
+        for (_, why) in &stats.unread {
+            self.refuse(why.clone());
+        }
         for term in &stats.add {
             self.stat(metadata, term.index, term.value, &["{}_DIFF"]);
         }
@@ -178,55 +211,78 @@ fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-fn off_sheet(metadata: &Metadata, design: &ModuleDesign) -> Vec<String> {
-    let fixed = |value| format_fixed5(value, true, 5);
-    let mut out = Vec::new();
-    for (missions, group) in &design.mission_terms {
-        let missions: Vec<_> = missions.iter().map(|mission| lossy(mission)).collect();
-        let only = if missions.is_empty() { String::new() } else { format!(" on {} missions", missions.join(", ")) };
-        for (terms, kind) in [(&group.add, "added"), (&group.average, "averaged"), (&group.multiply, "multiplied")] {
-            for term in terms {
-                let stat = metadata.get(term.index).map_or_else(|| format!("stat {}", term.index), |(name, _, _)| (*name).to_owned());
-                out.push(format!("{stat} {} ({kind}) applies only{only} under mission_type_stats; mission-conditional stats are not shown", fixed(term.value)));
-            }
-        }
+fn missions(missions: &[Vec<u8>]) -> String {
+    if missions.is_empty() {
+        return "On missions, with no mission limit".into();
     }
-    if let Some(manpower) = design.manpower {
-        out.push(format!("manpower {} is outside the stat block and is not shown", fixed(manpower)));
-    }
-    for (resource, amount) in &design.build_resources {
-        out.push(format!("resource cost {} {} is outside the stat block and is not shown", lossy(resource), fixed(*amount)));
-    }
-    out
+    format!("On {} missions", missions.iter().map(|mission| lossy(mission)).collect::<Vec<_>>().join(", "))
 }
 
-struct Totals {
+fn joined(prefix: Option<&str>, part: &str) -> String {
+    prefix.map_or_else(|| part.to_owned(), |prefix| format!("{prefix}, {}", part.to_lowercase()))
+}
+
+fn module_design(sheet: &mut Sheet<'_>, metadata: &Metadata, design: &ModuleDesign, prefix: Option<&str>) {
+    for (limit, group) in &design.mission_terms {
+        sheet.from(Some(joined(prefix, &missions(limit)))).module(metadata, group);
+    }
+    sheet.from(prefix.map(str::to_owned)).costs(design.manpower.as_ref(), &Vec::new());
+    sheet.from(Some(joined(prefix, "Production resources"))).costs(None, &design.build_resources);
+    sheet.from(None);
+}
+
+struct Totals<'d> {
     stats: [i64; STAT_COUNT],
-    withheld: Vec<String>,
+    withheld: BTreeMap<usize, String>,
+    modules: Vec<(String, &'d ModuleDesign)>,
+    lineage: Vec<&'d Equipment>,
 }
 
-fn equipment_totals(database: &Database, metadata: &Metadata, token: &str) -> Result<Totals, String> {
+fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, token: &str) -> Result<Totals<'d>, String> {
     let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
     let equipment = &database.equipment[at];
     let mut components = StatComponents::base(&equipment.stats);
-    let mut withheld = Vec::new();
-    for held in database.lineage(equipment)? {
-        for keyword in &held.off_sheet {
-            let why = format!("{} of {} is outside the stat block and is not shown", lossy(keyword), lossy(&held.name));
-            if !withheld.contains(&why) {
-                withheld.push(why);
-            }
-        }
+    let mut withheld: BTreeMap<usize, String> = BTreeMap::new();
+    for (index, why) in &equipment.unread_terms {
+        withheld.entry(*index).or_insert_with(|| why.clone());
     }
+    let mut modules = Vec::new();
     for (slot, module) in database.default_modules(equipment)? {
         let (shown, slot) = (lossy(module), lossy(slot));
         let design = database.module_design(module).ok_or_else(|| format!("Default module {shown} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"))?;
+        let source = format!("Default module {shown} in slot {slot}");
         if let Some(group) = database.module_stats(module) {
             components.apply_module(group, equipment)?;
+            for (index, why) in &group.unread {
+                withheld.entry(*index).or_insert_with(|| format!("{source}: {why}"));
+            }
         }
-        withheld.extend(off_sheet(metadata, design).into_iter().map(|why| format!("Default module {shown} in slot {slot}: {why}")));
+        modules.push((source, design));
     }
-    Ok(Totals { stats: components.finish_for(equipment)?, withheld })
+    if let Some(why) = withheld.get(&RELIABILITY_STAT).cloned() {
+        for term in &equipment.scaled_by_reliability {
+            let stat = metadata.get(term.index).map_or_else(|| format!("stat {}", term.index), |(name, _, _)| (*name).to_owned());
+            withheld.entry(term.index).or_insert_with(|| format!("{stat} scales with reliability, which is withheld: {why}"));
+        }
+    }
+    Ok(Totals { stats: components.finish_for(equipment)?, withheld, modules, lineage: database.lineage(equipment)? })
+}
+
+fn equipment_sheet(sheet: &mut Sheet<'_>, metadata: &Metadata, totals: &Totals<'_>) {
+    sheet.equipment(metadata, &totals.stats, &totals.withheld);
+    for (at, held) in totals.lineage.iter().enumerate() {
+        let name = lossy(&held.name);
+        let set_by = (at != 0).then(|| format!("Set by {name}"));
+        sheet.from(set_by.clone()).costs(held.manpower.as_ref(), &Vec::new());
+        sheet.from(Some(joined(set_by.as_deref(), "Production resources"))).costs(None, &held.resources);
+        for keyword in &held.off_sheet {
+            sheet.from(None).refuse(format!("{} of {name} is not shown", lossy(keyword)));
+        }
+    }
+    for (source, design) in &totals.modules {
+        module_design(sheet, metadata, design, Some(source));
+    }
+    sheet.from(None);
 }
 
 fn stat_metadata() -> Result<&'static Metadata, String> {
@@ -292,15 +348,14 @@ impl AtHour for EntityStatsAt {
                 EntityKind::Equipment => {
                     let metadata = stat_metadata()?;
                     let totals = equipment_totals(&technologies()?.equipment, metadata, token)?;
-                    sheet.equipment(metadata, &totals.stats);
-                    totals.withheld.into_iter().for_each(|why| sheet.refuse(why));
+                    equipment_sheet(&mut sheet, metadata, &totals);
                 }
                 EntityKind::Module => {
                     let (database, metadata) = (&technologies()?.equipment, stat_metadata()?);
                     let missing = || format!("Module {token} is not in the recorded content");
                     let (stats, design) = (database.module_stats(token).ok_or_else(missing)?, database.module_design(token).ok_or_else(missing)?);
                     sheet.module(metadata, stats);
-                    off_sheet(metadata, design).into_iter().for_each(|why| sheet.refuse(why));
+                    module_design(&mut sheet, metadata, design, None);
                 }
                 EntityKind::Tactic => {
                     let tactics = technologies()?.tactics.as_ref().ok_or("The recorded combat tactics were not read")?.as_ref().map_err(Clone::clone)?;

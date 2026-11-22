@@ -370,6 +370,7 @@ pub(super) fn convoy_weapon_bound_from_database(
             .chain(&group.average)
             .chain(&group.multiply)
             .any(|term| stats.contains(&term.index))
+            || group.unread.iter().any(|(index, _)| stats.contains(index))
     };
     let stat_term = |values: &[StatValue], index: usize| {
         values
@@ -399,6 +400,12 @@ pub(super) fn convoy_weapon_bound_from_database(
                 .archetype
                 .filter(|&at| seen_archetypes.insert(at))
                 .map(|at| &database.equipment[at]);
+        }
+        if let Some((_, why)) = equipment.unread_terms.iter().find(|(index, _)| stats.contains(index)) {
+            return (
+                Err(format!("convoy equipment {}: {why}", String::from_utf8_lossy(&equipment.name))),
+                misreads,
+            );
         }
         if upgrade_touches_weapons {
             return (

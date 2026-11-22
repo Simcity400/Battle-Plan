@@ -5896,7 +5896,11 @@ label: Array<GameRun>,
 /**
  * The value as the game formats it, coloured as the game colours it.
  */
-value: Array<GameRun>, };
+value: Array<GameRun>,
+/**
+ * Where the value comes from or when it applies; null for the entity's own stat.
+ */
+source: string | null, };
 export type EntityStatsParamsAtHour = EntityStatsParams & { hour: number };
 export type AirSuperiorityParams = { branchId: string, mode?: AirMode,
 /**

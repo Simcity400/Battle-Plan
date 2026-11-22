@@ -454,8 +454,16 @@ fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     out
 }
 
+pub(super) fn held_from(query: &Query<'_>, tag: &Country, slot: u32, id: u32, hour: i32) -> Option<i32> {
+    let held = |at: i32| query.holders.at(tag, at).filter(|run| run.holder == (Holder::Found { slot, id }));
+    let mut since = held(hour)?.first;
+    while let Some(run) = since.checked_sub(1).and_then(held) {
+        since = run.first;
+    }
+    Some(since)
+}
+
 fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32, Vec<(i32, i32)>> {
-    let first = first.saturating_sub(STAGGER_PERIOD - 1);
     let mut out: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
     for (&raw, runs) in &links.slots {
         for &(a, b, held) in runs {
@@ -497,6 +505,13 @@ struct Piece {
     last: i32,
     slot: u32,
     id: u32,
+    held_from: i32,
+}
+
+impl Piece {
+    fn reach(&self) -> i32 {
+        self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from)
+    }
 }
 
 struct PieceRows {
@@ -512,7 +527,7 @@ struct PieceRows {
 
 fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<PieceRows> {
     let recording = query.replay.recording();
-    let owners = owner_ids(links, piece.slot, piece.first, piece.last);
+    let owners = owner_ids(links, piece.slot, piece.reach(), piece.last);
     let mut projects = Vec::new();
     let mut histories = Vec::new();
     for &raw in owners.keys() {
@@ -652,7 +667,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             }
         }
         if projects_read.len() != linked.len() {
-            let present: Vec<(u32, u32, u32)> = rows.iter().map(|(_, row, _)| (row.owner, row.local, row.definition)).collect();
+            let present: Vec<_> = rows.iter().map(|(_, row, _)| ((row.owner, row.local, row.definition), fold::state(row))).collect();
             fold.absent((piece.slot, piece.id), |raw| projects_read.contains_key(&raw), &present);
             continue;
         }
@@ -687,12 +702,16 @@ fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec
             unknown.push((run.first, run.last));
             continue;
         };
+        let Some(held_from) = held_from(query, country, slot, id, run.first) else {
+            unknown.push((run.first, run.last));
+            continue;
+        };
         match identities.last_mut() {
             Some(held) if (held.slot, held.country_id) == (slot, id) && held.last_hour.checked_add(1) == Some(run.first) => held.last_hour = run.last,
             _ => identities.push(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
         }
         for stretch in query.timeline.within(run.first, run.last) {
-            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id });
+            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id, held_from });
         }
     }
     unknown.sort_unstable();

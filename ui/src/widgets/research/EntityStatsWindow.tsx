@@ -31,12 +31,12 @@ export default function EntityStatsWindow({ runtime, widget, link, active, onClo
             {data.unavailable && <p className="entity-stats-missing">{data.unavailable}</p>}
             {data.stats.length > 0 && <dl className="entity-stats-list">
               {data.stats.map((stat, at) => <div key={at}>
-                <dt><GameRuns runs={trimLabel(stat.label)} /></dt>
+                <dt><GameRuns runs={trimLabel(stat.label)} />{stat.source && <small className="entity-stats-source">{stat.source}</small>}</dt>
                 <dd><GameRuns runs={trimValue(stat.value)} /></dd>
               </div>)}
             </dl>}
             {!data.unavailable && !data.stats.length && !refusals.length && <p className="entity-stats-missing">No stats recorded.</p>}
-            {refusals.map(([reason, count]) => <p className="entity-stats-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
+            {refusals.map(([reason, count]) => <p className="entity-stats-missing" key={reason}>Withheld: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
           </>}
     </div></GameIcons></GameArtFor>
   </FloatingPanel>;

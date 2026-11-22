@@ -171,9 +171,11 @@ fn two_completions_sharing_an_owner_project_and_marker_ordinal_on_different_date
 fn owners_are_every_raw_id_linking_to_the_slot_and_edges_stay_in_the_piece() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };
     let owners = owner_ids(&links, 5, 20, 150);
-    assert_eq!(owners, BTreeMap::from([(10, vec![(0, 99)]), (11, vec![(50, 150)])]));
+    assert_eq!(owners, BTreeMap::from([(10, vec![(20, 99)]), (11, vec![(50, 150)])]));
     let day = STAGGER_PERIOD - 1;
-    assert_eq!(owner_ids(&links, 5, 100, 150), BTreeMap::from([(10, vec![(100 - day, 99)]), (11, vec![(100 - day, 150)])]), "an owner reaches back as far as a read that still supplies the first hour");
+    let piece = |held_from| Piece { run: 0, first: 100, last: 150, slot: 5, id: 1, held_from };
+    assert_eq!(owner_ids(&links, 5, piece(0).reach(), 150), BTreeMap::from([(10, vec![(100 - day, 99)]), (11, vec![(100 - day, 150)])]), "an owner reaches back as far as a read that still supplies the first hour");
+    assert_eq!(piece(90).reach(), 90, "never past the start of the holder's continuous possession");
     let spans: [&[(i32, i32)]; 2] = [&[(20, 99)], &[(30, 40), (60, 300)]];
     assert_eq!(boundaries(20, 150, &[], &spans, &History::default()), [20, 30, 41, 60, 100]);
     let stamps = History { keys: vec![(0, vec![Step { hour: 25, cells: Some(Box::new([Cell::Number(25)])) }])], ..History::default() };
@@ -221,7 +223,7 @@ fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countr
     };
     let mut fold = Fold::new(0);
     let mut observed = Vec::new();
-    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut observed, &mut Vec::new(), &AtomicBool::new(false)).unwrap();
+    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1, held_from: 0 }, &read, &mut observed, &mut Vec::new(), &AtomicBool::new(false)).unwrap();
     let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.owner, episode.start.hour, episode.runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>())).collect();
     assert_eq!(
         shown,
@@ -428,5 +430,62 @@ fn a_project_gone_from_a_complete_read_and_back_is_another_episode_whatever_its_
             let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
             assert_eq!(starts.last(), Some(&GONE.end), "{id}: the project back after its owner's proven absence is a new episode: {starts:?}");
         }
+    }
+}
+
+fn project_frame(hour: i32, state: impl Fn(i32) -> (u32, u8), stamped: impl Fn(u32, i32) -> Option<i32>) -> replay_frame::frame::DecodedFrame {
+    use crate::test_fixtures::source;
+    use replay_data::rows::{ProjectRow, SliceReadRow, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = source(1, hour, None);
+    let (offset, not_completed) = state(hour);
+    let mut project = ProjectRow { owner: 9001, local_id: 1, definition_id: 40, program_reference: u64::from(offset == 0x18), started: u8::from(offset == 0x18), ..Default::default() };
+    project.state.current_offset = offset;
+    project.state.not_completed = not_completed;
+    *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(vec![project]));
+    *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::empty(TableId::ProjectHistory));
+    *frame.tables[TableId::ProjectPrograms.index()] = TableView::Complete(TableRows::empty(TableId::ProjectPrograms));
+    let stamped = &stamped;
+    let mut stamps: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
+        .into_iter()
+        .flat_map(|table| [11, 9001].into_iter().filter_map(move |owner| Some(SliceReadRow { table: table.index() as u32, owner, sample_hour: stamped(owner, hour)? })))
+        .collect();
+    stamps.sort_by_key(|row| (row.table, row.owner));
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
+    frame
+}
+
+#[test]
+fn a_completion_in_an_owners_complete_read_ends_its_episode_though_another_owner_is_unstamped() {
+    const FIRST: i32 = 20;
+    const DONE: std::ops::Range<i32> = 30..35;
+    const LAST: i32 = 45;
+    let state = |hour: i32| if DONE.contains(&hour) { (0xe8, 0) } else { (0x18, 1) };
+    let stamped = |owner: u32, hour: i32| (owner != 11 || !DONE.contains(&hour)).then_some(hour);
+    for (fold, ..) in folded("special-projects-ended-unstamped", FIRST, LAST, |hour| project_frame(hour, state, stamped)) {
+        let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+        assert_eq!(starts, [FIRST, DONE.end], "the completion read while another owner was unstamped ends the episode, and the project running again is a new one");
+    }
+}
+
+#[test]
+fn a_read_before_the_holder_took_the_tag_supplies_no_list() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    const FIRST: i32 = 20;
+    const TAKEN: i32 = 25;
+    const STALE: i32 = TAKEN - 1;
+    const READ: i32 = 31;
+    const LAST: i32 = 40;
+    let frame = |hour: i32| {
+        let mut frame = project_frame(hour, |_| (0x18, 1), |_, hour| Some(if (STALE..READ).contains(&hour) { STALE } else { hour }));
+        if hour < TAKEN {
+            let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
+            countries[0].tag = b"POL".to_vec();
+        }
+        frame
+    };
+    for (_, observed, _) in folded("special-projects-taken", FIRST, LAST, frame) {
+        assert_eq!(observed, [(READ, LAST)], "a read from before the country held the tag supplies none of its hours, as the details hold");
     }
 }

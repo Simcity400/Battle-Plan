@@ -3,6 +3,7 @@ use crate::{
     products::at_hour::entry,
     test_fixtures::{CAMPAIGN, records, source},
 };
+use dashboard_query::identity::Holder;
 use replay::campaign::SeekResult;
 use replay_data::rows::{
     CharacterRoleTraitRow, CountryLinkRow, LexicalTokenRow, ProjectBreakthroughRow, ProjectHistoryRow, ProjectProgramRow, ProjectScientistAssignment, ScientistRow,
@@ -529,4 +530,45 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     assert!(!before["sections"].to_string().contains("Variable 1"), "the predecessor's value is never shown as the replacement's: {before}");
     assert!(before["refusals"].as_object().unwrap().keys().any(|why| why.contains("not proven to be this one")), "{before}");
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn an_iterations_project_values_need_a_read_of_the_project_at_the_choice_hour() {
+    const STALE: i32 = 24;
+    const CHOICE: i32 = 25;
+    const LISTED: i32 = 26;
+    for lagging in [true, false] {
+        let frame = |hour: i32| {
+            let mut frame = source(1, hour, None);
+            let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: 77, program_reference: 1, started: 1, ..Default::default() };
+            project.state.current_offset = 0x18;
+            project.state.not_completed = 1;
+            set(&mut frame, TableId::Projects, TableRows::Projects(vec![project]));
+            let listed = (hour >= LISTED).then(|| ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() });
+            set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(listed.into_iter().collect()));
+            set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens([(41, "mod_reward"), (42, "mod_option"), (77, "project")].map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).into()));
+            let read = if lagging && hour == CHOICE { STALE } else { hour };
+            let mut slices: Vec<SliceReadRow> =
+                [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
+            slices.sort_by_key(|row| (row.table, row.owner));
+            set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+            frame
+        };
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(crate::SourceKey { source_id: "special-project-operands".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let context = SpecialProjectIterationAt::context(&source, &load()).unwrap();
+        let query = crate::answer::query(&source, 1).unwrap();
+        let params: iteration::SpecialProjectIterationParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "read": LISTED })).unwrap();
+        let Some(Holder::Found { slot, id }) = query.holders.at(&params.country, CHOICE).map(|run| run.holder) else { panic!("GER is held at the choice") };
+        let holder = Owner { slot, id };
+        let (cells, cancelled) = (dashboard_follow::live::Cells::default(), AtomicBool::new(false));
+        let at = At { owner: Some(holder), holders: &query.holders, hour: CHOICE, context: &context, cancelled: &cancelled, live: &cells };
+        let listing = iteration::listed(&query, &at, &params, holder).unwrap().unwrap();
+        let reads = [Read::all(TableId::Projects), Read::all(TableId::ProjectHistory), Read::all(TableId::SliceReads)];
+        let frame = dashboard_base::products::at_hour::frame(&query, CHOICE, &reads, SpecialProjectIterationAt::TITLE).unwrap();
+        let run = query.timeline.at(CHOICE).unwrap().run;
+        let reads = Reads { query: &query, coverage: &context.coverage, links: &context.links, tag: &params.country, holder, run, hour: CHOICE };
+        let operands = iteration::same_project(&frame, &reads, &listing, LISTED).unwrap();
+        assert_eq!(operands.is_err(), lagging, "a project last read the hour before its choice is not proven to hold its values then, though its history and episode agree: {operands:?}");
+    }
 }

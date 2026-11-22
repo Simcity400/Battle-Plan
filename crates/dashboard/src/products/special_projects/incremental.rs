@@ -140,7 +140,7 @@ impl Episodes {
             let known: BTreeSet<_> = read.owners.keys().copied().collect();
             let programs: BTreeSet<_> = read.projects.iter().flat_map(|h| &h.keys).flat_map(|(_, s)| s).filter_map(|s| program(s.cells.as_deref()?)).collect();
             let r = q.replay.recording();
-            let owners = owner_ids(links, piece.slot, piece.first, q.timeline.at(piece.last).unwrap().last);
+            let owners = owner_ids(links, piece.slot, piece.reach(), q.timeline.at(piece.last).unwrap().last);
             let linked: BTreeSet<u32> = owners.iter().filter(|(_, runs)| within(runs, piece.last)).map(|(&raw, _)| raw).collect();
             let mut current = Current {
                 projects: Track::new(r, &piece, TableId::Projects, &PROJECT_COLUMNS, |k| known.contains(&((k >> 32) as u32)), count)?,
@@ -220,10 +220,10 @@ impl Episodes {
                 } else { self.fold.extend(before, next); }
                 extend(&mut self.observed, next, next);
             } else if boundary && c.projects.reader.status() == Status::Complete {
-                let present: Vec<(u32, u32, u32)> = c.projects.rows.iter()
+                let present: Vec<_> = c.projects.rows.iter()
                     .filter_map(|(&key, cells)| project_row((key >> 32) as u32, key as u32, cells))
                     .filter(|row| c.proven.0.contains_key(&row.owner))
-                    .map(|row| (row.owner, row.local, row.definition)).collect();
+                    .map(|row| ((row.owner, row.local, row.definition), super::fold::state(&row))).collect();
                 self.fold.absent((piece.slot, piece.id), |raw| c.proven.0.contains_key(&raw), &present);
             }
             c.piece.last = next;
