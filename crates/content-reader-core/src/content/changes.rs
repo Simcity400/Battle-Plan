@@ -218,6 +218,7 @@ mod tests {
     #[test]
     fn entered_junction_targets_signal_the_generation() {
         use super::super::{entry_kind, generation, tests::junction, walk_folder};
+        use crate::test_support::change_directory_with_new_stamp;
         let root = std::env::temp_dir().join(format!("content-watch-links-{}", std::process::id()));
         let layer = root.join("layer");
         let target = root.join("outside/nested/art");
@@ -232,9 +233,11 @@ mod tests {
         graph.changes.validate(false, || Ok(())).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         *graph.changes.state.notification.lock().unwrap() = Some(sender);
-        std::fs::write(target.join("added.dds"), b"art").unwrap();
-        receiver.recv().unwrap();
-        assert_ne!(graph.changes.state.dirty.load(Ordering::Acquire), 0);
+        change_directory_with_new_stamp(&target, || {
+            std::fs::write(target.join("added.dds"), b"art").unwrap();
+            receiver.recv().unwrap();
+            assert_ne!(graph.changes.state.dirty.load(Ordering::Acquire), 0);
+        });
         assert!(graph.changes.validate(false, || graph.witnesses.validate()).is_err());
         drop(scope);
         drop(graph);

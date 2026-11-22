@@ -3,6 +3,8 @@ use super::*;
 mod memo_tests;
 
 pub(super) use crate::test_support::{Record, zip_records};
+#[cfg(windows)]
+use crate::test_support::{file_timestamps, set_file_timestamps};
 
 #[test]
 fn prepared_metadata_inputs_keep_mount_order_and_archive_files_as_single_inputs() {
@@ -92,27 +94,6 @@ fn explicit_uncovered_reads_report_hits_and_missing_candidates() {
 }
 
 #[cfg(windows)]
-pub(super) fn file_timestamps(file: &File) -> (i64, i64) {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
-    };
-    let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
-    assert_ne!(
-        unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileBasicInfo,
-                (&mut info as *mut FILE_BASIC_INFO).cast(),
-                std::mem::size_of_val(&info) as u32,
-            )
-        },
-        0
-    );
-    (info.LastWriteTime, info.ChangeTime)
-}
-
-#[cfg(windows)]
 pub(super) fn file_usn(file: &File) -> i64 {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::{
@@ -147,30 +128,9 @@ pub(super) fn file_usn(file: &File) -> i64 {
 
 #[cfg(windows)]
 pub(super) fn overwrite_preserving_timestamps(path: &Path, offset: u64, bytes: &[u8]) {
-    use std::{
-        io::{Seek, SeekFrom, Write},
-        os::windows::io::AsRawHandle,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_BASIC_INFO, FileBasicInfo, SetFileInformationByHandle,
-    };
+    use std::io::{Seek, SeekFrom, Write};
     let mut writer = File::options().write(true).open(path).unwrap();
-    let suppressed = FILE_BASIC_INFO {
-        LastWriteTime: -1,
-        ChangeTime: -1,
-        ..unsafe { std::mem::zeroed() }
-    };
-    assert_ne!(
-        unsafe {
-            SetFileInformationByHandle(
-                writer.as_raw_handle(),
-                FileBasicInfo,
-                (&suppressed as *const FILE_BASIC_INFO).cast(),
-                std::mem::size_of_val(&suppressed) as u32,
-            )
-        },
-        0
-    );
+    set_file_timestamps(&writer, -1, -1);
     writer.seek(SeekFrom::Start(offset)).unwrap();
     writer.write_all(bytes).unwrap();
     writer.sync_all().unwrap();

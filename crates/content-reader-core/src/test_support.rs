@@ -2,6 +2,88 @@
 use crate::ResolvedLayers;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use std::{fs::File, io, os::windows::io::AsRawHandle};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx, SetFileInformationByHandle,
+};
+
+#[cfg(windows)]
+pub(crate) fn file_timestamps(file: &File) -> (i64, i64) {
+    let mut info = FILE_BASIC_INFO::default();
+    assert_ne!(
+        unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&raw mut info).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        },
+        0,
+        "{}",
+        io::Error::last_os_error()
+    );
+    (info.LastWriteTime, info.ChangeTime)
+}
+
+#[cfg(windows)]
+pub(crate) fn set_file_timestamps(file: &File, modified: i64, changed: i64) {
+    let info = FILE_BASIC_INFO {
+        LastWriteTime: modified,
+        ChangeTime: changed,
+        ..Default::default()
+    };
+    assert_ne!(
+        unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&raw const info).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        },
+        0,
+        "{}",
+        io::Error::last_os_error()
+    );
+}
+
+#[cfg(windows)]
+const FILETIME_TICKS_PER_SECOND: i64 = 10_000_000;
+
+#[cfg(windows)]
+pub fn rewrite_preserving_modified_time(path: &Path, bytes: &[u8]) {
+    let original = File::open(path).unwrap();
+    assert_eq!(original.metadata().unwrap().len(), bytes.len() as u64);
+    let (modified, changed) = file_timestamps(&original);
+    drop(original);
+    std::fs::write(path, bytes).unwrap();
+    let changed = changed + FILETIME_TICKS_PER_SECOND;
+    let attributes = File::options().write(true).open(path).unwrap();
+    set_file_timestamps(&attributes, modified, changed);
+    drop(attributes);
+    assert_eq!(file_timestamps(&File::open(path).unwrap()), (modified, changed));
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn change_directory_with_new_stamp(path: &Path, change: impl FnOnce()) {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES,
+    };
+
+    let directory = File::options()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    let (_, changed) = file_timestamps(&directory);
+    change();
+    set_file_timestamps(&directory, 0, changed + FILETIME_TICKS_PER_SECOND);
+}
+
 pub struct Stack {
     root: PathBuf,
 }

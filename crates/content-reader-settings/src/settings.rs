@@ -859,6 +859,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cached_language_tracks_edits_absence_and_transient_read_failures() {
+        use content_reader_core::test_support::rewrite_preserving_modified_time;
         use std::os::windows::fs::OpenOptionsExt;
         enter_settings_tables();
         let root = std::env::temp_dir().join(format!("language-input-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -867,7 +868,6 @@ mod tests {
         let english = b"language=\"l_english\"";
         let spanish = b"language=\"l_spanish\"";
         fs::write(&file, english).unwrap();
-        let modified = fs::metadata(&file).unwrap().modified().unwrap();
         let scope = content_reader_core::content::Generation::enter();
         let layers = content_reader_core::ResolvedLayers::default();
         let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&file).unwrap();
@@ -876,8 +876,7 @@ mod tests {
         let original = SettingsKeys::read(english).language();
         assert_eq!(language_in(&layers, &root).unwrap(), original);
         assert_eq!(language_in(&layers, &root).unwrap(), original);
-        fs::write(&file, spanish).unwrap();
-        fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+        rewrite_preserving_modified_time(&file, spanish);
         assert!(layers.validate_generation().is_err());
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
