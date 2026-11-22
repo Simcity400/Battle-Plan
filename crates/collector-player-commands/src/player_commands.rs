@@ -942,7 +942,10 @@ pub fn status() -> impl serde::Serialize {
     store.as_ref().map(|live| live.status())
 }
 
-pub fn urgent() -> bool {
+/// # Safety
+/// Only the originating spool may query the live command store. It must finish the query before the
+/// runtime releases the installation's store at detach.
+pub unsafe fn urgent() -> bool {
     let pointer = LIVE.load(Ordering::Acquire);
     if pointer.is_null() {
         return false;

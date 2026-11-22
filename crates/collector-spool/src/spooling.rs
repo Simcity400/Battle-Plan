@@ -1204,8 +1204,10 @@ impl<B: SegmentBackend> Campaign<B> {
             self.construction_ic.written(work.construction_ic_receipt);
         }
         if let Err(error) = &result {
-            let _span = collector_workers::spool_phases::SPOOL
-                .span(collector_workers::spool_phases::Phase::Write);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { collector_workers::spool_phases::SPOOL
+                .span(collector_workers::spool_phases::Phase::Write) };
             let _ = self.spool.finish_segment();
             self.disk_branch = None;
             if !self.spool.is_queued()
@@ -1240,8 +1242,10 @@ impl<B: SegmentBackend> Campaign<B> {
         if restarting {
             self.encoder = FrameEncoder::new();
         }
-        let span = collector_workers::spool_phases::SPOOL
-            .span(collector_workers::spool_phases::Phase::Encode);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { collector_workers::spool_phases::SPOOL
+            .span(collector_workers::spool_phases::Phase::Encode) };
         let frame = {
             let _phase =
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Encode);
@@ -2149,7 +2153,11 @@ impl Processor {
         result
     }
 
-    pub fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
+    /// # Safety
+    /// Only the originating spool may submit a loss. The loss or count must come from that
+    /// session's capture, and the spool must submit it in capture order and before releasing the
+    /// recording.
+    pub unsafe fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
         self.poll_writer()?;
         let _details = replay_data::codec::error_details_scope();
         if collector_memory::terminal::failed() {
@@ -2165,7 +2173,9 @@ impl Processor {
             let id = match campaign_name(loss.campaign_id.as_bytes()) {
                 Ok(id) => id,
                 Err(error) => {
-                    self.unknown_loss(loss.count);
+                    // SAFETY: The originating spool accounts for this session's own missing
+                    // capture.
+                    unsafe { self.unknown_loss(loss.count) };
                     return Err(error);
                 }
             };
@@ -2178,7 +2188,11 @@ impl Processor {
         result
     }
 
-    pub fn unknown_loss(&mut self, count: u64) {
+    /// # Safety
+    /// Only the originating spool may submit a loss. The loss or count must come from that
+    /// session's capture, and the spool must submit it in capture order and before releasing the
+    /// recording.
+    pub unsafe fn unknown_loss(&mut self, count: u64) {
         self.unknown_pending = self.unknown_pending.saturating_add(count);
         self.suppress_origin |= count != 0;
     }
@@ -2246,8 +2260,10 @@ impl Processor {
         if collector_memory::terminal::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        let span = collector_workers::spool_phases::SPOOL
-            .span(collector_workers::spool_phases::Phase::Observe);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { collector_workers::spool_phases::SPOOL
+            .span(collector_workers::spool_phases::Phase::Observe) };
         if let Some(clock) = captured.clock.as_ref() {
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
                 campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
@@ -2309,7 +2325,8 @@ impl Processor {
         span: collector_workers::spool_phases::Span<'static>,
     ) -> io::Result<PreparedFrame> {
         let Some(clock) = captured.clock.as_ref() else {
-            self.unknown_loss(1);
+            // SAFETY: The originating spool accounts for this session's own missing capture.
+            unsafe { self.unknown_loss(1) };
             return Err(invalid(
                 "entry clock unreadable; campaign and hour cannot be recorded",
             ));
@@ -2317,7 +2334,8 @@ impl Processor {
         let id = match campaign_name(clock.campaign_id.as_bytes()) {
             Ok(id) => id,
             Err(error) => {
-                self.unknown_loss(1);
+                // SAFETY: The originating spool accounts for this session's own missing capture.
+                unsafe { self.unknown_loss(1) };
                 return Err(error);
             }
         };
@@ -2421,8 +2439,10 @@ impl Processor {
         );
         costs.script_variables = campaign.variables_scratch.take_work();
         self.stats.conversion.record(&costs);
-        let span = collector_workers::spool_phases::SPOOL
-            .span(collector_workers::spool_phases::Phase::Merge);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { collector_workers::spool_phases::SPOOL
+            .span(collector_workers::spool_phases::Phase::Merge) };
         if collector_memory::terminal::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -2605,8 +2625,10 @@ impl Processor {
             &mut work,
             helpers,
         );
-        let _span = collector_workers::spool_phases::SPOOL
-            .span(collector_workers::spool_phases::Phase::Commit);
+        let _span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { collector_workers::spool_phases::SPOOL
+            .span(collector_workers::spool_phases::Phase::Commit) };
 
         if let Err(error) = &result {
             self.error(error);
@@ -3184,7 +3206,10 @@ impl Processor {
     pub unsafe fn flush_commands(&mut self, final_drain: bool) -> io::Result<()> {
         if !final_drain
             && self.command_last_flush.elapsed() < std::time::Duration::from_secs(5)
-            && !collector_player_commands::player_commands::urgent()
+            && !
+            // SAFETY: The spool queries its command installation before runtime releases the
+            // store.
+            unsafe { collector_player_commands::player_commands::urgent() }
         {
             return Ok(());
         }
@@ -3539,11 +3564,17 @@ impl Processor {
         }
     }
 
-    pub fn take_retry_full(&mut self) -> bool {
+    /// # Safety
+    /// Only the originating spool may consume this recovery state, as part of handing the
+    /// publication outcome back to capture.
+    pub unsafe fn take_retry_full(&mut self) -> bool {
         std::mem::take(&mut self.retry_full)
     }
 
-    pub fn take_unpublished_families(&mut self) -> u32 {
+    /// # Safety
+    /// Only the originating spool may consume this recovery state, as part of handing the
+    /// publication outcome back to capture.
+    pub unsafe fn take_unpublished_families(&mut self) -> u32 {
         std::mem::take(&mut self.unpublished_families)
     }
 
@@ -3879,8 +3910,10 @@ fn decoded_with_costs(
         .clock
         .is_none()
         .then_some("clock unreadable as its capture began");
-    let span = collector_workers::spool_phases::SPOOL
-        .span(collector_workers::spool_phases::Phase::ConvertCore);
+    let span =
+    // SAFETY: This worker records phases on the counters assigned to its spool role.
+    unsafe { collector_workers::spool_phases::SPOOL
+        .span(collector_workers::spool_phases::Phase::ConvertCore) };
     let tables = if let Some(reason) = failure {
         unavailable_tables(reason)
     } else {
@@ -4229,7 +4262,9 @@ fn convert_with_helper(
         let mut projection = projection;
         let mut costs = collector_capture::pack_conversion::HourCosts::of(index + 1);
         let mut packs = [const { None }; TABLE_COUNT];
-        let span = HELPER.span(Phase::ConvertCore);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { HELPER.span(Phase::ConvertCore) };
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
         // SAFETY: This conversion belongs to the joined spool round and uses its shared queue.
@@ -5419,7 +5454,8 @@ mod tests {
         // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
         // consuming it.
         unsafe { processor.frame(&captured(10)) }.unwrap();
-        processor.take_retry_full();
+        // SAFETY: The originating spool consumes its own retry request for the recovery handoff.
+        unsafe { processor.take_retry_full() };
         let campaign = processor
             .campaigns
             .get_mut(std::str::from_utf8(ID).unwrap())
@@ -5429,7 +5465,12 @@ mod tests {
             // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
             // consuming it.
             unsafe { processor.frame(&captured(hour)) }.unwrap();
-            assert!(!processor.take_retry_full(), "hour {hour}");
+            assert!(
+                !
+            // SAFETY: This fixture consumes its own spool recovery state.
+            unsafe { processor.take_retry_full() },
+                "hour {hour}"
+            );
         }
         // SAFETY: This spool's frame and command processing have finished before its processor is
         // closed.
@@ -5866,7 +5907,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            processor.lost(&loss).unwrap_err().to_string(),
+            // SAFETY: This isolated spool fixture submits its own captured loss.
+            unsafe { processor.lost(&loss) }.unwrap_err().to_string(),
             "queue loss witness has inconsistent hours and count"
         );
         // SAFETY: This spool's frame and command processing have finished before its processor is
@@ -5900,7 +5942,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            processor.lost(&loss).unwrap_err().to_string(),
+            // SAFETY: This isolated spool fixture submits its own captured loss.
+            unsafe { processor.lost(&loss) }.unwrap_err().to_string(),
             "queue loss witness has inconsistent hours and count"
         );
         assert_eq!(processor.json()["write_errors"], 3);
@@ -7087,7 +7130,10 @@ mod tests {
             loaded_hour: Some(0),
             load_signal: Some(1),
         };
-        assert!(processor.lost(&loss).is_err());
+        assert!(
+            // SAFETY: This isolated spool fixture submits its own captured loss.
+            unsafe { processor.lost(&loss) }.is_err()
+        );
         let mut captured = captured(4);
         captured.clock.as_mut().unwrap().campaign_id = owned_text(b"../invalid");
         // SAFETY: The caller owns the session and runs preparation before admitting consumers.

@@ -154,7 +154,10 @@ fn player_raw_fault_prefix_matches_direct_and_keeps_independent_controllers() {
             reads: RefCell::new(Vec::new()),
         };
         let mut job = PlayersJob::new();
-        let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&MapCapacities::default()) };
         capture(&raw_memory, &mut job, &mut captured);
         assert_eq!(
             captured.players.outcome, direct.outcome,
@@ -188,7 +191,10 @@ fn both_player_terminators_precede_payload_and_semantic_gates_stop_later_players
         reads: RefCell::new(Vec::new()),
     };
     let mut job = PlayersJob::new();
-    let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
+    let mut captured =
+    // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+    // fixture.
+    unsafe { MapCaptured::with_capacities(&MapCapacities::default()) };
     capture(&memory, &mut job, &mut captured);
     let reads = memory.reads.borrow();
     let user_terminator = reads
@@ -243,7 +249,10 @@ fn raw_controller_walk_keeps_first_fault_and_original_count_bounds() {
         reads: RefCell::new(Vec::new()),
     };
     let mut job = PlayersJob::new();
-    let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
+    let mut captured =
+    // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+    // fixture.
+    unsafe { MapCaptured::with_capacities(&MapCapacities::default()) };
     capture(&memory, &mut job, &mut captured);
     assert_eq!(
         captured.human_controllers.outcome,
@@ -295,7 +304,10 @@ fn raw_controllers_preserve_reserved_physical_aliases() {
     world.put(reserved, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
     world.put(reserved + ccountry::ID, &0_u32.to_le_bytes());
     let mut job = PlayersJob::new();
-    let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
+    let mut captured =
+    // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+    // fixture.
+    unsafe { MapCaptured::with_capacities(&MapCapacities::default()) };
     capture(&world.memory(), &mut job, &mut captured);
     assert_eq!(captured.human_controllers.outcome, Outcome::Rows { len: 2 });
     assert_eq!(captured.human_controllers.rows[0].country, 2);

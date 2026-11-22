@@ -81,7 +81,9 @@ pub(crate) fn encode(
     let job = || {
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Encode);
         collector_memory::terminal::set_context(allocation_context);
-        let _span = HELPER.span(Phase::Encode);
+        let _span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { HELPER.span(Phase::Encode) };
         work();
     };
     // SAFETY: The spool owns this conversion round and uses no helper in a competing round.

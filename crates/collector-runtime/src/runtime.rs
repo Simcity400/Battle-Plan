@@ -987,7 +987,10 @@ fn run(
     collector_observers::world_input_changes::presize(slots);
     collector_air_histories::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = collector_capture::country_scale::Sizing::for_slots(slots);
-    match collector_capture::country_scale::source_demand::Demand::observe(&memory, base) {
+    match
+    // SAFETY: Attach or the isolated fixture owns this authenticated census and its observer
+    // demand.
+    unsafe { collector_capture::country_scale::source_demand::Demand::observe(&memory, base) } {
         Ok(Some(demand)) => demand.apply(&mut sizing),
         Ok(None) => {}
         Err(reason) => processor.observe_input_demand_error(reason),
@@ -1094,19 +1097,15 @@ fn run(
             .extended
             .country_counters
             .raise_for_physical_navies(demand.navies.capacities);
-        sizing
-            .extended
-            .naval_counters
+        // SAFETY: This attachment's sizing pass owns the live observer demand.
+        unsafe { sizing.extended.naval_counters_mut() }
             .raise_for_names(demand.navies.name_rows, demand.navies.name_bytes);
-        sizing
-            .extended
-            .naval_counters
+        // SAFETY: This attachment's sizing pass owns the live observer demand.
+        unsafe { sizing.extended.naval_counters_mut() }
             .raise_for_supply_origins(demand.navies.supply_origins);
         let _ = processor.observe_input_demand(
-            sizing
-                .extended
-                .naval_counters
-                .raise_for_port(demand.navies.port),
+            // SAFETY: This attachment's sizing pass owns the live observer demand.
+            unsafe { sizing.extended.naval_counters_mut() }.raise_for_port(demand.navies.port),
         );
     }
     if let Some(demand) = processor
@@ -1163,7 +1162,8 @@ fn run(
         for reason in demand.failures() {
             processor.observe_input_demand_error(reason);
         }
-        sizing.extended.raise_for_politics(demand);
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe { sizing.extended.raise_for_politics(demand) };
     }
     if let Some(slots) = processor
         .observe_input_demand(
@@ -1179,7 +1179,10 @@ fn run(
         ))
         .flatten()
     {
-        sizing.extended.economy.demand.raise(demand);
+        // SAFETY: This attachment's sizing pass owns the live observer demand.
+        unsafe { sizing.extended.economy_mut() }
+            .demand
+            .raise(demand);
     }
     // SAFETY: The caller owns the session and runs preparation before admitting consumers.
     unsafe { sizing.extended.operation_outcomes.prepare() };
@@ -4248,7 +4251,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
 }
 
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
-    let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits.read();
+    let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits();
     let calls = |calls: collector_workers::private_heap::Calls| {
         collector_status::status::status!({
             "calls": calls.calls,
@@ -4484,7 +4487,9 @@ fn spool_loop(
         if collector_memory::terminal::failed() {
             return Err("collector allocation failed");
         }
-        let span = phases.span(Phase::Observers);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { phases.span(Phase::Observers) };
         if !collector_workers::tick_gate::game_ticking() {
             // SAFETY: This session's spool prepares only slots owned by its sizing pass.
             unsafe { shared.prepare_frame_clocks(&live) };
@@ -4527,7 +4532,9 @@ fn spool_loop(
                     collector_workers::frame_priority::Role::Spool,
                 )
             };
-            let span = phases.span(Phase::Receive);
+            let span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Receive) };
             let elapsed = wait_completed_callback(
                 &
                     // SAFETY: This is the runtime's frame pool for the current session.
@@ -4628,13 +4635,19 @@ fn spool_loop(
                 unsafe { shared.spool_stalled(false) };
             }
             if startup_unknown != 0 {
-                processor.unknown_loss(std::mem::take(&mut startup_unknown));
+                // SAFETY: The originating spool accounts for this session's own missing capture.
+                unsafe { processor.unknown_loss(std::mem::take(&mut startup_unknown)) };
             }
             if frame.dropped_before.unknown_count != 0 {
-                processor.unknown_loss(frame.dropped_before.unknown_count);
+                // SAFETY: The originating spool accounts for this session's own missing capture.
+                unsafe { processor.unknown_loss(frame.dropped_before.unknown_count) };
             }
             for loss in frame.dropped_before.iter() {
-                if let Err(error) = processor.lost(loss) {
+                if let Err(error) =
+                    // SAFETY: The originating spool is submitting a loss from its own capture or
+                    // isolated fixture.
+                    unsafe { processor.lost(loss) }
+                {
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                 }
             }
@@ -4685,16 +4698,23 @@ fn spool_loop(
                     None
                 }
             };
-            let span = phases.span(Phase::Recycle);
+            let span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Recycle) };
             if collector_memory::terminal::failed() {
                 return Err("collector allocation failed");
             }
-            if processor.take_retry_full() {
+            if
+            // SAFETY: The originating spool consumes its own retry request for the recovery
+            // handoff.
+            unsafe { processor.take_retry_full() } {
                 // SAFETY: The spool requests recovery after unpublished output in the current
                 // session.
                 unsafe { shared.request_retry_full() };
             }
-            let unpublished = processor.take_unpublished_families();
+            let unpublished =
+            // SAFETY: The originating spool forwards the families from its own failed publication.
+            unsafe { processor.take_unpublished_families() };
             if unpublished != 0 {
                 // SAFETY: The sole spool requests forgetting only the families from a failed publication.
                 unsafe { shared.forget_families() }.fetch_or(unpublished, Ordering::Release);
@@ -4752,7 +4772,9 @@ fn spool_loop(
             return Err("collector allocation failed");
         }
         sizing.spool_pass(shared, &mut processor, received)?;
-        let span = phases.span(Phase::Flush);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { phases.span(Phase::Flush) };
         if collector_memory::terminal::failed() {
             return Err("collector allocation failed");
         }
@@ -4787,7 +4809,9 @@ fn spool_loop(
             // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
             unsafe { shared.stop_spool() }.load(Ordering::Acquire)
         {
-            let _span = phases.span(Phase::Status);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Status) };
             collector_memory::terminal::attempted_hour(None);
             let _status_phase =
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Status);
@@ -4857,10 +4881,16 @@ fn spool_loop(
                 ),
                 Ok(()) => {
                     if pending.unknown_count != 0 {
-                        processor.unknown_loss(pending.unknown_count);
+                        // SAFETY: The originating spool accounts for this session's own missing
+                        // capture.
+                        unsafe { processor.unknown_loss(pending.unknown_count) };
                     }
                     for loss in pending.iter() {
-                        if let Err(error) = processor.lost(loss) {
+                        if let Err(error) =
+                            // SAFETY: The originating spool is submitting a loss from its own capture
+                            // or isolated fixture.
+                            unsafe { processor.lost(loss) }
+                        {
                             add_terminal_error(
                                 &mut drain_result,
                                 error_reason(error, "cannot drain retained loss witness"),
@@ -4916,7 +4946,9 @@ fn spool_loop(
         if
         // SAFETY: This is the runtime's frame pool for the current session.
         unsafe { shared.frames() }.ready_is_empty() {
-            let _span = phases.span(Phase::Wait);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Wait) };
             std::thread::park_timeout(SPOOL_IDLE_WAIT);
         }
     }
@@ -5269,7 +5301,9 @@ impl SizingThread {
         processor: &mut Processor,
         received: bool,
     ) -> Result<(), &'static str> {
-        let span = collector_workers::spool_phases::SPOOL.span(Phase::Sizing);
+        let span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { collector_workers::spool_phases::SPOOL.span(Phase::Sizing) };
         if let Some(&failure) = self.sizing.failure.get() {
             return Err(failure);
         }
@@ -5308,7 +5342,9 @@ impl SizingThread {
             return;
         }
         let Some(thread) = &self.thread else {
-            let _span = collector_workers::spool_phases::SPOOL.span(Phase::Retire);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { collector_workers::spool_phases::SPOOL.span(Phase::Retire) };
             drop(retired);
             return;
         };
@@ -5319,7 +5355,9 @@ impl SizingThread {
             held.extend(retired);
         } else {
             drop(held);
-            let _span = collector_workers::spool_phases::SPOOL.span(Phase::Retire);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { collector_workers::spool_phases::SPOOL.span(Phase::Retire) };
             drop(retired);
             return;
         }
@@ -5410,7 +5448,9 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         collector_memory::terminal::set_context(*lock(&sizing.context));
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
-            let _span = phases.span(Phase::Retire);
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Retire) };
             drop(retired);
         }
         let due = Instant::now() >= next_pass;
@@ -5429,7 +5469,9 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
                     SIZING_IDLE_WAIT
                 };
         }
-        let _span = phases.span(Phase::Wait);
+        let _span =
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { phases.span(Phase::Wait) };
         std::thread::park_timeout(next_pass.saturating_duration_since(Instant::now()));
     }
 }
@@ -5452,7 +5494,9 @@ fn sizing_pass(
         collector_lifetime::world_lifetime::generation(),
         hint_demand,
     ) && once_a_second;
-    let span = phases.span(Phase::Sizing);
+    let span =
+    // SAFETY: This worker records phases on the counters assigned to its spool role.
+    unsafe { phases.span(Phase::Sizing) };
     if let Some(logistics_rows) = registry
         .poll_logistics(&live, base)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
@@ -5589,7 +5633,10 @@ fn sizing_pass(
     if capacity_census {
         match collector_capture::country_scale::observe_fuel_unit_demand(&live, base) {
             Ok(Some(demand)) => sizing.raise(shared, |capacities| {
-                capacities.extended.economy.demand.raise(demand)
+                // SAFETY: This attachment's sizing pass owns the live observer demand.
+                unsafe { capacities.extended.economy_mut() }
+                    .demand
+                    .raise(demand)
             }),
             Ok(None) => {}
             Err(reason) => sizing.error(reason),
@@ -5705,11 +5752,13 @@ fn sizing_pass(
         collector_observers::nuclear_strikes::presize(
             collector_observers::building_bombing::buildings().saturating_add(registry.slots),
         );
-        let source = collector_capture::country_scale::source_demand::Demand::observe_periodic(
+        let source =
+        // SAFETY: Session sizing or the isolated fixture owns the census and its observer demand.
+        unsafe { collector_capture::country_scale::source_demand::Demand::observe_periodic(
             &live,
             base,
             capacity_census,
-        );
+        ) };
         let air_loss_capacity = collector_observers::air_losses::capacity();
         let bombing_capacity = collector_observers::building_bombing::capacity();
         collector_observers::market_changes::presize(0, registry.slots);
@@ -5824,17 +5873,15 @@ fn sizing_pass(
                 .extended
                 .country_counters
                 .raise_for_physical_navies(demand.navies.capacities);
-            raised
-                .extended
-                .naval_counters
+            // SAFETY: This attachment's sizing pass owns the live observer demand.
+            unsafe { raised.extended.naval_counters_mut() }
                 .raise_for_names(demand.navies.name_rows, demand.navies.name_bytes);
-            raised
-                .extended
-                .naval_counters
+            // SAFETY: This attachment's sizing pass owns the live observer demand.
+            unsafe { raised.extended.naval_counters_mut() }
                 .raise_for_supply_origins(demand.navies.supply_origins);
-            let failure = raised
-                .extended
-                .naval_counters
+            let failure =
+            // SAFETY: This attachment's sizing pass owns the live observer demand.
+            unsafe { raised.extended.naval_counters_mut() }
                 .raise_for_port(demand.navies.port)
                 .err();
             capacities.core = raised.core;
@@ -5914,7 +5961,9 @@ fn sizing_pass(
                 .extended
                 .country_counters
                 .raise_for_pride_names(demand.pride_name_bytes);
-            capacities.extended.raise_for_politics(demand);
+            // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand
+            // update.
+            unsafe { capacities.extended.raise_for_politics(demand) };
         });
         let operations =
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);

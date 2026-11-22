@@ -48,6 +48,7 @@ pub struct SpoolWatch {
     cycles: Option<u64>,
     spool: [u64; collector_workers::spool_phases::WALL_NAMES.len()],
     helper: [u64; collector_workers::spool_phases::WALL_NAMES.len()],
+    thread: std::marker::PhantomData<*mut ()>,
 }
 
 impl SpoolWatch {
@@ -57,6 +58,7 @@ impl SpoolWatch {
             cycles: collector_workers::spool_phases::thread_cycles(),
             spool: collector_workers::spool_phases::SPOOL.walls(),
             helper: collector_workers::spool_phases::HELPER.walls(),
+            thread: std::marker::PhantomData,
         }
     }
 

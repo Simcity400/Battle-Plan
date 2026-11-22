@@ -131,6 +131,7 @@ impl Sample {
 pub struct Stamp {
     qpc_begin: i64,
     cycles: Option<u64>,
+    thread: std::marker::PhantomData<*mut ()>,
 }
 
 impl Stamp {
@@ -138,6 +139,7 @@ impl Stamp {
         Self {
             qpc_begin: collector_primitives::clock::qpc(),
             cycles: thread_cycles(),
+            thread: std::marker::PhantomData,
         }
     }
 
@@ -254,7 +256,10 @@ impl<const N: usize> Samples<N> {
     }
 }
 
-pub fn record(sample: Sample) {
+/// # Safety
+/// Only the admitted capture callback may publish its own sample for the current hour, once that
+/// callback's measurements are complete.
+pub unsafe fn record(sample: Sample) {
     SAMPLES.record(sample);
 }
 

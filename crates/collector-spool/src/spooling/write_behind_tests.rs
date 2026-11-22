@@ -260,7 +260,10 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
         .collect::<Vec<_>>();
     replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
 }
-pub fn idle_sync_refused() {
+/// # Safety
+/// Run only in an isolated fixture process with no live attachment or competing allocation-failure
+/// fixture. This starts a writer and injects a process-wide allocation failure.
+pub unsafe fn idle_sync_refused() {
     let (mut processor, store) = processor();
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { processor.frame(&campaign_frame(ID, 7, 10)) }.unwrap();
@@ -770,7 +773,8 @@ fn a_failed_close_retries_its_flushed_gap_without_duplicating_recorded_loss() {
         load_signal: Some(7),
         ..Default::default()
     };
-    processor.lost(&loss).unwrap();
+    // SAFETY: The originating spool is submitting a loss from its own capture or isolated fixture.
+    unsafe { processor.lost(&loss) }.unwrap();
     let closing = Release(Arc::new(Gate::default()));
     store.lock().unwrap().sync_gate = Some((Arc::clone(&closing.0), true));
     let receipt = close(&mut processor);

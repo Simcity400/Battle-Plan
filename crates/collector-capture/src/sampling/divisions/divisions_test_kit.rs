@@ -87,7 +87,13 @@ pub fn direct(memory: &impl Memory, lens: [usize; 6]) -> Split {
     }
 }
 
-pub fn split(memory: &impl Memory, lens: [usize; 6]) -> (Split, DivisionsCopyReport, DivisionsJob) {
+/// # Safety
+/// Run only in an isolated fixture that owns the collector's process-wide read accounting. No live
+/// attachment may consume the fixture's Divisions verdicts.
+pub unsafe fn split(
+    memory: &impl Memory,
+    lens: [usize; 6],
+) -> (Split, DivisionsCopyReport, DivisionsJob) {
     let ctx = DivisionsCopyContext {
         base: BASE,
         game_state: GAME_STATE,
@@ -96,7 +102,9 @@ pub fn split(memory: &impl Memory, lens: [usize; 6]) -> (Split, DivisionsCopyRep
         details_active: true,
     };
     let mut first = DivisionsJob::new();
-    let report = super::copy_divisions_refresh(memory, ctx, &mut first);
+    let report =
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { super::copy_divisions_refresh(memory, ctx, &mut first) };
     assert!(report.raw_ok);
     let mut frame =
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.

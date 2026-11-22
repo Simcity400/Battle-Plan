@@ -77,8 +77,10 @@ impl native_frame::Lanes for Lanes<'_> {
             }
             let _phase = collector_memory::terminal::enter(phase);
             collector_memory::terminal::set_context(context);
-            let _span = collector_workers::spool_phases::HELPER
-                .span_now(collector_workers::spool_phases::Phase::Columnar);
+            let _span =
+            // SAFETY: This conversion worker records its phase on the session's helper counters.
+            unsafe { collector_workers::spool_phases::HELPER
+                .span_now(collector_workers::spool_phases::Phase::Columnar) };
             engine_allocation::advisory(job);
         };
         // SAFETY: The spool owns this conversion round and uses no helper in a competing round.

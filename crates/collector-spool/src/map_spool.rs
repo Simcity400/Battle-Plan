@@ -761,7 +761,9 @@ mod tests {
     }
 
     fn fixture() -> MapCaptured {
-        let mut captured = MapCaptured::new();
+        let mut captured =
+        // SAFETY: This fixture owns the map allocation and runs without a live attachment.
+        unsafe { MapCaptured::new() };
         set(
             &mut captured.players,
             vec![chuman::Row {

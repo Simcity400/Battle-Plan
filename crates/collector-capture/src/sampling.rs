@@ -462,7 +462,10 @@ impl Captured {
             world_generation: collector_lifetime::world_lifetime::generation(),
             capture_seq: 0,
             fixed_layout: None,
-            map: MapCaptured::with_capacities(map_capacities),
+            map:
+            // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+            // fixture.
+            unsafe { MapCaptured::with_capacities(map_capacities) },
             extended:
             // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
             // consuming it.
@@ -750,7 +753,7 @@ pub struct FrameCapacities {
     pub extended: extended::Capacities,
 }
 
-pub struct WaitCounter {
+struct WaitCounter {
     calls: AtomicU64,
     ns: AtomicU64,
     max_ns: AtomicU64,
@@ -787,7 +790,7 @@ pub struct Shared {
     pub(crate) native_tick_ns: AtomicU64,
     pub(crate) native_tick_calls: AtomicU64,
     pub base: usize,
-    pub trampoline: usize,
+    trampoline: usize,
     pub frequency: u64,
     pub game_score_enabled: bool,
     pub capture_mode: replay_data::scope::CaptureMode,
@@ -795,7 +798,7 @@ pub struct Shared {
     pub(crate) frames: crate::frame_pool::FramePool,
     pub(crate) frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     pub(crate) history_frames: collector_workers::frame_fence::Frames,
-    pub heap_waits: WaitCounter,
+    heap_waits: WaitCounter,
     pub(crate) frame_priority:
         engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
     pub(crate) dropped: AtomicU64,
@@ -930,6 +933,10 @@ enum Return {
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    pub fn heap_waits(&self) -> [u64; 3] {
+        self.heap_waits.read()
+    }
+
     /// # Safety
     /// Only attach may install the pool, before publication. Only the runtime and its admitted
     /// capture workers may use the installed pool, and only until it has joined at detach.
@@ -2466,7 +2473,8 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
             after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
         });
         sample.join = collector_workers::callback_profile_state::take_join();
-        collector_workers::callback_profile::record(sample);
+        // SAFETY: The current admitted callback has completed this sample's measurement.
+        unsafe { collector_workers::callback_profile::record(sample) };
     }
 }
 

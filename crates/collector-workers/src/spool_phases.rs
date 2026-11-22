@@ -119,7 +119,11 @@ impl Steps {
         PHASES[usize::from(self.current.load(std::sync::atomic::Ordering::Relaxed))]
     }
 
-    pub fn span(&self, phase: Phase) -> Span<'_> {
+    /// # Safety
+    /// Only a worker designated by this attachment to record phases on these counters may start a
+    /// span, or an isolated fixture may use its own counters. Keep that authority through the
+    /// span's finish or drop.
+    pub unsafe fn span(&self, phase: Phase) -> Span<'_> {
         if phase != Phase::Wait {
             let begin = collector_primitives::clock::qpc();
             crate::tick_gate::wait();
@@ -128,7 +132,8 @@ impl Steps {
                 std::sync::atomic::Ordering::Relaxed,
             );
         }
-        self.span_now(phase)
+        // SAFETY: This conversion worker records its phase on the session's helper counters.
+        unsafe { self.span_now(phase) }
     }
 
     pub fn walls(&self) -> [u64; STEPS + 1] {
@@ -140,7 +145,11 @@ impl Steps {
         out
     }
 
-    pub fn span_now(&self, _phase: Phase) -> Span<'_> {
+    /// # Safety
+    /// Only a worker designated by this attachment to record phases on these counters may start a
+    /// span, or an isolated fixture may use its own counters. Keep that authority through the
+    /// span's finish or drop.
+    pub unsafe fn span_now(&self, _phase: Phase) -> Span<'_> {
         self.current
             .store(_phase as u8, std::sync::atomic::Ordering::Relaxed);
         #[cfg(any(test, feature = "test-support"))]
@@ -151,6 +160,7 @@ impl Steps {
             collector_primitives::clock::qpc(),
             #[cfg(feature = "phase_cpu")]
             thread_cycles(),
+            std::marker::PhantomData,
         )
     }
 
@@ -170,6 +180,7 @@ pub struct Span<'a>(
     Phase,
     i64,
     #[cfg(feature = "phase_cpu")] Option<u64>,
+    std::marker::PhantomData<*mut ()>,
 );
 
 pub fn thread_cycles() -> Option<u64> {
@@ -242,7 +253,8 @@ impl<'a> Span<'a> {
     pub fn switch(self, phase: Phase) -> Span<'a> {
         let steps = self.0;
         drop(self);
-        steps.span(phase)
+        // SAFETY: This worker records phases on the counters assigned to its spool role.
+        unsafe { steps.span(phase) }
     }
 }
 

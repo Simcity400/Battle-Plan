@@ -411,11 +411,19 @@ impl MapCaptured {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new() -> Self {
-        Self::with_capacities(&MapCapacities::default())
+    /// # Safety
+    /// Only an isolated collector fixture may allocate this test map. No live recording may share
+    /// its allocation-failure state.
+    pub unsafe fn new() -> Self {
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { Self::with_capacities(&MapCapacities::default()) }
     }
 
-    pub fn with_capacities(capacity: &MapCapacities) -> Self {
+    /// # Safety
+    /// Allocate only from the attaching or admitted session's measured map capacities or in an
+    /// isolated fixture that owns its allocation-failure state.
+    pub unsafe fn with_capacities(capacity: &MapCapacities) -> Self {
         Self {
             players: CaptureRows::new(capacity.rows[0]),
             human_controllers: CaptureRows::new(capacity.rows[1]),
@@ -1006,7 +1014,10 @@ mod players_split_tests {
     }
 
     fn direct(memory: &SliceMemory<'_>) -> MapCaptured {
-        let mut captured = MapCaptured::with_capacities(&capacities());
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities()) };
         // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
         // image.
         unsafe { captured.sample(memory, BASE, GS, &mut NoSources) };
@@ -1014,7 +1025,10 @@ mod players_split_tests {
     }
 
     fn split(memory: &SliceMemory<'_>) -> (MapCaptured, PlayersCopyReport) {
-        let mut captured = MapCaptured::with_capacities(&capacities());
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities()) };
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
@@ -1063,12 +1077,18 @@ mod players_split_tests {
             let mut caps = capacities();
             caps.rows[0] = players;
             caps.rows[1] = controllers;
-            let mut direct = MapCaptured::with_capacities(&caps);
+            let mut direct =
+            // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+            // fixture.
+            unsafe { MapCaptured::with_capacities(&caps) };
             let _ =
             // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding
             // game image.
             unsafe { direct.sample(&memory, BASE, GS, &mut NoSources) };
-            let mut captured = MapCaptured::with_capacities(&caps);
+            let mut captured =
+            // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+            // fixture.
+            unsafe { MapCaptured::with_capacities(&caps) };
             let ctx = PlayersCopyContext {
                 base: BASE,
                 game_state: GS,
@@ -1101,7 +1121,10 @@ mod players_split_tests {
         let mut caps = capacities();
         caps.rows[0] = 1;
         caps.rows[1] = 1;
-        let mut direct = MapCaptured::with_capacities(&caps);
+        let mut direct =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&caps) };
         let _ =
         // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
         // image.
@@ -1160,11 +1183,17 @@ mod players_split_tests {
         };
         let mut capacities = capacities();
         capacities.rows[0] = 0;
-        let mut direct = MapCaptured::with_capacities(&capacities);
+        let mut direct =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities) };
         // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
         // image.
         unsafe { direct.sample(&memory, BASE, GS, &mut NoSources) };
-        let mut captured = MapCaptured::with_capacities(&capacities);
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities) };
         let ctx = PlayersCopyContext {
             base: BASE,
             game_state: GS,
@@ -1203,7 +1232,10 @@ mod players_split_tests {
 
         assert!(report.raw_ok);
         assert!(!tiny.log.overflowed);
-        let mut captured = MapCaptured::with_capacities(&capacities());
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities()) };
         // SAFETY: Decode is settling the matching job into its originating frame.
         unsafe { captured.decode_players_payload(BASE, &tiny, &mut [0; 2]) };
         assert_eq!(captured.players.outcome, Outcome::Rows { len: 1 });
@@ -1265,7 +1297,10 @@ mod tests {
             }
         }
         let mut sources = Sources::default();
-        let mut captured = MapCaptured::with_capacities(&MapCapacities::default());
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&MapCapacities::default()) };
         let memory = Unreadable::default();
         // SAFETY: The admitted hour or isolated fixture owns this map and the corresponding game
         // image.
@@ -1325,7 +1360,10 @@ mod tests {
         capacity.player_names += 19;
         capacity.land_participants += 13;
         capacity.order_geometry += 17;
-        let captured = MapCaptured::with_capacities(&capacity);
+        let captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacity) };
         assert_eq!(captured.naval.ships.rows.len(), capacity.rows[5]);
         assert_eq!(captured.player_names.len(), capacity.player_names);
         assert_eq!(captured.land_participants.len(), capacity.land_participants);
@@ -1372,7 +1410,10 @@ mod tests {
             ..MapCapacities::default()
         };
         capacity.rows[5] = 4096;
-        let mut captured = MapCaptured::with_capacities(&capacity);
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacity) };
         captured.naval.ships.rows[0].id = u64::MAX;
         captured.naval.ships.outcome = Outcome::Truncated {
             len: capacity.rows[5],
@@ -1397,7 +1438,9 @@ mod tests {
 
         assert_eq!(captured.orders.geometry.len(), 16384 + 23);
 
-        let mut idle = MapCaptured::new();
+        let mut idle =
+        // SAFETY: This fixture owns the map allocation and runs without a live attachment.
+        unsafe { MapCaptured::new() };
         // SAFETY: This path owns the frame capacity changes and excludes teardown.
         unsafe { idle.grow(&mut capacity) };
         assert_eq!(idle.naval.ships.rows.len(), captured.naval.ships.rows.len());
@@ -1626,7 +1669,10 @@ mod tests {
             order_groups: 2048,
             ..MapCapacities::default()
         };
-        let mut captured = MapCaptured::with_capacities(&capacity);
+        let mut captured =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacity) };
         captured.orders.rows.outcome = Outcome::Unavailable {
             reason: "orders scratch full",
         };

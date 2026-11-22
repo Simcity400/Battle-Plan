@@ -926,7 +926,9 @@ fn thread_label(phase: Phase) -> io::Result<()> {
             // SAFETY: The spool exclusively uses this helper until the job joins.
             unsafe { helper.join(false, &job, || ()) };
         }
-        Phase::Spool => collector_spool::spooling::write_behind_tests::idle_sync_refused(),
+        Phase::Spool =>
+        // SAFETY: This allocation-failure exercise runs in its own fixture process.
+        unsafe { collector_spool::spooling::write_behind_tests::idle_sync_refused() },
         #[cfg(feature = "alloc-fault-injection")]
         Phase::Journal => {
             collector_memory::terminal::inject(Phase::Journal, 1);
@@ -994,17 +996,21 @@ fn set_aside_witness() -> io::Result<()> {
                 ))
             }?;
         }
-        processor.lost(&collector_capture::sampling::LostObservation {
-            campaign_id: engine_native::capture_text::Owned {
-                bytes: CAMPAIGN.to_vec(),
-                len: CAMPAIGN.len(),
-            },
-            first_hour: 12,
-            last_hour: 12,
-            load_signal: Some(1),
-            count: 1,
-            ..Default::default()
-        })?;
+        // SAFETY: The originating spool is submitting a loss from its own capture or isolated
+        // fixture.
+        unsafe {
+            processor.lost(&collector_capture::sampling::LostObservation {
+                campaign_id: engine_native::capture_text::Owned {
+                    bytes: CAMPAIGN.to_vec(),
+                    len: CAMPAIGN.len(),
+                },
+                first_hour: 12,
+                last_hour: 12,
+                load_signal: Some(1),
+                count: 1,
+                ..Default::default()
+            })
+        }?;
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { processor.frame(&collector_spool::spooling::campaign_frame(OTHER, 2, 30)) }?;
         collector_memory::terminal::fail(Phase::Spool, Code::Reserve);
@@ -1530,6 +1536,7 @@ fn exercise_pipeline(
                 .as_ref()
                 .map(|clock| clock.with_campaign_id(CAMPAIGN.as_slice()))
         };
+        // SAFETY: This isolated fixture owns the callback state and the Divisions read accounting.
         unsafe {
             collector_capture::sampling::synthetic_callback(
                 &shared,

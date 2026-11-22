@@ -139,7 +139,10 @@ fn unit_scale_orders() {
             },
         );
         let mut capacities = collector_map_capture::map_capture::MapCapacities::default();
-        let mut map = MapCaptured::with_capacities(&capacities);
+        let mut map =
+        // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+        // fixture.
+        unsafe { MapCaptured::with_capacities(&capacities) };
         let live = world.live();
         for _ in 0..4 {
             map.reset();
@@ -397,7 +400,9 @@ fn unit_scale_capture() {
             assert!(air::copy_air_refresh(&memory, ordinary, &mut job).raw_ok);
             assert_eq!(job.map_outcome, Outcome::Rows { len: shape.wings });
         });
-        let mut map = collector_map_capture::map_capture::MapCaptured::new();
+        let mut map =
+        // SAFETY: This fixture owns the map allocation and runs without a live attachment.
+        unsafe { collector_map_capture::map_capture::MapCaptured::new() };
         map.air_wings.rows.resize(shape.wings, Default::default());
         map.air_wing_names.resize(job.names_len, 0);
         let copied = std::mem::size_of_val(job.map_rows[..shape.wings].as_ref());

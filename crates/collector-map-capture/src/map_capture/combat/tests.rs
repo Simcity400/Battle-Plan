@@ -172,16 +172,20 @@ impl Memory for World {
 }
 
 fn empty_map() -> MapCaptured {
-    MapCaptured::with_capacities(&MapCapacities {
-        rows: [0; MAP_TABLES],
-        player_names: 0,
-        air_wing_names: 0,
-        land_participants: 0,
-        order_geometry: 0,
-        order_groups: 0,
-        order_visits: 0,
-        naval_groups: 0,
-    })
+    // SAFETY: These are session-measured map capacities or capacities owned by an isolated
+    // fixture.
+    unsafe {
+        MapCaptured::with_capacities(&MapCapacities {
+            rows: [0; MAP_TABLES],
+            player_names: 0,
+            air_wing_names: 0,
+            land_participants: 0,
+            order_geometry: 0,
+            order_groups: 0,
+            order_visits: 0,
+            naval_groups: 0,
+        })
+    }
 }
 fn progress() -> combat_progress::Captured {
     combat_progress::Captured::with_capacities(&combat_progress::Capacities::default())

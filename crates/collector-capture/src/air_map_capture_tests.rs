@@ -46,7 +46,9 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
     assert_eq!(job.identity_outcome, Outcome::Rows { len: WINGS });
     assert_eq!((job.names_len, job.name_failures), (WINGS * 4, 0));
 
-    let mut map = MapCaptured::new();
+    let mut map =
+    // SAFETY: This fixture owns the map allocation and runs without a live attachment.
+    unsafe { MapCaptured::new() };
     map.air_wings.rows.truncate(1);
     map.air_wing_names.truncate(1);
     let capacity = Capacities {

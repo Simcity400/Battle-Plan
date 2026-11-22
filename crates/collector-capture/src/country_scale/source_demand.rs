@@ -15,11 +15,18 @@ pub struct Demand {
 }
 
 impl Demand {
-    pub fn observe(memory: &impl Memory, base: usize) -> Result<Option<Self>, &'static str> {
-        Self::observe_periodic(memory, base, true)
+    /// # Safety
+    /// Only the attaching runtime or its designated sizing pass may publish census demand from the
+    /// session's authenticated image. Tests must own the live demand registries in isolation.
+    pub unsafe fn observe(memory: &impl Memory, base: usize) -> Result<Option<Self>, &'static str> {
+        // SAFETY: Session sizing or the isolated fixture owns the census and its observer demand.
+        unsafe { Self::observe_periodic(memory, base, true) }
     }
 
-    pub fn observe_periodic(
+    /// # Safety
+    /// Only the attaching runtime or its designated sizing pass may publish census demand from the
+    /// session's authenticated image. Tests must own the live demand registries in isolation.
+    pub unsafe fn observe_periodic(
         memory: &impl Memory,
         base: usize,
         capacity_census: bool,
@@ -147,7 +154,9 @@ mod tests {
                 false
             }
         }
-        let skipped = Demand::observe_periodic(&Registry, 0, false)
+        let skipped =
+        // SAFETY: Session sizing or the isolated fixture owns the census and its observer demand.
+        unsafe { Demand::observe_periodic(&Registry, 0, false) }
             .unwrap()
             .unwrap();
         assert!(skipped.state_names.is_none());
@@ -158,7 +167,10 @@ mod tests {
         let previous = sizing.core;
         skipped.apply(&mut sizing);
         assert_eq!(sizing.core, previous);
-        let attach = Demand::observe(&Registry, 0).unwrap().unwrap();
+        let attach =
+        // SAFETY: Attach or the isolated fixture owns this authenticated census and its observer
+        // demand.
+        unsafe { Demand::observe(&Registry, 0) }.unwrap().unwrap();
         assert!(attach.state_names.unwrap().is_err());
         assert!(attach.faction_members.unwrap().is_err());
         assert!(attach.wars.unwrap().is_err());

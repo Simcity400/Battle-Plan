@@ -324,7 +324,7 @@ fn prepare_retirement() -> std::io::Result<()> {
     Ok(())
 }
 
-pub struct PayloadPools;
+pub struct PayloadPools(());
 
 impl Drop for PayloadPools {
     fn drop(&mut self) {
@@ -413,7 +413,7 @@ impl Drop for PayloadPools {
 /// publishing any hook. Retain the returned guard until acquisition and decode are joined and their
 /// payloads returned.
 pub unsafe fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
-    let pools = PayloadPools;
+    let pools = PayloadPools(());
     prepare_retirement()?;
     for _ in 0..JOB_POOL_STEADY {
         if collector_memory::terminal::failed() {

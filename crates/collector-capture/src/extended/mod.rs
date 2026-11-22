@@ -706,12 +706,12 @@ packs!(
     pub air_relations,
     pub air_histories,
     pub(crate) army_icon_inputs @helper,
-    pub naval_counters @helper,
+    pub(crate) naval_counters @helper,
     pub railway_guns,
     pub(crate) active_abilities,
     pub country_counters,
     pub game_score,
-    pub group_counters,
+    pub(crate) group_counters,
     pub saved_event_targets,
     pub(crate) battle_sounds,
     pub equipment_destruction,
@@ -741,8 +741,8 @@ packs!(
     pub construction @helper,
     pub division_presentation @helper_exclusive,
     pub(crate) division_model_inputs,
-    pub division_templates,
-    pub economy @helper,
+    pub(crate) division_templates,
+    pub(crate) economy @helper,
     pub fog @helper,
     pub governance @helper,
     pub intel @helper_cached,
@@ -768,12 +768,12 @@ packs!(
     pub hired_advisors @helper,
     pub character_inputs @helper,
     pub logistics,
-    pub combat_log,
+    pub(crate) combat_log,
     pub(crate) division_counts,
     pub(crate) country_factories,
     pub(crate) state_building_inputs,
     pub war_overview,
-    pub industrial_organisations @helper,
+    pub(crate) industrial_organisations @helper,
     pub(crate) production_modifiers @helper,
     pub line_output,
     pub politics,
@@ -789,6 +789,20 @@ packs!(
 );
 
 impl Capacities {
+    /// # Safety
+    /// Only the attaching runtime or its designated sizing pass may use this pack to prepare
+    /// the live economy observers. Keep their storage live throughout the borrow and its use.
+    pub unsafe fn economy_mut(&mut self) -> &mut economy::Capacities {
+        &mut self.economy
+    }
+
+    /// # Safety
+    /// Only the attaching runtime or its designated sizing pass may use this pack to prepare
+    /// the live fleet-region observer. Keep its storage live throughout the borrow and its use.
+    pub unsafe fn naval_counters_mut(&mut self) -> &mut naval_counters::Capacities {
+        &mut self.naval_counters
+    }
+
     pub fn raise_reserved_visibility(&mut self, slots: usize) {
         self.country_appearance.raise_reverse_visibility(slots);
     }
@@ -938,7 +952,11 @@ impl Capacities {
             .raise_for_reservations(demand.reservation_words);
     }
 
-    pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
+    /// # Safety
+    /// Only the attaching runtime or its designated session sizing pass may publish advisor demand,
+    /// using measured demand for the current session. Tests must own the process-wide demand in
+    /// isolation.
+    pub unsafe fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
         self.war_overview.raise_for_demand(demand.war_overview);
         characters::advisors::note_modifier_demand(demand.advisor_modifiers);
         collector_primitives::country_slots::raise(

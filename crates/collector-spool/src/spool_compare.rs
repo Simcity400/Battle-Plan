@@ -428,7 +428,9 @@ pub(crate) fn compare_frame(
             counters.record(index, _outcome);
         }
     };
-    let span = SPOOL.span(Phase::Compare);
+    let span =
+    // SAFETY: This worker records phases on the counters assigned to its spool role.
+    unsafe { SPOOL.span(Phase::Compare) };
     match helpers {
         Some(helpers) => {
             let context = collector_memory::terminal::context();
@@ -436,7 +438,9 @@ pub(crate) fn compare_frame(
                 let _phase =
                     collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
                 collector_memory::terminal::set_context(context);
-                let _span = HELPER.span(Phase::Compare);
+                let _span =
+                // SAFETY: This worker records phases on the counters assigned to its spool role.
+                unsafe { HELPER.span(Phase::Compare) };
                 work();
             };
             // SAFETY: The spool owns this conversion round and uses no helper in a competing

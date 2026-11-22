@@ -215,7 +215,10 @@ pub(crate) fn copy_divisions_core_refresh(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn copy_divisions_refresh(
+/// # Safety
+/// Run only in an isolated fixture that owns the collector's process-wide read accounting. No live
+/// attachment may consume the fixture's Divisions verdicts.
+pub unsafe fn copy_divisions_refresh(
     memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,

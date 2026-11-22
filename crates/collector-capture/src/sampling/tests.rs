@@ -2054,7 +2054,9 @@ fn divisions_split_copy_matches_direct_walk() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory, [64; 6]);
-    let (split, report, _) = kit::split(&memory, [64; 6]);
+    let (split, report, _) =
+    // SAFETY: This isolated fixture owns its Divisions read accounting.
+    unsafe { kit::split(&memory, [64; 6]) };
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
     assert_eq!(split.divisions_outcome, Outcome::Rows { len: 3 });
@@ -2080,7 +2082,9 @@ fn divisions_split_copy_matches_direct_walk_from_short_storage() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory, [64; 6]);
-    let (split, report, _) = kit::split(&memory, [1; 6]);
+    let (split, report, _) =
+    // SAFETY: This isolated fixture owns its Divisions read accounting.
+    unsafe { kit::split(&memory, [1; 6]) };
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
     assert_eq!(split.divisions_outcome, Outcome::Rows { len: 3 });
@@ -2188,7 +2192,9 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
             fault: fault..fault + 1,
         };
         let direct = kit::direct(&memory, [64; 6]);
-        let (split, report, _) = kit::split(&memory, [64; 6]);
+        let (split, report, _) =
+        // SAFETY: This isolated fixture owns its Divisions read accounting.
+        unsafe { kit::split(&memory, [64; 6]) };
         assert!(report.raw_ok, "fault={fault:x}");
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(
@@ -2250,7 +2256,9 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
         ..Default::default()
     };
     let mut first = DivisionsJob::new();
-    let report = copy_divisions_refresh(&memory, ctx, &mut first);
+    let report =
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { copy_divisions_refresh(&memory, ctx, &mut first) };
     assert!(report.raw_ok);
     assert_eq!(first.source_outcome(), Outcome::Rows { len: 3 });
     let (first_sources, _) = first.census.sources();
@@ -2325,7 +2333,9 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
         let mut bytes = kit::fixture();
         bytes[fault..fault + 8].fill(0xff);
         let mut first = DivisionsJob::new();
-        let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
+        let report =
+        // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+        unsafe { copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first) };
         assert!(report.raw_ok);
         assert!(matches!(
             first.source_outcome(),
@@ -2337,7 +2347,9 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
         bytes[address..address + 8].fill(0);
     }
     let mut first = DivisionsJob::new();
-    let report = copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
+    let report =
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first) };
     assert!(report.raw_ok);
     assert!(matches!(
         first.source_outcome(),
@@ -2348,7 +2360,8 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
     for country in [kit::C0, kit::C1] {
         bytes[country + ccountry::DIVISIONS..country + ccountry::DIVISIONS + 16].fill(0);
     }
-    copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first);
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { copy_divisions_refresh(&kit::memory(&bytes), ctx, &mut first) };
     assert_eq!(first.source_outcome(), Outcome::Rows { len: 0 });
     assert!(first.census.sources().0.is_empty());
 }
@@ -2508,7 +2521,8 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
     assert_eq!(read_accounting::snapshot(), accounted);
     let mut composed = DivisionsJob::new();
-    copy_divisions_refresh(&composed_memory, ctx, &mut composed);
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { copy_divisions_refresh(&composed_memory, ctx, &mut composed) };
     assert_eq!(payload.census.rows(), composed.census.rows());
     assert_eq!(*memory.0.calls.borrow(), *composed_memory.calls.borrow());
     assert_eq!(
@@ -2691,7 +2705,9 @@ fn divisions_copy_decode_counters_keep_game_thread_cost_separate() {
         ..Default::default()
     };
     let mut first = DivisionsJob::new();
-    let report = copy_divisions_refresh(&memory, ctx, &mut first);
+    let report =
+    // SAFETY: The isolated fixture owns the Divisions read accounting for this copy.
+    unsafe { copy_divisions_refresh(&memory, ctx, &mut first) };
     assert!(report.raw_ok);
     assert!(report.copy_ticks[0] > 0);
     let mut frame =
@@ -2714,17 +2730,23 @@ fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
     let direct = kit::direct(&memory, [64; 6]);
     for cap in [0usize, 1, 3, 64] {
         let caps = [cap; 6];
-        let (split, report, _) = kit::split(&memory, caps);
+        let (split, report, _) =
+        // SAFETY: This isolated fixture owns its Divisions read accounting.
+        unsafe { kit::split(&memory, caps) };
         assert!(report.raw_ok, "cap={cap}");
         kit::assert_matches_direct(&split, &direct);
     }
-    let (exact, _, _) = kit::split(&memory, [3; 6]);
+    let (exact, _, _) =
+    // SAFETY: This isolated fixture owns its Divisions read accounting.
+    unsafe { kit::split(&memory, [3; 6]) };
     assert_eq!(exact.divisions_outcome, Outcome::Rows { len: 3 });
     for groups in [0, 1] {
         let mut caps = [3; 6];
         caps[2] = groups;
         let direct = kit::direct(&memory, [3; 6]);
-        let (split, report, _) = kit::split(&memory, caps);
+        let (split, report, _) =
+        // SAFETY: This isolated fixture owns its Divisions read accounting.
+        unsafe { kit::split(&memory, caps) };
         assert!(report.raw_ok);
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.groups_outcome, Outcome::Rows { len: 3 });

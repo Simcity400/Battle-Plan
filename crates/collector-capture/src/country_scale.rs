@@ -871,7 +871,8 @@ mod tests {
         let demand = PoliticsDemand::default();
         let mut sizing = Sizing::for_slots(COUNTRIES + 1);
         let before = sizing.extended;
-        sizing.extended.raise_for_politics(demand);
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe { sizing.extended.raise_for_politics(demand) };
         assert!(sizing.extended == before);
         let intel = PoliticsDemand {
             agency_upgrade_rows: 5_000 * 17,
@@ -888,7 +889,8 @@ mod tests {
         };
         assert!(intel.exceeds(&PoliticsDemand::default()));
         assert_eq!(intel.max(PoliticsDemand::default()), intel);
-        sizing.extended.raise_for_politics(intel);
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe { sizing.extended.raise_for_politics(intel) };
         assert!(sizing.extended.intel.rows[17] >= intel.agency_upgrade_rows);
         assert!(
             sizing.extended.intel.agency_upgrade_definitions >= intel.agency_upgrade_definitions
@@ -904,41 +906,59 @@ mod tests {
             sizing.extended.intel.strategic_operative_entries >= intel.strategic_operative_entries
         );
         let before = sizing.extended;
-        sizing
-            .extended
-            .raise_for_politics(PoliticsDemand::default());
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing
+                .extended
+                .raise_for_politics(PoliticsDemand::default())
+        };
         assert!(sizing.extended == before);
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            active_characters: 1 << 20,
-            ..Default::default()
-        });
-        assert!(sizing.extended != before);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            party_leaders: 1 << 20,
-            ..Default::default()
-        });
-        assert!(sizing.extended != before);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            civil_wars: 1 << 20,
-            ..Default::default()
-        });
-        assert!(sizing.extended != before);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            retired_characters: 1 << 20,
-            ..Default::default()
-        });
-        assert!(sizing.extended != before);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            character_inputs: collector_characters::extended::character_inputs::Demand {
-                traits: 1 << 20,
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                active_characters: 1 << 20,
                 ..Default::default()
-            },
-            ..Default::default()
-        });
+            })
+        };
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                party_leaders: 1 << 20,
+                ..Default::default()
+            })
+        };
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                civil_wars: 1 << 20,
+                ..Default::default()
+            })
+        };
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                retired_characters: 1 << 20,
+                ..Default::default()
+            })
+        };
+        assert!(sizing.extended != before);
+        let before = sizing.extended;
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                character_inputs: collector_characters::extended::character_inputs::Demand {
+                    traits: 1 << 20,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
         assert!(sizing.extended != before);
         let seen = PoliticsDemand {
             war_overview: Default::default(),
@@ -962,18 +982,24 @@ mod tests {
             ..Default::default()
         };
         let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            faction_advisors: 1 << 16,
-            faction_advisor_bytes: 1 << 20,
-            ..Default::default()
-        });
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                faction_advisors: 1 << 16,
+                faction_advisor_bytes: 1 << 20,
+                ..Default::default()
+            })
+        };
         assert!(sizing.extended != before);
         let before = sizing.extended;
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            advisor_tokens: 1 << 16,
-            advisor_token_bytes: 1 << 20,
-            ..Default::default()
-        });
+        // SAFETY: Attach, session sizing or the isolated fixture owns the advisor demand update.
+        unsafe {
+            sizing.extended.raise_for_politics(PoliticsDemand {
+                advisor_tokens: 1 << 16,
+                advisor_token_bytes: 1 << 20,
+                ..Default::default()
+            })
+        };
         assert!(sizing.extended != before);
         assert!(!seen.exceeds(&seen) && seen.max(demand) == seen);
         let modifiers = PoliticsDemand {
