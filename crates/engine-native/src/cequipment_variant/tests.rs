@@ -757,6 +757,7 @@ fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
     );
     assert_eq!(rows[0].values, values.map(Some));
     assert_eq!(rows[1].values, values.map(Some));
+    let mut partial_rows = Vec::new();
     assert_eq!(
         walk_stats(
             &memory,
@@ -768,12 +769,12 @@ fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
                     address: usize::MAX
                 }
             ],
-            &mut Vec::new()
+            &mut partial_rows
         ),
-        Outcome::Unavailable {
-            reason: "variant address overflow"
-        }
+        Outcome::Rows { len: 1 }
     );
+    assert_eq!(partial_rows[0].variant, source(&bytes).id);
+    assert_eq!(partial_rows[0].values, values.map(Some));
     assert!(matches!(
         walk_stats(
             &SliceMemory {
@@ -2224,22 +2225,43 @@ fn walk_stats_carried_withholds_replaced_design_after_registry_read_without_affe
             bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
         }
     }
-    let init_variant =
-        |buf: &mut [u8], off: usize, id: u32, token: u32, def_off: usize, values: [i64; 10]| {
-            buf[off..off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
-            buf[off + TYPE..off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
-            buf[off + ID..off + ID + 4].copy_from_slice(&id.to_le_bytes());
-            buf[off + EQUIPMENT_TOKEN..off + EQUIPMENT_TOKEN + 4]
-                .copy_from_slice(&token.to_le_bytes());
-            buf[off + DEFINITION..off + DEFINITION + 8]
-                .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
-            for (lane, value) in STAT_LANES.into_iter().zip(values) {
-                buf[off + lane.offset..off + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
-            }
-            buf[off + BUILD_COST..off + BUILD_COST + 8].copy_from_slice(&values[9].to_le_bytes());
-        };
-    init_variant(&mut bytes, var0, 1, 77, def0, base_values);
-    init_variant(&mut bytes, var1, 2, 77, def0, base_values);
+    let orig_author = (11_u64 << 32) | 79;
+    let neighbor_author = (22_u64 << 32) | 79;
+    let replacement_author = (99_u64 << 32) | 79;
+    let init_variant = |buf: &mut [u8],
+                        off: usize,
+                        id: u32,
+                        token: u32,
+                        def_off: usize,
+                        author: u64,
+                        trait_count: i32,
+                        values: [i64; 10]| {
+        buf[off..off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+        buf[off + TYPE..off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+        buf[off + ID..off + ID + 4].copy_from_slice(&id.to_le_bytes());
+        buf[off + EQUIPMENT_TOKEN..off + EQUIPMENT_TOKEN + 4].copy_from_slice(&token.to_le_bytes());
+        buf[off + DEFINITION..off + DEFINITION + 8]
+            .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+        buf[off + INDUSTRIAL_ORGANISATION..off + INDUSTRIAL_ORGANISATION + 8]
+            .copy_from_slice(&author.to_le_bytes());
+        buf[off + ORGANISATION_TRAIT_COUNT..off + ORGANISATION_TRAIT_COUNT + 4]
+            .copy_from_slice(&trait_count.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(values) {
+            buf[off + lane.offset..off + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        buf[off + BUILD_COST..off + BUILD_COST + 8].copy_from_slice(&values[9].to_le_bytes());
+    };
+    init_variant(&mut bytes, var0, 1, 77, def0, orig_author, 1, base_values);
+    init_variant(
+        &mut bytes,
+        var1,
+        2,
+        77,
+        def0,
+        neighbor_author,
+        2,
+        base_values,
+    );
 
     let initial = World {
         bytes: &bytes,
@@ -2248,7 +2270,16 @@ fn walk_stats_carried_withholds_replaced_design_after_registry_read_without_affe
     let v0 = RegistryRow::read(&initial, 0, base_ptr + var0).unwrap();
     let v1 = RegistryRow::read(&initial, 0, base_ptr + var1).unwrap();
 
-    init_variant(&mut bytes, var0, 99, 88, def1, replacement_values);
+    init_variant(
+        &mut bytes,
+        var0,
+        99,
+        88,
+        def1,
+        replacement_author,
+        7,
+        replacement_values,
+    );
 
     let mut rows = Vec::new();
     let mut witness = RecordingWitness {
@@ -2266,17 +2297,20 @@ fn walk_stats_carried_withholds_replaced_design_after_registry_read_without_affe
             &mut (),
             &mut witness,
         ),
-        Outcome::Rows { len: 2 }
+        Outcome::Rows { len: 1 }
     );
-    assert_eq!(rows[0].variant, v0.id);
-    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
     assert!(witness
         .withheld
         .iter()
         .any(|(_, reason)| *reason == "variant identity changed before stat read"));
-    assert_eq!(rows[1].variant, v1.id);
-    assert_eq!(rows[1].values[4], Some(42_000_000));
-    assert_eq!(rows[1].values[9], Some(2_400_000));
+    assert!(rows[..1].iter().all(|row| row.variant != v0.id));
+    assert!(rows[..1]
+        .iter()
+        .all(|row| row.organisation.author != replacement_author));
+    assert_eq!(rows[0].variant, v1.id);
+    assert_eq!(rows[0].organisation.author, neighbor_author);
+    assert_eq!(rows[0].values[4], Some(42_000_000));
+    assert_eq!(rows[0].values[9], Some(2_400_000));
 
     let mut witness = RecordingWitness {
         withheld: Vec::new(),
@@ -2293,16 +2327,41 @@ fn walk_stats_carried_withholds_replaced_design_after_registry_read_without_affe
             &mut (),
             &mut witness,
         ),
-        Outcome::Rows { len: 2 }
+        Outcome::Rows { len: 1 }
     );
-    assert_eq!(rows[0].variant, v0.id);
-    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
     assert!(witness
         .withheld
         .iter()
         .any(|(_, reason)| *reason == "variant identity changed before stat read"));
-    assert_eq!(rows[1].variant, v1.id);
-    assert_eq!(rows[1].values[0], None);
-    assert_eq!(rows[1].values[4], Some(42_000_000));
-    assert_eq!(rows[1].values[9], Some(2_400_000));
+    assert_eq!(rows[0].variant, v1.id);
+    assert_eq!(rows[0].organisation.author, neighbor_author);
+    assert_eq!(rows[0].values[0], None);
+    assert_eq!(rows[0].values[4], Some(42_000_000));
+    assert_eq!(rows[0].values[9], Some(2_400_000));
+
+    let mut witness = RecordingWitness {
+        withheld: Vec::new(),
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &bytes,
+                blocked: Some(base_ptr + var0 + INDUSTRIAL_ORGANISATION),
+            },
+            0,
+            &[v0, v1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert!(witness
+        .withheld
+        .iter()
+        .any(|(_, reason)| *reason == "variant identity changed before stat read"));
+    assert_eq!(rows[0].variant, v1.id);
+    assert_eq!(rows[0].organisation.author, neighbor_author);
+    assert_eq!(rows[0].values[4], Some(42_000_000));
+    assert_eq!(rows[0].values[9], Some(2_400_000));
 }

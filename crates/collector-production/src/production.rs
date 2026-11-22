@@ -616,7 +616,13 @@ impl Variants {
                 &mut stat_witness,
             )
         });
-        self.organisations_complete = matches!(self.stats.outcome, Outcome::Rows { .. });
+        if let Outcome::Rows { len } = self.stats.outcome {
+            self.organisation_holds.truncate(len);
+        }
+        self.organisations_complete = matches!(
+            self.stats.outcome,
+            Outcome::Rows { len } if len == source.map_or(0, <[_]>::len)
+        );
         self.organisation_bytes = self
             .stats
             .rows

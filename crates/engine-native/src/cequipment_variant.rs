@@ -1806,6 +1806,26 @@ pub fn walk_stats_carried(
                     }
                 }
             }
+            let mut identity_error: [Option<&'static str>; BATCH] = [None; BATCH];
+            for (slot, source) in sources.iter().enumerate() {
+                let Some(expected_vtable) = sites.variant_vtable else {
+                    identity_error[slot] = Some("variant vtable site unlocated");
+                    continue;
+                };
+                let Some(header) = headers[slot] else {
+                    identity_error[slot] = Some("variant identity unreadable");
+                    continue;
+                };
+                match identity_header(expected_vtable, header) {
+                    Ok(live_id) if live_id == source.id => {}
+                    Ok(_) => {
+                        identity_error[slot] = Some("variant identity changed before stat read");
+                    }
+                    Err(reason) => {
+                        identity_error[slot] = Some(reason);
+                    }
+                }
+            }
             let pre_refusal: Option<&'static str> = if !sites.rebuild_located {
                 Some("variant stat rebuild site unlocated")
             } else {
@@ -1815,29 +1835,8 @@ pub fn walk_stats_carried(
             let mut candidate_refusals = [[None; STAT_LANE_COUNT]; BATCH];
             if pre_refusal.is_none() {
                 for (slot, source) in sources.iter().enumerate() {
-                    let Some(expected_vtable) = sites.variant_vtable else {
-                        candidate_refusals[slot] =
-                            [Some("variant vtable site unlocated"); STAT_LANE_COUNT];
+                    if identity_error[slot].is_some() {
                         continue;
-                    };
-                    let Some(header) = headers[slot] else {
-                        candidate_refusals[slot] =
-                            [Some("variant identity unreadable"); STAT_LANE_COUNT];
-                        continue;
-                    };
-                    match identity_header(expected_vtable, header) {
-                        Ok(live_id) if live_id == source.id => {}
-                        Ok(_) => {
-                            candidate_refusals[slot] = [
-                                Some("variant identity changed before stat read");
-                                STAT_LANE_COUNT
-                            ];
-                            continue;
-                        }
-                        Err(reason) => {
-                            candidate_refusals[slot] = [Some(reason); STAT_LANE_COUNT];
-                            continue;
-                        }
                     }
                     let Some(meta) = metas[slot] else {
                         for lane in 0..STAT_LANE_COUNT {
@@ -1925,6 +1924,12 @@ pub fn walk_stats_carried(
                 }
             };
             for (slot, source) in sources.iter().enumerate() {
+                if let Some(reason) = identity_error[slot] {
+                    for lane in 0..STAT_LANE_COUNT {
+                        witness.record_withheld(lane, reason);
+                    }
+                    continue;
+                }
                 let values = if let Some(reason) = batch_refusal {
                     for lane in 0..STAT_LANE_COUNT {
                         witness.record_withheld(lane, reason);

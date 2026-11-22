@@ -57,8 +57,13 @@ impl VariantPart {
                 &mut witness,
             )
         });
-        self.leaves.organisations_complete =
-            matches!(self.leaves.stats.outcome, Outcome::Rows { .. });
+        if let Outcome::Rows { len } = self.leaves.stats.outcome {
+            self.leaves.organisation_holds.truncate(len);
+        }
+        self.leaves.organisations_complete = matches!(
+            self.leaves.stats.outcome,
+            Outcome::Rows { len } if len == source.len()
+        );
         capture_source(&mut self.leaves.upgrades, Ok(source), |source, rows| {
             cequipment_upgrades_instance::walk(memory, base, source, rows)
         });
@@ -234,7 +239,9 @@ impl Variants {
         self.stats.outcome = Outcome::Rows { len: 0 };
         self.upgrades.rows.clear();
         self.upgrades.outcome = Outcome::Rows { len: 0 };
+        let mut organisations_complete = true;
         for mut part in parts {
+            organisations_complete &= part.leaves.organisations_complete;
             if matches!(part.leaves.definitions.outcome, Outcome::Rows { .. }) {
                 let bytes = &part.leaves.definition_bytes.first[..part.leaves.definition_bytes.len];
                 self.definition_bytes
@@ -284,7 +291,8 @@ impl Variants {
             }
         }
         if details {
-            self.organisations_complete = matches!(self.stats.outcome, Outcome::Rows { .. });
+            self.organisations_complete =
+                matches!(self.stats.outcome, Outcome::Rows { .. }) && organisations_complete;
             self.organisation_bytes = self
                 .stats
                 .rows
