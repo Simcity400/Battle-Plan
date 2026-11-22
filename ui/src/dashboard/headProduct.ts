@@ -9,7 +9,9 @@ import { panelReply } from './follow/panel.ts';
 import { canonical } from './follow/canonical.ts';
 import { screenHolder } from './follow/onScreen.ts';
 import { useWidgetKey } from './follow/useFollow.ts';
-import { installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './follow/useFollowed.ts';
+import { installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
+import type { ModelField } from '../draw/views/fields';
+import { perfLog } from '../shell/perf.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
@@ -143,7 +145,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const following = active && follows && !prepared && !!track && !!params;
   const paramsKey = params ? JSON.stringify(params) : null;
   const [element, setElement] = useState<Element | null>(null);
-  const root = useCallback((next: Element | null) => { if (next) setElement(screenHolder(next)); }, []);
+  const [node, setNode] = useState<Element | null>(null);
+  const root = useCallback((next: Element | null) => { if (next) { setElement(screenHolder(next)); setNode(next); } }, []);
   const visible = useOnScreen(following ? element : null);
   const pipeline = usePipeline(runtime.clock, runtime.client);
   const bounds = useMemo(() => track ? [track.branch.firstHour, track.branch.lastHour] as const : null,
@@ -190,6 +193,17 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);
   const exactRead = track && params ? (at: number) => runtime.client.product({ sourceId: track.source.id, revision: track.source.revision, product,
     params: { ...params, branchId: track.branch.id, hour: at } }, new AbortController().signal).then(reply => reply.data) : undefined;
+  useSurfaceLabel(node, following);
+  const exactNow = useRef(exactRead);
+  exactNow.current = exactRead;
+  const auditable = !!exactRead;
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
+    const rowsOf = (raw: unknown) => recordedPanelRows(product, raw).map(row => ({ row, key: row, value: row }));
+    pipeline.audit(pipe, fields => { const panel = installedPanel(fields[`model:${sub}`] as ModelField | undefined); return panel?.data === undefined ? undefined : rowsOf(panel.data); });
+    perfLog.reader(pipe, 0, async hour => { const read = exactNow.current; return read ? { values: new Map(rowsOf(await read(hour)).map(row => [row.key, row.value])) } : null; });
+    return () => pipeline.audit(pipe, null);
+  }, [pipeline, pipe, sub, product, auditable]);
   useRecordedRows(product, pushed && data !== undefined && at !== null && exactRead ? {
     hour: at, rows: () => recordedPanelRows(product, data), exact: async () => recordedPanelRows(product, await exactRead(at)),
   } : undefined);

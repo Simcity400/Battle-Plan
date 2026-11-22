@@ -29,6 +29,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
+  ms?: number;
 }
 
 export interface Presentation<B extends Bitmap = Bitmap> {
@@ -60,7 +61,7 @@ export type PageMessage = FrameRequest
 
 export interface Installed {
   id: number; h: number; c: number; lo: number; hi: number; gen: Generation; binding: number; follows: boolean;
-  mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>;
+  mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>; ms: number;
 }
 
 export interface WidgetView {
@@ -291,7 +292,7 @@ export class Page<B extends Bitmap = Bitmap> {
     for (const [key, value] of Object.entries(entry.fields)) fields[key] = value === SAME ? widget.installed!.fields[key] : value;
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     widget.installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
-      mode: entry.mode, reason: entry.reason, fields };
+      mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0 };
     widget.status = entry.mode; widget.reason = entry.reason;
     if (widget.failed !== null && entry.binding > widget.failed) widget.failed = null;
     this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });

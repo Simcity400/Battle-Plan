@@ -327,3 +327,20 @@ test('should-fix a: a pointer hit-tests the installed picture, never a candidate
   await flush(); await flush();
   assert.deepEqual(hits, ['row:10']);
 });
+
+test('changed rows still in flight from before a rewind never merge onto the new stream, and an early stream waits for its seek', async () => {
+  const { page, lane, mount, step, failures } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n, 2n], [10n, 20n]) }], false, NATIVE, 0));
+  await step(10, { playing: false });
+  await step(4, { playing: false, seek: true });
+  lane.receive('follow', message(4, [{ id: 5, answer: { notRecorded: 'Not recorded before 5' } }], true, NATIVE, 1));
+  lane.receive('follow', message(11, [{ id: 5, answer: rows([2n], [21n], { changed: true }) }], false, NATIVE, 0));
+  lane.receive('follow', message(8, [{ id: 5, answer: rows([1n, 2n], [80n, 90n]) }], true, NATIVE, 2));
+  lane.receive('follow', message(9, [{ id: 5, answer: rows([2n], [91n], { changed: true }) }], false, NATIVE, 2));
+  await step(4);
+  assert.deepEqual([failures, page.view(1).mode], [[], 'picture'], 'the old stream\'s change is dropped, not merged onto a not-recorded answer');
+  await step(9, { playing: false, seek: true });
+  assert.deepEqual([page.view(1).h, valueOf(page.view(1), 5, 0), valueOf(page.view(1), 5, 1)], [9, 80n, 91n], 'the early stream merges onto its own table once its seek is current');
+});

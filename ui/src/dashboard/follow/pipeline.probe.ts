@@ -1,6 +1,7 @@
 import { Lane } from '../../draw/lane.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
-import { Page, type Bitmap, type PageMessage } from './page.ts';
+import { Page, type Bitmap, type Entry, type PageMessage } from './page.ts';
+import { parseAnswer, cellValue } from './message.ts';
 import { splitForLanes } from './split.ts';
 
 interface Fake extends Bitmap { closed: boolean }
@@ -41,34 +42,41 @@ const quantile = (values: number[], q: number) => { const sorted = [...values].s
 async function workload(name: string, countries: number, change: number, distinct: boolean) {
   const lanes: Lane<Fake>[] = [];
   const page = new Page<Fake>({ lanes: LANES, post: (lane, m: PageMessage) => {
+    const copy = structuredClone(m);
     for (const [index, target] of lanes.entries()) if (lane === 'all' || lane === index) {
-      if (m.type === 'frame') target.frame(m); else if (m.type === 'stream') target.stream(m.route, m.seek, m.target);
+      if (copy.type === 'frame') target.frame(copy); else if (copy.type === 'stream') target.stream(copy.route, copy.seek, copy.target);
     }
   } });
+  const cloned = (entry: Entry<Fake>): Entry<Fake> => ({ ...structuredClone({ ...entry, surfaces: [] }), surfaces: entry.surfaces });
   let laneMs = 0;
   for (let index = 0; index < LANES; index++) lanes.push(new Lane<Fake>({
     lane: index, lanes: LANES, views: () => fieldsView(() => undefined),
     crop: async sources => sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })),
-    present: presentation => page.offer(presentation), release: () => {}, charge: () => {}, fail: () => {}, later: () => {},
+    present: presentation => page.offer({ ...presentation, entries: presentation.entries.map(cloned) }), release: () => {}, charge: () => {}, fail: () => {}, later: () => {},
   }));
   const subs = new Set<number>();
+  let shown = 0;
   for (let widget = 0; widget < WIDGETS; widget++) {
     const lane = widget % LANES, sub = distinct ? (widget + 1) * LANES + lane : LANES + lane;
     if (!subs.has(sub)) { subs.add(sub); lanes[lane]!.follow(sub, 'followed'); lanes[lane]!.bindRoute(sub, ROUTE, NATIVE); }
     lanes[lane]!.mount(widget, [sub], 'fields');
-    page.mount(widget, { route: ROUTE, lane, surfaces: [] });
+    page.mount(widget, { route: ROUTE, lane, surfaces: [], changed: () => {
+      const body = page.view(widget).fields?.[`answer:${sub}`] as Uint8Array | undefined, answer = body && parseAnswer(body);
+      if (answer && answer.kind !== 'notRecorded') shown += Number(cellValue(answer, 0) & 1n);
+    } });
   }
   const bytes: number[] = [], ingest: number[] = [], serve: number[] = [], commit: number[] = [], ages: number[] = [];
   page.publish(0, { playing: true, step: HOURS_PER_FRAME, speed: 1440, seek: 0 });
   for (let frame = 0; frame < FRAMES; frame++) {
     const hour = frame * HOURS_PER_FRAME, day = frame;
-    const sparse = change < 1 && frame > 0 ? Array.from({ length: Math.max(1, Math.round(countries * change)) }, (_, k) => (day * 7 + k * 13) % countries).sort((a, b) => a - b) : null;
+    const sparse = frame === 0 ? null : change < 1 ? Array.from({ length: Math.max(1, Math.round(countries * change)) }, (_, k) => (day * 7 + k * 13) % countries).sort((a, b) => a - b)
+      : Array.from({ length: countries }, (_, row) => row);
     const unique = sparse && [...new Set(sparse)];
     const sent = message(hour, [...subs].map(id => ({ id, body: table(countries, day, id, unique) })));
     bytes.push(sent.byteLength);
     const split = splitForLanes(sent, LANES);
     const i0 = performance.now();
-    if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) lanes[lane]!.receive('follow', part); });
+    if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) lanes[lane]!.receive('follow', structuredClone(part)); });
     ingest.push(performance.now() - i0);
     const s0 = performance.now();
     await flush();

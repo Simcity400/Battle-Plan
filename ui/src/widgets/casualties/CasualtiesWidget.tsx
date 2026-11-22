@@ -26,7 +26,7 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
-import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -131,6 +131,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     useLiveFollow(store, queries[3], root, read, answered),
   ];
   const rankFollowed = top == null || followsHead(ranked);
+  const refused = followRefusal(ranked);
   const lives = useHandoff(measured, rankFollowed, store, track?.branch.id);
   const [dealt, taken, unknown, partial] = lives.map(live => ({ live }));
   const followed = [dealt, taken, unknown, partial];
@@ -214,6 +215,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const loading = followedHead ? false : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved?.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;

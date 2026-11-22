@@ -8,7 +8,7 @@ export type ToLane =
   | { type: 'follow'; sub: number; channel: Channel; product?: string }
   | { type: 'route'; sub: number; route: number; native: number; seek: number; offset: number }
   | { type: 'unfollow'; sub: number }
-  | { type: 'rank'; sub: number; version: number }
+  | { type: 'rank'; sub: number; version: number; countries?: readonly string[] }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
   | { type: 'bind'; widget: number; binding: Binding; model?: unknown }

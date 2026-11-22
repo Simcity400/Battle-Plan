@@ -86,6 +86,16 @@ pub fn registry() -> &'static Registry {
 
 pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-window", "follow-close"];
 
+fn rank_window(params: &Value) -> io::Result<crate::query::RankWindow> {
+    let count = |name: &str| params.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| crate::invalid(format!("A follow window names no {name}")));
+    let countries = match params.get("countries") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| crate::invalid("A follow window's countries are slots or tags"))?,
+    };
+    let version = params.get("version").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()).ok_or_else(|| crate::invalid("A follow window names no version"))?;
+    Ok(crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version })
+}
+
 fn unavailable(reason: impl Into<String>) -> Value {
     json!({ "available": false, "reason": reason.into() })
 }
@@ -140,6 +150,11 @@ impl Registry {
                     if let Err(error) = host.follow().follow(id, query) {
                         return Ok(unavailable(error.to_string()));
                     }
+                    if let Some(window) = params.get("window").filter(|window| !window.is_null()) {
+                        if let Err(error) = host.follow().window(id, rank_window(window)?) {
+                            return Ok(unavailable(error.to_string()));
+                        }
+                    }
                 }
                 {
                     let mut followed = lock(&self.followed);
@@ -179,13 +194,7 @@ impl Registry {
             }
             "follow-window" => {
                 let id = id(params)?;
-                let count = |name: &str| params.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| crate::invalid(format!("A follow window names no {name}")));
-                let countries = match params.get("countries") {
-                    None | Some(Value::Null) => Vec::new(),
-                    Some(value) => serde_json::from_value(value.clone()).map_err(|_| crate::invalid("A follow window's countries are slots or tags"))?,
-                };
-                let version = params.get("version").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()).ok_or_else(|| crate::invalid("A follow window names no version"))?;
-                let window = crate::query::RankWindow { from: count("from")?, count: count("count")?, countries, version };
+                let window = rank_window(params)?;
                 let host = lock(&self.followed).get(&id).filter(|held| !held.panel).map(|held| Arc::clone(&held.host));
                 let Some(host) = host else { return Ok(unavailable(format!("Follow {id} is no followed ranking"))); };
                 if let Err(error) = host.follow().window(id, window) {

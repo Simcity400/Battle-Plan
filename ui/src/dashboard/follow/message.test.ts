@@ -42,3 +42,13 @@ test('a dated panel reads the native MessagePack bytes', () => {
   assert.deepEqual([...bytes.slice(40, 48)], [0x81, 0xa4, 114, 111, 119, 115, 0x91, 7]);
   assert.deepEqual(parseDatedPanels(bytes).panels[0]!.panel?.data, { rows: [7] });
 });
+
+const GOLDEN_RANKED = '464f4c3300000000280000000100000000000000000000000900000028000000800000000000000001010500020000000200000002000000650000000000000067000000000000000000000000000000000000000000000084030000000000000100000000000000bc0200000000000002000000000000000000000000000000ffffffffffffffff0000000001000000000000000300000006000000000000005a5a5a4141410000';
+
+test('should-fix d: a ranked window the service writes reads back with its version, values and ranks', () => {
+  const bytes = new Uint8Array(GOLDEN_RANKED.match(/../g)!.map(pair => parseInt(pair, 16)));
+  const [ranked] = parseFollowed(bytes).answers.map(({ answer }) => answer);
+  assert.ok(ranked!.kind === 'rows');
+  assert.deepEqual([ranked.window, ranked.columns, ranked.canonical], [5, 2, true]);
+  assert.deepEqual([0, 1].map(row => [rowName(ranked, row), cellValue(ranked, row * 2), cellValue(ranked, row * 2 + 1)]), [['ZZZ', 900n, 1n], ['AAA', 700n, 2n]]);
+});

@@ -59,6 +59,14 @@ export function useFollowedWidget(pipeline: Pipeline | null, key: string | null,
   return id;
 }
 
+export function useSurfaceLabel(element: Element | null, on: boolean, label = 'page') {
+  useLayoutEffect(() => {
+    if (!on || !(element instanceof HTMLElement) || element.dataset.surface) return;
+    element.dataset.surface = label;
+    return () => { delete element.dataset.surface; };
+  }, [element, on, label]);
+}
+
 export function useElement(target: { readonly current: Element | null }): Element | null {
   const [element, setElement] = useState<Element | null>(null);
   useLayoutEffect(() => { if (target.current !== element) setElement(target.current); });

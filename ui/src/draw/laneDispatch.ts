@@ -41,7 +41,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'follow': lane.follow(m.sub, m.channel, m.product); break;
       case 'route': lane.bindRoute(m.sub, m.route, m.native, m.seek, m.offset); break;
       case 'unfollow': lane.unfollow(m.sub); break;
-      case 'rank': lane.rank(m.sub, m.version); break;
+      case 'rank': lane.rank(m.sub, m.version, m.countries); break;
       case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;
       case 'unmount': lane.unmount(m.widget); break;
       case 'bind': lane.bind(m.widget, m.binding, m.model); break;

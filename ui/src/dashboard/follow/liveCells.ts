@@ -1,6 +1,6 @@
 import { liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
-import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
+import { CELL, cellNumber, cellState, rowReason } from './message.ts';
 import type { FollowedAnswer } from './message';
 
 export const CELLS = 0x8000_0000;
@@ -75,6 +75,9 @@ export function valuedGroup(spec: LiveGroupSpec, values: readonly (number | stri
   };
 }
 
+const UNSAFE = 4;
+export const TOO_LARGE = 'This value is too large for the page to show exactly';
+
 export class CellGroup implements GroupValues {
   seek?: number;
   start: number | null = null;
@@ -110,8 +113,9 @@ export class CellGroup implements GroupValues {
     for (let row = 0; row < answer.rows; row++) {
       for (let column = 0; column < this.width; column++) {
         const at = row * this.width + column;
-        this.states[at] = cellState(answer, at);
-        this.values[at] = cellNumber(answer, at) ?? Number(cellValue(answer, at));
+        const state = cellState(answer, at), value = state === CELL.value ? cellNumber(answer, at) : null;
+        this.states[at] = state === CELL.value && value === null ? UNSAFE : state;
+        this.values[at] = value ?? NaN;
       }
       this.reasons[row] = rowReason(answer, row);
     }
@@ -129,6 +133,7 @@ export class CellGroup implements GroupValues {
     if (this.whole !== null) return this.whole;
     if (row >= this.reasons.length) return NOT_READ;
     const state = this.states[row * this.width + column];
+    if (state === UNSAFE) return TOO_LARGE;
     return this.reasons[row] ?? (state === CELL.missing ? NO_VALUE : NOT_RECORDED);
   }
 }

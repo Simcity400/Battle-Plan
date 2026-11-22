@@ -39,7 +39,7 @@ import { followStore } from '../../dashboard/follow/connection.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
@@ -186,6 +186,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
   }, [ranks, followKey, top]);
   const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape);
   const followedHead = followsHead(followed) && followed.entry !== null;
+  const refused = followRefusal(followed);
   const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (following || pinned) ? window.lastHour : null;
@@ -330,6 +331,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     const shared = headState(arsenal);
     if (shared) return shared;
     if (!track) return <WidgetState kind="empty" icon={icon} message={`Load a campaign to see ${label.toLowerCase()}.`} />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if ((widget.time.mode === 'range' || pinned) && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;

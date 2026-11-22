@@ -116,7 +116,13 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && columnReads
     ? { product: 'series-state', params: { branchId, family, reads: columnReads } } : null),
   [familiesText, following, branchId, columnReadsText]);
-  const columnsFollowed = useFollowedAll(store, columnQueries, root);
+  const windowTags = useStickyMembers(`${stickyReset}|window`, top != null ? rankedTags(rankEntry?.answer) : [], stickyLimit(top ?? 0));
+  const windowText = top != null ? JSON.stringify(windowTags) : 'null';
+  const columnWindows = useMemo(() => {
+    const countries = JSON.parse(windowText) as string[] | null;
+    return families.map(() => countries && { from: 0, count: 0, countries });
+  }, [familiesText, windowText]);
+  const columnsFollowed = useFollowedAll(store, columnQueries, root, columnWindows);
   const columnsNow = useRef(columnsFollowed);
   columnsNow.current = columnsFollowed;
   const followedHead = following && !!store && (top == null || rankQuery !== null);

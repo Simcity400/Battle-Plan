@@ -10,6 +10,9 @@ import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
+import { perfLog } from '../../shell/perf.ts';
+import { validateNuclearArsenal, arsenalNotice, arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
+import { countryRaceItem } from './countryRace.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 type Model = Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined };
@@ -105,6 +108,26 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     };
   }, [owner, pipeline, pipe, props.active, props.resetKey]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);
+  const auditable = !!props.exactRead;
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) return;
+    const rowsOf = (items: readonly RaceItem[]) => items.flatMap(item => [{ row: item.key, key: `${item.key}:total`, value: item.label },
+      ...item.segments.filter(part => part.id !== 'total').map(part => ({ row: item.key, key: `${item.key}:${part.id}`, value: String(part.value) }))]);
+    pipeline.audit(pipe, fields => { const items = fields.items as readonly RaceItem[] | undefined; return items && (items.length ? rowsOf(items) : [{ row: 'empty', key: 'empty:notice', value: '' }]); });
+    perfLog.reader(pipe, 0, async hour => {
+      const read = latest.current.exactRead, model = latest.current.model;
+      if (!read) return null;
+      const reply = validateNuclearArsenal(await read(hour)), values = new Map<string, string>();
+      for (const row of arsenalRows(reply, hour, model)) {
+        const item = countryRaceItem(row, model.colours, () => model.tokens.accent, model.tokens.muted);
+        values.set(`${item.key}:total`, item.label);
+        for (const part of item.segments) if (part.id !== 'total') values.set(`${item.key}:${part.id}`, String(part.value));
+      }
+      if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
+      return { values, ranked: true };
+    });
+    return () => pipeline.audit(pipe, null);
+  }, [pipeline, pipe, auditable]);
   return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>
     <p ref={ranking} id={owner + '-ranking'} className="sr-only">{raceText(props.items, props.name) || props.empty}</p>

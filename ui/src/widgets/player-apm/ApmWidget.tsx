@@ -27,7 +27,7 @@ import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useProduct } from '../../dashboard/products';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { useHeadHour } from '../army-size/headHour.ts';
@@ -77,6 +77,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
     shown(shownThrough(entry));
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
+  const refused = followRefusal(followed);
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null && !graph, () => apmHeadStructure(entryRef.current?.answer), woken);
   const headStructure = headEntry && !graph ? apmHeadStructure(headEntry.answer) : null;
@@ -190,6 +191,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if (!query.window || first == null || last == null || first > last) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
     if (query.reason && !headEntry) return <WidgetState kind="unavailable" message={query.reason} />;

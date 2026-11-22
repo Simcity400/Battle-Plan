@@ -381,7 +381,7 @@ const DASHBOARD_INVENTORY = `(() => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
     const placeholder = a.querySelector('.dash-empty[role="status"]');
     const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
-    const surfaces = [...new Set([...a.querySelectorAll('canvas[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
+    const surfaces = [...new Set([...a.querySelectorAll('[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
     return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
   });
 })()`;

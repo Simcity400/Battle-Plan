@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
-import { ZERO_DIVISOR, liveSection, repliedCells } from './liveCells.ts';
+import { CellGroup, TOO_LARGE, ZERO_DIVISOR, liveSection, repliedCells } from './liveCells.ts';
+import { parseFollowed } from './message.ts';
+import { message } from './messages.fixture.ts';
 import type { LiveSection } from './liveCells.ts';
 
 const section = (groups: LiveSection['groups']): LiveSection => ({
@@ -42,4 +44,10 @@ test('a request\'s reply gives each cell its value by its formula, and a missing
 test('a reply naming no cells keeps the same reading', () => {
   const none = repliedCells({ warnings: [] });
   assert.equal(none.read(), none.read(), 'a reply naming no cells');
+});
+
+test('should-fix c: a live value past 2^53 is named too large, never rounded into another number', () => {
+  const group = new CellGroup();
+  group.land(parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [2n ** 53n + 1n, 7n] } }])).answers[0]!.answer);
+  assert.deepEqual([group.get(0, 0), group.missing(0, 0), group.get(1, 0)], [undefined, TOO_LARGE, 7]);
 });

@@ -10,6 +10,7 @@ import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
 import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
+import { perfLog } from '../../shell/perf.ts';
 
 export type ExactRows = (hour: number) => Promise<readonly string[] | null>;
 import { carriedValues, type TableReading, type TableRowModel, type TableSurfaceModel, type TableTheme, type TableValues } from './surface.ts';
@@ -168,7 +169,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     const tips = keys ? Object.fromEntries(made.rows.map(row => [row.key, keys(row.key)])) : undefined;
     pipeline.present(pipe, 'table');
     pipeline.bind(pipe, [held.surface], { surfaces: [{ width: w, height: h, dpr: devicePixelRatio }], ...followed ? {} : { dated: { h: shownAt, c: shownAt } } },
-      {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, window: view.current });
+      {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, window: view.current, ...perfLog ? { audit: true } : {} });
   }, [pipeline, pipe, followed, shownAt, offset]);
   useLayoutEffect(() => {
     const node = body.current;
@@ -232,6 +233,13 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     };
   }, [pipeline, pipe, bind, paintMirror]);
   useLayoutEffect(() => { rebind.current = bind; bind(); }, [model, bind]);
+  const auditable = !!exactRows;
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) return;
+    pipeline.audit(pipe, fields => (fields.keys as readonly string[] | undefined)?.map(key => ({ row: key, key, value: key })));
+    perfLog.reader(pipe, 0, async hour => { const keys = await latest.current.exactRows?.(hour); return keys ? { values: new Map(keys.map(key => [key, key])) } : null; });
+    return () => pipeline.audit(pipe, null);
+  }, [pipeline, pipe, auditable]);
   useEffect(() => followed ? undefined : live.subscribe(bind), [live, followed, bind]);
   useLayoutEffect(() => {
     const node = body.current; if (!node) return;

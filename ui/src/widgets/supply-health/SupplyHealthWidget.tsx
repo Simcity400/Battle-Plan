@@ -174,6 +174,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
 
   const problem = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
+    if (supply.refused) return <WidgetState kind="unavailable" message={supply.refused} />;
     if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
     if (groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

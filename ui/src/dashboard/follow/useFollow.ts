@@ -5,7 +5,7 @@ import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
 import { FollowedWidgetKey, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from './store.ts';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
-import { useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './useFollowed.ts';
+import { useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, useSurfaceLabel } from './useFollowed.ts';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
@@ -23,6 +23,11 @@ export interface Followed {
 }
 
 export const followsHead = (followed: Followed) => followed.status === 'followed';
+
+export function followRefusal(...followed: readonly Followed[]): string | null {
+  for (const each of followed) if (each.status === 'unavailable' || each.status === 'failed') return each.reason ?? 'The followed reading stopped without a reason';
+  return null;
+}
 
 export function usePlaybackHour(clock: PlaybackController, on = true): number {
   const subscribe = useCallback((changed: () => void) => on ? clock.subscribe(changed) : () => {}, [clock, on]);
@@ -43,6 +48,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   const query = prepared || !store ? null : asked;
   const element = useElement(target);
   const visible = useOnScreen(query ? element : null, onScreen);
+  useSurfaceLabel(element, !!query);
   const pipe = useFollowedWidget(pipeline, store && query ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null, bounds: undefined });
   const branch = query ? (query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId) : undefined;
   const follow = useMemo(() => store && typeof branch === 'string' ? { source: store.source, branch, offset: store.offset } : null, [store, branch]);

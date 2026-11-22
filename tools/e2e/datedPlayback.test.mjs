@@ -17,7 +17,7 @@ test('sweep input coverage marks gestures at the boundary and excludes hidden in
   assert.match(source, /pinWidget = owners\[index\];\s*await app\.evaluate\(`__e2e\.setPinWidget\(\$\{JSON\.stringify\(pinWidget\)\}\)`\)/,
     'the pin action carries the widget whose settings were clicked');
   assert.match(source, /if \(c\.hidden \|\| !c\.checkVisibility\(/, 'hidden worker canvases are not input pictures');
-  assert.match(source, /querySelectorAll\('canvas\[data-surface\]'\)/, 'mounted hidden worker surfaces stay declared');
+  assert.match(source, /querySelectorAll\('\[data-surface\]'\)/, 'mounted hidden surfaces, drawn or installed into the page, stay declared');
   assert.doesNotMatch(source, /canvas\[data-surface\]:not\(\[hidden\]\)/, 'surface inventory does not discard hidden declarations');
   const rewindMoved = source.indexOf('Playback rewind did not move back');
   const rewindSettled = source.indexOf('const rewind = await settleInputs()');
@@ -266,6 +266,7 @@ test('Research requires five visible dated widgets, a full playing window and sa
   assert.equal(verdict(records.map(r => r.t === 'picture' ? { ...r, shownAt: r.at + 1e9 } : r)), false,
     'a picture is held only from a display its frame could reach');
   assert.equal(verdict(records.map(r => ({ ...r, renderer: 'dom' }))), false);
+  assert.equal(verdict(records.map(r => r.t === 'picture' ? { ...r, renderer: 'page' } : r)), true, 'astra 15: a picture the page installed is measured, not discarded');
   assert.equal(verdict(records.filter(r => r.t !== 'workerFrame')), false);
 });
 

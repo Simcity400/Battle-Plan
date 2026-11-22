@@ -8,7 +8,7 @@ import { followStore } from '../../dashboard/follow/connection.ts';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -47,6 +47,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
     shown(shownThrough(entry));
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
+  const refused = followRefusal(followed);
   const structureOf = (entry: FollowEntry | null) => clockStructure(clockHead(entry?.answer));
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null, () => structureOf(entryRef.current), woken);
@@ -78,6 +79,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its recorded clock times." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if (headEntry) {
       if (!head) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if ('reason' in head) return <WidgetState kind="unavailable" message={head.reason} />;

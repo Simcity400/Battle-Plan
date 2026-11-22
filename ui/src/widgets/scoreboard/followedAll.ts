@@ -4,7 +4,8 @@ import { canonical } from '../../dashboard/follow/canonical.ts';
 import { installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from '../../dashboard/follow/store.ts';
 import { observeOnScreen, useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import type { OnScreen } from '../../dashboard/follow/useFollow';
-import { useElement, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from '../../dashboard/follow/useFollowed.ts';
+import { useElement, useFollowedWidget, useInstalled, useOnScreen, usePipeline, useSurfaceLabel } from '../../dashboard/follow/useFollowed.ts';
+import type { RankWindow } from '../../dashboard/follow/pipeline';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { Live } from '../../charts/live';
 
@@ -17,13 +18,14 @@ export interface FollowedAll {
 }
 
 export function useFollowedAll(store: FollowStore | null, queries: readonly (FollowQuery | null)[], target: RefObject<Element | null>,
-  onScreen: OnScreen = observeOnScreen): FollowedAll {
+  windows: readonly (RankWindow | null)[] = [], onScreen: OnScreen = observeOnScreen): FollowedAll {
   const prepared = useContext(PreparingPage);
   const widgetKey = useWidgetKey();
   const pipeline = usePipeline(store?.clock ?? null, store?.client ?? null);
   const element = useElement(target);
   const wanted = !prepared && !!store && queries.some(Boolean);
   const visible = useOnScreen(wanted ? element : null, onScreen);
+  useSurfaceLabel(element, wanted);
   const pipe = useFollowedWidget(pipeline, wanted && store ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null });
   const key = JSON.stringify(queries.map(query => query ? canonical(query) : null));
   const asked = useRef(queries); asked.current = queries;
@@ -41,6 +43,12 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
     setSubs({ key, subs: made });
     return () => { for (const token of tokens) pipeline.unsubscribe(pipe, token); };
   }, [pipeline, pipe, store, visible, key]);
+  const windowsText = JSON.stringify(windows);
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null || subs.key !== key) return;
+    const asked = JSON.parse(windowsText) as (RankWindow | null)[];
+    subs.subs.forEach((sub, at) => { if (sub !== null) pipeline.window(pipe, sub, asked[at] ?? null); });
+  }, [pipeline, pipe, subs, key, windowsText]);
   const view = useInstalled(pipeline, pipe);
   const entries = useMemo(() => queries.map((_, at) => {
     const sub = subs.key === key ? subs.subs[at] : null;

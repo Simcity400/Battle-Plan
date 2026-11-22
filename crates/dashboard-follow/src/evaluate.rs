@@ -268,10 +268,12 @@ fn by_rank(a: &(i64, u128, u32), b: &(i64, u128, u32)) -> Ordering {
     b.0.cmp(&a.0).then(a.1.cmp(&b.1))
 }
 
-pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
+#[expect(clippy::too_many_arguments, reason = "a write reads its query, lane, finder, holders, window and reasons and writes one table")]
+pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, window: Option<&RankWindow>, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
     out.clear();
+    let version = window.map_or(0, |window| window.version);
     if let Some(reason) = reasons.unrecorded(lane) {
-        answer::not_recorded(&reason, out);
+        answer::not_recorded_in(&reason, version, out);
         return;
     }
     let cells = lane.cells();
@@ -409,6 +411,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             table.clear(1, false);
             let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
             for (at, tag) in tags.rows.iter().enumerate() {
+                if window.is_some_and(|window| !window.countries.contains(&names[at])) { continue; }
                 let key = match tag {
                     TagRow::Absent(reason) => {
                         table.row(0);
@@ -434,6 +437,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             }
         }
     }
+    table.window = version;
     table.encode(out);
 }
 
@@ -454,7 +458,7 @@ pub fn answer_at(query: &Query, lane: &Lane) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut reasons = Reasons::default();
     reasons.learn(lane);
-    write(query, lane, &Scan::new(lane.cells()), &tags_at(query, head(lane)), &reasons, &mut Scratch::default(), &mut out);
+    write(query, lane, &Scan::new(lane.cells()), &tags_at(query, head(lane)), None, &reasons, &mut Scratch::default(), &mut out);
     Ok(out)
 }
 

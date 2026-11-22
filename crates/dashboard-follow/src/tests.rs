@@ -1022,6 +1022,33 @@ fn the_message_bytes_are_the_ones_the_ui_reads() {
     assert_eq!(hex, GOLDEN);
 }
 
+fn golden_ranked() -> Vec<u8> {
+    use crate::answer::{Table, begin, push};
+    let mut message = Vec::new();
+    begin(&mut message, 0, 0, 40, 0, false);
+    let mut table = Table::default();
+    table.clear(2, false);
+    table.window = 5;
+    for (key, value, rank, name) in [(101, 900, 1, "ZZZ"), (103, 700, 2, "AAA")] {
+        table.row(key);
+        table.cell(value, State::Value);
+        table.cell(rank, State::Value);
+        table.name(name);
+    }
+    let mut body = Vec::new();
+    table.encode(&mut body);
+    push(&mut message, 9, 40, &body);
+    message
+}
+
+#[test]
+fn a_ranked_window_answer_is_the_bytes_the_ui_reads() {
+    let hex: String = golden_ranked().iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(hex, GOLDEN_RANKED);
+}
+
+const GOLDEN_RANKED: &str = "464f4c3300000000280000000100000000000000000000000900000028000000800000000000000001010500020000000200000002000000650000000000000067000000000000000000000000000000000000000000000084030000000000000100000000000000bc0200000000000002000000000000000000000000000000ffffffffffffffff0000000001000000000000000300000006000000000000005a5a5a4141410000";
+
 const GOLDEN: &str = "464f4c3301000000d204000003000000000000000000000007000000b0040000d000000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff02000000040000000000000000000000010000000300000000000000000000000300000006000000160000001900000032000000474552534f56534f5620686173206e6f2076616c75654954414954412069732068656c64206279206e6f20636f756e74727900000000000008000000d20400004000000000000000000000000000000000000000010000000000000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f75720009000000d204000058000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff000000000000000000000000";
 
 #[test]
@@ -1525,6 +1552,27 @@ fn a_follow_names_lanes_its_id_belongs_to() {
     assert!(wrong.unwrap_err().to_string().contains("not of lane 0 among 3"));
     let right = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 1, "lanes": 3 })).unwrap();
     assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
+}
+
+#[test]
+fn a_window_on_a_series_of_every_country_sends_only_its_countries_under_its_version() {
+    let pages = record(quiet);
+    let mut harness = harness(&pages);
+    let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
+    let mut holders = Holders::default();
+    holders.tags.insert("MMM".into(), held(1, 101));
+    holders.tags.insert("ZZZ".into(), held(2, 102));
+    holders.tags.insert("AAA".into(), held(3, 103));
+    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
+    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
+    let Query::Series { countries, .. } = Query::series_top(&POWER, &POWER.measures[0], 3, identity.clone()) else { unreachable!() };
+    let every = Query::Series { series: &POWER, measure: &POWER.measures[0], countries, top: None, least: false, parts: false, identity };
+    harness.follow.follow(7, every).unwrap();
+    harness.follow.window(7, crate::RankWindow { from: 0, count: 0, countries: vec!["ZZZ".into()], version: 3 }).unwrap();
+    harness.seek(0);
+    let answered = harness.play(20).iter().flat_map(Played::answers).filter(|(at, ..)| *at == 7).last().expect("an answer").2;
+    let names: Vec<&str> = (0..answered.keys.len()).filter_map(|row| answered.name(row)).collect();
+    assert_eq!((names, answered.window), (vec!["ZZZ"], 3), "the window's countries alone, under its version");
 }
 
 #[test]

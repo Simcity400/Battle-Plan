@@ -1055,7 +1055,7 @@ impl Engine {
             if let Some(rows) = followed.ranking.write(&followed.query, lane, step.table(followed.table), &followed.tags, followed.window.as_ref(), &self.reasons, &mut self.scratch.table, &mut self.body) {
                 stats.rows_read += rows;
             } else {
-                evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
+                evaluate::write(&followed.query, lane, &*index, &followed.tags, followed.window.as_ref(), &self.reasons, &mut self.scratch, &mut self.body);
             }
             stats.cells += cells_of(&self.scratch.table, &self.body);
             stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));

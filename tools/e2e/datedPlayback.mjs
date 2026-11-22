@@ -246,7 +246,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         const seen = new Set(), seenSurfaces = new Set(), lag = [], drawn = [], available = [];
         let crossed = false, uncrossedLate = false;
         for (const r of held.values()) {
-          if ((placementMode ? !visiblePlacements.has(r.placement) : !visible.has(r.surface)) || r.renderer !== 'worker') continue;
+          if ((placementMode ? !visiblePlacements.has(r.placement) : !visible.has(r.surface)) || r.renderer !== 'worker' && r.renderer !== 'page') continue;
           seen.add(r.placement); seenSurfaces.add(r.surface); observedSurfaces.add(r.surface); observedPairs.add(`${r.surface}\u0000${r.placement}`);
           const target = r.fixedHour ?? head, hour = r.hour, eligibleAge = Number.isFinite(r.eligibleHour) ? target - r.eligibleHour : Infinity;
           available.push(eligibleAge);

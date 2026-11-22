@@ -37,7 +37,7 @@ import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -98,6 +98,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
+  const refused = followRefusal(fuelFollowed, capacityFollowed);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const drillOnClock = saved ? following && storedDrill.breakdown === null || storedDrill.breakdown !== null && storedDrill.follow
     : storedDrill.breakdown !== null && storedDrill.follow;
@@ -231,6 +232,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || saved.id === 'consumption' && !!options.fuelConsumptionLevel && !savedLevel);
 
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
+    : refused ? <WidgetState kind="unavailable" message={refused} />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="unavailable" message="This time is outside the recording." />
       : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
         : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
