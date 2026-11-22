@@ -477,6 +477,99 @@ fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read()
     assert_eq!(trace.count(), 4);
 }
 #[test]
+fn governance_batch_carried_research_aliased_technologies_do_not_reread_completed_prefix() {
+    let mut world = World::new(1);
+    let country = World::country(1);
+    world.pointer(
+        country + SLOT + 0x80 + cresearch_slot::TECHNOLOGY,
+        country + TECH + 0x400,
+    );
+    world.put(
+        country + SLOT + 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
+        8_u32.to_le_bytes(),
+    );
+    world.pointer(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY,
+        country + TECH,
+    );
+    world.put(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
+        7_u32.to_le_bytes(),
+    );
+    world.array(
+        country + TECH + 0x400 + ctechnology::APPLIED_BONUS_IDS,
+        country + 0x4104,
+        0,
+    );
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    let tech_a = country + TECH + ctechnology::LIVE_PROGRESS;
+    let tech_b = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
+    world.put(tech_a, 777_001_i64.to_le_bytes());
+    world.put(tech_b, 888_002_i64.to_le_bytes());
+
+    let trace = Trace::fault(&world, "Research alias B one-shot", tech_b, true);
+    let result = research(&store, &trace, 1);
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    assert_eq!(result.inputs[0].progress_raw, 777_001);
+    assert_eq!(result.inputs[1].progress_raw, 888_002);
+    assert_eq!(result.inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        1
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        2
+    );
+
+    let trace = Trace::fault(&world, "Research alias A one-shot", tech_a, true);
+    let result = research(&store, &trace, 1);
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    assert_eq!(result.inputs[0].progress_raw, 777_001);
+    assert_eq!(result.inputs[1].progress_raw, 888_002);
+    assert_eq!(result.inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        2
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        1
+    );
+}
+#[test]
 fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason() {
     let world = World::new(1);
     let country = World::country(1);

@@ -23,6 +23,7 @@ struct Research {
     slots_to_rows: Vec<(usize, usize)>,
     slot_pointers: Vec<usize>,
     assigned_pointers: Vec<usize>,
+    slot_assigned: Vec<Option<usize>>,
     inputs: Vec<research_inputs::Row>,
     bonuses: Vec<research_inputs::BonusRow>,
     modifiers: Vec<research_modifiers::Row>,
@@ -208,12 +209,23 @@ impl Store {
                 .extend(held.slots_to_rows.iter().map(|&(slot, _)| slot));
             held.assigned_pointers.clear();
             engine_allocation::reserve_exact(&mut held.assigned_pointers, len).ok()?;
-            held.assigned_pointers.extend(
-                held.slots_to_rows
-                    .iter()
-                    .map(|&(_, row)| inputs[row].technology_pointer)
-                    .filter(|&pointer| pointer != 0),
-            );
+            held.slot_assigned.clear();
+            engine_allocation::reserve_exact(&mut held.slot_assigned, len).ok()?;
+            for &(_, row) in &held.slots_to_rows {
+                let pointer = inputs[row].technology_pointer;
+                let assigned = if pointer == 0 {
+                    None
+                } else if let Some(existing) =
+                    held.assigned_pointers.iter().position(|&at| at == pointer)
+                {
+                    Some(existing)
+                } else {
+                    let index = held.assigned_pointers.len();
+                    held.assigned_pointers.push(pointer);
+                    Some(index)
+                };
+                held.slot_assigned.push(assigned);
+            }
             held.country = country;
             held.status = status;
             held.slots = slots;
@@ -283,8 +295,7 @@ impl Store {
             );
         }
         let banked = banked.values();
-        let progress = progress.values();
-        let mut assigned = 0;
+        let mut progress = progress.into_values();
         for (index, &(slot, row)) in held.slots_to_rows.iter().enumerate() {
             let banked = if let Some(&value) = banked.get(index) {
                 value
@@ -298,21 +309,29 @@ impl Store {
                 value
             };
             inputs[row].slot.banked_days_raw = banked;
-            let technology = held.inputs[row].technology_pointer;
-            if technology != 0 {
-                let progress = if let Some(&value) = progress.get(assigned) {
+            if let Some(assigned) = held.slot_assigned[index] {
+                let value = if let Some(&value) = progress.get(assigned) {
                     value
                 } else {
+                    let technology = held.inputs[row].technology_pointer;
                     let Some(value) = technology
                         .checked_add(ctechnology::LIVE_PROGRESS)
                         .and_then(|at| read::<i64>(memory, at))
                     else {
                         return Carried::Failed("assigned technology unreadable");
                     };
+                    if progress.len() == assigned
+                        && (progress.len() < progress.capacity()
+                            || engine_allocation::advisory(|| {
+                                engine_allocation::reserve(&mut progress, 1).ok()
+                            })
+                            .is_some())
+                    {
+                        progress.push(value);
+                    }
                     value
                 };
-                assigned += 1;
-                inputs[row].progress_raw = progress;
+                inputs[row].progress_raw = value;
             }
         }
         bonuses[..held.bonuses.len()].clone_from_slice(&held.bonuses);
@@ -359,6 +378,12 @@ impl Drift {
         match self {
             Self::Complete(values) | Self::Partial(values) => values,
             Self::Serial => &[],
+        }
+    }
+    fn into_values(self) -> Vec<i64> {
+        match self {
+            Self::Complete(values) | Self::Partial(values) => values,
+            Self::Serial => Vec::new(),
         }
     }
 }

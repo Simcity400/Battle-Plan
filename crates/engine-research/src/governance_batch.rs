@@ -1,5 +1,6 @@
 use crate::batch_fallback::{self, Batch};
 use crate::memory::{Memory, RecordLayout, RecordSources};
+use std::cell::RefCell;
 
 pub struct Records<'a> {
     layout: &'a RecordLayout<'a>,
@@ -34,6 +35,8 @@ impl<'a> Records<'a> {
             Some(())
         });
         if prepared.is_none() {
+            records.index.clear();
+            records.bytes.clear();
             return records;
         }
         let copied = memory.copy_records(sources, layout, &mut records.bytes);
@@ -70,6 +73,8 @@ impl<'a> Records<'a> {
                     targets.push(target);
                 }
             }
+            targets.sort_unstable();
+            targets.dedup();
             Some(targets)
         })
         .unwrap_or_default()
@@ -139,13 +144,77 @@ impl<'a> Records<'a> {
         View {
             source,
             records: std::slice::from_ref(self),
+            recovered: RefCell::new(Recovered::default()),
         }
+    }
+}
+
+#[derive(Default)]
+struct Recovered {
+    spans: Vec<(usize, usize, usize)>,
+    bytes: Vec<u8>,
+}
+
+impl Recovered {
+    fn copy_prefix(&self, address: usize, destination: &mut [u8]) -> usize {
+        if self.spans.is_empty() {
+            return 0;
+        }
+        let upper = self.spans.partition_point(|&(at, _, _)| at <= address);
+        for &(at, offset, len) in self.spans[..upper].iter().rev() {
+            let delta = address - at;
+            if delta < len {
+                let count = (len - delta).min(destination.len());
+                let start = offset + delta;
+                destination[..count].copy_from_slice(&self.bytes[start..start + count]);
+                return count;
+            }
+        }
+        0
+    }
+
+    fn covers(&self, address: usize) -> bool {
+        if self.spans.is_empty() {
+            return false;
+        }
+        let upper = self.spans.partition_point(|&(at, _, _)| at <= address);
+        self.spans[..upper]
+            .iter()
+            .rev()
+            .any(|&(at, _, len)| address - at < len)
+    }
+
+    fn next_cached(&self, address: usize, limit: usize) -> Option<usize> {
+        if self.spans.is_empty() || limit == 0 {
+            return None;
+        }
+        let next = self.spans.partition_point(|&(at, _, _)| at <= address);
+        self.spans.get(next).and_then(|&(at, _, _)| {
+            let distance = at - address;
+            (distance < limit).then_some(distance)
+        })
+    }
+
+    fn record(&mut self, address: usize, data: &[u8]) {
+        if data.is_empty() || self.covers(address) {
+            return;
+        }
+        crate::allocation::advisory(|| {
+            crate::allocation::reserve(&mut self.bytes, data.len()).ok()?;
+            crate::allocation::reserve(&mut self.spans, 1).ok()?;
+            let offset = self.bytes.len();
+            self.bytes.extend_from_slice(data);
+            let position = self.spans.partition_point(|&(at, _, _)| at < address);
+            self.spans.insert(position, (address, offset, data.len()));
+            Some(())
+        });
     }
 }
 
 pub struct View<'b, 'a, M> {
     source: &'b M,
     records: &'b [Records<'a>],
+    recovered: RefCell<Recovered>,
 }
 
 impl<M> View<'_, '_, M> {
@@ -153,15 +222,37 @@ impl<M> View<'_, '_, M> {
         self.records.iter().find_map(|records| records.span(address))
     }
 
+    fn copy_cached_prefix(&self, address: usize, destination: &mut [u8]) -> usize {
+        if let Some(bytes) = self.span(address) {
+            let count = bytes.len().min(destination.len());
+            destination[..count].copy_from_slice(&bytes[..count]);
+            return count;
+        }
+        self.recovered.borrow().copy_prefix(address, destination)
+    }
+
     fn next_cached(&self, address: usize, limit: usize) -> Option<usize> {
-        self.records
+        let from_records = self
+            .records
             .iter()
             .filter_map(|records| records.next_cached(address, limit))
-            .min()
+            .min();
+        let from_recovered = self.recovered.borrow().next_cached(address, limit);
+        match (from_records, from_recovered) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn intersects_cache(&self, address: usize, len: usize) -> bool {
-        len != 0 && (self.span(address).is_some() || self.next_cached(address, len).is_some())
+        len != 0
+            && (self.span(address).is_some()
+                || self.recovered.borrow().covers(address)
+                || self.next_cached(address, len).is_some())
+    }
+
+    fn record_recovered(&self, address: usize, data: &[u8]) {
+        self.recovered.borrow_mut().record(address, data);
     }
 }
 
@@ -175,19 +266,17 @@ impl<M: Memory> Memory for View<'_, '_, M> {
             let Some(at) = address.checked_add(copied) else {
                 return false;
             };
-            if let Some(bytes) = self.span(at) {
-                let count = bytes.len().min(destination.len() - copied);
-                destination[copied..copied + count].copy_from_slice(&bytes[..count]);
-                copied += count;
+            let hit = self.copy_cached_prefix(at, &mut destination[copied..]);
+            if hit != 0 {
+                copied += hit;
             } else {
                 let remaining = destination.len() - copied;
                 let count = self.next_cached(at, remaining).unwrap_or(remaining);
-                if !self
-                    .source
-                    .copy(at, &mut destination[copied..copied + count])
-                {
+                let out = &mut destination[copied..copied + count];
+                if !self.source.copy(at, out) {
                     return false;
                 }
+                self.record_recovered(at, out);
                 copied += count;
             }
         }
@@ -208,7 +297,13 @@ impl<M: Memory> Memory for View<'_, '_, M> {
             .zip(destinations.iter())
             .any(|(&at, out)| self.intersects_cache(at, out.len()))
         {
-            return self.source.copy_scattered(addresses, destinations);
+            let completed = self.source.copy_scattered(addresses, destinations);
+            for (&at, out) in addresses.iter().zip(destinations.iter()).take(completed) {
+                if !out.is_empty() {
+                    self.record_recovered(at, out);
+                }
+            }
+            return completed;
         }
         for (completed, (address, destination)) in addresses
             .into_iter()
@@ -252,7 +347,27 @@ impl<M: Memory> Memory for View<'_, '_, M> {
             })
         });
         if !cached {
-            return self.source.copy_records(sources, layout, destination);
+            let completed = self.source.copy_records(sources, layout, destination);
+            let fields = layout.fields();
+            let mut recorded = 0;
+            'rows: for row in 0..sources.len() {
+                let Some(pointer) = sources.pointer(row) else {
+                    break;
+                };
+                for field in fields {
+                    if recorded == completed {
+                        break 'rows;
+                    }
+                    recorded += 1;
+                    if field.len != 0
+                        && let Some(at) = pointer.checked_add(field.source_offset)
+                    {
+                        let start = row * layout.stride() + field.destination_offset;
+                        self.record_recovered(at, &destination[start..start + field.len]);
+                    }
+                }
+            }
+            return completed;
         }
         let mut completed = 0;
         for row in 0..sources.len() {
@@ -361,6 +476,7 @@ impl Assignments {
         View {
             source,
             records: &self.0,
+            recovered: RefCell::new(Recovered::default()),
         }
     }
 }
@@ -533,5 +649,19 @@ mod tests {
             assert_eq!(memory.reads_at(0x1200), 1);
             assert_eq!(memory.reads_at(0x1220), 1);
         }
+
+        let memory = CountedFault::new(&bytes, None, false);
+        let overflow = Records::gather(
+            &memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Strided {
+                base: usize::MAX - 8,
+                stride: 8,
+                count: 3,
+            },
+            &POINTER_LAYOUT,
+        );
+        assert!(overflow.index.is_empty());
+        assert!(overflow.bytes.is_empty());
     }
 }
