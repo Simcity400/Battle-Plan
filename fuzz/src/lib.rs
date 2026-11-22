@@ -1,76 +1,146 @@
+use std::{
+    io::{self, Cursor},
+    sync::OnceLock,
+};
+
+use replay::campaign::{Replay, SeekResult};
+use replay_columnar::{
+    container::{ContainerWriter, SectionKey, Tags},
+    envelope::Kind,
+    pages::Block,
+    unit::{FrameEntry, restore},
+};
+use replay_data::rows::{TableId, tables::Countries};
+
 #[path = "../fixtures.rs"]
 pub mod fixtures;
 
-pub fn raw_recording(raw: &[u8]) -> std::io::Result<replay::container::Replay> {
-    use replay::container::Replay;
-    use std::sync::OnceLock;
+const LEVEL: i32 = 3;
 
-    static BASE: OnceLock<Replay> = OnceLock::new();
-    let base = BASE.get_or_init(|| fixtures::recording(false).expect("synthetic recording"));
-    let block = &base.index[0];
-    let compressed = zstd::encode_all(raw, 3)?;
-    let start = block.offset as usize;
-    let trailer_start = (block.offset + block.length) as usize;
-    let mut bytes = base.bytes()[..start].to_vec();
-    bytes.extend_from_slice(&compressed);
-    let new_trailer_start = bytes.len();
-    bytes.extend_from_slice(&base.bytes()[trailer_start..]);
-    let footer = bytes.len() - 24;
-    bytes[footer - 16..footer - 8].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
-    bytes[footer - 8..footer].copy_from_slice(&(raw.len() as u64).to_le_bytes());
-    bytes[footer + 4..footer + 12].copy_from_slice(&(new_trailer_start as u64).to_le_bytes());
-    let mut input = replay_data::codec::Decoder::new(raw);
-    if let Ok(count) = input.count(4) {
-        let mut first = None;
-        let mut last = None;
-        for _ in 0..count {
-            let decoded = (|| {
-                let length = input.u32()? as usize;
-                let mut payload = replay_data::codec::Decoder::new(input.take(length)?);
-                let frame = replay_frame::frame::Frame::decode(&mut payload)?;
-                payload.finish()?;
-                Ok::<_, std::io::Error>(frame)
-            })();
-            let Ok(frame) = decoded else {
-                break;
-            };
-            first.get_or_insert(frame.hour);
-            last = Some(frame.hour);
-        }
-        if let (Some(first), Some(last)) = (first, last) {
-            bytes[footer - 32..footer - 28].copy_from_slice(&first.to_le_bytes());
-            bytes[footer - 28..footer - 24].copy_from_slice(&last.to_le_bytes());
-        }
+fn base(sequence: bool) -> &'static Replay {
+    static SINGLE: OnceLock<Replay> = OnceLock::new();
+    static SEQUENCE: OnceLock<Replay> = OnceLock::new();
+    let cell = if sequence { &SEQUENCE } else { &SINGLE };
+    cell.get_or_init(|| fixtures::recording_sequence(false, sequence).expect("synthetic recording"))
+}
+
+fn country_frame(block: &mut Block) -> &mut FrameEntry {
+    let table = &mut block.tables[TableId::Countries.index()].unit;
+    if let Some(frame) = table
+        .parts
+        .first_mut()
+        .and_then(|part| part.frames.first_mut())
+    {
+        return frame;
     }
-    let checksum = crc32fast::hash(&bytes[new_trailer_start..footer]);
-    bytes[footer + 20..].copy_from_slice(&checksum.to_le_bytes());
-    Replay::open(bytes)
+    &mut table
+        .first
+        .as_mut()
+        .and_then(|first| {
+            first
+                .streams
+                .iter_mut()
+                .find(|(stream, _)| *stream == restore::ROWS)
+        })
+        .and_then(|(_, chunks)| chunks.first_mut())
+        .expect("the initial synthetic country snapshot has a rows stream")
+        .frame
+}
+
+pub fn raw_seed(sequence: bool) -> io::Result<Vec<u8>> {
+    let recording = base(sequence).recording();
+    let mut block = recording.block(0, 0)?;
+    let mut seed = vec![u8::from(sequence)];
+    seed.extend(recording.frame(country_frame(&mut block))?);
+    let hour = i32::from(sequence);
+    let SeekResult::Frame(frame) =
+        raw_recording(&seed)?.seek_selected(1, hour, Some(&[TableId::Countries]))?
+    else {
+        return Err(io::Error::other(
+            "the raw seed does not reach its last hour",
+        ));
+    };
+    if frame
+        .complete::<Countries>()?
+        .first()
+        .map(|row| row.command_power_raw)
+        != Some(i64::from(hour))
+    {
+        return Err(io::Error::other(
+            "the raw seed does not preserve the synthetic country",
+        ));
+    }
+    Ok(seed)
+}
+
+pub fn raw_recording(data: &[u8]) -> io::Result<Replay> {
+    let (&shape, raw) = data.split_first().unwrap_or((&0, &[]));
+    let base = base(shape & 1 != 0);
+    let recording = base.recording();
+    let mut block = recording.block(0, 0)?;
+    let mut directory = recording.run(0)?.directory().clone();
+    let mut writer = ContainerWriter::resume(
+        Cursor::new(base.bytes().to_vec()),
+        recording.root().clone(),
+        recording.revision(),
+        LEVEL,
+        None,
+    )?;
+    let extent = writer.put_zstd(Kind::Block, Tags::default(), raw, LEVEL)?;
+    let frame = country_frame(&mut block);
+    frame.offset = extent.offset;
+    frame.stored = u32::try_from(extent.stored).map_err(io::Error::other)?;
+    frame.raw = u32::try_from(extent.raw).map_err(io::Error::other)?;
+    frame.digest = extent.digest;
+
+    block.head.chain = Block::chain_after(&[0; 32], &block.body()?);
+    directory.chain = block.head.chain;
+    let tags = Tags {
+        hours: u32::from(block.head.hours),
+        ..Tags::default()
+    };
+    directory.open[0] = writer.put_zstd(Kind::BlockPage, tags, &block.write()?, LEVEL)?;
+    let run = writer.put_zstd(
+        Kind::RunDirectory,
+        Tags::default(),
+        &directory.write(0)?,
+        LEVEL,
+    )?;
+    writer.set_open(SectionKey::WORLD_LOG, &[run])?;
+    let (bytes, _, _) = writer.finish(&[], true, |_| Ok(()))?;
+    Replay::open(bytes.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
+    use replay::campaign::SeekResult;
+    use replay_data::rows::tables::Countries;
+
     #[test]
     fn raw_wrapper_reaches_matching_multiframe_snapshot_delta_baselines() {
-        let source = super::fixtures::recording_sequence(false, true).unwrap();
-        let index = &source.index[0];
-        let raw = zstd::decode_all(
-            &source.bytes()[index.offset as usize..(index.offset + index.length) as usize],
-        )
-        .unwrap();
-        let recording = super::raw_recording(&raw).unwrap();
-        assert_eq!(
-            (recording.index[0].first_hour, recording.index[0].last_hour),
-            (0, 1)
-        );
-        let replay::container::SeekResult::Frame(frame) = recording.seek(1, 1).unwrap() else {
-            panic!("delta is unreachable");
-        };
-        assert_eq!(
-            frame
-                .complete::<replay_data::rows::tables::Countries>()
-                .unwrap()[0]
-                .command_power_raw,
-            1
-        );
+        for sequence in [false, true] {
+            let seed = super::raw_seed(sequence).unwrap();
+            let recording = super::raw_recording(&seed).unwrap();
+            let last = i32::from(sequence);
+            assert_eq!(
+                (recording.index[0].first_hour, recording.index[0].last_hour),
+                (0, last)
+            );
+            for hour in 0..=last {
+                let SeekResult::Frame(frame) = recording.seek(1, hour).unwrap() else {
+                    panic!("synthetic hour is unreachable");
+                };
+                assert_eq!(
+                    frame.complete::<Countries>().unwrap()[0].command_power_raw,
+                    i64::from(hour)
+                );
+            }
+
+            let damaged = super::raw_recording(&seed[..1]).unwrap();
+            let SeekResult::Frame(frame) = damaged.seek(1, last).unwrap() else {
+                panic!("damaged frame lost its outer recording");
+            };
+            assert!(frame.complete::<Countries>().is_err());
+        }
     }
 }

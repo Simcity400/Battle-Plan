@@ -5,9 +5,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use dashboard::{Source, SourceKey};
+use dashboard_base::{Source, SourceKey};
 use libfuzzer_sys::fuzz_target;
-use replay::container::Replay;
+use replay::campaign::Replay;
 
 fn read(replay: Replay) {
     let source = Source::from_replay(
