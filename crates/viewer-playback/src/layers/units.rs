@@ -616,7 +616,8 @@ impl Units {
             }
             self.deferred = deferred;
         }
-        let held: Vec<u32> = self.by_key.values().copied().collect();
+        let mut held: Vec<u32> = self.by_key.values().copied().collect();
+        held.sort_unstable();
         for stack in held {
             let admitted = self.admits(self.stacks[stack as usize].key.0);
             let at = stack as usize;
@@ -820,7 +821,8 @@ impl Units {
         }
         let old = std::mem::replace(&mut self.combat, combat);
         let divisions = mirrors.get(TableId::Divisions);
-        let changed: Vec<u64> = old.iter().filter(|(id, side)| self.combat.get(id) != Some(side)).map(|(&id, _)| id).chain(self.combat.keys().filter(|id| !old.contains_key(id)).copied()).collect();
+        let mut changed: Vec<u64> = old.iter().filter(|(id, side)| self.combat.get(id) != Some(side)).map(|(&id, _)| id).chain(self.combat.keys().filter(|id| !old.contains_key(id)).copied()).collect();
+        changed.sort_unstable();
         for id in changed {
             if let Some(slot) = divisions.and_then(|divisions| divisions.slot(u128::from(id))) {
                 self.mark_stack_of(slot);

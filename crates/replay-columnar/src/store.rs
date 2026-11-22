@@ -1090,26 +1090,34 @@ impl StoreBytes {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 struct KeyIndex {
     buckets: Vec<u32>,
     held: usize,
     lookups: u64,
+    hasher: foldhash::fast::RandomState,
 }
 
-#[inline]
-fn bucket_of(key: u128, mask: usize) -> usize {
-    let mixed = (key as u64 ^ (key >> 64) as u64 ^ (key >> 64) as u64 >> 29).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (mixed >> 32) as usize & mask
+impl PartialEq for KeyIndex {
+    fn eq(&self, other: &Self) -> bool {
+        self.held == other.held && self.lookups == other.lookups
+    }
 }
+
+impl Eq for KeyIndex {}
 
 impl KeyIndex {
+    #[inline]
+    fn bucket(&self, key: u128, mask: usize) -> usize {
+        std::hash::BuildHasher::hash_one(&self.hasher, key) as usize & mask
+    }
+
     fn find(&self, key: u128, keys: &Keys) -> Option<u32> {
         if self.buckets.is_empty() {
             return None;
         }
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         loop {
             match self.buckets[at] {
                 0 => return None,
@@ -1134,7 +1142,7 @@ impl KeyIndex {
 
     fn place(&mut self, key: u128, held: u32) {
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         while self.buckets[at] != 0 {
             at = (at + 1) & mask;
         }
@@ -1147,7 +1155,7 @@ impl KeyIndex {
             return;
         }
         let mask = self.buckets.len() - 1;
-        let mut at = bucket_of(key, mask);
+        let mut at = self.bucket(key, mask);
         loop {
             match self.buckets[at] {
                 0 => return,
@@ -1160,7 +1168,7 @@ impl KeyIndex {
         let mut next = (at + 1) & mask;
         while self.buckets[next] != 0 {
             let held = self.buckets[next];
-            let home = bucket_of(keys.get(held - 1), mask);
+            let home = self.bucket(keys.get(held - 1), mask);
             let between = if at <= next { home <= at || home > next } else { home <= at && home > next };
             if between {
                 self.buckets[at] = held;
@@ -1743,8 +1751,8 @@ pub trait StringSource {
 
 #[derive(Default)]
 pub struct Strings {
-    held: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
-    pinned: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
+    held: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
+    pinned: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
     next: u32,
     pinned_from: Option<u32>,
     bytes: usize,
@@ -1753,13 +1761,22 @@ pub struct Strings {
 
 #[derive(Default)]
 struct TextIndex {
-    first: HashMap<u64, u32, foldhash::fast::FixedState>,
-    more: HashMap<u64, Vec<u32>, foldhash::fast::FixedState>,
+    hasher: foldhash::fast::RandomState,
+    first: HashMap<u64, u32, foldhash::fast::RandomState>,
+    more: HashMap<u64, Vec<u32>, foldhash::fast::RandomState>,
 }
 
 impl TextIndex {
+    fn digest(&self, text: &[u8]) -> u64 {
+        #[cfg(test)]
+        if COLLIDING.get() {
+            return 0;
+        }
+        std::hash::BuildHasher::hash_one(&self.hasher, text)
+    }
+
     fn add(&mut self, text: &[u8], id: u32) {
-        let digest = text_digest(text);
+        let digest = self.digest(text);
         match self.first.entry(digest) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(id);
@@ -1768,8 +1785,8 @@ impl TextIndex {
         }
     }
 
-    fn find(&self, text: &[u8], held: &HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>) -> Option<u32> {
-        let digest = text_digest(text);
+    fn find(&self, text: &[u8], held: &HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>) -> Option<u32> {
+        let digest = self.digest(text);
         let first = *self.first.get(&digest)?;
         std::iter::once(first)
             .chain(self.more.get(&digest).into_iter().flatten().copied())
@@ -1787,14 +1804,6 @@ impl TextIndex {
 #[cfg(test)]
 thread_local! {
     static COLLIDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn text_digest(text: &[u8]) -> u64 {
-    #[cfg(test)]
-    if COLLIDING.get() {
-        return 0;
-    }
-    std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text)
 }
 
 impl Strings {

@@ -361,3 +361,10 @@ fn a_reserved_event_code_is_refused_by_the_event_walk_as_by_the_reader() {
     let damaged = advanced(&bytes, &entry).unwrap_err();
     assert!(damaged.to_string().contains("damaged"), "{damaged}");
 }
+
+#[test]
+fn cursor_lifetime_maps_use_keyed_hashing() {
+    let cursor = Cursor::new(&[Kind::U32], &[0], 0);
+    let _: &foldhash::fast::RandomState = cursor.open.hasher();
+    let _: &foldhash::fast::RandomState = cursor.skipped.hasher();
+}

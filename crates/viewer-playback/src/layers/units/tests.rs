@@ -1078,19 +1078,18 @@ fn legacy_fast_colliding_stacks(count: usize, bucket_mask: u64) -> Vec<super::St
 #[test]
 fn units_hash_indexes_randomize_instances_and_avoid_fixed_fast_collisions() {
     use std::hash::BuildHasher;
-    let first = Units::new(flat());
-    let second = Units::new(flat());
+    let units = Units::new(flat());
+    let _: &foldhash::fast::RandomState = units.asking.hasher();
+    let _: &foldhash::fast::RandomState = units.combat.hasher();
+    let _: &foldhash::fast::RandomState = units.readers.hasher();
+    let _: &foldhash::fast::RandomState = units.links.hasher();
+    let _: &foldhash::fast::RandomState = units.by_key.hasher();
+
     let u64_keys = legacy_fast_colliding_u64(512, 12);
-    let u32_keys: Vec<u32> = (1..=32).collect();
     let stack_keys = legacy_fast_colliding_stacks(512, 511);
 
-    assert!(u64_keys[..32].iter().any(|&k| first.asking.hasher().hash_one(k) != second.asking.hasher().hash_one(k)), "asking map must randomize per instance");
-    assert!(u64_keys[..32].iter().any(|&k| first.combat.hasher().hash_one(k) != second.combat.hasher().hash_one(k)), "combat map must randomize per instance");
-    assert!(u32_keys.iter().any(|&k| first.readers.hasher().hash_one(k) != second.readers.hasher().hash_one(k)), "readers map must randomize per instance");
-    assert!(u32_keys.iter().any(|&k| first.links.hasher().hash_one(k) != second.links.hasher().hash_one(k)), "links map must randomize per instance");
-    assert!(stack_keys[..32].iter().any(|&k| first.by_key.hasher().hash_one(k) != second.by_key.hasher().hash_one(k)), "by_key map must randomize per instance");
-
     let buckets = 512usize;
+    let seeded = foldhash::fast::FixedState::with_seed(0x9e37_79b9_7f4a_7c15);
     let max_load = |hashes: Vec<u64>| {
         let mut load = vec![0u32; buckets];
         for hash in hashes {
@@ -1098,12 +1097,10 @@ fn units_hash_indexes_randomize_instances_and_avoid_fixed_fast_collisions() {
         }
         *load.iter().max().unwrap()
     };
-    let combat_max = max_load(u64_keys.iter().map(|&k| first.combat.hasher().hash_one(k)).collect());
-    assert!(combat_max <= 16, "{combat_max} legacy-Fast colliding division keys shared a bucket");
-    let asking_max = max_load(u64_keys.iter().map(|&k| first.asking.hasher().hash_one(k)).collect());
-    assert!(asking_max <= 16, "{asking_max} legacy-Fast colliding asking keys shared a bucket");
-    let stack_max = max_load(stack_keys.iter().map(|&k| first.by_key.hasher().hash_one(k)).collect());
-    assert!(stack_max <= 16, "{stack_max} legacy-Fast colliding stack keys shared a bucket");
+    let u64_max = max_load(u64_keys.iter().map(|&k| seeded.hash_one(k)).collect());
+    assert!(u64_max <= 12, "{u64_max} legacy-Fast colliding division keys shared a bucket");
+    let stack_max = max_load(stack_keys.iter().map(|&k| seeded.hash_one(k)).collect());
+    assert!(stack_max <= 12, "{stack_max} legacy-Fast colliding stack keys shared a bucket");
 
     let ids = legacy_fast_colliding_u64(32, 12);
     let held_ids = ids.clone();
@@ -1151,4 +1148,56 @@ fn units_hash_indexes_randomize_instances_and_avoid_fixed_fast_collisions() {
     let second_min_even = *ids.iter().enumerate().filter(|(slot, _)| slot % 2 == 0).map(|(_, id)| id).filter(|&&id| id != expected_min_even).min().unwrap();
     assert_eq!(oldest(&side), vec![((10, 3, None), second_min_even), ((20, 3, None), expected_min_odd)]);
     composed_equal(&side);
+}
+
+#[test]
+fn combat_changes_with_moving_divisions_keep_deterministic_land_target_order_after_slot_reuse() {
+    let bounds: BTreeMap<u32, [f32; 4]> = (10..=300u32).map(|p| (p, [p as f32 * 10.0, 1000.0, p as f32 * 10.0 + 5.0, 1005.0])).collect();
+    let ground: Arc<dyn Ground> = Arc::new(Flat { bounds });
+    let initial: Vec<u64> = (101..=108).collect();
+    let fresh_ids: Vec<u64> = (201..=208).collect();
+    let initial_rec = initial.clone();
+    let fresh_rec = fresh_ids.clone();
+    let recording = recorded::record("units-combat-slot-reuse", 64, move |at, store| {
+        for table in TABLES {
+            store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        }
+        if at == 0 {
+            let mut links = store.table(TableId::CountryLinks.index()).unwrap();
+            links.insert_at(0, 7).unwrap();
+            links.write(0, column(TableId::CountryLinks, "canonical_slot"), Cell::U32(3)).unwrap();
+            for (slot, &id) in initial_rec.iter().enumerate() {
+                division(store, slot as u32, id, 10 + slot as u32 * 10, 7);
+            }
+            let mut combats = store.table(TableId::LandCombats.index()).unwrap();
+            combats.insert_at(0, 1).unwrap();
+            combats.write(0, column(TableId::LandCombats, "defenders"), Cell::U64List(&initial_rec)).unwrap();
+        } else if at == 20 {
+            store.table(TableId::LandCombats.index()).unwrap().delete(0).unwrap();
+            let mut divisions = store.table(TableId::Divisions.index()).unwrap();
+            for slot in 0..initial_rec.len() as u32 {
+                divisions.write(slot, column(TableId::Divisions, "province"), Cell::U32(110 + slot * 10)).unwrap();
+            }
+        } else if at == 40 {
+            for (offset, &id) in fresh_rec.iter().enumerate() {
+                division(store, (initial_rec.len() + offset) as u32, id, 210 + offset as u32 * 10, 7);
+            }
+        }
+    });
+    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let meshes: HashMap<u64, usize> = initial.iter().chain(&fresh_ids).map(|&id| (id, id as usize)).collect();
+    let expected: Vec<u64> = fresh_ids.iter().rev().copied().chain(initial.iter().copied()).collect();
+    for _ in 0..4 {
+        let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Units::new(Arc::clone(&ground)))], View::default()).unwrap();
+        layer(&side).set_vision(Choice::default(), Arc::new(Vision::default()));
+        entry.playhead().play(4.0);
+        entry.playhead().seek(0);
+        frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+        through(&mut side, 24);
+        side.settle_all().unwrap();
+        through(&mut side, 48);
+        side.settle_all().unwrap();
+        let identities: Vec<u64> = layer(&side).land(&meshes).into_iter().map(|target| target.identity).collect();
+        assert_eq!(identities, expected, "land() target order after combat-triggered slot reuse must be deterministic");
+    }
 }

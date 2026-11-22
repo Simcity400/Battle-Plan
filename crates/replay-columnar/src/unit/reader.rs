@@ -633,8 +633,8 @@ pub struct Cursor {
     timed: bool,
     lap: Option<std::time::Instant>,
     passing: Vec<bool>,
-    open: HashMap<u32, usize, foldhash::fast::FixedState>,
-    skipped: HashMap<u32, u128, foldhash::fast::FixedState>,
+    open: HashMap<u32, usize, foldhash::fast::RandomState>,
+    skipped: HashMap<u32, u128, foldhash::fast::RandomState>,
     targets: Vec<u32>,
 }
 
@@ -974,7 +974,7 @@ fn lap(last: &mut Option<std::time::Instant>) -> std::time::Duration {
     now - held
 }
 
-fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut HashMap<u32, usize, foldhash::fast::FixedState>, slots: &mut Vec<u32>) -> io::Result<()> {
+fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut HashMap<u32, usize, foldhash::fast::RandomState>, slots: &mut Vec<u32>) -> io::Result<()> {
     passing.clear();
     open.clear();
     let (mut at, mut hour) = (life.at, u32::from(life.hour));
