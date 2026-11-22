@@ -28,14 +28,14 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const offscreen = canvas.transferControlToOffscreen(), id = surfaceId(), clock = props.clock;
     const stopClock = drawClock(clock);
     let point: { x: number; y: number } | undefined;
-    let version = 0, ready = false, first = true, selected = -1, ticket = 0;
+    let version = 0, ready = false, first = true, selected = -1, ticket = 0, holds = -Infinity;
     let resolve: ((p?: RaceInspection) => void) | undefined;
     const visible = (show: boolean) => {
       canvas.style.visibility = show ? '' : 'hidden';
       if (ready !== show) perfLog?.ink(id, show);
       ready = show;
     };
-    const clear = () => { visible(false); point = undefined; selected = -1; resolve?.(); resolve = undefined; hideTooltip(owner);
+    const clear = () => { holds = -Infinity; visible(false); point = undefined; selected = -1; resolve?.(); resolve = undefined; hideTooltip(owner);
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
@@ -78,7 +78,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const clockHour = clock.positionAt(shownTime(m.shown));
       if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour)) ||
         m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
-      else visible(true);
+      else { holds = m.holdsThrough ?? -Infinity; visible(true); }
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
       resolve?.(); if (!ready) { done(undefined); return; }
@@ -121,7 +121,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     };
     const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
     const stopClockAnchor = clock.onAnchor((previous, next) => {
-      if (latest.current.model.fixed === undefined && motionOf(previous) !== motionOf(next)) clear();
+      if (latest.current.model.fixed === undefined && (motionOf(previous) !== motionOf(next) || !next.playing && next.hour > holds)) clear();
     });
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);

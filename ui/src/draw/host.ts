@@ -18,13 +18,13 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   content.append(canvas);
   const offscreen = canvas.transferControlToOffscreen();
   const stopClock = drawClock(clock);
-  let owner = 0, fixed: number | undefined, closed = false, first = true;
+  let owner = 0, fixed: number | undefined, closed = false, first = true, holds = -Infinity;
   let origin = { x: 0, y: 0 };
   const visible = (show: boolean) => {
     if (canvas.hidden === !show) return;
     canvas.hidden = !show; perfLog?.ink(id, show);
   };
-  const release = () => { visible(false); own(false, true); hit(null); };
+  const release = () => { holds = -Infinity; visible(false); own(false, true); hit(null); };
   const measure = () => {
     const reading = model(id, owner);
     if (!reading?.cells.length) return release;
@@ -54,6 +54,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
       const clockHour = clock.positionAt(shownTime(p.shown));
       if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); continue; }
       const hour = pictureHour(p.date, clockHour, fixed);
+      holds = hour === null ? -Infinity : p.holdsThrough ?? -Infinity;
       visible(hour !== null);
       own(hour !== null, hour === null);
       if (hour === null) hit(null);
@@ -73,7 +74,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (fixed === undefined) { release(); refresh(); }
   });
   const stopClockAnchor = clock.onAnchor((previous, next) => {
-    if (fixed === undefined && motionOf(previous) !== motionOf(next)) release();
+    if (fixed === undefined && (motionOf(previous) !== motionOf(next) || !next.playing && next.hour > holds)) release();
   });
   refresh();
   return { refresh, close() {

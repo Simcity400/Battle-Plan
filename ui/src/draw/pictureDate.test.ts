@@ -141,4 +141,27 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   now += 17; frame();
   assert.ok(sent.some(m => m.type === 'present' && m.surfaces.some(s => s.id === 4 && s.date?.through === 99 && s.seek === 12)),
     'a retained picture is reported under the new seek');
+
+  const dayClears: number[][] = [], days: string[] = [];
+  const day = { getContext: () => ({ fillText: (value: string) => days.push(value), clearRect: (...args: number[]) => dayClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
+  const pause = (position: number, seek: number, speed: number, generation: number, forwardSeek = false) => post({ type: 'clock',
+    anchor: { at: performance.timeOrigin + now, position, seek, lastHour: 100, playing: false, speed, generation, forwardSeek } });
+  const presented = (generation: number) => sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 5 && s.generation === generation).at(-1);
+  pause(23, 13, 1, 5);
+  post({ type: 'surface', id: 5, owner: 1, canvas: day, width: 100, height: 20, dpr: 1,
+    model: { view: 'nuclear-arsenal', offset: 0, date: { since: 0, through: 99 },
+      reply: { types: [], countries: [], missing: null, warnings: [] }, structure: 'empty', cells: [{ ...cell, key: 'empty' }] } });
+  now += 17; frame();
+  assert.deepEqual([presented(5)?.readHour, presented(5)?.holdsThrough], [23, 23], 'a paused notice is read at its hour and holds until midnight');
+  const lastHourOfDay = days.at(-1);
+  dayClears.length = 0;
+  pause(23, 13, 168, 6);
+  assert.equal(dayClears.length, 0, 'a paused speed change erases nothing before the next frame');
+  now += 17; frame();
+  assert.equal(dayClears.length, 0, 'a paused speed change erases nothing in the next frame');
+  assert.deepEqual([presented(6)?.readHour, presented(6)?.holdsThrough], [23, 23], 'the kept picture is presented under the new anchor at its hour');
+  pause(24, 14, 168, 7, true);
+  now += 17; frame();
+  assert.deepEqual([presented(7)?.readHour, presented(7)?.holdsThrough], [24, 47], 'a paused step past midnight presents the next day');
+  assert.notEqual(days.at(-1), lastHourOfDay, 'the notice is repainted with the next day');
 });

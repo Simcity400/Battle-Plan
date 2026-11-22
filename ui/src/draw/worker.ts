@@ -243,10 +243,8 @@ function paint(s: Surface, head: number) {
     s.reply = raw;
   }
   s.date.paint(); s.through = through;
-  if (view?.nextChange) {
-    s.nextText = view.nextChange(raw, through + m.offset) - m.offset;
-    scheduleChange(s, s.nextText);
-  }
+  s.nextText = view?.nextChange ? view.nextChange(raw, through + m.offset) - m.offset : undefined;
+  if (s.nextText !== undefined) scheduleChange(s, s.nextText);
   if (changed) s.pointer.present((x, y) => s.program.hit(x, y));
   return changed;
 }
@@ -368,15 +366,22 @@ function advanceTable(table: Table, head: number) {
   drawTable(table.ctx, state, now, table.scrollLeft, table.icons, table.picture, table.dpr);
   table.markEnds = markEnd(state, now); table.painted = true;
 }
+function holdsThrough(s: Panel | Race) {
+  if (s.through === undefined) return undefined;
+  const next = (s.nextText ?? Infinity) - 1;
+  if (s.kind === 'race') return Math.min(s.confirmed ?? s.through, next);
+  const entry = s.model.follow === undefined ? undefined : followed.read(s.model.follow);
+  return entry?.hasFollowedCells || !s.date.drawn ? s.through : Math.min(s.date.drawn.through, next);
+}
 function report(s: Surface, head: number, notices: Present[]) {
   const shown = s.through !== undefined;
   if (s.shown === shown) return;
   s.shown = shown;
   if (s.kind === 'race') {
     post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-      head: s.model.fixed ?? head, hour: s.through ?? null, at: wall(), shown: shownWall });
+      head: s.model.fixed ?? head, hour: s.through ?? null, holdsThrough: holdsThrough(s) ?? null, at: wall(), shown: shownWall });
   } else if (s.kind === 'panel') notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-    head: s.model.fixed ?? head, date: s.date.drawn, shown: shownWall });
+    head: s.model.fixed ?? head, date: s.date.drawn, readHour: s.through, holdsThrough: holdsThrough(s), shown: shownWall });
   else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
     head: s.model.fixed ?? head, readHour: s.through, at: wall(), shown: shownWall });
 }
