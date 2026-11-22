@@ -47,6 +47,8 @@ UNCHANGED = "no input changed since the base"
 BUILT_FROM = "ci-built-from"
 SETTLED = 946684800
 TEST_COST = 4
+UNIFIED = "cfg(all())"
+UNIFY = "test-unify"
 
 
 @dataclass(frozen=True)
@@ -150,7 +152,10 @@ class Crate:
 def crates_from_manifests(root):
     """Each workspace member's folder, relative to `root`, and the members it depends on through a
     path dependency of any kind or target, read from the manifests themselves so that planning
-    needs no Rust toolchain; None when the root manifest cannot be read."""
+    needs no Rust toolchain; None when the root manifest cannot be read. The dev-dependencies that
+    `tools/check-feature-unification.py` generates under `cfg(all())` are not edges, bar `test-unify`
+    which they alone reach: the rest only set features on crates the member's tests already build
+    through its own dependencies."""
     root = Path(root)
     key = lambda path: os.path.normcase(os.path.normpath(str(path)))
     try:
@@ -175,8 +180,11 @@ def crates_from_manifests(root):
     crates = {}
     for folder, (path, data) in members.items():
         sections = [data.get(kind, {}) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
-        for target in data.get("target", {}).values():
-            sections += [target.get(kind, {}) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
+        for platform, target in data.get("target", {}).items():
+            for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+                table = target.get(kind, {})
+                pinned = (platform, kind) == (UNIFIED, "dev-dependencies")
+                sections.append({name: spec for name, spec in table.items() if name == UNIFY} if pinned else table)
         deps = set()
         for section in sections:
             for name, spec in section.items():

@@ -1,8 +1,8 @@
 use crate::map::terrain_shader::{SIDE, Stand};
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use std::{future::Future, io};
-use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets};
+use std::io;
+use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, scoped};
 use viewer_foundation::map::province_map::{HEIGHT_SCALE, WATER_HEIGHT};
 
 pub(crate) const SHADER: &str = include_str!("unknown_hatch.wgsl");
@@ -130,27 +130,6 @@ impl HatchParams {
     }
 }
 
-fn ready<T>(future: impl Future<Output = T>) -> T {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::yield_now();
-    }
-}
-
-fn scoped<T>(device: &wgpu::Device, what: &str, create: impl FnOnce() -> T) -> Result<T, String> {
-    let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let value = create();
-    match ready(validation.pop()).or(ready(memory.pop())) {
-        Some(error) => Err(format!("{what}: {error}")),
-        None => Ok(value),
-    }
-}
-
 pub struct UnknownHatch {
     pipeline: wgpu::RenderPipeline,
     indices: wgpu::Buffer,
@@ -175,62 +154,67 @@ struct Ring {
 impl UnknownHatch {
     pub fn new(device: &wgpu::Device, samples: u32) -> Result<Self, String> {
         let triangles = crate::map::terrain_shader::indices([SIDE, SIDE]);
-        let (pipeline, indices) = scoped(device, "unknown snow and mud hatch pipeline", || {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("unknown snow/mud hatch"),
-                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-            });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("unknown snow/mud hatch"),
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("hatch_vertex"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: size_of::<Instance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Uint32x4, 1 => Uint32],
-                    })],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("hatch_pixel"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: SCENE_FORMAT,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::COLOR,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
-                multiview_mask: None,
-                cache: None,
-            });
-            let indices = shader_pipeline::gpu::stats::create_buffer_init(
-                device,
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("unknown snow/mud hatch triangles"),
-                    contents: bytemuck::cast_slice(&triangles),
-                    usage: wgpu::BufferUsages::INDEX,
-                },
-            );
-            (pipeline, indices)
-        })?;
+        let (pipeline, indices) = scoped(
+            device,
+            || "unknown snow and mud hatch pipeline".to_owned(),
+            || {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("unknown snow/mud hatch"),
+                    source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+                });
+                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("unknown snow/mud hatch"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("hatch_vertex"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<Instance>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![0 => Uint32x4, 1 => Uint32],
+                        })],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("hatch_pixel"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: SCENE_FORMAT,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::COLOR,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: wgpu::MultisampleState {
+                        count: samples,
+                        ..Default::default()
+                    },
+                    multiview_mask: None,
+                    cache: None,
+                });
+                let indices = shader_pipeline::gpu::stats::create_buffer_init(
+                    device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("unknown snow/mud hatch triangles"),
+                        contents: bytemuck::cast_slice(&triangles),
+                        usage: wgpu::BufferUsages::INDEX,
+                    },
+                );
+                Ok((pipeline, indices))
+            },
+        )
+        .map_err(|error| error.to_string())?;
         Ok(Self {
             pipeline,
             indices,
@@ -278,101 +262,107 @@ impl UnknownHatch {
             .copied()
             .collect();
         let length = bytes.len() as u64;
-        scoped(device, "unknown snow and mud hatch bindings", || {
-            if ring.params.as_ref().is_none_or(|(_, slots)| *slots <= slot) {
-                let slots = (slot + 1).next_power_of_two().max(4);
-                ring.params = Some((
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("unknown snow/mud hatch parameters"),
-                        size: slots as u64 * PARAMS_STRIDE,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    }),
-                    slots,
-                ));
-                ring.groups.clear();
-            }
-            if ring
-                .blocks
-                .as_ref()
-                .is_none_or(|(_, size)| ring.used + length > *size)
-            {
-                let size = (ring.used + length).next_power_of_two().max(1 << 16);
-                ring.blocks = Some((
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("unknown snow/mud hatch blocks"),
-                        size,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    }),
-                    size,
-                ));
-                ring.used = 0;
-            }
-            if ring
-                .views
-                .as_ref()
-                .is_none_or(|(had_heights, had_unknown)| {
-                    had_heights != heights || had_unknown != unknown
-                })
-            {
-                ring.views = Some((heights.clone(), unknown.clone()));
-                ring.groups.clear();
-            }
-            let (params_buffer, _) = ring.params.as_ref().expect("made above");
-            while ring.groups.len() <= slot {
-                let at = ring.groups.len() as u64 * PARAMS_STRIDE;
-                ring.groups
-                    .push(shader_pipeline::gpu::stats::create_bind_group(
-                        device,
-                        &wgpu::BindGroupDescriptor {
-                            label: Some("unknown snow/mud hatch"),
-                            layout: &self.pipeline.get_bind_group_layout(0),
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                        buffer: params_buffer,
-                                        offset: at,
-                                        size: std::num::NonZeroU64::new(
-                                            size_of::<HatchParams>() as u64
-                                        ),
-                                    }),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::TextureView(heights),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 2,
-                                    resource: wgpu::BindingResource::TextureView(unknown),
-                                },
-                            ],
-                        },
+        scoped(
+            device,
+            || "unknown snow and mud hatch bindings".to_owned(),
+            || {
+                if ring.params.as_ref().is_none_or(|(_, slots)| *slots <= slot) {
+                    let slots = (slot + 1).next_power_of_two().max(4);
+                    ring.params = Some((
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("unknown snow/mud hatch parameters"),
+                            size: slots as u64 * PARAMS_STRIDE,
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }),
+                        slots,
                     ));
-            }
-            for (buffer, _) in streams {
-                match ring.streams.iter_mut().find(|(held, ..)| held == buffer) {
-                    Some((.., drawn)) => *drawn = true,
-                    None => ring.streams.push((
-                        buffer.clone(),
-                        shader_pipeline::gpu::stats::create_bind_group(
+                    ring.groups.clear();
+                }
+                if ring
+                    .blocks
+                    .as_ref()
+                    .is_none_or(|(_, size)| ring.used + length > *size)
+                {
+                    let size = (ring.used + length).next_power_of_two().max(1 << 16);
+                    ring.blocks = Some((
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("unknown snow/mud hatch blocks"),
+                            size,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }),
+                        size,
+                    ));
+                    ring.used = 0;
+                }
+                if ring
+                    .views
+                    .as_ref()
+                    .is_none_or(|(had_heights, had_unknown)| {
+                        had_heights != heights || had_unknown != unknown
+                    })
+                {
+                    ring.views = Some((heights.clone(), unknown.clone()));
+                    ring.groups.clear();
+                }
+                let (params_buffer, _) = ring.params.as_ref().expect("made above");
+                while ring.groups.len() <= slot {
+                    let at = ring.groups.len() as u64 * PARAMS_STRIDE;
+                    ring.groups
+                        .push(shader_pipeline::gpu::stats::create_bind_group(
                             device,
                             &wgpu::BindGroupDescriptor {
-                                label: Some("unknown snow/mud hatch terrain heights"),
-                                layout: &self.pipeline.get_bind_group_layout(1),
-                                entries: &[wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: buffer.as_entire_binding(),
-                                }],
+                                label: Some("unknown snow/mud hatch"),
+                                layout: &self.pipeline.get_bind_group_layout(0),
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: params_buffer,
+                                                offset: at,
+                                                size: std::num::NonZeroU64::new(
+                                                    size_of::<HatchParams>() as u64,
+                                                ),
+                                            },
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(heights),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: wgpu::BindingResource::TextureView(unknown),
+                                    },
+                                ],
                             },
-                        ),
-                        true,
-                    )),
+                        ));
                 }
-            }
-        })
-        .map_err(io::Error::other)?;
+                for (buffer, _) in streams {
+                    match ring.streams.iter_mut().find(|(held, ..)| held == buffer) {
+                        Some((.., drawn)) => *drawn = true,
+                        None => ring.streams.push((
+                            buffer.clone(),
+                            shader_pipeline::gpu::stats::create_bind_group(
+                                device,
+                                &wgpu::BindGroupDescriptor {
+                                    label: Some("unknown snow/mud hatch terrain heights"),
+                                    layout: &self.pipeline.get_bind_group_layout(1),
+                                    entries: &[wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: buffer.as_entire_binding(),
+                                    }],
+                                },
+                            ),
+                            true,
+                        )),
+                    }
+                }
+                Ok(())
+            },
+        )?;
         let (params_buffer, _) = ring.params.as_ref().expect("made above");
         let (blocks_buffer, _) = ring.blocks.as_ref().expect("made above");
         let first = ring.used;
@@ -753,7 +743,14 @@ mod tests {
     }
 
     #[test]
-    fn an_immediately_ready_scope_resolves_without_a_runtime() {
-        assert_eq!(ready(std::future::ready(7)), 7);
+    fn invalid_pipeline_samples_fail_with_named_validation_error() {
+        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
+        let error = UnknownHatch::new(&device, 3)
+            .err()
+            .expect("unsupported MSAA sample count must fail validation");
+        assert!(
+            error.contains("unknown snow and mud hatch pipeline"),
+            "{error}"
+        );
     }
 }
