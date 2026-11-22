@@ -1764,3 +1764,88 @@ fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
         run,
     );
 }
+
+#[test]
+fn keep_drawn_preserves_motion_continuity_when_land_appears_below_cutoff() {
+    content_reader_core::test_game::enter();
+    let guis = layout_gui(br#"guiTypes={
+        containerWindowType={name=unit_mapicon size={width=81 height=29}
+            gridBoxType={name=units_box size={width=81 height=290}
+                slotsize={width=81 height=1} max_slots_horizontal=1 format=UPPER_LEFT}
+        }
+        positionType={name=unit_counter_zoomed_in_offset position={x=0 y=0}}
+        containerWindowType={name=unit_counter_navy size={width=20 height=10}}
+        containerWindowType={name=naval_headquarter_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn spriteType=GFX_synthetic_plate}}
+        containerWindowType={name=naval_combat_mapicon size={width=20 height=10}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions position={x=57 y=9} frame=12}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay position={x=3 y=4}}
+        }
+    }"#);
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+        },
+        |content| {
+            let points = [(1, [2., 9.5, 2.])];
+            content.default_anchors = Arc::new(points.into());
+            content.bounds = Arc::new([(1, [1., 1., 3., 3.])].into());
+            content.region_of = Arc::new([(1, 1)].into());
+        },
+        |inputs| {
+            use replay_data::rows::{TableId, TableRows};
+            use replay_frame::frame::TableView;
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 11,
+                metrics: Default::default(),
+                tables: TableId::ALL
+                    .map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let mut tables = synthetic_hour(&inputs, &frame);
+            tables.divisions = [((1, STANDSTILL), vec![land_unit(10, 1, 10, 10, true)])].into();
+            tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
+            let empty = BTreeSet::new();
+            let schedule = Shared::default();
+            let mut inputs = CounterInputs {
+                selected: &empty,
+                schedule: &schedule,
+                ..inputs
+            };
+            inputs.camera.center = [2., 2.];
+            inputs.camera.height = inputs.content.defines.icons_cutoff + 10.0;
+            let mut above = prepare_cached(&inputs, &tables).unwrap();
+            assert!(above.motion_layout().is_none(), "above the cutoff no land layout is built");
+            above.set_motion_continuity(2);
+            assert_eq!(above.motion_continuity(), 2);
+
+            inputs.camera.height = 80.;
+            let mut below = prepare_cached(&inputs, &tables).unwrap();
+            assert_eq!(below.motion_layout().expect("land layout below cutoff").continuity(), 0);
+            below.keep_drawn(&mut above);
+            assert_eq!(below.motion_continuity(), 2);
+            assert_eq!(
+                below.motion_layout().expect("land layout below cutoff").continuity(),
+                2,
+                "zooming below the cutoff keeps the publication's continuity epoch"
+            );
+
+            inputs.camera.height = inputs.content.defines.icons_cutoff + 10.0;
+            let mut above_again = prepare_cached(&inputs, &tables).unwrap();
+            above_again.keep_drawn(&mut below);
+            assert!(above_again.motion_layout().is_none());
+            assert_eq!(above_again.motion_continuity(), 2);
+
+            inputs.camera.height = 80.;
+            let mut below_again = prepare_cached(&inputs, &tables).unwrap();
+            below_again.keep_drawn(&mut above_again);
+            assert_eq!(
+                below_again.motion_layout().expect("land layout below cutoff").continuity(),
+                2
+            );
+        },
+    );
+}

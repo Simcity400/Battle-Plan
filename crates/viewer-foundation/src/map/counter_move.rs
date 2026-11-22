@@ -1378,6 +1378,7 @@ struct HandedLayout {
 struct HandedUnit {
     outcome: Result<crate::map::free_icons::Track, TrackRefusal>,
     reference: Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
+    saved_before_clock_loss: Option<Result<crate::map::free_icons::Track, TrackRefusal>>,
 }
 
 #[derive(Debug, Default)]
@@ -1605,12 +1606,11 @@ impl MovementHistory {
         self.largest_glide = 0.0;
         let frame_time = previous_time.map_or(0.0, |previous| (frame_time_now - previous).max(0.0));
         self.delta = self.render.step(frame_time);
-        if steady
-            || clock_missing
-            || previous_time.is_some_and(|previous| frame_time_now < previous)
-        {
+        if steady || previous_time.is_some_and(|previous| frame_time_now < previous) {
             self.units.clear();
             self.placed.clear();
+        } else if clock_missing {
+            self.units.clear();
         } else if let Some(previous) = previous_hour.filter(|&previous| previous != frame_hour) {
             self.units.retain(|_, state| state.hour == previous);
             self.placed
@@ -1695,17 +1695,21 @@ impl MovementHistory {
             return refused(TrackRefusal::SteadyOrNoFrame);
         };
         if clock_speed.is_none() {
-            self.record_layout_track(layout, unit, Err(TrackRefusal::ClockSpeedUnavailable), None);
+            self.record_clock_unavailable(layout, unit);
             return refused(TrackRefusal::ClockSpeedUnavailable);
         }
         if layout.continuity() != self.continuity {
-            if let Some(outcome) = self
+            if let Some(handed) = self
                 .layouts
-                .get(&layout.id())
-                .and_then(|held| held.tracks.get(&unit))
-                .map(|handed| handed.outcome.clone())
+                .get_mut(&layout.id())
+                .and_then(|held| held.tracks.get_mut(&unit))
             {
-                return match outcome {
+                if let Some(saved) = handed.saved_before_clock_loss.take() {
+                    handed.outcome = saved;
+                } else if handed.outcome == Err(TrackRefusal::ClockSpeedUnavailable) {
+                    handed.outcome = Err(TrackRefusal::ContinuityReset);
+                }
+                return match handed.outcome.clone() {
                     Ok(track) => Ok(track),
                     Err(why) => refused(why),
                 };
@@ -1785,6 +1789,45 @@ impl MovementHistory {
         }
     }
 
+    fn record_clock_unavailable(&mut self, layout: &DrawnLayout, unit: Unit) {
+        let id = layout.id();
+        if let Some(held) = self.layouts.get_mut(&id) {
+            if let Some(existing) = held.tracks.get_mut(&unit) {
+                if existing.outcome != Err(TrackRefusal::ClockSpeedUnavailable) {
+                    existing.saved_before_clock_loss = Some(existing.outcome.clone());
+                    existing.outcome = Err(TrackRefusal::ClockSpeedUnavailable);
+                }
+                return;
+            }
+            held.tracks.insert(
+                unit,
+                HandedUnit {
+                    outcome: Err(TrackRefusal::ClockSpeedUnavailable),
+                    reference: None,
+                    saved_before_clock_loss: None,
+                },
+            );
+            return;
+        }
+        self.prune_layouts();
+        let mut tracks = std::collections::HashMap::new();
+        tracks.insert(
+            unit,
+            HandedUnit {
+                outcome: Err(TrackRefusal::ClockSpeedUnavailable),
+                reference: None,
+                saved_before_clock_loss: None,
+            },
+        );
+        self.layouts.insert(
+            id,
+            HandedLayout {
+                live: layout.downgrade(),
+                tracks,
+            },
+        );
+    }
+
     fn record_layout_track(
         &mut self,
         layout: &DrawnLayout,
@@ -1793,7 +1836,11 @@ impl MovementHistory {
         reference: Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
     ) {
         let id = layout.id();
-        let entry = HandedUnit { outcome, reference };
+        let entry = HandedUnit {
+            outcome,
+            reference,
+            saved_before_clock_loss: None,
+        };
         if let Some(held) = self.layouts.get_mut(&id) {
             held.tracks.insert(unit, entry);
             return;

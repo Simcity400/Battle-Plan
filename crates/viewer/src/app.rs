@@ -371,6 +371,25 @@ struct MapPresented {
     reopened: bool,
 }
 
+fn overlay_matches_continuity(
+    overlay: (u64, replay_data::BranchId, i32, u32),
+    presented: (replay_data::BranchId, i32, Option<&str>),
+    current_generation: Option<u64>,
+    gaps: &[replay_frame::branches::Gap],
+) -> bool {
+    let (ov_gen, ov_branch, ov_hour, ov_ours) = overlay;
+    let (branch, hour, viewing) = presented;
+    current_generation.is_none_or(|generation| ov_gen == generation)
+        && ov_branch == branch
+        && viewing.is_none_or(|viewing| viewing == ov_ours.to_string())
+        && !viewer_foundation::map::presentation::crosses_gap(
+            gaps,
+            branch,
+            ov_hour.min(hour),
+            ov_hour.max(hour),
+        )
+}
+
 fn overlay_rect(clip: egui::Rect, points: f32) -> egui::Rect {
     let inset = 8.0 * points;
     egui::Rect::from_min_size(
@@ -788,6 +807,7 @@ pub struct Viewer {
     overlay_head_before: Option<viewer_foundation::map::anchored::Head>,
     overlay_counted: viewer_foundation::map::overlay_count::Watch,
     overlay_unpainted: bool,
+    overlay_generation: Option<u64>,
     overlay_clock_unavailable: bool,
     overlay_drawn_fraction: Option<f32>,
     overlay_lookups: Option<(usize, u64, u64)>,
@@ -1325,6 +1345,7 @@ impl Viewer {
             overlay_head_before: None,
             overlay_counted: Default::default(),
             overlay_unpainted: false,
+            overlay_generation: None,
             overlay_clock_unavailable: false,
             overlay_shifts: Default::default(),
             overlay_camera_before: None,
@@ -1938,7 +1959,7 @@ impl Viewer {
     }
 
     fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
-        let crate::playhead_host::overlay::Made { hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
+        let crate::playhead_host::overlay::Made { generation, hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
         let current_epoch = self
             .counter_view
             .presentation
@@ -1946,23 +1967,23 @@ impl Viewer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .continuity();
-        let stale_before_reset = self.presented.last.as_ref().is_some_and(|(shown_branch, shown_hour, shown_viewing)| {
-            rows.branch != *shown_branch
-                || shown_viewing.as_deref().is_some_and(|viewing| viewing != tables.ours().to_string())
-                || viewer_foundation::map::presentation::crosses_gap(
+        let current_generation = live_of(&self.playhead_map)
+            .and_then(|side| side.products().overlay_generation);
+        let matches_continuity = self.presented.seek.is_none()
+            && self.presented.last.as_ref().is_none_or(|(shown_branch, shown_hour, shown_viewing)| {
+                overlay_matches_continuity(
+                    (generation, rows.branch, rows.hour, tables.ours()),
+                    (*shown_branch, *shown_hour, shown_viewing.as_deref()),
+                    current_generation,
                     gaps,
-                    *shown_branch,
-                    rows.hour.min(*shown_hour),
-                    rows.hour.max(*shown_hour),
                 )
-        });
-        if let Some(layout) = prepared.motion_layout() {
-            layout.set_continuity(if stale_before_reset {
-                current_epoch.saturating_sub(1)
-            } else {
-                current_epoch
             });
-        }
+        prepared.set_motion_continuity(if matches_continuity {
+            current_epoch
+        } else {
+            current_epoch.saturating_sub(1)
+        });
+        self.overlay_generation = Some(generation);
         self.overlay_moved = moved;
         if let Some(old) = self.prepared_overlay.as_mut()
             && self.overlay_view.as_ref() == Some(&view)
@@ -2155,6 +2176,7 @@ impl Viewer {
         self.overlay_shifts.clear();
         self.overlay_placed_view = None;
         (self.overlay_shown, self.overlay_view, self.overlay_hour, self.overlay_drawn_fraction, self.overlay_lookups) = (None, None, None, None, None);
+        self.overlay_generation = None;
         self.overlay_clock_unavailable = false;
         self.overlay_layered = None;
         self.overlay_loading.clear();
@@ -2305,23 +2327,24 @@ impl Viewer {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
-            if self.overlay_unpainted
-                && let (Some(prepared), Some(rows), Some(tables)) = (
-                    self.prepared_overlay.as_ref(),
-                    self.overlay_frame.as_ref(),
-                    self.overlay_tables.as_ref(),
-                )
-                && rows.branch == next.0
-                && next.2.as_deref().is_none_or(|viewing| viewing == tables.ours().to_string())
-                && !viewer_foundation::map::presentation::crosses_gap(
-                    gaps,
-                    next.0,
-                    rows.hour.min(next.1),
-                    rows.hour.max(next.1),
-                )
-                && let Some(layout) = prepared.motion_layout()
-            {
-                layout.set_continuity(epoch);
+            let current_generation = live_of(&self.playhead_map)
+                .and_then(|side| side.products().overlay_generation);
+            if let (Some(generation), Some(prepared), Some(rows), Some(tables)) = (
+                self.overlay_generation,
+                self.prepared_overlay.as_mut(),
+                self.overlay_frame.as_ref(),
+                self.overlay_tables.as_ref(),
+            ) && overlay_matches_continuity(
+                (generation, rows.branch, rows.hour, tables.ours()),
+                (next.0, next.1, next.2.as_deref()),
+                current_generation,
+                gaps,
+            ) {
+                prepared.set_motion_continuity(epoch);
+                if !self.overlay_unpainted {
+                    self.overlay_unpainted = true;
+                    self.overlay_fraction = None;
+                }
             }
         }
         if continuity == Continuity::Reset || restart != UnitRestart::Keep {
@@ -4966,7 +4989,7 @@ impl Viewer {
             if clock_lost || clock_recovered {
                 self.overlay_fraction = None;
             }
-            let moved_now = !clock_lost
+            let moved_now = !(clock_lost || clock_recovered)
                 && self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
             let placed_now = !moved_now
                 && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);

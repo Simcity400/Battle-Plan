@@ -331,3 +331,36 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));
     assert_eq!(*viewer.shown_mode(), diplomacy);
 }
+
+#[test]
+fn overlay_continuity_matches_destination_across_lagging_layers_and_rejects_stale_overlays() {
+    let gaps = [Gap { branch: BRANCH, first_hour: 5, last_hour: 6, reason: "recorder paused".into() }];
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 4, Some("7")), Some(0), &gaps),
+        "destination overlay arriving while layers lag before the gap stays stale on Frame 1"
+    );
+    assert!(
+        super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(0), &gaps),
+        "destination overlay matches once layers catch up across the gap on Frame 2"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 4, 7), (BRANCH, 8, Some("7")), Some(0), &gaps),
+        "retained pre-gap overlay is not promoted across the gap"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(1), &gaps),
+        "retained pre-seek overlay is rejected once overlay generation advances"
+    );
+    assert!(
+        super::overlay_matches_continuity((1, BRANCH, 8, 7), (BRANCH, 8, Some("7")), Some(1), &gaps),
+        "destination overlay from the current generation matches after seek"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH, 8, Some("9")), Some(1), &gaps),
+        "retained overlay from another viewing country is rejected"
+    );
+    assert!(
+        !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH + 1, 8, Some("7")), Some(0), &gaps),
+        "retained overlay from another branch is rejected"
+    );
+}

@@ -1914,13 +1914,65 @@ fn clock_recovery_does_not_diverge_from_clockless_painted_layout() {
         None,
         "reused clockless painted layout must keep figure settled until repainted"
     );
+    let recovered_track = history
+        .track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores the moving track instead of downgrading to NoPriorPlacement");
+    let reused_head = Head { hour: 140, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: reused_head,
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.5, 148, 2.0)
+        },
+        SEEN,
+    );
+    let reused_figure = history
+        .at_head(unit, &moving)
+        .expect("reused recovered layout keeps figure on counter track");
+    assert_eq!(reused_figure.at, recovered_track.at(reused_head));
+    assert_eq!(reused_figure.heading, None);
+
+    let post_reset_epoch = history.clear();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: None,
+            ..movement_frame(0.6, 148, 2.0)
+        },
+        SEEN,
+    );
     assert_eq!(
         history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
-        Err(TrackRefusal::NoPriorPlacement)
+        Err(TrackRefusal::ClockSpeedUnavailable)
     );
-    assert!(
-        history.at_head(unit, &moving).is_some(),
-        "once repainted with clock speed available, figure and counter resume moving together"
+    assert_eq!(history.at_head(unit, &moving), None);
+    let recovered_pre_reset_head = Head { hour: 142, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: recovered_pre_reset_head,
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.7, 148, 2.0)
+        },
+        SEEN,
+    );
+    let restored_pre_reset = history
+        .track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores a retained pre-reset layout's saved track");
+    assert_eq!(restored_pre_reset, recovered_track);
+    let figure_after_pre_reset_recovery = history
+        .at_head(unit, &moving)
+        .expect("figure moves with restored pre-reset track");
+    assert_eq!(
+        figure_after_pre_reset_recovery.at,
+        restored_pre_reset.at(recovered_pre_reset_head)
+    );
+    let post_gap = DrawnLayout::at_continuity(196, post_reset_epoch);
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
     );
 }
 
