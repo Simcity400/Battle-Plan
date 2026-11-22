@@ -84,6 +84,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
       if (!head) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if ('reason' in head) return <WidgetState kind="unavailable" message={head.reason} />;
     } else {
+      if (following && window) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if (!request) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
       if (error) return <WidgetState kind="error" what="campaign clock" failure={error} onRetry={retry} />;
       if (!data) return <WidgetState kind="loading" label="Loading campaign clock…" />;

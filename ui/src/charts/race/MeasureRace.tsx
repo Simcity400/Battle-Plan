@@ -5,6 +5,7 @@ import type { HeadProduct } from '../../dashboard/headProduct';
 import type { NuclearArsenalReply } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FollowEntry } from '../../dashboard/follow/store';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -36,7 +37,7 @@ import { loadProduct, useFollowedProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { followStore } from '../../dashboard/follow/connection.ts';
-import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
+import { CELL, cellNumber, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
@@ -52,7 +53,7 @@ import { SECONDARY_DASH } from '../palette.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import type { SeriesStateReply } from '../../generated/dashboard';
 import { useMeasureSeries } from '../../widgets/country-measure/measureSeries';
-import { followedEntries, followedRowTags, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
+import { RANK_MARGIN, followedRace, followedRowTags, rankRange, rankedTotal, rawNumber, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
 import type { RankedLine, RankedMeasure } from './measureRaceData';
 import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
@@ -184,7 +185,9 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     sticky.current = stickyMembers(sticky.current, followKey, valuedRows(answer), stickyLimit(top!));
     return TOP_ROWS + sticky.current.tags.join(',');
   }, [ranks, followKey, top]);
-  const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape);
+  const [rankEnd, setRankEnd] = useState(RANK_MARGIN * 3);
+  const rankWindow = ranks ? { from: 0, count: Math.min(top!, rankEnd), countries: [] } : undefined;
+  const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape, undefined, rankWindow);
   const followedHead = followsHead(followed) && followed.entry !== null;
   const refused = followRefusal(followed);
   const playbackHour = usePlaybackHour(runtime.clock, false);
@@ -197,7 +200,9 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     [following, runtime.clock, axisOffset]);
   const membership = lineMix ? mixing?.spans ?? null : resolved.membership;
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
-  useShownEachFrame(runtime.clock, widget.kind === 'nuclear-arsenal' && raceView === 'race' ? null : () => track ? following ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : moment : null);
+  const shownEntry = useRef<FollowEntry | null>(null);
+  useShownEachFrame(runtime.clock, widget.kind === 'nuclear-arsenal' && raceView === 'race' ? null : () => track ? following
+    ? shownEntry.current ? shownEntry.current.through : trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : moment : null);
 
   const partsKey = parts ? JSON.stringify(parts.kind === 'keyed' ? [parts.family, parts.partBits] : parts.items.map(item => [item.id, item.measure])) : '';
   const raceHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
@@ -206,6 +211,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
   const hatching = hatches.size > 0 && raceView === 'race';
   const partsRead = splitting || hatching;
   const entry = racing && followedHead ? followed.entry : null;
+  shownEntry.current = entry;
   const followedTags = useMemo(() => !entry ? [] : followed.structure.startsWith(TOP_ROWS)
     ? followed.structure.slice(TOP_ROWS.length).split(',').filter(Boolean) : followedRowTags(entry.answer, top == null ? tags : null),
   [entry, followed.structure, top, tags]);
@@ -221,7 +227,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
   }, [partsRead, splitting, hatches, partIds, proportional, positiveOnly, top]);
   const liveRanked = useMemo(() => {
     if (!entry || !track) return null;
-    return live.current = liveRace(runtime.clock, axisOffset, hour => decorate(followedEntries(entry.answer, top != null ? null : tags, member, hour, slots, decimals, format),
+    return live.current = liveRace(runtime.clock, axisOffset, hour => decorate(followedRace(entry, top != null ? null : tags, member, hour, slots, decimals, format).entries,
       partsRead && raceHead ? raceHead.values(followedTags) : undefined),
     () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null);
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
@@ -336,6 +342,7 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;
     if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+    if (entry?.answer?.kind === 'notRecorded') return <WidgetState kind="unavailable" message={entry.answer.reason} />;
     if (grouped && !groups.data) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
     if (raceView === 'race' && !entry && !ranked.data && !arsenal?.data) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
     return undefined;
@@ -387,10 +394,16 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
     const head = following ? runtime.clock.positionAt() : moment - axisOffset;
     perfLog?.present(widget.id, 'nuclear-arsenal', at === null ? null : { since: at - axisOffset, through: at - axisOffset }, head, 'race');
   } : undefined;
+  const remoteRows = useMemo(() => {
+    if (!ranks || !entry || entry.answer?.kind !== 'rows') return undefined;
+    const answer = entry.answer, values = Array.from({ length: answer.rows }, (_, row) => rawNumber(cellNumber(answer, row * answer.columns) ?? cellValue(answer, row * answer.columns), decimals));
+    return { total: rankedTotal(answer.rows, Math.min(top!, rankEnd), top!), offset: 0, min: Math.min(0, ...values), max: Math.max(0, ...values), owner: entry.id,
+      onRange: (first: number, count: number) => setRankEnd(end => { const wanted = rankRange(first, count); return wanted === end ? end : wanted; }) };
+  }, [ranks, entry, entry?.answer, top, rankEnd, decimals]);
   const race = (visible: boolean) => <CountryRaceView arsenal={arsenal && { ...selection, exactRead: arsenal.exactRead, offset: axisOffset, follow: arsenal.workerFollow, reply: arsenal.workerFollow === undefined ? arsenal.data : undefined,
       asked: following && arsenal.workerFollow === undefined, fixed: following ? undefined : moment - axisOffset }} runtime={runtime} track={track} active={active && visible} state={state} present={present} options={options}
     view={lineMix ? 'mix' : raceView ?? 'race'} extent={extent} playhead={playhead}
-    moment={moment} slots={slots} ranked={entries} liveRanked={liveRanked ?? undefined} lines={lines}
+    moment={moment} slots={slots} ranked={entries} liveRanked={liveRanked ?? undefined} lines={lines} remoteRows={remoteRows}
     countryTags={arsenal ? entries.map(row => row.tag) : raceLookTags(raceView === 'race', liveRanked ? followedTags : null, lineTags)}
     mix={mixing ? { tag: mixing.tag, lines } : null} lineTooltip={lineTooltip} beforeChart={beforeChart}
     label={label} empty={`No ${label.toLowerCase()} recorded on ${dayLabel(moment)}.`} formatValue={formatValue}

@@ -31,7 +31,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const drawn = pipeline.held(pipe, 'race', () => {
       const canvas = document.createElement('canvas');
       canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
-      canvas.dataset.surface = 'race';
+      canvas.dataset.surface = 'race'; canvas.dataset.placement = String(pipe);
       return { canvas, surface: bitmapSurface(canvas) };
     })!;
     const { canvas, surface } = drawn;
@@ -77,6 +77,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (event.type === 'contextmenu') event.preventDefault();
       if (event.type !== 'pointermove') action = { kind: event.type === 'click' ? 'pick' : 'menu', x: event.clientX, y: event.clientY };
       pipeline.pointer(pipe, 0, [event.clientX - b.left, event.clientY - b.top]);
+      if (event.type !== 'pointermove' && pipeline.view(pipe)?.tooltip) install();
     };
     const leave = () => { point = undefined; pipeline.pointer(pipe, 0, null); pipeline.inspect(pipe, null); hideTooltip(owner); };
     const choose = (index: number, kind: string) => {
@@ -84,7 +85,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const item = listed[Math.min(listed.length - 1, Math.max(0, index))];
       if (!item) return;
       action = { kind, x: b.right, y: b.top + b.height / 2 };
-      pipeline.inspect(pipe, `race:${item.key}`);
+      if (pipeline.inspecting(pipe) === `race:${item.key}`) install();
+      else pipeline.inspect(pipe, `race:${item.key}`);
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { selected = -1; pipeline.inspect(pipe, null); hideTooltip(owner); return; }
@@ -111,9 +113,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   const auditable = !!props.exactRead;
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    const rowsOf = (items: readonly RaceItem[]) => items.flatMap(item => [{ row: item.key, key: `${item.key}:total`, value: item.label },
-      ...item.segments.filter(part => part.id !== 'total').map(part => ({ row: item.key, key: `${item.key}:${part.id}`, value: String(part.value) }))]);
-    pipeline.audit(pipe, fields => { const items = fields.items as readonly RaceItem[] | undefined; return items && (items.length ? rowsOf(items) : [{ row: 'empty', key: 'empty:notice', value: '' }]); });
+    pipeline.audit(pipe, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
     perfLog.reader(pipe, 0, async hour => {
       const read = latest.current.exactRead, model = latest.current.model;
       if (!read) return null;

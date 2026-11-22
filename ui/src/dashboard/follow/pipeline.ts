@@ -149,6 +149,11 @@ export class Pipeline {
       return;
     }
     if (message.type === 'hit') { this.page.inspect(message.widget, message.key); this.flush(); return; }
+    if (message.type === 'served') {
+      if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, seek: message.seek, head: message.target,
+        playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms });
+      return;
+    }
     if (message.type === 'needs') { for (const need of message.needs) this.needs(message.widget, need.sub, need.countries); this.flush(); return; }
     this.page.offer(message);
     if (!this.page.playing) this.commitSoon();
@@ -157,7 +162,7 @@ export class Pipeline {
   private commitSoon() {
     if (this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; this.page.frame(); this.flush(); });
+    engine.next('commit', () => { this.framing = false; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined) {
@@ -341,6 +346,8 @@ export class Pipeline {
   }
 
   inspect(id: number, key: string | null) { this.page.inspect(id, key); this.flush(); }
+
+  inspecting(id: number) { return this.page.widgets.get(id)?.inspect ?? null; }
 
   pointer(id: number, surface: number, point: [number, number] | null) {
     const widget = this.widgets.get(id);

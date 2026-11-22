@@ -75,6 +75,7 @@ function race(wake: (widget: number) => void): LaneView {
       const items = held.picture.inspect()?.items ?? [], listed = JSON.stringify(items);
       held.items = held.items?.text === listed ? held.items : { text: listed, content: content() };
       fields.items = { value: items, content: `items:${held.items.content}` };
+      fields.audit = { value: held.picture.rows() ?? [], content: `audit:${held.items.content}:${held.content}` };
       const at = held.picture.hitTest();
       return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: false, hit: point => { const item = at({ x: point[0], y: point[1] }); return item ? `race:${item.key}` : null; } };
     },

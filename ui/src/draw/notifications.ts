@@ -6,4 +6,7 @@ export interface PictureSample {
   drawMs: number;
   mode: string; reason?: string; dim: boolean; reset: number; binding: number; inspect: string | null; tooltip: boolean;
 }
-export type DrawSample = PictureSample;
+export interface FrameSample {
+  t: 'workerFrame'; at: number; lane: number; seek: number; head: number; playing: boolean; changed: number; workMs: number;
+}
+export type DrawSample = PictureSample | FrameSample;

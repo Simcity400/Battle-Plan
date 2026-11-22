@@ -83,13 +83,15 @@ function mount(count: number) {
     document.body.append(node);
     const id = pipeline.mount({ offset: 0, pin: null, bounds: [0, HOURS - 1] });
     const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state', params: { branchId: '1', widget: at % 3 } }, 'followed')!;
-    pipeline.onInstall(id, () => {
+    const render = () => {
       const view = pipeline.view(id)!;
       const body = view.mode === 'picture' ? view.fields?.[`answer:${sub}`] as Uint8Array | undefined : undefined;
       const value = body ? new DataView(body.buffer, body.byteOffset).getBigInt64(32, true) : null;
       node.textContent = view.mode === 'picture' ? `${view.id}|${view.h}|${value}` : view.mode;
       node.toggleAttribute('data-dim', view.dim);
-    });
+    };
+    pipeline.onInstall(id, render);
+    pipeline.onDate(id, render);
     widgets.push({ id, sub, node });
   }
 }

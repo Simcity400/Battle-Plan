@@ -1,4 +1,4 @@
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { asFailure } from '../../dashboard/queryError.ts';
@@ -7,6 +7,7 @@ import type { Live, LiveValues } from '../../charts/live';
 import { tableSortOf, tableSortToken } from '../../charts/table/options';
 import FamilyTable, { type FamilyColumn } from '../../draw/tables/FamilyTable.tsx';
 import type { ExactRows } from '../../draw/tables/FamilyTable.tsx';
+import { RANK_MARGIN, rankRange } from '../../charts/race/measureRaceData.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../draw/tables/settings.ts';
 import type { TableSettings } from '../../draw/tables/logic.ts';
@@ -88,7 +89,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && rankFamily
     ? { product: 'series-state', params: { branchId, family: rankFamily, top, least: descending ? undefined : true } } : null,
   [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending]);
-  const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
+  const [rankEnd, setRankEnd] = useState(RANK_MARGIN * 3);
+  const rankWindows = useMemo(() => [top != null ? { from: 0, count: Math.min(top, rankEnd), countries: [] } : null], [top, rankEnd]);
+  const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root, rankWindows);
   const rankEntry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => {
@@ -139,11 +142,14 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, asked.length), [asked]);
   const result = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour', 'tags'], active, validate, track?.source);
   const reply = followedHead ? undefined : result.data;
+  const toTableRows = useRef<(board: readonly BoardRow[]) => TableRowModel[]>(() => []);
   const exactRows: ExactRows | undefined = perfLog && track && registryData && !resolved.reason ? at => {
     const params = scoreboardParams(track.branch.id, at, shown, top == null ? rankedCandidates(resolved, at, resolved.tags) : [], top, rank, descending);
     const request = { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params };
-    return perfLog!.exactOnce(JSON.stringify(request), async () =>
-      validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length).rows.map(row => countryKey(row.country)));
+    return perfLog!.exactOnce(JSON.stringify(request), async () => {
+      const board = replyRows(validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length), asked);
+      return { rows: toTableRows.current(board), values: replyValues(board, shown) };
+    });
   } : undefined;
 
   const identityHour = useIdentityHour(runtime.client, track, followedHead && top != null ? NO_NAMES : named, runtime.clock, false,
@@ -191,12 +197,14 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     ...shown.map((column, index): FamilyColumn => ({ key: column.key, label: column.label, as: 'faint', tone: 'blue', offered: OFFERED.number, priority: index + 1,
       numeric: true, format: { decimals: column.decimals, percent: column.unit === 'percent', zero: column.noneAtZero ? 'None' : undefined }, hideable: shown.length > 1, hint: scoreboardColumnNote(column) })),
   ], [shown, top]);
-  const tableRows = useMemo<TableRowModel[]>(() => rows.map(row => {
+  const tableRowsOf = useCallback((board: readonly BoardRow[]): TableRowModel[] => board.map(row => {
     const runs = looks.get(row.tag), look = runs ? undefined : label(row.tag);
     const named = look && (look.known ? { text: look.name } : { missing: look.name });
     return { key: row.key, cells: { country: runs ? { looks: runs, iconSlot: true, country: row.tag } : { ...named, icon: look!.flag, iconSlot: true, country: row.tag },
       ...Object.fromEntries(shown.map(column => [column.key, measureCell(column, row.tag)])) } };
-  }), [rows, shown, label, looks]);
+  }), [shown, label, looks]);
+  toTableRows.current = tableRowsOf;
+  const tableRows = useMemo<TableRowModel[]>(() => tableRowsOf(rows), [rows, tableRowsOf]);
   const tableLive = useMemo<Live<TableValues>>(() => {
     if (!followedHead) { const values = replyValues(rows, shown); return { read: () => values, subscribe: () => () => {} }; }
     return liveByColumn<bigint>(Object.fromEntries(shown.flatMap(column => {
@@ -303,6 +311,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     settings={tableSettings} onSettings={setOption ? onTableSettings : undefined} live={tableLive} sources={tableSources} shownAt={reply?.hour ?? hour}
     fixed={widget.time.mode === 'follow' || !reply ? undefined : reply.hour - track!.axisOffset}
     rank={ranked} members={tableMembers} headerSlot={headerSlot ?? null} tooltipKeys={tooltipKeys} exactRows={exactRows}
+    onRange={followedHead && top != null ? (first, count) => setRankEnd(rankRange(first, count)) : undefined} total={followedHead && top != null ? top : undefined}
     onHover={(key, at, drawn) => {
       const row = key === null ? undefined : byKey.get(key);
       if (row && at && drawn) showTooltip(tooltipOwner, tooltip(row, drawn), at.x, at.y, row.key); else hideTooltip(tooltipOwner);

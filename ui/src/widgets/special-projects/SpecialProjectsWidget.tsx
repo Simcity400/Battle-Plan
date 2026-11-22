@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
-import type { HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
+import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Segmented } from '../../components/Segmented';
@@ -36,7 +36,7 @@ import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries,
   projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName,
-  validateSpecialProjectsReply } from './specialProjectsData';
+  validateSpecialProjectsReply, progressStyle } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { PlaybackController } from '../../dashboard/playback';
@@ -76,6 +76,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
       .concat([...iterations].map(text => <small key={text}>{text}</small>));
   }, [reply]);
   const exactRead = feed?.exactRead;
+  const painted = !!feed?.pipeline && feed.pipe !== undefined && feed.follow !== undefined;
   useDrawnPanel(list, clock, feed, true);
   const groups = useMemo(() => currentProjects(reply, at), [reply, at]);
   const { running, completed, earlier, cancelled } = groups;
@@ -90,7 +91,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
     {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
       const { run, info } = card;
       return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-        {...item(card)}>
+        style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)}>
         <ProjectTile icon={info.icon} />
         <span className="special-project-now-text"><strong>{info.name}</strong><span>
           {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}

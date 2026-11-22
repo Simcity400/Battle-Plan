@@ -11,8 +11,10 @@ import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { perfLog } from '../../shell/perf.ts';
+import { auditRows } from '../views/table.ts';
+import type { AuditRow } from '../notifications';
 
-export type ExactRows = (hour: number) => Promise<readonly string[] | null>;
+export type ExactRows = (hour: number) => Promise<{ rows: readonly TableRowModel[]; values: TableValues | null; empty?: string } | null>;
 import { carriedValues, type TableReading, type TableRowModel, type TableSurfaceModel, type TableTheme, type TableValues } from './surface.ts';
 import { updateTableSettings, type TableColumnDefaults } from './settings.ts';
 import { layoutTable, ROW_HEIGHT, type TableColumnLayout, type TableFormat, type TableSettings } from './logic.ts';
@@ -52,6 +54,8 @@ export interface FamilyTableProps {
   onHover: (row: string | null, at?: { x: number; y: number }, drawn?: TableReading) => void;
   exactRows?: ExactRows;
   headerSlot: HTMLElement | null;
+  onRange?: (first: number, count: number) => void;
+  total?: number;
 }
 
 const OVERSCAN = 4;
@@ -68,7 +72,7 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
 }
 
 export default function FamilyTable({ label, className, clock, offset, columns: specs, rows, settings, onSettings, live, reply, follow, sources,
-  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot }: FamilyTableProps) {
+  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot, onRange, total }: FamilyTableProps) {
   const body = useRef<HTMLDivElement>(null), widget = measuredWidget() ?? undefined;
   const [width, setWidth] = useState(0), [scrollLeft, setScrollLeft] = useState(0);
   const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
@@ -95,6 +99,8 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     }));
   }, []);
   const rebind = useRef<() => void>(() => {});
+  const ranged = useRef(onRange), totalRows = useRef(total);
+  ranged.current = onRange; totalRows.current = total;
   const readMirror = useCallback(() => { ++mirrorAsked.current; rebind.current(); }, []);
   const rowHeight = ROW_HEIGHT[settings.density];
   useLayoutEffect(() => {
@@ -103,6 +109,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       const first = Math.max(0, Math.floor(node.scrollTop / rowHeight) - OVERSCAN), count = Math.ceil(node.clientHeight / rowHeight) + OVERSCAN * 2;
       if (view.current.first === first && view.current.count === count) return;
       view.current = { first, count };
+      ranged.current?.(first, count);
       readMirror();
     };
     const observer = new ResizeObserver(update);
@@ -177,7 +184,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     const extent = document.createElement('div');
     const drawn = pipeline.held(pipe, 'table', () => {
       const canvas = document.createElement('canvas');
-      canvas.className = 'tf-canvas'; canvas.setAttribute('aria-hidden', 'true'); canvas.dataset.surface = 'table';
+      canvas.className = 'tf-canvas'; canvas.setAttribute('aria-hidden', 'true'); canvas.dataset.surface = 'table'; canvas.dataset.placement = String(pipe);
       return { canvas, surface: bitmapSurface(canvas) };
     })!;
     const canvas = drawn.canvas;
@@ -195,7 +202,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
         drawnCount.current = rows.count;
         accessible.current?.setAttribute('aria-rowcount', String(rows.count + 1));
         if (rows.empty) accessible.current?.setAttribute('aria-description', rows.empty); else accessible.current?.removeAttribute('aria-description');
-        extent.style.height = `${Math.max(node.clientHeight, rowSize() * rows.count)}px`;
+        extent.style.height = `${Math.max(node.clientHeight, rowSize() * Math.max(rows.count, totalRows.current ?? 0))}px`;
       }
       const widths = shown.fields.widths as Record<string, number> | undefined;
       if (widths) {
@@ -234,10 +241,17 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
   }, [pipeline, pipe, bind, paintMirror]);
   useLayoutEffect(() => { rebind.current = bind; bind(); }, [model, bind]);
   const auditable = !!exactRows;
+  const shownColumns = useRef<string[]>([]);
+  shownColumns.current = layout.columns.map(column => column.key);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, fields => (fields.keys as readonly string[] | undefined)?.map(key => ({ row: key, key, value: key })));
-    perfLog.reader(pipe, 0, async hour => { const keys = await latest.current.exactRows?.(hour); return keys ? { values: new Map(keys.map(key => [key, key])) } : null; });
+    pipeline.audit(pipe, fields => fields.audit as readonly AuditRow[] | undefined);
+    perfLog.reader(pipe, 0, async hour => {
+      const exact = await latest.current.exactRows?.(hour);
+      if (!exact) return null;
+      const rows = auditRows(exact.rows, shownColumns.current, exact.values, hour, exact.empty);
+      return { values: new Map(rows.map(row => [row.key, row.value])) };
+    });
     return () => pipeline.audit(pipe, null);
   }, [pipeline, pipe, auditable]);
   useEffect(() => followed ? undefined : live.subscribe(bind), [live, followed, bind]);

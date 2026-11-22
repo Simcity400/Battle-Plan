@@ -1,5 +1,5 @@
 import type { LaneView, Painted, PaintInput, Scene, Value } from '../lane.ts';
-import { advanceTableState, cellIcons, drawTable, fitState, nextChange, rankMarkers, tablePicture, tableReading, tableState,
+import { advanceTableState, cellIcons, cellText, drawTable, fitState, nextChange, rankMarkers, tablePicture, tableReading, tableState,
   type RankMarker, type TablePicture, type TableReading, type TableRowModel, type TableSurfaceModel, type TableSurfaceState, type TableValues } from '../tables/surface.ts';
 import { sourceValues } from '../tables/sources.ts';
 import { hitTable, preserveRevealTimes, ROW_HEIGHT, SORT_GLIDE_MS } from '../tables/logic.ts';
@@ -14,7 +14,7 @@ interface Held {
   canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; picture: TablePicture; state?: TableSurfaceState; content: string;
   icons: Map<string, ImageBitmap | null>; order?: { sort: string; keys: string[] }; markers: Map<string, RankMarker>; floor: Map<string, number>;
   measures: Map<string, number>; fitted?: TableSurfaceModel; mirror?: { text: string; content: string }; tooltip?: { text: string; content: string };
-  keys?: { text: string; content: string };
+  audit?: { text: string; content: string };
   wake?: () => void;
 }
 
@@ -92,6 +92,11 @@ function icon(held: Held, url: string) {
 
 const kept = (held: { text: string; content: string } | undefined, text: string, content: () => string) => held && held.text === text ? held : { text, content: content() };
 
+export function auditRows(rows: readonly TableRowModel[], columns: readonly string[], values: TableValues | null, hour: number, empty: string | undefined) {
+  if (!rows.length) return empty === undefined ? [] : [{ row: 'empty', key: 'empty:notice', value: empty }];
+  return rows.flatMap(row => columns.map(column => ({ row: row.key, key: `${row.key}:${column}`, value: cellText(row.cells[column] ?? { missing: 'Not recorded' }, values, hour) })));
+}
+
 export function tableView(structureOf: (product: string | undefined) => Structure | undefined, wake: (widget: number) => void): LaneView {
   return {
     next(scene, hour) {
@@ -164,9 +169,9 @@ export function tableView(structureOf: (product: string | undefined) => Structur
         fields.mirror = { value: mirror, content: `mirror:${held.mirror.content}` };
       }
       if (bound.audit) {
-        const keys = next.rows.map(row => row.key);
-        held.keys = kept(held.keys, keys.join('\u0000'), content);
-        fields.keys = { value: keys, content: `keys:${held.keys.content}` };
+        const rows = auditRows(next.rows, next.layout.columns.map(column => column.key), next.values, next.hour, next.model.empty);
+        held.audit = kept(held.audit, JSON.stringify(rows), content);
+        fields.audit = { value: rows, content: `audit:${held.audit.content}` };
       }
       if (input.inspect?.startsWith('row:')) {
         const row = input.inspect.split(':')[1]!;

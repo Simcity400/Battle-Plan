@@ -256,3 +256,6 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   if (latest?.cancellation && !run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(latest.cancellation) });
   return { ...tip, rows };
 }
+
+export const progressStyle = (progress: number, painted: boolean): Readonly<Record<string, number>> | undefined =>
+  painted ? undefined : { '--project-progress': Math.max(0, progress) / 100 };

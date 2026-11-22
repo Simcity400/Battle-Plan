@@ -66,6 +66,17 @@ export function followedEntries(answer: FollowedAnswer | undefined, asked: reado
   return rows.slice(0, Math.max(0, slots)).map(({ tag, raw }) => ({ tag, value: rawNumber(raw, decimals), label: format(String(raw), decimals), stretch: null, hour }));
 }
 
+export function followedRace(entry: { answer: FollowedAnswer | undefined; through: number }, asked: readonly string[] | null,
+  member: ((tag: string, hour: number) => boolean) | null, hour: number, slots: number, decimals: number, format: (raw: string, decimals: number) => string) {
+  const shown = Math.min(hour, entry.through);
+  if (entry.answer?.kind === 'notRecorded') return { entries: [] as CountryRaceEntry[], reason: entry.answer.reason, shown };
+  return { entries: followedEntries(entry.answer, asked, member, shown, slots, decimals, format), shown };
+}
+
+export const RANK_MARGIN = 10;
+export const rankRange = (first: number, count: number) => first + count + RANK_MARGIN;
+export const rankedTotal = (rows: number, asked: number, top: number) => rows < asked ? rows : top;
+
 export function followedRowTags(answer: FollowedAnswer | undefined, asked: readonly string[] | null): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];

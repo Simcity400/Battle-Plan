@@ -56,6 +56,7 @@ export interface LaneHost<B extends Bitmap> {
   later(run: () => void): void;
   hit?(widget: number, key: string | null): void;
   needs?(widget: number, needs: readonly { sub: number; countries: readonly string[] }[]): void;
+  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number }): void;
   budget?: number;
   clock?: () => number;
   stretch?: (ms: number) => void;
@@ -619,6 +620,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.freed = 0;
     if (bytes) this.host.release(bytes);
     this.host.stretch?.(this.time() - began);
+    this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: entries.length, ms: this.time() - began });
   }
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0): Entry<B> {

@@ -400,3 +400,9 @@ test('History following the head keeps bars past the shown hour for the chart to
   assert.deepEqual(projectHistory(data, 160, undefined, -Infinity, true).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.lastHour, span.positive, span.endLabel]),
     [[159, true, '✓']]);
 });
+
+test('review 4 finding 12: a pinned or asked card sets its own progress variable; a page-painted one leaves it to the installed texts', async () => {
+  const { progressStyle } = await import('./specialProjectsData.ts');
+  assert.deepEqual(progressStyle(50, false), { '--project-progress': 0.5 });
+  assert.equal(progressStyle(50, true), undefined);
+});

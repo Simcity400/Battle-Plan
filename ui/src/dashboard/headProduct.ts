@@ -12,6 +12,7 @@ import { useWidgetKey } from './follow/useFollow.ts';
 import { installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
 import type { ModelField } from '../draw/views/fields';
 import { perfLog } from '../shell/perf.ts';
+import { exactLive, panelAuditRows, panelTexts } from './follow/panelAudit.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
@@ -193,15 +194,26 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);
   const exactRead = track && params ? (at: number) => runtime.client.product({ sourceId: track.source.id, revision: track.source.revision, product,
     params: { ...params, branchId: track.branch.id, hour: at } }, new AbortController().signal).then(reply => reply.data) : undefined;
-  useSurfaceLabel(node, following);
+  useSurfaceLabel(node, following, pipe);
   const exactNow = useRef(exactRead);
   exactNow.current = exactRead;
   const auditable = !!exactRead;
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
-    const rowsOf = (raw: unknown) => recordedPanelRows(product, raw).map(row => ({ row, key: row, value: row }));
-    pipeline.audit(pipe, fields => { const panel = installedPanel(fields[`model:${sub}`] as ModelField | undefined); return panel?.data === undefined ? undefined : rowsOf(panel.data); });
-    perfLog.reader(pipe, 0, async hour => { const read = exactNow.current; return read ? { values: new Map(rowsOf(await read(hour)).map(row => [row.key, row.value])) } : null; });
+    let texted = false;
+    pipeline.audit(pipe, fields => {
+      const texts = fields[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, panel = installedPanel(fields[`model:${sub}`] as ModelField | undefined);
+      texted = texts !== undefined;
+      if (texts) return [...texts].map(([key, value]) => ({ row: key, key, value }));
+      return panel?.data === undefined ? undefined : panelAuditRows(product, panel.data, fields[`live:${sub}`] as ReadonlyMap<string, unknown> | null | undefined);
+    });
+    perfLog.reader(pipe, 0, async hour => {
+      const read = exactNow.current;
+      if (!read) return null;
+      const raw = await read(hour), live = exactLive(raw);
+      const rows = texted ? [...panelTexts(product, raw, live, hour) ?? []].map(([key, value]) => ({ row: key, key, value })) : panelAuditRows(product, raw, live);
+      return { values: new Map(rows.map(row => [row.key, row.value])) };
+    });
     return () => pipeline.audit(pipe, null);
   }, [pipeline, pipe, sub, product, auditable]);
   useRecordedRows(product, pushed && data !== undefined && at !== null && exactRead ? {

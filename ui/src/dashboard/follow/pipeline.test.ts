@@ -117,3 +117,22 @@ test('review 4 finding 1: a widget whose incoming ranking names a country its co
     assert.deepEqual(pipeline.view(id)?.fields?.names, ['FRA', 'GER']);
   } finally { close(); }
 });
+
+test('review 4 finding 14: under audit each lane records the frames it served, and a paused install is sampled when it commits', async () => {
+  const { capturePictures } = await import('../pulled.ts');
+  const { pipeline, clock, send, source, settle, close } = inProcess();
+  try {
+    await capturePictures(true);
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const records = await capturePictures(false) as { t: string; lane?: number; seek?: number; head?: number; widget?: string; hour?: number | null }[];
+    const frames = records.filter(record => record.t === 'workerFrame');
+    assert.ok(frames.some(frame => frame.lane === 0 && frame.seek === clock.getSnapshot().seekSequence && frame.head === 10), JSON.stringify(frames.slice(-3)));
+    assert.ok(records.some(record => record.t === 'picture' && record.widget === 'widget' && record.hour === 10), 'the picture installed while paused is sampled, under its widget id');
+  } finally { close(); }
+});

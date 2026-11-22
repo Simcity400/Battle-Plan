@@ -1,6 +1,6 @@
 import { APPEARANCE_EVENT } from '../shell/appearance/events.ts';
 import { DisplayRate } from '../draw/frameRate.ts';
-import type { PictureSample } from '../draw/notifications';
+import type { DrawSample } from '../draw/notifications';
 
 let displayRate = 60;
 const display = new DisplayRate();
@@ -19,20 +19,20 @@ export function noteFrame(at: number) {
   window.dispatchEvent(new Event('playback-display-rate'));
 }
 
-let audit: PictureSample[] | null = null;
+let audit: DrawSample[] | null = null;
 let auditOffset = 0;
 
 export const auditing = () => audit !== null;
-export function recordPicture(sample: PictureSample) { audit?.push(sample); }
+export function recordPicture(sample: DrawSample) { audit?.push(sample); }
 
-export function capturePictures(start: boolean): Promise<PictureSample[]> {
+export function capturePictures(start: boolean): Promise<DrawSample[]> {
   if (start) { audit = []; auditOffset = 0; return Promise.resolve([]); }
   const records = audit ?? [];
   audit = null; auditOffset = 0;
   return Promise.resolve(records);
 }
 
-export function capturePicturesBatch(limit: number): Promise<{ records: PictureSample[]; done: boolean }> {
+export function capturePicturesBatch(limit: number): Promise<{ records: DrawSample[]; done: boolean }> {
   const records = audit ?? [], count = Math.max(1, Math.floor(limit));
   const chunk = records.slice(auditOffset, auditOffset + count);
   auditOffset += chunk.length;

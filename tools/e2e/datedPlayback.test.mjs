@@ -268,6 +268,9 @@ test('Research requires five visible dated widgets, a full playing window and sa
   assert.equal(verdict(records.map(r => ({ ...r, renderer: 'dom' }))), false);
   assert.equal(verdict(records.map(r => r.t === 'picture' ? { ...r, renderer: 'page' } : r)), true, 'astra 15: a picture the page installed is measured, not discarded');
   assert.equal(verdict(records.filter(r => r.t !== 'workerFrame')), false);
+  const one = records.find(r => r.t === 'picture' && r.at > 300);
+  assert.equal(verdict([...records, { ...one, at: one.at + 10, hour: null }]), false,
+    'review 4 finding 15: one blank frame in a hundred fails');
 });
 
 test('placement visibility keeps a hidden surface out of the held-frame gate until it is shown', () => {

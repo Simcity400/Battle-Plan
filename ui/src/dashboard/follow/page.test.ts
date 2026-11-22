@@ -424,3 +424,4 @@ test('should-fix: an entry that only moves the confirmation dates the widget wit
   p.offer({ lane: 0, serial: 2, entries: [later] }); p.frame();
   assert.deepEqual([told, dated, p.view(1).id], [installed, 1, 2]);
 });
+

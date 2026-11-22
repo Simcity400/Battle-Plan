@@ -22,7 +22,8 @@ export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'hit'; widget: number; key: string | null }
-  | { type: 'needs'; widget: number; needs: readonly { sub: number; countries: readonly string[] }[] };
+  | { type: 'needs'; widget: number; needs: readonly { sub: number; countries: readonly string[] }[] }
+  | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number };
 
 export type FromPull = { kind: 'follow' | 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 

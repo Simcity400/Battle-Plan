@@ -391,7 +391,7 @@ async function playbackInputs() {
     const visibility = [], actions = [];
     const scan = () => {
       const shown = [];
-      for (const c of document.querySelectorAll('article canvas[data-placement]')) {
+      for (const c of document.querySelectorAll('article [data-placement]')) {
         if (c.hidden || !c.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
         const bounds = c;
         const article = c.closest('article'), pin = article.getAttribute('data-fixed-hour');
@@ -439,7 +439,7 @@ async function playbackInputs() {
     const lacking = article => {
       if (loading(article)) return 'loading';
       if ([...article.querySelectorAll('[data-state="error"], [role="alert"]')].some(visible)) return 'error';
-      const canvases = [...article.querySelectorAll('canvas[data-placement]')].filter(visible);
+      const canvases = [...article.querySelectorAll('[data-placement]')].filter(visible);
       if (canvases.some(canvas => canvas.closest('[data-table-pending]'))) return 'pending rows';
       if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
@@ -454,7 +454,7 @@ async function playbackInputs() {
     };
     const articles = [...grid.querySelectorAll('article.dash-widget')].filter(visible);
     if (!articles.length) return ['no visible widget'];
-    return articles.filter(article => article.querySelector('canvas[data-placement]'))
+    return articles.filter(article => article.querySelector('[data-placement]'))
       .map(article => [article.getAttribute('aria-label') || article.dataset.widget, lacking(article)])
       .filter(([, why]) => why).map(([widget, reason]) => ({ widget, reason }));
   })()`;
@@ -601,7 +601,7 @@ async function playbackVisibility() {
         observer.unobserve(canvas); observed.delete(canvas);
         reports.push({ id: held.id, placement: held.placement, at: performance.timeOrigin + performance.now(), visible: false });
       }
-      for (const canvas of grid.querySelectorAll('article.dash-widget canvas[data-placement]'))
+      for (const canvas of grid.querySelectorAll('article.dash-widget [data-placement]'))
         if (!observed.has(canvas)) { observed.set(canvas, { id: canvas.closest('article.dash-widget').dataset.widget, placement: Number(canvas.dataset.placement) }); observer.observe(canvas); }
     };
     const layout = new MutationObserver(scan);

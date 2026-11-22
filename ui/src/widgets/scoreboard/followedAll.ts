@@ -25,8 +25,8 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   const element = useElement(target);
   const wanted = !prepared && !!store && queries.some(Boolean);
   const visible = useOnScreen(wanted ? element : null, onScreen);
-  useSurfaceLabel(element, wanted);
   const pipe = useFollowedWidget(pipeline, wanted && store ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null });
+  useSurfaceLabel(element, wanted, pipe);
   const key = JSON.stringify(queries.map(query => query ? canonical(query) : null));
   const asked = useRef(queries); asked.current = queries;
   const windowsNow = useRef(windows); windowsNow.current = windows;

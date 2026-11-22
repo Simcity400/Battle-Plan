@@ -79,3 +79,27 @@ test('the nuclear panel audit names every field that changes its rendered struct
     countries: [{ ...REPLY.countries[0], counts: [...REPLY.countries[0].counts, { ordinal: 1, value: 0, ready: 0 }] }],
   }), rows, 'a new weapon type changes the rendered structure');
 });
+
+test('review 4 finding 13: a paused race redraws when its scroll or size changes, though its rows, day and notice stand', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  picture.draw(model, REPLY, 100);
+  assert.equal(picture.changed, false, 'nothing to redraw');
+  picture.draw({ ...model, scroll: 40 }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the new scroll is drawn');
+  picture.draw({ ...model, scroll: 40, width: 420 }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the new size is drawn');
+});
+
+test('review 4 finding 15: the race audits ranked rows as the auditor reads them: the row is the country, the key its part', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false, split: true,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  const [first] = picture.rows()!;
+  assert.deepEqual([first!.row, first!.key, `${first!.row}:${first!.key}`], ['USA', 'total', 'USA:total']);
+});

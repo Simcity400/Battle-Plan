@@ -278,7 +278,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));
       const pass = Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&
         surfaces.every(s => Number.isFinite(s.p95) && s.p95 <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(s.eligibleP95) && s.eligibleP95 <= MAX_PLAYBACK_AGE_HOURS) &&
-        future === 0 && exact && boundaryErrors.length === 0;
+        future === 0 && missing === 0 && exact && boundaryErrors.length === 0;
       placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, p95: Number.isFinite(age) ? age : null,
         eligibleP95: Number.isFinite(eligible) ? eligible : null, surfaces, samples: samples.length, distinctHoursPerSecond: hours.size / seconds,
         missing, late, lateWithoutCrossing, structureCrossings, future, exact, boundaryErrors, pass });
