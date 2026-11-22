@@ -5,7 +5,7 @@ import type { DashboardMapState } from '../../dashboard/client';
 import type { MapTarget } from '../../dashboard/geometry';
 
 const target: MapTarget = { sourceId: 's', path: 'p', revision: 'r', branchId: '1', hour: 20, fraction: 0, sequence: 10, playing: true, hoursPerSecond: 4 };
-const state: DashboardMapState = { id: 'map', sourceId: 's', revision: 'r', branchId: '1', hour: 15, fraction: 0,
+const state: DashboardMapState = { id: 'map', clockId: 'page-1', sourceId: 's', revision: 'r', branchId: '1', hour: 15, fraction: 0,
   sequence: 8, requestedSequence: 8, loading: false, error: null };
 
 test('playing, an earlier built hour answers the clock without waiting for its sequence', () => {

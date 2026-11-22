@@ -116,14 +116,34 @@ const STATS: &[(&str, &str, bool)] = &[
     ("armor_value", "STAT_SYNTHETIC_ARMOR", true),
     ("ap_attack", "STAT_SYNTHETIC_PIERCING", true),
     ("maximum_speed", "STAT_SYNTHETIC_SPEED", false),
-    ("reliability", "STAT_SYNTHETIC_RELIABILITY", false),
-    ("build_cost_ic", "STAT_SYNTHETIC_COST", false),
     ("hg_attack", "STAT_SYNTHETIC_HG_ATTACK", true),
     ("torpedo_attack", "STAT_SYNTHETIC_TORPEDO_ATTACK", true),
     ("sub_attack", "STAT_SYNTHETIC_SUB_ATTACK", true),
     ("air_agility", "STAT_SYNTHETIC_AIR_AGILITY", true),
     ("air_defence", "STAT_SYNTHETIC_AIR_DEFENCE", true),
     ("supply_consumption", "STAT_SYNTHETIC_SUPPLY_CONSUMPTION", false),
+];
+const PINNED_STATS: &[(usize, (&str, &str, bool))] = &[
+    (
+        crate::equipment::RELIABILITY_STAT,
+        ("reliability", "STAT_SYNTHETIC_RELIABILITY", false),
+    ),
+    (
+        crate::equipment::RELIABILITY_FACTOR_STAT,
+        (
+            "reliability_factor",
+            "STAT_SYNTHETIC_RELIABILITY_FACTOR",
+            false,
+        ),
+    ),
+    (
+        crate::equipment::CARRIER_SIZE_STAT,
+        ("carrier_size", "STAT_SYNTHETIC_CARRIER_SIZE", true),
+    ),
+    (
+        crate::equipment::BUILD_COST_IC_STAT,
+        ("build_cost_ic", "STAT_SYNTHETIC_COST", false),
+    ),
 ];
 
 const AI_STRATEGIES: &[(&str, u32)] = &[
@@ -178,14 +198,19 @@ pub fn executable() -> Executable {
             (game.token(name).expect("a category is a keyword"), mask, name)
         })
         .collect();
-    let mut stats: Vec<_> = STATS.to_vec();
-    let padding: Vec<_> = (stats.len()..crate::equipment::STAT_COUNT)
+    let stats: Vec<_> = (0..crate::equipment::STAT_COUNT)
         .map(|index| {
-            let name: &'static str = Box::leak(format!("synthetic_stat_{index}").into_boxed_str());
-            (name, "STAT_SYNTHETIC", false)
+            if let Some(&(_, entry)) = PINNED_STATS.iter().find(|&&(at, _)| at == index) {
+                entry
+            } else if let Some(&entry) = STATS.get(index) {
+                entry
+            } else {
+                let name: &'static str =
+                    Box::leak(format!("synthetic_stat_{index}").into_boxed_str());
+                (name, "STAT_SYNTHETIC", false)
+            }
         })
         .collect();
-    stats.extend(padding);
     game.modifiers(MODIFIERS.iter().copied())
         .auxiliary(|tables| {
             tables.equipment_categories = Ok(categories

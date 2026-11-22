@@ -218,6 +218,341 @@ pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(History { columns, to, texts, keys })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogGap {
+    pub first: i32,
+    pub last: i32,
+    pub status: Status,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogSpan {
+    pub columns: Vec<usize>,
+    pub texts: Vec<Box<[u8]>>,
+    pub gaps: Vec<LogGap>,
+}
+
+impl LogSpan {
+    pub fn text(&self, cell: Cell) -> Option<&[u8]> {
+        match cell {
+            Cell::Text(index) => self.texts.get(index as usize).map(|text| &**text),
+            _ => None,
+        }
+    }
+}
+
+fn cell_number(kind: Kind, bits: u64) -> i64 {
+    match kind {
+        Kind::U8 => i64::from(bits as u8),
+        Kind::I8 => i64::from(bits as i8),
+        Kind::U16 => i64::from(bits as u16),
+        Kind::I16 => i64::from(bits as i16),
+        Kind::U32 | Kind::OptionalU32 => i64::from(bits as u32),
+        Kind::I32 | Kind::OptionalI32 => i64::from(bits as i32),
+        Kind::Bool => (bits & 1) as i64,
+        _ => bits as i64,
+    }
+}
+
+fn resolve_log_reasons(
+    recording: &Recording,
+    held: &crate::columnar_frames::Run,
+    pages: &[unit::BlockPage],
+    kinds: &[Kind],
+    table: usize,
+    to: i32,
+    needed: &[(usize, Vec<u32>)],
+) -> io::Result<HashMap<u32, String>> {
+    let mut reasons: HashMap<u32, String> = HashMap::new();
+    let source = recording.extents();
+    for (page_idx, ids) in needed {
+        let missing: Vec<u32> = ids.iter().copied().filter(|id| !reasons.contains_key(id)).collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let page = &pages[*page_idx];
+        let block_first = held.block_first_hour(page.block);
+        let entry = &page.tables[table];
+        if let Some(last) = entry.parts.iter().rposition(|part| block_first + i32::from(part.first) <= to) {
+            let mut prefix = None;
+            for part_idx in 0..=last {
+                let part_entry = &entry.parts[part_idx];
+                let part_last = entry.parts.get(part_idx + 1).map_or(page.hours - 1, |following| following.first - 1);
+                let fetched = unit::reader::fetch(source, part_entry, part_last, &[], prefix.as_ref())?;
+                for (id, bytes) in fetched.strings() {
+                    if missing.contains(id) {
+                        reasons.entry(*id).or_insert_with(|| String::from_utf8_lossy(bytes).into_owned());
+                    }
+                }
+                if missing.iter().all(|id| reasons.contains_key(id)) {
+                    break;
+                }
+                prefix = Some(fetched.prefix());
+            }
+        }
+        if !missing.iter().all(|id| reasons.contains_key(id)) {
+            let prior = if *page_idx == 0 { entry.first.as_ref() } else { pages[*page_idx - 1].tables[table].restore.as_ref() };
+            for restore in [prior, entry.restore.as_ref()].into_iter().flatten() {
+                let (_, meta) = unit::reader::restore(source, restore, kinds, &[])?;
+                for (id, bytes) in meta.strings {
+                    if missing.contains(&id) {
+                        reasons.entry(id).or_insert_with(|| String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                }
+                if missing.iter().all(|id| reasons.contains_key(id)) {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(reasons)
+}
+
+#[allow(clippy::too_many_arguments, reason = "a log span query names its run, table, columns, keys, range and row sink")]
+pub fn log_span(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    columns: &[usize],
+    keys: Keys<'_>,
+    from: i32,
+    to: i32,
+    each: &mut dyn FnMut(i32, u128, &[Cell]),
+) -> io::Result<LogSpan> {
+    let index = table.index();
+    let kinds = crate::columnar_frames::schema()?.swap_remove(index);
+    if let Some(&column) = columns.iter().find(|&&column| column >= kinds.len()) {
+        return Err(invalid(format!("{table:?} has no column {column}")));
+    }
+    if recording.predates(index).is_some() {
+        return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
+    }
+    if let Some(reason) = recording.withheld_reason(index) {
+        return Err(crate::columnar_frames::Damage::wrap(
+            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+            invalid(reason.to_owned()),
+        ));
+    }
+    let held = recording.run(run)?;
+    if held.ordinals == 0 {
+        return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
+    }
+    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    if from > to {
+        return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
+    }
+    let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else {
+        return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
+    };
+    let recorded = recording.columns()[index].min(kinds.len());
+    let mut read: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
+    read.sort_unstable();
+    read.dedup();
+    let first_block = held.place(first).0;
+    let last_block = held.place(last).0;
+    let pages = recording.table_pages(run, index, first_block.saturating_sub(1), last_block + 1)?;
+    if !unit::reader::class_of(&pages, index)? {
+        return Err(invalid(format!("{table:?} holds state: it has no rows by hour to read as a log")));
+    }
+    let mut status_runs: Vec<StatusRun> = Vec::new();
+    let mut needed_reasons: Vec<(usize, Vec<u32>)> = Vec::new();
+    for (page_idx, page) in pages.iter().enumerate() {
+        if page.block < first_block {
+            continue;
+        }
+        let mut page_reasons = Vec::new();
+        unit::reader::statuses(&page.tables[index], page.hours, held.block_first_hour(page.block), &mut |start, end, status| {
+            let (a, b) = (start.max(from), end.min(to));
+            if a > b {
+                return;
+            }
+            if let Status::Unavailable { reason } = status
+                && !page_reasons.contains(&reason)
+            {
+                page_reasons.push(reason);
+            }
+            match status_runs.last_mut() {
+                Some(held) if held.status == status && held.last + 1 == a => held.last = b,
+                _ => status_runs.push(StatusRun { first: a, last: b, status }),
+            }
+        })?;
+        if !page_reasons.is_empty() {
+            needed_reasons.push((page_idx, page_reasons));
+        }
+    }
+    let reasons = if needed_reasons.is_empty() {
+        HashMap::new()
+    } else {
+        resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, to, &needed_reasons)?
+    };
+    let mut gaps: Vec<LogGap> = Vec::new();
+    let mut available_runs: Vec<(i32, i32)> = Vec::new();
+    for run in &status_runs {
+        if crate::columnar_frames::available(run.status) {
+            match available_runs.last_mut() {
+                Some((_, last)) if *last + 1 == run.first => *last = run.last,
+                _ => available_runs.push((run.first, run.last)),
+            }
+        }
+        if run.status != Status::Complete {
+            let reason = match run.status {
+                Status::Unavailable { reason } => reasons.get(&reason).cloned(),
+                _ => None,
+            };
+            match gaps.last_mut() {
+                Some(held) if held.status == run.status && held.reason == reason && held.last + 1 == run.first => held.last = run.last,
+                _ => gaps.push(LogGap { first: run.first, last: run.last, status: run.status, reason }),
+            }
+        }
+    }
+    if available_runs.is_empty() {
+        return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps });
+    }
+    let mut sorted = Vec::new();
+    if let Keys::These(asked) = keys {
+        sorted.extend_from_slice(asked);
+        sorted.sort_unstable();
+        sorted.dedup();
+    }
+    struct LogSink<'a> {
+        table: TableId,
+        columns: &'a [usize],
+        kinds: &'a [Kind],
+        recorded: usize,
+        named: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
+        texts: Vec<Box<[u8]>>,
+        by_text: HashMap<Box<[u8]>, u32, foldhash::fast::RandomState>,
+        by_id: HashMap<u32, u32, foldhash::fast::RandomState>,
+        out: Vec<Cell>,
+        failed: Option<io::Error>,
+    }
+
+    impl LogSink<'_> {
+        fn name(&mut self, id: u32, text: &[u8]) {
+            self.named.entry(id).or_insert_with(|| text.into());
+        }
+
+        fn fail(&mut self, error: io::Error) {
+            if self.failed.is_none() {
+                self.failed = Some(error);
+            }
+        }
+
+        fn emit(&mut self, hour: i32, key: u128, rows: &TableState, at: u32, each: &mut dyn FnMut(i32, u128, &[Cell])) {
+            if self.failed.is_some() {
+                return;
+            }
+            self.out.clear();
+            for &column in self.columns {
+                let cell = if column >= self.recorded {
+                    Cell::Unrecorded
+                } else {
+                    match rows.value(column, at) {
+                        replay_columnar::store::Value::Number(bits) => Cell::Number(cell_number(self.kinds[column], bits)),
+                        replay_columnar::store::Value::Missing => Cell::Missing,
+                        replay_columnar::store::Value::Unrecorded => Cell::Unrecorded,
+                        replay_columnar::store::Value::Text(id) => match self.by_id.get(&id) {
+                            Some(&text_index) => Cell::Text(text_index),
+                            None => {
+                                let Some(bytes) = self.named.get(&id) else {
+                                    self.fail(invalid(format!("{:?} names string {id}, which was not supplied by its log", self.table)));
+                                    return;
+                                };
+                                let text_index = match self.by_text.get(bytes) {
+                                    Some(&index) => index,
+                                    None => {
+                                        let index = self.texts.len() as u32;
+                                        self.texts.push(bytes.clone());
+                                        self.by_text.insert(bytes.clone(), index);
+                                        index
+                                    }
+                                };
+                                self.by_id.insert(id, text_index);
+                                Cell::Text(text_index)
+                            }
+                        },
+                        replay_columnar::store::Value::List(_) => Cell::Written(hour),
+                    }
+                };
+                self.out.push(cell);
+            }
+            each(hour, key, &self.out);
+        }
+    }
+
+    let mut sink = LogSink {
+        table,
+        columns,
+        kinds: &kinds,
+        recorded,
+        named: HashMap::default(),
+        texts: Vec::new(),
+        by_text: HashMap::default(),
+        by_id: HashMap::default(),
+        out: Vec::with_capacity(columns.len()),
+        failed: None,
+    };
+    let mut avail_at = 0usize;
+    let mut is_available = |hour: i32| -> bool {
+        while avail_at < available_runs.len() && available_runs[avail_at].1 < hour {
+            avail_at += 1;
+        }
+        available_runs.get(avail_at).is_some_and(|&(a, b)| a <= hour && hour <= b)
+    };
+    if matches!(keys, Keys::All) && !read.is_empty() {
+        unit::reader::log_span(recording.extents(), &pages, &kinds[..recorded], index, &read, held.first_hour, from..=to, &mut |hour, event| match event {
+            unit::reader::LogEvent::Named { id, text } => sink.name(id, text),
+            unit::reader::LogEvent::Appended { key, rows, at, .. } => {
+                if is_available(hour) {
+                    sink.emit(hour, key, rows, at, each);
+                }
+            }
+            unit::reader::LogEvent::Forgotten { .. } => {}
+        })?;
+    } else {
+        let mut ordinals: Vec<u64> = Vec::new();
+        let mut matched_hours: Vec<i32> = Vec::new();
+        unit::reader::log_span(recording.extents(), &pages, &kinds[..recorded], index, &[], held.first_hour, from..=to, &mut |hour, event| {
+            let unit::reader::LogEvent::Appended { ordinal, key, rows, at, .. } = event else { return };
+            if is_available(hour) && keys.asks(&sorted, key) {
+                if read.is_empty() {
+                    sink.emit(hour, key, rows, at, each);
+                } else {
+                    ordinals.push(ordinal);
+                    matched_hours.push(hour);
+                }
+            }
+        })?;
+        if !ordinals.is_empty() {
+            let mut matched_idx = 0usize;
+            unit::reader::log_rows_at(recording.extents(), &pages, &kinds[..recorded], index, &read, &ordinals, &mut |event| match event {
+                unit::reader::LogEvent::Named { id, text } => sink.name(id, text),
+                unit::reader::LogEvent::Appended { ordinal, key, rows, at, .. } => {
+                    if sink.failed.is_some() {
+                        return;
+                    }
+                    if ordinals.get(matched_idx) != Some(&ordinal) {
+                        sink.fail(invalid(format!("{table:?} returned log ordinal {ordinal} out of order")));
+                        return;
+                    }
+                    let hour = matched_hours[matched_idx];
+                    matched_idx += 1;
+                    sink.emit(hour, key, rows, at, each);
+                }
+                unit::reader::LogEvent::Forgotten { .. } => {}
+            })?;
+            if sink.failed.is_none() && matched_idx != ordinals.len() {
+                return Err(invalid(format!("{table:?} returned {matched_idx} of {} selected log rows", ordinals.len())));
+            }
+        }
+    }
+    if let Some(error) = sink.failed {
+        return Err(error);
+    }
+    Ok(LogSpan { columns: columns.to_vec(), texts: sink.texts, gaps })
+}
+
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));

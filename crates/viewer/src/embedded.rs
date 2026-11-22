@@ -73,13 +73,21 @@ pub struct Pending {
     pub seek: Option<Seek>,
     pub close: bool,
     pub error: Option<String>,
-    pub map_views: Option<Vec<DashboardMapView>>,
+    pub map_views: Option<(Option<String>, Vec<DashboardMapView>)>,
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
+    clock_origins: crate::page_clock::OriginGate,
 }
 
 impl Pending {
+    fn take(&mut self) -> Self {
+        let origins = std::mem::take(&mut self.clock_origins);
+        let taken = std::mem::take(self);
+        self.clock_origins = origins;
+        taken
+    }
+
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
@@ -123,9 +131,28 @@ impl Pending {
                 self.campaign_map = true;
                 self.map_views = None;
             }
-            NativeCommand::MapViews { views } => {
-                validate_map_views(&views)?;
-                self.map_views = Some(views);
+            NativeCommand::MapViews { clock_id, views } => {
+                match clock_id.as_deref() {
+                    Some(clock_id) => {
+                        validate_map_views(clock_id, &views)?;
+                        if self.clock_origins.admit(clock_id)
+                            == crate::page_clock::OriginStatus::Retired
+                        {
+                            return Ok(());
+                        }
+                    }
+                    None if !views.is_empty() => {
+                        return Err(
+                            "Map clock identity is missing or exceeds its control budget".into(),
+                        );
+                    }
+                    None => {
+                        if self.clock_origins.active().is_some() {
+                            return Ok(());
+                        }
+                    }
+                }
+                self.map_views = Some((clock_id, views));
                 self.campaign_map = false;
                 self.open = None;
                 self.seek = None;
@@ -164,19 +191,26 @@ impl Pending {
                 hour,
                 playback,
             } => {
-                if let Some(playback) = playback {
+                if let Some(playback) = &playback {
                     playback.validate()?;
                 }
                 validate_snapshot(&path, Some(&revision))?;
                 if branch.is_empty() || !branch.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err("A branch must be an unsigned decimal string".into());
                 }
+                let branch = branch
+                    .parse()
+                    .map_err(|_| "Branch exceeds the replay's u64 id")?;
+                if playback.as_ref().is_some_and(|clock| {
+                    self.clock_origins.admit(&clock.clock_id)
+                        == crate::page_clock::OriginStatus::Retired
+                }) {
+                    return Ok(());
+                }
                 self.seek = Some(Seek {
                     path: PathBuf::from(path),
                     revision,
-                    branch: branch
-                        .parse()
-                        .map_err(|_| "Branch exceeds the replay's u64 id")?,
+                    branch,
                     hour,
                     playback,
                 });
@@ -691,13 +725,12 @@ impl Controller {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) -> Pending {
-        let mut pending = std::mem::take(
-            &mut *self
-                .shared
-                .pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         pending.close |= self.closing;
         if !pending.close {
             let applied = (|| {
@@ -710,7 +743,7 @@ impl Controller {
                 if let Some(visible) = pending.visibility {
                     self.window.visibility(visible);
                 }
-                if let Some(views) = &pending.map_views {
+                if let Some((_, views)) = &pending.map_views {
                     self.window.map_views(views)?;
                 }
                 Ok::<_, io::Error>(())
@@ -1404,6 +1437,7 @@ mod tests {
                         fraction: 0.375,
                         hours_per_second: 1440.0,
                         composed_at: 0.0,
+                        clock_id: "page-1".into(),
                     }),
                 })
                 .unwrap();
@@ -1421,6 +1455,7 @@ mod tests {
                     fraction: 0.375,
                     hours_per_second: 1440.0,
                     composed_at: 0.0,
+                    clock_id: "page-1".into(),
                 }),
             })
         );
@@ -1653,5 +1688,156 @@ mod tests {
         drop(panel);
         assert!(following.upgrade().is_none(), "the last panel reader's close stops the store");
         assert!(entry.playhead().declarations() > declarations, "the store's playhead reader is retired");
+    }
+
+    #[test]
+    fn coalescing_rejects_seeks_from_retired_clock_origins_before_drain() {
+        let mut pending = Pending::default();
+        let seek = |path: &str, hour: i32, clock_id: &str| NativeCommand::Seek {
+            path: path.into(),
+            revision: "rev-1".into(),
+            branch: "1".into(),
+            hour,
+            playback: Some(dashboard::protocol::MapPlayback {
+                playing: true,
+                seek_sequence: 1,
+                fraction: 0.0,
+                hours_per_second: 1440.0,
+                composed_at: 10.0,
+                clock_id: clock_id.into(),
+            }),
+        };
+        pending.push(seek("old.battleplan", 100, "page-A")).unwrap();
+        pending.push(seek("new.battleplan", 200, "page-B")).unwrap();
+        pending.push(seek("old.battleplan", 300, "page-A")).unwrap();
+        let drained = pending.take();
+        let kept = drained.seek.expect("page-B seek survives");
+        assert_eq!(kept.path, PathBuf::from("new.battleplan"));
+        assert_eq!(kept.hour, 200);
+        assert_eq!(
+            kept.playback.as_ref().map(|clock| clock.clock_id.as_str()),
+            Some("page-B")
+        );
+        pending.push(seek("old.battleplan", 400, "page-A")).unwrap();
+        assert!(pending.take().seek.is_none(), "origin retirement persists across drains");
+    }
+
+    #[test]
+    fn map_views_envelope_gates_empty_clears_and_state_dedup_distinguishes_clock_origin() {
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let make = |clock_id: &str, sequence: u64, hour: i32| DashboardMapView {
+            options: Default::default(),
+            id: "map-1".into(),
+            source_id: "source".into(),
+            path: "campaign.battleplan".into(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing: false,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+
+        let mut pending = Pending::default();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 80, 100)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: vec![make("page-B", 0, 260)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        let (clock_id, views) = pending.take().map_views.expect("B's widgets survive late A clear");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].hour, 260);
+
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 81, 101)],
+            })
+            .unwrap();
+        let (clock_id, views) = pending
+            .take()
+            .map_views
+            .expect("B's legitimate empty clear survives late A snapshot");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert!(views.is_empty());
+
+        let state_a = DashboardMapState {
+            id: "map-1".into(),
+            clock_id: "page-A".into(),
+            source_id: Some("source".into()),
+            revision: Some("rev-1".into()),
+            hour: Some(260),
+            sequence: 0,
+            requested_sequence: 0,
+            ..Default::default()
+        };
+        let state_b = DashboardMapState {
+            clock_id: "page-B".into(),
+            ..state_a.clone()
+        };
+        assert!(!same_ack(&state_a, &state_b));
+        assert!(!clock_only(&state_a, &state_b));
+
+        let mut after_seek = Pending::default();
+        after_seek
+            .push(NativeCommand::Seek {
+                path: "campaign.battleplan".into(),
+                revision: "rev-1".into(),
+                branch: "1".into(),
+                hour: 100,
+                playback: Some(dashboard::protocol::MapPlayback {
+                    playing: false,
+                    seek_sequence: 1,
+                    fraction: 0.0,
+                    hours_per_second: 24.0,
+                    composed_at: 100.0,
+                    clock_id: "page-A".into(),
+                }),
+            })
+            .unwrap();
+        let _ = after_seek.take();
+        after_seek
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            after_seek.take().map_views,
+            Some((Some("page-A".into()), Vec::new())),
+            "a stamped empty clear for the active origin is admitted to hide the campaign map"
+        );
     }
 }

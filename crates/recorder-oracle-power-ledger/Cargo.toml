@@ -16,6 +16,7 @@ content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -827,14 +827,19 @@ pub struct Consumer {
     id: usize,
     reader: Reader,
     asked: std::sync::atomic::AtomicBool,
+    blocking: bool,
 }
 
 impl Consumer {
-    pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+    fn lock_ring(&self) -> Option<MutexGuard<'_, Ring>> {
+        if self.blocking {
+            return Some(lock(&self.shared.ring));
+        }
+        try_lock(&self.shared.ring)
+    }
+
+    fn take_from(&self, mut ring: MutexGuard<'_, Ring>, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
         let from = out.len();
-        let Some(mut ring) = try_lock(&self.shared.ring) else {
-            return 0;
-        };
         let taken = ring.take(self.id, head, out);
         drop(ring);
         if taken > 0 {
@@ -847,13 +852,36 @@ impl Consumer {
         taken
     }
 
+    fn ask_blocking(&self, head: Hour) {
+        let head = self.shared.timeline.clamp(head);
+        let mut control = lock(&self.shared.control);
+        control.ask(Some(self.id), head);
+        drop(control);
+        self.shared.wake.notify_all();
+        if !self.asked.load(Ordering::Relaxed) {
+            lock(&self.shared.ring).asks(self.id);
+            self.asked.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+        let Some(ring) = self.lock_ring() else {
+            return 0;
+        };
+        self.take_from(ring, head, out)
+    }
+
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
-        if let Some(ring) = try_lock(&self.shared.ring) {
+        if let Some(ring) = self.lock_ring() {
             ring.ahead(self.id, out);
         }
     }
 
     pub fn advance(&self, head: Hour) {
+        if self.blocking {
+            self.ask_blocking(head);
+            return;
+        }
         if !self.shared.ask(Some(self.id), head) {
             return;
         }
@@ -871,37 +899,6 @@ impl Consumer {
 
     pub fn reaches(&self, head: Hour) -> Option<bool> {
         try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
-        loop {
-            let seen = lock(&self.shared.control).version;
-            if lock(&self.shared.ring).has_ready(self.id, cap) {
-                return Ok(true);
-            }
-            let mut control = lock(&self.shared.control);
-            if let Some(error) = &control.error {
-                return Err(error.clone());
-            }
-            if control.published_steps > before.1 {
-                return Ok(true);
-            }
-            if control.version != seen {
-                continue;
-            }
-            if control.newest.is_some_and(|newest| newest >= cap)
-                && control.caught_up_at.is_some_and(|at| at >= cap)
-            {
-                return Ok(false);
-            }
-            while control.version == seen {
-                if let Some(error) = &control.error {
-                    return Err(error.clone());
-                }
-                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        }
     }
 
     pub fn land(&mut self) {
@@ -923,6 +920,58 @@ impl Consumer {
 
     pub fn reader(&self) -> Reader {
         self.reader
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Consumer {
+    pub fn set_blocking(&mut self, blocking: bool) -> bool {
+        std::mem::replace(&mut self.blocking, blocking)
+    }
+
+    pub fn take_blocking(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
+        let ring = lock(&self.shared.ring);
+        self.take_from(ring, head, out)
+    }
+
+    pub fn advance_blocking(&self, head: Hour) {
+        self.ask_blocking(head);
+    }
+
+    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
+        loop {
+            let seen = lock(&self.shared.control).version;
+            if lock(&self.shared.ring).has_ready(self.id, cap) {
+                return Ok(true);
+            }
+            let mut control = lock(&self.shared.control);
+            if let Some(error) = &control.error {
+                return Err(error.clone());
+            }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
+            if control.published_steps > before.1 {
+                return Ok(true);
+            }
+            if control.version != seen {
+                continue;
+            }
+            if control.newest.is_some_and(|newest| newest >= cap)
+                && control.caught_up_at.is_some_and(|at| at >= cap)
+            {
+                return Ok(false);
+            }
+            while control.version == seen {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
     }
 }
 
@@ -1093,7 +1142,13 @@ impl Playhead {
 
     pub fn consumer(&self, reader: Reader) -> Consumer {
         let id = lock(&self.shared.ring).join(reader);
-        Consumer { shared: Arc::clone(&self.shared), id, reader, asked: std::sync::atomic::AtomicBool::new(false) }
+        Consumer {
+            shared: Arc::clone(&self.shared),
+            id,
+            reader,
+            asked: std::sync::atomic::AtomicBool::new(false),
+            blocking: false,
+        }
     }
 
     pub fn head(&self, now: Instant) -> Hour {
@@ -1233,6 +1288,9 @@ impl Playhead {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
@@ -1256,6 +1314,9 @@ impl Playhead {
                 if let Some(error) = &control.error {
                     return Err(error.clone());
                 }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
                 control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
@@ -1264,17 +1325,35 @@ impl Playhead {
     #[cfg(feature = "test-support")]
     pub fn wait_for(&self, mut ready: impl FnMut() -> bool) -> Result<(), String> {
         loop {
+            let version = {
+                let control = lock(&self.shared.control);
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control.version
+            };
             if ready() {
                 return Ok(());
             }
-            let control = lock(&self.shared.control);
+            let mut control = lock(&self.shared.control);
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
             if control.stop {
-                return Err("playhead stopped".into());
+                return Err("the playhead stopped".into());
             }
-            drop(self.shared.wake.wait_timeout(control, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner));
+            while control.version == version {
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+            }
         }
     }
 

@@ -276,7 +276,7 @@ content-reader-image = { path = "crates/content-reader-image" }
 content-reader-save = { path = "crates/content-reader-save" }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
 png = "0.18"
-pollster = "0.4"
+pollster = "1"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay", default-features = false }
 replay-looks = { path = "crates/replay-looks" }
@@ -346,60 +346,13 @@ opt-level = 3
 
 [profile.ci]
 inherits = "dev"
+opt-level = 0
 
 [profile.ci.package."*"]
 opt-level = 1
 
-[profile.ci.package.collector]
-opt-level = 0
-
-[profile.ci.package.collector-air]
-opt-level = 0
-
-[profile.ci.package.collector-characters]
-opt-level = 0
-
-[profile.ci.package.collector-division-templates]
-opt-level = 0
-
-[profile.ci.package.collector-divisions]
-opt-level = 0
-
-[profile.ci.package.collector-equipment-destruction]
-opt-level = 0
-
-[profile.ci.package.collector-factions]
-opt-level = 0
-
-[profile.ci.package.collector-hook-failures]
-opt-level = 0
-
-[profile.ci.package.collector-land-events]
-opt-level = 0
-
-[profile.ci.package.collector-missions]
-opt-level = 0
-
-[profile.ci.package.collector-naval-history]
-opt-level = 0
-
-[profile.ci.package.collector-naval-missions]
-opt-level = 0
-
-[profile.ci.package.collector-naval-results]
-opt-level = 0
-
-[profile.ci.package.collector-operation-outcomes]
-opt-level = 0
-
-[profile.ci.package.collector-plans]
-opt-level = 0
-
-[profile.ci.package.collector-states]
-opt-level = 0
-
-[profile.ci.package.collector-workers]
-opt-level = 0
+[profile.ci.package.dashboard-query]
+opt-level = 1
 
 [profile.release-lto]
 inherits = "release"

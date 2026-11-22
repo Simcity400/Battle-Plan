@@ -1,10 +1,7 @@
-mod support {
-    pub mod unit_world;
-}
 use engine_native::{
     cair_base, cair_wing, carmy, cfleet, cship, ctask_force, memory::ReadCounts, walk::Outcome,
 };
-use support::unit_world::{self as fixture, Shape};
+use crate::support::unit_world::{self as fixture, Shape};
 
 fn run(shape: Shape, timed: bool) {
     let world = fixture::build(shape);
