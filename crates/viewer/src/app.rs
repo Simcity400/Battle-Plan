@@ -4988,7 +4988,10 @@ impl Viewer {
                                 time: animation_time,
                                 hour: movement_hour,
                                 head: at,
-                                overlay_hour: now.frame.hour,
+                                overlay_layout: self
+                                    .prepared_overlay
+                                    .as_ref()
+                                    .and_then(|prepared| prepared.motion_layout().cloned()),
                                 clock_speed,
                                 speeds: document.content.counters.defines.movement_speeds,
                                 steady: self.options.window_dump,

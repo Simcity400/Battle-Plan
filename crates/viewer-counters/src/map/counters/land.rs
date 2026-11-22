@@ -143,6 +143,7 @@ pub(super) struct PreparedLand {
     pub(super) flotillas: Vec<Flotilla>,
     pub(super) positions: Vec<counter_move::Position>,
     pub(super) units: Vec<Unit>,
+    pub(super) layout: counter_move::DrawnLayout,
     pub(super) icons: Vec<counter_groups::Icon>,
     pub(super) source_kinds: Vec<u32>,
     pub(super) groups: Vec<counter_groups::Group>,
@@ -268,7 +269,7 @@ impl PreparedLand {
                     }
                 }
                 places.push(viewer_foundation::map::free_icons::Place { hour, at: placed });
-                icon.track = history.track(unit, &places, hour, width);
+                icon.track = history.track(&self.layout, unit, &places, width).ok();
                 if settled && position.motion.is_some() {
                     *report
                         .land_counter_gaps
@@ -2096,6 +2097,7 @@ pub(super) fn land_counters<'a>(
         .collect();
     Ok(PreparedLand {
         units,
+        layout: counter_move::DrawnLayout::new(inputs.hour),
         sprites: (0..drawn.len()).map(|_| None).collect(),
         plans,
         stacks: drawn,

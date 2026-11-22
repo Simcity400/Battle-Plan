@@ -3617,6 +3617,10 @@ struct DrawnCounters {
 }
 
 impl PreparedCounters {
+    pub fn motion_layout(&self) -> Option<&counter_move::DrawnLayout> {
+        self.land.as_ref().map(|land| &land.layout)
+    }
+
     pub fn flag_source<'a>(
         &'a self,
         assets: &'a CounterAssets,
