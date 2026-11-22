@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - id: tier
@@ -76,7 +76,7 @@ jobs:
         env:
           BASE: ${{ needs.changes.outputs.base }}
         run: git cat-file -e "$BASE" 2>/dev/null || git fetch --no-tags origin "$BASE"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - if: matrix.needs_python
