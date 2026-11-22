@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, sync::OnceLock};
-use viewer_foundation::naval_math::dominance_value;
+use replay_derive::naval_math::dominance_value;
 
 use content_reader_core::{
     defines::Defines, map::MapData, map::ProvinceKind, terrain::TerrainDefinitions,
@@ -9,7 +9,8 @@ use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
 use map_display_data::landscape::Attributes;
-use viewer_foundation::map::{directed_wars::Owner, visibility::Families};
+use replay_derive::directed_wars::Owner;
+use viewer_foundation::visibility::Families;
 
 pub type Fact<T> = Result<T, String>;
 

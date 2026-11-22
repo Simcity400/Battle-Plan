@@ -1,4 +1,5 @@
 export const ENTRY_MS = 700;
+export const entryTime = { now: () => performance.now() };
 const MOST = 4096;
 const STEP = 256;
 

@@ -15,10 +15,8 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc, time::Duration};
 use viewer_counter_products::map::orders;
-use viewer_foundation::map::{
-    perspective::{Choice, Vision},
-    ribbon_content::OrderField,
-};
+use viewer_foundation::perspective::{Choice, Vision};
+use viewer_gpu::ribbon_content::OrderField;
 
 const LIMIT: Duration = Duration::from_secs(60);
 
@@ -217,7 +215,7 @@ fn the_battle_plans_notes_are_stated_from_the_rows_the_viewing_country_holds_an_
     through(&mut fed, &mut layer, 30);
     let (hour, _) = layer.plan().unwrap();
     assert!(hour >= 20, "a plan from rows holding the order, at {hour}");
-    let mut today = viewer_foundation::map::tables::Limitations::default();
+    let mut today = viewer_foundation::tables::Limitations::default();
     today.note_battle_plan(1);
     assert_eq!(layer.notes(), today.into_lines(), "today's two lines for the one order drawn");
     assert_eq!(layer.notes().len(), 2);
@@ -276,8 +274,8 @@ fn after_a_seek_back_the_plan_shown_at_the_sought_hour_is_made_from_its_rows() {
     assert_eq!(layer.plan().unwrap().0, 4, "the plan shown at the sought hour is made from the rows at it");
 }
 
-fn label(key: &str) -> viewer_foundation::map::name_draw::WorldName {
-    viewer_foundation::map::name_draw::WorldName {
+fn label(key: &str) -> viewer_runtime::name_draw::WorldName {
+    viewer_runtime::name_draw::WorldName {
         key: key.to_owned(),
         strategic_provinces: None,
         text: "118 Divs - Army Group 2".to_owned(),
@@ -296,7 +294,7 @@ fn label(key: &str) -> viewer_foundation::map::name_draw::WorldName {
 #[test]
 fn two_plans_labels_differ_by_content_never_by_their_upload_generation() {
     use super::differ_labels;
-    use viewer_foundation::map::name_draw::{Placements, next_generation};
+    use viewer_runtime::name_draw::{Placements, next_generation};
     let placements = |country| Placements { country, warnings: Vec::new(), generation: next_generation(), near: None };
     let today = placements(vec![label("1:1"), label("1:2")]);
     let layer = placements(vec![label("1:1"), label("1:2")]);
@@ -536,7 +534,7 @@ impl Drop for OpenHeldForFour {
 
 #[test]
 fn a_plan_made_for_another_viewing_country_is_withheld_until_its_own_is_made() {
-    use viewer_foundation::map::perspective::Country;
+    use viewer_foundation::perspective::Country;
     const BEFORE: i32 = 0;
     const AFTER: i32 = 50;
     let entry = open(recorded::record("orders viewer", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();

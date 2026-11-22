@@ -1,5 +1,5 @@
-use viewer_foundation::map::counter_hovers::unit_hits::Kind;
-use viewer_foundation::unit_handle::Unit;
+use viewer_native_gui::counter_hovers::unit_hits::Kind;
+use viewer_runtime::unit_handle::Unit;
 
 pub const DRAG_START: f32 = 1.0;
 pub const MIN_EXTENT: f32 = 30.0;

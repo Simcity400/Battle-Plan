@@ -1,7 +1,7 @@
 use replay_data::rows::{RowCodec, TableId, tables};
 use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use std::{collections::BTreeMap, io, sync::Mutex};
-use viewer_foundation::map::tables::core;
+use viewer_foundation::tables::core;
 
 #[derive(Default)]
 pub(crate) struct CountryIndex(Mutex<Option<State>>);

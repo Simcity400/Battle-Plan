@@ -7,7 +7,7 @@ use crate::{
 use replay_data::Hour;
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Instant};
-use viewer_foundation::profiling::current_thread_cpu_time;
+use viewer_runtime::profiling::current_thread_cpu_time;
 
 fn number(name: &str) -> io::Result<Option<u64>> {
     match std::env::var(name) {

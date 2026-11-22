@@ -134,8 +134,8 @@ impl Assets {
             .collect()
     }
 
-    pub fn gui_assets(&self) -> viewer_foundation::map::native_gui::Assets {
-        viewer_foundation::map::native_gui::Assets {
+    pub fn gui_assets(&self) -> viewer_native_gui::native_gui::Assets {
+        viewer_native_gui::native_gui::Assets {
             fonts: self
                 .definitions
                 .values()

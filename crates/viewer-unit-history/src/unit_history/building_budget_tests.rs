@@ -3,13 +3,13 @@ use viewer_buildings::map_buildings::{
     budget_fixture::{budget_buildings, damage, destruction, exempt_growth, file_order, generation, hour_after, next_hour, replace, variant},
 };
 use std::sync::Arc;
-use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Placement};
+use viewer_gpu::camera::{Camera, MapDefines, MapSize, Placement};
 
 fn camera(center: [f32; 2], height: f32) -> Camera {
     Placement {
         center,
         height,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test())
 }

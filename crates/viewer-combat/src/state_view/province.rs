@@ -348,7 +348,7 @@ fn strategic_locations(content: &Content, frame: &DecodedFrame, root: &native::E
             .filter(|&&pair| pair as u32 == id)
             .map(|&pair| (pair >> 32) as u32)
             .chain(provinces.iter().filter(|&&pair| (pair >> 32) as u32 == id).map(|&pair| pair as u32));
-        let names = viewer_foundation::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
+        let names = dashboard_text::table_access::TokenNames::new(frame).map_err(|e| e.to_string())?;
         tokens
             .map(|token| {
                 let spelling = names.name(token).map_err(|e| e.to_string())?;

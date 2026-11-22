@@ -2,7 +2,7 @@ use super::{BUILDING_TILE, BuildingHistory, ModelPass, UnitGates, hidden_map_fra
 use viewer_scene_base::line_lod::wrap_offsets;
 use viewer_scene_base::line_lod::MARGIN;
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 
 struct Part {
     name: &'static str,
@@ -11,8 +11,8 @@ struct Part {
 
 impl Part {
     fn new(name: &'static str) -> Self {
-        let began = viewer_foundation::view_record::on()
-            .then(|| (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time()));
+        let began = viewer_runtime::view_record::on()
+            .then(|| (std::time::Instant::now(), viewer_runtime::profiling::current_thread_cpu_time()));
         Self { name, began }
     }
 }
@@ -22,9 +22,9 @@ impl Drop for Part {
         let Some((wall, cpu)) = self.began else {
             return;
         };
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         add("presentation_wall_us", self.name, wall.elapsed().as_micros() as u64);
-        if let (Some(cpu), Some(now)) = (cpu, viewer_foundation::profiling::current_thread_cpu_time()) {
+        if let (Some(cpu), Some(now)) = (cpu, viewer_runtime::profiling::current_thread_cpu_time()) {
             add("presentation_cpu_us", self.name, now.saturating_sub(cpu).as_micros() as u64);
         }
     }
@@ -42,7 +42,7 @@ pub(super) struct Presentation<'a> {
     pub map_buildings: Option<&'a mut ModelPass>,
     pub unit_models: Option<&'a mut ModelPass>,
     pub unit_gates: Option<UnitGates>,
-    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
+    pub visibility: viewer_foundation::mode_visibility::Visibility,
     pub mesh_limit: i32,
     pub movement_arrows: Option<&'a mut crate::movement_arrows::Player>,
     pub animated_text: Option<&'a mut viewer_map_text::animated_map_text::Player>,
@@ -51,7 +51,7 @@ pub(super) struct Presentation<'a> {
     pub map_frame: Option<&'a mut ModelPass>,
     pub ambient: Option<&'a mut crate::mapframe::Presentation>,
     pub last_animation_time: Option<f32>,
-    pub province_frame: Option<&'a viewer_foundation::map::province_schedule::ProvinceFrame>,
+    pub province_frame: Option<&'a viewer_gpu::province_schedule::ProvinceFrame>,
     pub pose_tick: bool,
 }
 
@@ -85,7 +85,7 @@ impl Presentation<'_> {
             province_frame,
             pose_tick,
         } = self;
-        let view_span = viewer_foundation::profiling::span("step_view");
+        let view_span = viewer_runtime::profiling::span("step_view");
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
         drop(view_span);
@@ -95,12 +95,12 @@ impl Presentation<'_> {
                 && rails_shown
             {
                 let _part = Part::new("trains");
-                let _trains_span = viewer_foundation::profiling::span("step_trains");
-                let field_span = viewer_foundation::profiling::span("train_field");
+                let _trains_span = viewer_runtime::profiling::span("step_trains");
+                let field_span = viewer_runtime::profiling::span("train_field");
                 pass.replace_field(&assets.library, plan.field(assets, animation_time));
                 drop(field_span);
                 if pose_tick {
-                    let _animate_span = viewer_foundation::profiling::span("train_animate");
+                    let _animate_span = viewer_runtime::profiling::span("train_animate");
                     pass.animate(animation_time, visible, &animation_offsets);
                 }
             }
@@ -110,7 +110,7 @@ impl Presentation<'_> {
             }
             let gates = gates.for_mode(&visibility);
             let history_part = Part::new("history");
-            let history_profile = viewer_foundation::profiling::thread_span("history_update");
+            let history_profile = viewer_runtime::profiling::thread_span("history_update");
             let models = unit_history.update_models_with_frame(
                 camera,
                 size,
@@ -125,7 +125,7 @@ impl Presentation<'_> {
             drop(history_part);
             if let Some(arrows) = movement_arrows {
                 let _part = Part::new("arrows");
-                let _arrows_span = viewer_foundation::profiling::span("step_arrows");
+                let _arrows_span = viewer_runtime::profiling::span("step_arrows");
                 arrows.advance(
                     last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
                     last_animation_time.is_some_and(|last| animation_time < last),
@@ -135,39 +135,39 @@ impl Presentation<'_> {
             }
             if let Some(text) = animated_text {
                 let _part = Part::new("text");
-                let _text_span = viewer_foundation::profiling::span("step_text");
+                let _text_span = viewer_runtime::profiling::span("step_text");
                 text.advance(camera, animation_time, province_frame);
             }
             if let Some(pass) = map_buildings {
                 let _part = Part::new("buildings");
-                let _buildings_span = viewer_foundation::profiling::span("step_buildings");
-                if viewer_foundation::profile_writer::profiling() {
-                    viewer_foundation::profiling::record_count(
+                let _buildings_span = viewer_runtime::profiling::span("step_buildings");
+                if viewer_runtime::profile_writer::profiling() {
+                    viewer_runtime::profiling::record_count(
                         "building_field_reused",
                         u64::from(models.buildings.is_none()),
                     );
-                    viewer_foundation::profiling::record_count(
+                    viewer_runtime::profiling::record_count(
                         "building_field_updated",
                         u64::from(models.buildings.is_some()),
                     );
                 }
                 if let Some(placed) = models.buildings {
-                    let _place_span = viewer_foundation::profiling::span("building_place");
+                    let _place_span = viewer_runtime::profiling::span("building_place");
                     pass.update_placed(placed, BUILDING_TILE);
                 }
                 if pose_tick {
-                    let _animate_span = viewer_foundation::profiling::span("building_animate");
+                    let _animate_span = viewer_runtime::profiling::span("building_animate");
                     let _animate_profile =
-                        viewer_foundation::profiling::thread_span("building_animate");
+                        viewer_runtime::profiling::thread_span("building_animate");
                     pass.animate(animation_time, visible, &animation_offsets);
                 }
             }
             if let Some(pass) = unit_models {
                 let _part = Part::new("units");
-                let _units_span = viewer_foundation::profiling::span("step_units");
-                let place_span = viewer_foundation::profiling::span("unit_place");
-                let place_profile = viewer_foundation::profiling::thread_span("unit_place");
-                viewer_foundation::view_record::add(
+                let _units_span = viewer_runtime::profiling::span("step_units");
+                let place_span = viewer_runtime::profiling::span("unit_place");
+                let place_profile = viewer_runtime::profiling::thread_span("unit_place");
+                viewer_runtime::view_record::add(
                     "unit walk",
                     "placed",
                     models.units.standing.as_ref().map_or(0, Vec::len) as u64,
@@ -175,12 +175,12 @@ impl Presentation<'_> {
                 pass.update_moving(models.units, viewer_unit_models::unit_models::UNIT_TILE);
                 drop(place_profile);
                 drop(place_span);
-                let clocks_span = viewer_foundation::profiling::span("unit_clocks");
+                let clocks_span = viewer_runtime::profiling::span("unit_clocks");
                 pass.set_clocks(unit_history.combat_clocks());
                 drop(clocks_span);
                 if pose_tick {
-                    let _animate_span = viewer_foundation::profiling::span("unit_animate");
-                    let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
+                    let _animate_span = viewer_runtime::profiling::span("unit_animate");
+                    let _animate_profile = viewer_runtime::profiling::thread_span("unit_animate");
                     pass.animate(animation_time, None, &[0.0]);
                 }
             }
@@ -196,11 +196,11 @@ impl Presentation<'_> {
         let mut struck = BTreeSet::new();
         if let (Some(pass), Some(ambient)) = (map_frame, ambient) {
             let _part = Part::new("map_frame");
-            let _map_frame_span = viewer_foundation::profiling::span("step_map_frame");
-            let ambient_span = viewer_foundation::profiling::span("ambient_update");
+            let _map_frame_span = viewer_runtime::profiling::span("step_map_frame");
+            let ambient_span = viewer_runtime::profiling::span("ambient_update");
             let mut placed = ambient.update(camera, size, animation_time);
             drop(ambient_span);
-            let strike_span = viewer_foundation::profiling::span("strike_update");
+            let strike_span = viewer_runtime::profiling::span("strike_update");
             let (impacts, clocks) = strikes.update(camera, size, animation_time, |key| {
                 pass.root_play_position(key)
             });
@@ -209,7 +209,7 @@ impl Presentation<'_> {
                 let (seed, identity) = instance.animation_key();
                 (*mesh, seed, identity)
             };
-            let place_span = viewer_foundation::profiling::span("map_frame_place");
+            let place_span = viewer_runtime::profiling::span("map_frame_place");
             pass.set_hidden(hidden_map_frame_actors(
                 graphics,
                 placed.iter().map(key),
@@ -221,11 +221,11 @@ impl Presentation<'_> {
             placed.extend(impacts);
             pass.update_placed(placed, 256.);
             drop(place_span);
-            let clocks_span = viewer_foundation::profiling::span("map_frame_clocks");
+            let clocks_span = viewer_runtime::profiling::span("map_frame_clocks");
             pass.set_clocks(clocks);
             drop(clocks_span);
             if pose_tick {
-                let _animate_span = viewer_foundation::profiling::span("map_frame_animate");
+                let _animate_span = viewer_runtime::profiling::span("map_frame_animate");
                 pass.animate(animation_time, None, &[0.]);
             }
             struck.extend(pass.clock_actor_addresses());
@@ -247,7 +247,7 @@ pub(super) struct Beside {
     pub size: [u32; 2],
     pub animation_time: f32,
     pub pose_tick: bool,
-    pub records: Option<viewer_foundation::profiling::ThreadRecords>,
+    pub records: Option<viewer_runtime::profiling::ThreadRecords>,
 }
 
 impl Beside {
@@ -256,8 +256,8 @@ impl Beside {
         let Self { graphics, camera, size, animation_time, pose_tick, .. } = self;
         if let Some((pass, assets, plan)) = self.aircraft.as_mut() {
             let _part = Part::new("aircraft");
-            let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
-            let field_span = viewer_foundation::profiling::span("aircraft_field");
+            let _aircraft_span = viewer_runtime::profiling::span("step_aircraft");
+            let field_span = viewer_runtime::profiling::span("aircraft_field");
             let (mut field, hidden) = plan.field(
                 assets,
                 animation_time,
@@ -265,48 +265,48 @@ impl Beside {
                 &|key| pass.root_play_position(key),
             );
             drop(field_span);
-            let place_span = viewer_foundation::profiling::span("aircraft_place");
+            let place_span = viewer_runtime::profiling::span("aircraft_place");
             pass.replace_field(&assets.library(), &mut field);
             pass.set_hidden(hidden);
             drop(place_span);
             if pose_tick {
-                let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
-                let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
+                let _animate_span = viewer_runtime::profiling::span("aircraft_animate");
+                let _animate_profile = viewer_runtime::profiling::thread_span("aircraft_animate");
                 pass.animate(animation_time, None, &[0.]);
             }
         }
         let (sprawl, city_presentation) = (self.sprawl.as_mut(), self.city_presentation.as_mut());
         if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
             let _part = Part::new("cities");
-            let _cities_span = viewer_foundation::profiling::span("step_cities");
-            let update_span = viewer_foundation::profiling::span("city_update");
+            let _cities_span = viewer_runtime::profiling::span("step_cities");
+            let update_span = viewer_runtime::profiling::span("city_update");
             let placed = presentation.update(
                 camera,
                 size,
                 viewer_models::draws_city_sprawl(&camera),
                 animation_time,
             );
-            viewer_foundation::view_record::add(
+            viewer_runtime::view_record::add(
                 "city sprawl",
                 if placed.is_some() { "field_rebuilt" } else { "field_kept" },
                 1,
             );
             if let Some(placed) = placed {
-                let _place_span = viewer_foundation::profiling::span("city_place");
-                viewer_foundation::view_record::add("city sprawl", "placed", placed.len() as u64);
+                let _place_span = viewer_runtime::profiling::span("city_place");
+                viewer_runtime::view_record::add("city sprawl", "placed", placed.len() as u64);
                 pass.update_placed(placed, viewer_buildings::sprawl::SPRAWL_TILE);
             }
             drop(update_span);
-            let clocks_span = viewer_foundation::profiling::span("city_clocks");
+            let clocks_span = viewer_runtime::profiling::span("city_clocks");
             pass.set_clock_records(presentation.clock_records(), animation_time);
             drop(clocks_span);
             if pose_tick {
-                let _animate_span = viewer_foundation::profiling::span("city_animate");
-                let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
+                let _animate_span = viewer_runtime::profiling::span("city_animate");
+                let _animate_profile = viewer_runtime::profiling::thread_span("city_animate");
                 pass.animate(animation_time, None, &[0.0]);
             }
         }
-        self.records = viewer_foundation::profiling::take_thread_records();
+        self.records = viewer_runtime::profiling::take_thread_records();
         self
     }
 }
@@ -362,8 +362,8 @@ mod tests {
     use super::*;
     use viewer_rail::trains::{TrainAssets, TrainPlan};
     use dashboard_core::protocol::MapGraphics;
-    use viewer_foundation::map::camera::{MapDefines, MapSize, Placement};
-    use viewer_foundation::map::presentation::Continuity;
+    use viewer_gpu::camera::{MapDefines, MapSize, Placement};
+    use viewer_runtime::presentation::Continuity;
 
     struct World {
         trains: (ModelPass, Arc<TrainAssets>, TrainPlan),
@@ -391,7 +391,7 @@ mod tests {
                     keep_particle: true,
                     ..Default::default()
                 });
-            let bounds = Arc::new(viewer_foundation::map::province_admission::edge_boxes());
+            let bounds = Arc::new(viewer_gpu::province_admission::edge_boxes());
             let mut unit_history = viewer_unit_history::unit_history::History::default();
             unit_history.set(
                 (1..=6)
@@ -429,7 +429,7 @@ mod tests {
                 map_buildings: None,
                 unit_models: Some(&mut self.unit_models),
                 unit_gates: Some(viewer_unit_history::unit_history::test_support::GATES),
-                visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
+                visibility: viewer_foundation::mode_visibility::Visibility::POLITICAL,
                 mesh_limit: i32::MAX,
                 movement_arrows: None,
                 animated_text: None,
@@ -525,12 +525,12 @@ mod tests {
             return;
         };
         let enabled = arm == "1";
-        assert_eq!(viewer_foundation::profile_writer::profiling(), enabled);
+        assert_eq!(viewer_runtime::profile_writer::profiling(), enabled);
         let mut world = World::new();
         for frame in 0..4 {
-            viewer_foundation::profiling::begin_thread_frame();
+            viewer_runtime::profiling::begin_thread_frame();
             world.step(&MapGraphics::default(), frame as f32 / 10.0);
-            let line = viewer_foundation::profiling::take_thread_spans();
+            let line = viewer_runtime::profiling::take_thread_spans();
             for stage in ["history_update", "unit_place", "unit_animate"] {
                 let calls = format!("mt_{stage}_calls=1");
                 assert_eq!(line.split_whitespace().any(|field| field == calls), enabled);

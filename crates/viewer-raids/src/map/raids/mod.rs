@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use viewer_foundation::map::province_map::province_at;
+use viewer_gpu::province_map::province_at;
 use viewer_foundation::trigger_content::TriggerContent;
 pub mod cycle;
 mod details;
@@ -12,7 +12,7 @@ pub mod launch;
 pub mod offers;
 pub mod paths;
 pub mod unit_inputs;
-use viewer_foundation::map::movement_reads as reach;
+use viewer_unit_reads::movement_reads as reach;
 pub mod script;
 pub mod tooltips;
 pub mod windows;
@@ -32,17 +32,17 @@ use replay_data::{rows::RaidRow, rows::RaidScope, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
 use script::{Eval, REFUSED, Scope, Scopes, World, refused};
-use viewer_foundation::map::mode_visibility::RaidReach;
-use viewer_foundation::map::{
-    camera::Camera,
+use viewer_foundation::mode_visibility::RaidReach;
+use viewer_gpu::camera::Camera;
+use viewer_native_gui::{
     native_gui::{self, SpriteSetter, lifecycle::MapIconPool},
     sprites::{self, Batch},
 };
-use viewer_foundation::table_access::{Refusals, TokenKeys, refuse};
+use dashboard_text::table_access::{Refusals, TokenKeys, refuse};
 
 pub const UNKNOWN_GLYPH: &str = "GFX_raid_type_icon_unknown";
 pub const OTHER_GLYPH: &str = "GFX_raid_type_icon_other_raid";
-use viewer_foundation::map::native_windows::RAID_WINDOW as WINDOW;
+use viewer_native_gui::native_windows::RAID_WINDOW as WINDOW;
 const FRAME_SPRITE: &[u8] = b"GFX_on_map_raids_icons_frame_strip";
 
 type TemplateNames = HashMap<Box<[u8]>, Result<String, String>>;

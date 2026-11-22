@@ -9,7 +9,8 @@ use content_reader_core::ResolvedLayers;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{rows::OperationRow, rows::OperativeMissionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{map::native_gui, tooltip_text::Tooltip};
+use viewer_native_gui::native_gui;
+use viewer_foundation::tooltip_text::Tooltip;
 
 use super::raids::{RaidAssets, script::World};
 
@@ -21,7 +22,7 @@ pub mod windows;
 
 pub use windows::{IntelHit, IntelInputs, IntelView, PreparedIntel, hit_at, hit_seen, prepare};
 
-use viewer_foundation::map::native_windows;
+use viewer_native_gui::native_windows;
 
 pub const CONTAINER_WINDOW: &str = native_windows::INTEL_CONTAINER_WINDOW;
 pub const ENTRIES_LIST: &str = "entries";
@@ -164,7 +165,7 @@ impl IntelDefines {
     }
 
     pub fn cutoff(&self) -> f32 {
-        viewer_foundation::map::camera::fixed5_camera_distance(self.cutoff)
+        viewer_gpu::camera::fixed5_camera_distance(self.cutoff)
     }
 }
 

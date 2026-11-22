@@ -1,18 +1,18 @@
 
 #[cfg(test)]
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::native_resources::Context;
+use viewer_gpu::camera::MapSize;
+use viewer_native_gui::native_resources::Context;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
+use viewer_native_gui::test_support::gui;
 
 use super::*;
-use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
+use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
 
 const BUTTON_CONTAINER: &str = "raid_map_icon_button_container";
 const FRAME: &str = "raid_map_icon_frame";
@@ -188,7 +188,7 @@ impl PreparedRaids {
         details: Option<&(u32, std::sync::Arc<tooltips::Details>)>,
         hovered: Option<u32>,
     ) -> usize {
-        use viewer_foundation::map::icon_windows::{Owner, Plan};
+        use viewer_native_gui::icon_windows::{Owner, Plan};
         hits.clear();
         let owners: Vec<_> = self
             .placed
@@ -356,7 +356,7 @@ mod tests {
         family: IconFamily::Raids,
         moves: None,
     };
-    use viewer_foundation::map::native_gui::lifecycle::Instance;
+    use viewer_native_gui::native_gui::lifecycle::Instance;
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
@@ -429,7 +429,7 @@ mod tests {
             height: 300.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         };
         let key = |id| tooltips::Key::Raid {
             id,

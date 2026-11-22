@@ -1,7 +1,7 @@
 use super::*;
 use std::f32::consts::TAU;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::province_admission::side_planes;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::province_admission::side_planes;
 
 const MAP_SIZE_X: f32 = 5632.0;
 const TILE: f32 = 256.0;
@@ -366,7 +366,7 @@ fn tree_visibility_keeps_the_camera_side_margin() {
         height: 50.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let planes = side_planes(camera, [1024, 768]);
     assert!(visible(&bucket, 0.0, &planes));
@@ -381,7 +381,7 @@ fn one_nearest_visible_wrap_owns_the_tile_and_equal_distance_keeps_first() {
         height: 50.0,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let frame = TreeFrame {
         camera,

@@ -2,7 +2,8 @@ use super::{Arg, Tooltip, counter_content, tooltip_text_state_name};
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::{naval_count_approx, perspective::Vision};
+use viewer_unit_reads::naval_count_approx;
+use viewer_foundation::perspective::Vision;
 use viewer_foundation::tooltip_text::localise;
 
 const INTEL_FEATURE: u32 = 1 << 5;

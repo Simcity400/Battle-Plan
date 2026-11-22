@@ -1,13 +1,10 @@
 use super::super::*;
 use super::{PreparedItem, prepared};
 use std::collections::HashMap;
-use viewer_foundation::map::{
+use viewer_native_gui::{
     gui_resources::hit_rectangle,
     icon_windows::{self, Drawn},
-    native_gui::{
-        self,
-        lifecycle::{Instance, SlotId, Tick},
-    },
+    native_gui::{self, lifecycle::{Instance, SlotId, Tick}},
     native_windows::AIR_WING_WINDOW as WINDOW,
 };
 
@@ -28,7 +25,7 @@ pub(crate) struct View {
 pub(crate) struct Composed {
     pub parts: Vec<Vec<native_gui::Part>>,
     hits: Vec<(
-        viewer_foundation::map::counter_hovers::unit_hits::Blocker,
+        viewer_native_gui::counter_hovers::unit_hits::Blocker,
         AirGridHover,
     )>,
 }
@@ -302,7 +299,7 @@ impl View {
                     &mut report.icon_gui_notes,
                 ) {
                     composed.hits.push((
-                        viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+                        viewer_native_gui::counter_hovers::unit_hits::Blocker {
                             rect: hit.rect,
                             layer,
                         },
@@ -455,7 +452,7 @@ fn update_item(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::test_support::gui::fixture;
+    use viewer_native_gui::test_support::gui::fixture;
     fn window_bytes() -> &'static [u8] {
         br#"guiTypes={containerWindowType={name=air_wing_counter size={width=58 height=27}
             buttonType={name=count_bg quadTextureSprite=GFX_even}
@@ -609,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_committed_wing_grid_follows_the_hits_already_taken() {
-        let blocker = |x| viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+        let blocker = |x| viewer_native_gui::counter_hovers::unit_hits::Blocker {
             rect: [x, 0., 1., 1.],
             layer: 3,
         };

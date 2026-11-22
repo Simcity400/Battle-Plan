@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, convert::Infallible, io, sync::Arc};
 
 use replay_data::rows::{ProvinceRow, tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::{memo::Recent, tables::core};
+use viewer_runtime::memo::Recent;
+use viewer_foundation::tables::core;
 
 use crate::map::counter_groups::{Bounds, Extents, GroupDefines};
 

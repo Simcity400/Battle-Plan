@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::map::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
+use viewer_gpu::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
 
 fn map_camera(height: f32) -> Camera {
     Placement::map([2816.0, 1024.0], height).on(MapSize::TEST, MapDefines::test())

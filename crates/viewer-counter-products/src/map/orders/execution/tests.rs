@@ -6,8 +6,8 @@ use replay_data::{
     rows::TableId, rows::TableSchema,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::memo::TableKey;
-use viewer_foundation::map::memo::project;
+use viewer_runtime::memo::TableKey;
+use viewer_runtime::memo::project;
 
 const GROUP: u64 = 0x1_0000_0035;
 const UNIT: u64 = 0x2_0000_0061;

@@ -134,7 +134,7 @@ test('disposable adapter refuses debug input and its teardown removes it', async
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('fresh owned Edge contexts preserve exact pixels and 5,000 rows; a stall expires', () => {
+test('fresh owned Edge contexts preserve exact pixels and 5,000 rows, captured once loading clears', () => {
   const baseURL = new URL('./', import.meta.url).href;
   const program = `import assert from 'node:assert/strict';
     import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
@@ -163,19 +163,43 @@ async function rasterProof() {
     for (const [index, directory] of dirs.entries()) {
       const context = await browser.newContext(contextOptions);
       try {
+        await context.clock.install({ time: 0 });
+        await context.clock.pauseAt(1_000);
         const page = await context.newPage();
         await page.setContent(`<img src="${source}" width="${index ? 85 : 16}">`); await page.locator('img').evaluate(img => img.decode());
         await page.setContent(`<style>body{margin:0}.dash-widget{width:350px;height:1400px;background:#234567}img{width:18.5px;height:18.5px}</style>
           <article class="dash-widget"><header class="dash-widget-header"><h2>Synthetic</h2></header><div class="dash-widget-scaled"><img src="${source}"><span role="status" data-parity-loading>Loading widget?</span></div></article>`);
         await page.locator('img').evaluate(img => img.decode());
         const lists = [{ complete: true, total: 5000, rows: Array.from({ length: 5000 }, (_, index) => ({ index, key: String(index), value: index * 2 })) }];
-        await page.evaluate(() => setTimeout(() => {
+        const real = app.createApp(page, {});
+        let settled = false, settling;
+        const started = new Promise(resolve => { settling = resolve; });
+        const settle = async locator => { settling(); await real.settle(locator); settled = true; };
+        const driver = { ...real, settle, prepare: async () => {}, install: async () => {}, widget: () => page.locator('.dash-widget'), prepareFullRows: async () => {}, fullRows: async () => lists };
+        await page.evaluate(() => {
+          let samples = 0;
+          Object.defineProperty(window, '__hoi4ParityBrowserErrors', { configurable: true, get: () => { samples++; return []; } });
+          window.__settleSamples = () => samples;
+        });
+        const capturing = captureWidget({ page, app: driver, kind: 'synthetic', directory });
+        await started;
+        const samples = () => page.evaluate(() => window.__settleSamples());
+        for (let tick = 0; await samples() === 0; tick++) {
+          assert.ok(tick < 10_000, 'the capture never sampled the widget');
+          await page.clock.runFor(16);
+        }
+        const before = await samples();
+        await page.clock.runFor(1_000);
+        await page.evaluate(() => 0);
+        assert.equal(settled, false, 'a loading marker holds the capture past a full stability interval');
+        assert.ok(await samples() - before >= 50, 'the capture sampled the widget through a full stability interval');
+        await page.evaluate(() => {
           const fallback = document.querySelector('[data-parity-loading]');
           fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
-        }, 900));
-        const real = app.createApp(page, {});
-        const driver = { ...real, prepare: async () => {}, install: async () => {}, widget: () => page.locator('.dash-widget'), prepareFullRows: async () => {}, fullRows: async () => lists };
-        const item = await captureWidget({ page, app: driver, kind: 'synthetic', directory });
+        });
+        await page.clock.runFor(256);
+        await page.clock.resume();
+        const item = await capturing;
         assert.equal(item.status, 'captured'); assert.equal(item.model.lists[0].rows.length, 5000);
         assert.match(item.model.text, /Rows/); assert.doesNotMatch(item.model.text, /Loading widget/);
         assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), [1440, 1000, 1]);
@@ -186,11 +210,28 @@ async function rasterProof() {
     assert.equal((await compareCaptures(...dirs)).pass, true);
     const file = path.join(dirs[1], 'synthetic.png'), png = PNG.sync.read(await readFile(file)); png.data[0] ^= 1; await writeFile(file, PNG.sync.write(png));
     assert.equal((await compareCaptures(...dirs)).counts.DIFF, 1);
-    const failure = await captureWidget({ page: { close: async () => {} }, app: { prepare: () => new Promise(() => {}) }, kind: 'stall', directory: root, budgetMs: 20 });
-    assert.equal(failure.status, 'error'); assert.match(failure.error, /budget exceeded/); assert.ok(failure.wallMs < 1000);
-    await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(JSON.parse(await readFile(path.join(root, 'stall.json'))).status, 'error');
   } finally { await rm(root, { recursive: true, force: true }); }
 }
+
+test('a stalled capture fails when its budget runs out, closes its page and publishes the error', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'parity-stall-'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let closed = false, settled = false;
+    const pending = captureWidget({ page: { close: async () => { closed = true; } }, app: { prepare: () => new Promise(() => {}) }, kind: 'stall', directory: root, budgetMs: 20 });
+    void pending.then(() => { settled = true; });
+    t.mock.timers.tick(19);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([settled, closed], [false, false], 'inside its budget the capture waits');
+    t.mock.timers.tick(1);
+    const failure = await pending;
+    assert.equal(failure.status, 'error'); assert.match(failure.error, /budget exceeded/); assert.equal(closed, true);
+    assert.equal(JSON.parse(await readFile(path.join(root, 'stall.json'))).status, 'error');
+  } finally {
+    t.mock.timers.reset();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('refs refuse without exporting anything', async () => {
   await assert.rejects(cache.resolveUI('HEAD'), /Prepared UI worktree/);

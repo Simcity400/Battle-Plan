@@ -9,7 +9,7 @@ use crate::{
 use map_display_data::landscape::Regions;
 use serde_json::json;
 use std::{collections::BTreeSet, io, sync::Arc, time::Instant};
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 use viewer_borders::{border_pass::ClassPlan, demilitarized::{Zone, ZonePlan}};
 use viewer_map_modes::map_mode::MapMode;
 

@@ -1,10 +1,8 @@
 use super::*;
 use viewer_map_modes::map_mode::{MapMode, Stock, visibility};
-use viewer_foundation::map::{
-    camera::{Free, Lens, MapDefines, MapSize, Pose},
-    mode_visibility::PriorityTable,
-    test_support::gui,
-};
+use viewer_gpu::camera::{Free, Lens, MapDefines, MapSize, Pose};
+use viewer_foundation::mode_visibility::PriorityTable;
+use viewer_native_gui::test_support::gui;
 
 const RULES: &[u8] = b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }
     adjacency_rule = { name = B }

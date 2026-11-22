@@ -5,7 +5,8 @@ use content_reader_core::buildings::Buildings;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::{map::tables::core, table_access::TokenNames};
+use viewer_foundation::tables::core;
+use dashboard_text::table_access::TokenNames;
 
 pub(super) const NO_MAXIMUM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 

@@ -204,7 +204,7 @@ fn equipment_destruction_hourly_restoration_is_terminal_on_exactly_two_errors() 
         restore_hourly(
             &mut restored,
             &mut previous_errors,
-            Instant::now(),
+            || Duration::ZERO,
             || {
                 hourly_calls.set(hourly_calls.get() + 1);
                 if busy && hourly_calls.get() == 1 {
@@ -290,17 +290,18 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
         // hourly exit.
         unsafe { admission.enter() }.is_none()
     );
-    let passed = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let waiter = scope.spawn(|| {
-            wait_acquisitions(&admission, Instant::now()).unwrap();
-            passed.store(true, Ordering::SeqCst);
-        });
-        assert!(!passed.load(Ordering::SeqCst));
-        drop(lease);
-        waiter.join().unwrap();
+    let (lease, polls) = (std::cell::RefCell::new(Some(lease)), Cell::new(0));
+    let waited = wait_acquisitions(&admission, || {
+        polls.set(polls.get() + 1);
+        if polls.get() == 1 {
+            drop(lease.borrow_mut().take());
+            Duration::ZERO
+        } else {
+            DETACH_BUDGET
+        }
     });
-    assert!(passed.load(Ordering::SeqCst));
+    assert_eq!(waited, Ok(()), "releasing the last lease quiets admission");
+    assert_eq!(polls.get(), 1);
     assert!(
         // SAFETY: This is the admitted callback's live gate entry, paired with its native tick or
         // hourly exit.
@@ -347,7 +348,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     let admission = CaptureAdmission::new();
     // SAFETY: Detach closes admission before waiting for admitted capture to complete.
     unsafe { admission.close() };
-    wait_acquisitions(&admission, Instant::now()).unwrap();
+    wait_acquisitions(&admission, || Duration::ZERO).unwrap();
     assert!(observers_active());
     let retained_shared = SharedSlot::retained_for_test();
     let pointer = retained_shared.identity_for_test();

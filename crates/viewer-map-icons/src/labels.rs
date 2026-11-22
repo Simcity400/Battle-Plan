@@ -5,36 +5,30 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
-use viewer_foundation::map::icon_windows::Retry;
+use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
+use viewer_native_gui::icon_windows::Retry;
 #[cfg(test)]
-use viewer_foundation::map::label_reads::victory_point_keys;
-use viewer_foundation::map::label_reads::{
-    label_anchors, label_name, overrides_ladder, unreadable,
-};
-use viewer_foundation::map::mode_visibility::{Priorities, PriorityIcon, Visibility};
-use viewer_foundation::map::native_resources::Context;
-use viewer_foundation::map::province_schedule::Schedule;
+use viewer_runtime::label_reads::victory_point_keys;
+use viewer_runtime::label_reads::{label_anchors, label_name, overrides_ladder, unreadable};
+use viewer_foundation::mode_visibility::{Priorities, PriorityIcon, Visibility};
+use viewer_native_gui::native_resources::Context;
+use viewer_gpu::province_schedule::Schedule;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
+use viewer_native_gui::test_support::gui;
 
 use content_reader_core::{gui::native, map::MapData, map::ProvinceKind};
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
-use viewer_foundation::map::{
-    allegiance::{self, Allegiance},
-    camera::Camera,
-    native_gui::{
-        self,
-        lifecycle::{MapIconPool, SlotId},
-    },
+use viewer_foundation::{allegiance::{self, Allegiance}, tables::{Available, core, rows}};
+use viewer_gpu::camera::Camera;
+use viewer_native_gui::{
+    native_gui::{self, lifecycle::{MapIconPool, SlotId}},
     sprites::{self, Batch},
-    tables::{Available, core, rows},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,10 +97,10 @@ impl LabelDefines {
 
 const FRAMES_PER_SHAPE: u32 = 5;
 
-pub const ANCHOR_STACK: u32 = viewer_foundation::map::label_reads::VICTORY_POINT;
+pub const ANCHOR_STACK: u32 = viewer_runtime::label_reads::VICTORY_POINT;
 
-use viewer_foundation::map::native_windows::CAPITAL_WINDOW;
-use viewer_foundation::map::native_windows::VICTORY_POINT_WINDOW;
+use viewer_native_gui::native_windows::CAPITAL_WINDOW;
+use viewer_native_gui::native_windows::VICTORY_POINT_WINDOW;
 
 const ICON: &str = "icon";
 const TEXT: &str = "text";
@@ -405,9 +399,9 @@ pub struct LabelView {
     report: LabelReport,
     texts: [BTreeMap<SlotId, String>; 2],
     written: [HashMap<u32, Written>; 2],
-    painted: [viewer_foundation::map::icon_windows::Painted<u32, [IconAnchor; 2]>; 2],
+    painted: [viewer_native_gui::icon_windows::Painted<u32, [IconAnchor; 2]>; 2],
     labels: HashMap<u32, usize>,
-    owners: Vec<viewer_foundation::map::icon_windows::Owner>,
+    owners: Vec<viewer_native_gui::icon_windows::Owner>,
 }
 
 #[derive(Debug)]
@@ -481,9 +475,9 @@ impl PreparedLabels {
         view: &mut LabelView,
     ) {
         assert_eq!(dirty.len(), self.placed.len());
-        use viewer_foundation::map::icon_windows::{Owner, Plan};
+        use viewer_native_gui::icon_windows::{Owner, Plan};
         if self.nothing_due(context, dirty, view) {
-            viewer_foundation::map::redraws::note("labels.nothing_due", 1);
+            viewer_runtime::redraws::note("labels.nothing_due", 1);
             for (pool, name) in view.pools.iter_mut().zip([VICTORY_POINT_WINDOW, CAPITAL_WINDOW]) {
                 pool.stood_still(name);
             }
@@ -653,15 +647,15 @@ impl PreparedLabels {
         view: &LabelView,
     ) -> bool {
         if view.shown_dirty != dirty {
-            viewer_foundation::map::redraws::note("labels.due.dirty", 1);
+            viewer_runtime::redraws::note("labels.due.dirty", 1);
             return false;
         }
         if view.shown != self.placed {
-            viewer_foundation::map::redraws::note("labels.due.placed", 1);
+            viewer_runtime::redraws::note("labels.due.placed", 1);
             return false;
         }
         if view.projected != self.report {
-            viewer_foundation::map::redraws::note("labels.due.projection", 1);
+            viewer_runtime::redraws::note("labels.due.projection", 1);
             return false;
         }
         view.pools.iter().enumerate().all(|(index, pool)| {
@@ -686,7 +680,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
+    use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
 
     const UNANCHORED: IconAnchor = IconAnchor {
         world: [0.0; 3],
@@ -694,13 +688,13 @@ pub(crate) mod tests {
         family: IconFamily::Labels,
         moves: None,
     };
-    use viewer_foundation::map::native_resources;
+    use viewer_native_gui::native_resources;
 
-    use viewer_foundation::map::test_support::localisation::loaded;
+    use viewer_foundation::test_support::localisation::loaded;
 
     #[test]
     fn one_hour_s_labels_are_placed_for_each_camera_and_report_only_that_camera_s_refusals() {
-        use viewer_foundation::map::camera::{MapDefines, MapSize, Placement, WATER_HEIGHT};
+        use viewer_gpu::camera::{MapDefines, MapSize, Placement, WATER_HEIGHT};
         let candidate = |province: u32, x: f32, dot: f32, text: f32, name: Result<Option<Arc<str>>, String>| Candidate {
             province,
             world: [x, WATER_HEIGHT, 1000.0],
@@ -755,7 +749,7 @@ pub(crate) mod tests {
         use replay_data::rows::{
             CountryLinkRow, CountryRow, PoliticsRow, ProvinceRow, StateRow, TableRows,
         };
-        use viewer_foundation::map::test_support::{test_frame, test_put};
+        use viewer_foundation::test_support::{test_frame, test_put};
         let mut frame = test_frame(1);
         test_put(
             &mut frame,
@@ -990,8 +984,8 @@ pub(crate) mod tests {
         );
         assert!(view.drawn().quads[0].layer < view.drawn().quads[1].layer);
 
-        let workers = viewer_foundation::parallel::Workers::new(Arc::new(
-            viewer_foundation::builder_pool::Pool::new(1).unwrap(),
+        let workers = viewer_runtime::parallel::Workers::new(Arc::new(
+            viewer_runtime::builder_pool::Pool::new(1).unwrap(),
         ));
         let dirty = labels.dirty(&Schedule::default());
         let outputs: [_; 2] = std::array::from_fn(|_| std::sync::Mutex::new(None));
@@ -1160,7 +1154,7 @@ pub(crate) mod tests {
     #[test]
     fn dump_icons_past_the_initial_pool_all_draw() {
         content_reader_core::test_game::enter();
-        use viewer_foundation::map::icon_windows::DumpFrames;
+        use viewer_native_gui::icon_windows::DumpFrames;
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1571,8 +1565,11 @@ pub(crate) mod tests {
     }
     #[test]
     fn a_map_recording_holds_the_political_map_labels_and_weather() {
-        use viewer_foundation::map::test_support::{
-            assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+        use viewer_foundation::test_support::{
+            assert_reads_recorded,
+            complete_frame,
+            map_scoped,
+            put_sample_campaign,
         };
         use viewer_map_modes::political::{build, FrameKey, test_support::map};
         use content_reader_core::map::MapData;

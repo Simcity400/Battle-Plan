@@ -130,7 +130,7 @@ impl Following {
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let stop = Arc::clone(&stop);
             move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 loop {
                     apart.step(entry.playhead().head(Instant::now()));
                     let mut stopping = stop.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

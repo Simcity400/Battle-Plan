@@ -7,7 +7,14 @@ use crate::{
 };
 use replay_data::rows::{Recorded, ReservedCountryIntelSample, ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs, TableId, ZeroSubjectInputs};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use viewer_foundation::map::perspective::{active_war, intel_fraction, map_cutoff, map_intel_subject, network_term, saturate};
+use viewer_foundation::perspective::{
+    active_war,
+    intel_fraction,
+    map_cutoff,
+    map_intel_subject,
+    network_term,
+    saturate,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Order {

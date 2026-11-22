@@ -11,12 +11,12 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
-use viewer_foundation::map::pass_key::{Keyed, PassKey};
-use viewer_foundation::map::textures::Content;
-use viewer_foundation::map::gpu_contract::REFRACTION_FORMAT;
-use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
-use viewer_foundation::parallel::Workers;
+use viewer_gpu::gpu_contract::DEPTH_FORMAT;
+use viewer_gpu::pass_key::{Keyed, PassKey};
+use viewer_gpu::textures::Content;
+use viewer_gpu::gpu_contract::REFRACTION_FORMAT;
+use viewer_gpu::gpu_contract::SCENE_FORMAT;
+use viewer_runtime::parallel::Workers;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cover {
@@ -376,7 +376,7 @@ impl Coasts {
                 bytes,
                 map,
                 water,
-                viewer_foundation::map::province_map::HEIGHT_SCALE,
+                viewer_gpu::province_map::HEIGHT_SCALE,
                 widest_step(map),
             )
         });
@@ -1210,7 +1210,7 @@ impl Terrain {
                 self.cut.as_ref().map_or(&[][..], |cut| cut.rims.as_slice()),
             );
             let draws = keyed.draws(key);
-            let record = |name| viewer_foundation::view_record::add("map scene", name, 1);
+            let record = |name| viewer_runtime::view_record::add("map scene", name, 1);
             record(if draws { "sea_bed_drawn" } else { "sea_bed_kept" });
             if let Some(part) = keyed.differed() {
                 record(part);
@@ -1421,7 +1421,7 @@ impl Terrain {
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &Prepared) {
         let kept = &self.retained[prepared.at];
-        viewer_foundation::view_record::add(
+        viewer_runtime::view_record::add(
             "map scene",
             if kept.bundle.is_some() {
                 "terrain_bundles"
@@ -2215,7 +2215,7 @@ mod tests {
             vec![Ok(Arc::new(Compiled { vertex, pixel }))],
         );
         let map = [512, 256];
-        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, _queue) = viewer_gpu::test_support::gpu::device();
         let arena = gpu::Arena::new(&device);
         let bytes = vec![200u8; (map[0] * map[1]) as usize];
         let mut terrain = Terrain::new(&device, &effect, &bytes, map, 1, &Workers::default()).unwrap();

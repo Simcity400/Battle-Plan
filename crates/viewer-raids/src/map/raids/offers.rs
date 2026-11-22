@@ -14,7 +14,7 @@ use super::{
     script::{Eval, Scope, Scopes, World},
     target_country,
 };
-use viewer_foundation::parallel::Workers;
+use viewer_runtime::parallel::Workers;
 
 #[derive(Clone, Debug)]
 pub struct Province {

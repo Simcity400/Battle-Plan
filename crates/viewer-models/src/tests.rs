@@ -1,9 +1,9 @@
 use crate::test_support::{MESHES_GFX, PLANE_ASSET, library_with_one_mesh, triangle_mesh, visual_stack};
 use crate::*;
 use std::collections::BTreeSet;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
 
 #[test]
 fn library_growth_mid_intro_keeps_the_raid_units_history() {
@@ -246,7 +246,7 @@ fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() 
         Placement {
             center: [0.0, 0.0],
             height,
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test())
     };
@@ -1558,8 +1558,8 @@ fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_s
 fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_stands_for_the_cull() {
     let wide = 1.0e9;
     let width = MapSize::TEST.x();
-    let eye = viewer_foundation::map::camera::Camera { center: [-10., 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
-    let moved = viewer_foundation::map::camera::Camera { center: [width - 10., 0.], ..eye };
+    let eye = viewer_gpu::camera::Camera { center: [-10., 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_gpu::camera::Pose::Map };
+    let moved = viewer_gpu::camera::Camera { center: [width - 10., 0.], ..eye };
     let pass = ModelPass::new(&library_with_one_mesh(1.), "unit models");
     let cull = GameCull { eye: [-10., 100., 0.], sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]], x: -10., pad: 0. };
     pass.set_cull(Some(cull), Some(cull));
@@ -1573,10 +1573,10 @@ fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gat
     let wide = 1.0e9;
     let pass = ModelPass::new(&library_with_one_mesh(1.), "unit models");
     let sides = [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]];
-    let pad = viewer_foundation::map::camera::PAD;
+    let pad = viewer_gpu::camera::PAD;
     let held = GameCull { eye: [1000., 0.5, 0.], sides, x: 1000., pad };
     let own = |x: f32| GameCull { eye: [x, 0.5, 0.], sides, x, pad: 0. };
-    let camera = |x: f32| viewer_foundation::map::camera::Camera { center: [x, 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
+    let camera = |x: f32| viewer_gpu::camera::Camera { center: [x, 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_gpu::camera::Pose::Map };
     let at = |x: f32| ModelInstance { position: [x, 0., 0.], scale: 1.0, ..ModelInstance::default() };
     let default = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(held.test([1434., 0.5, 0.], 1., default), None, "the held cull, moved by the pan, admits it");

@@ -10,9 +10,17 @@ use shader_pipeline::gpu;
 
 use super::{Assets, Style, draw};
 use viewer_scene_base::shader_scene;
-use viewer_foundation::map::{
-    camera::Camera, free_icons, gpu_contract::Targets, native_gui::SpriteKind,
-    native_resources::GuiResources, native_text, province_map::HeightField, province_schedule,
+use viewer_gpu::{
+    camera::Camera,
+    gpu_contract::Targets,
+    province_map::HeightField,
+    province_schedule,
+};
+use viewer_native_gui::{
+    free_icons,
+    native_gui::SpriteKind,
+    native_resources::GuiResources,
+    native_text,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,8 +156,8 @@ impl Player {
                 draw::Renderer::new(
                     effect,
                     samples,
-                    viewer_foundation::map::gpu_contract::SCENE_FORMAT,
-                    viewer_foundation::map::gpu_contract::DEPTH_FORMAT,
+                    viewer_gpu::gpu_contract::SCENE_FORMAT,
+                    viewer_gpu::gpu_contract::DEPTH_FORMAT,
                 )
             }),
             styles: assets
@@ -468,7 +476,7 @@ impl Player {
                 let renderer = self.renderer.as_ref().map_err(Clone::clone)?;
                 let prepared = renderer
                     .prepare(arena, retained, &mesh, &camera, [1.0; 4], &|id| {
-                        if id == viewer_foundation::map::sprites::NO_TEXTURE {
+                        if id == viewer_native_gui::sprites::NO_TEXTURE {
                             Ok(None)
                         } else {
                             self.textures
@@ -540,7 +548,7 @@ fn popup_height(heights: HeightField<'_>, x: f32, z: f32) -> f32 {
         content_reader_core::crt::truncate_f32(z + 0.5).clamp(0, heights.height as i32 - 1) as usize;
     let row = heights.height as usize - 1 - bottom;
     (f32::from(heights.values[row * heights.width as usize + column]) * 0.1)
-        .max(viewer_foundation::map::camera::WATER_HEIGHT)
+        .max(viewer_gpu::camera::WATER_HEIGHT)
 }
 
 #[cfg(test)]
@@ -628,8 +636,8 @@ mod tests {
 
     #[test]
     fn a_free_eye_keeps_a_text_s_screen_size_and_fades_it_behind_hills() {
-        use viewer_foundation::map::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
-        use viewer_foundation::map::terrain_sight::TerrainSight;
+        use viewer_gpu::camera::{Free, Lens, MapDefines, MapSize, Placement, Pose};
+        use viewer_gpu::terrain_sight::TerrainSight;
         let camera = |eye: [f32; 3], target: [f32; 3]| {
             Placement {
                 center: [eye[0], eye[2]],

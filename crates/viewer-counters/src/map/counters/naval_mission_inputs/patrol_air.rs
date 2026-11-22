@@ -1,6 +1,6 @@
 use super::*;
 use air_range::Sources;
-use viewer_foundation::map::{air_detection, air_range};
+use viewer_unit_reads::{air_detection, air_range};
 
 const ONE: i64 = 100_000;
 const INVALID: i64 = 0xffff_ffff;

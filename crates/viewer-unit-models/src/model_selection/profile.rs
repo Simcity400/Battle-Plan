@@ -1,5 +1,5 @@
 use std::{cell::Cell, time::Instant};
-use viewer_foundation::profiling::{BuilderSpan, BuilderSpans, current_thread_cpu_time};
+use viewer_runtime::profiling::{BuilderSpan, BuilderSpans, current_thread_cpu_time};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Stage {

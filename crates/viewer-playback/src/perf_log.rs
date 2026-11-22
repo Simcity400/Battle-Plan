@@ -252,7 +252,7 @@ static PREFIX: OnceLock<std::ffi::OsString> = OnceLock::new();
 
 pub fn log_to(prefix: &std::path::Path) {
     let _ = PREFIX.set(prefix.as_os_str().to_owned());
-    viewer_foundation::map::gpu_frame_time::request();
+    viewer_gpu::gpu_frame_time::request();
     account();
 }
 

@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 #[cfg(test)]
-use viewer_foundation::debug_fields::sorted_set;
+use viewer_runtime::debug_fields::sorted_set;
 
 const OWNED: &str = ".mod-corpus-owned";
 const OWNED_HEADER: &str = "mod-corpus values";

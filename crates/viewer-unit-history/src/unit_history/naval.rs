@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Budget, Entity, Frame, Kind, ModelInstance, Part, Target};
-use {viewer_foundation::unit_class::CounterClass, viewer_foundation::unit_handle::Unit};
+use viewer_runtime::{unit_class::CounterClass, unit_handle::Unit};
 
 #[derive(Clone, Default)]
 pub struct Sources {
@@ -15,7 +15,7 @@ pub struct Sources {
 #[derive(Clone)]
 pub struct FormationPlacement {
     pub force: u64,
-    pub position: viewer_foundation::map::counter_move::Position,
+    pub position: viewer_unit_reads::counter_move::Position,
     pub rotation: f32,
     pub scale: f32,
 }

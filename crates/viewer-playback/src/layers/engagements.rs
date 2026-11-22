@@ -8,7 +8,7 @@ use replay_data::{
     rows::{Field, NativeValue, NavalCombatSideDetails, Opaque, TableId},
 };
 use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
-use viewer_foundation::{
+use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{History, LAND, NAVAL, Provenance, at},
     naval_check,

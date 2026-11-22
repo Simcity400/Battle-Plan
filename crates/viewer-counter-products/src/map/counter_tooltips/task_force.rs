@@ -2,13 +2,13 @@
 use super::*;
 use replay_data::rows::TaskForceMapMotionRow;
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::task_force::Control;
-use viewer_foundation::map::counter_hovers::task_force::Hover;
+use viewer_native_gui::counter_hovers::task_force::Control;
+use viewer_native_gui::counter_hovers::task_force::Hover;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::gui_authored::Authored;
+use viewer_native_gui::counter_hovers::gui_authored::Authored;
 
 fn motion<'a>(context: &Context<'a>, id: u64) -> Result<&'a TaskForceMapMotionRow, String> {
     let rows = context
@@ -144,7 +144,7 @@ pub(super) mod tests {
     use replay_data::{
         rows::CountryLinkRow, rows::ProvinceRow, rows::TableRows, rows::TaskForceRow,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     pub(in crate::map::counter_tooltips) fn with_test_context<R>(
         frame: &DecodedFrame,
@@ -283,12 +283,12 @@ pub(super) mod tests {
     #[test]
     fn task_force_hover_never_matches_a_port_or_other_unit_class_with_the_same_handle() {
         let hover = hover(Control::Normal, &[7]);
-        let mut hit = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+        let mut hit = viewer_native_gui::counter_hovers::unit_hits::Hit {
             plate: None,
             ours: true,
             port: false,
             rect: [0.; 4],
-            kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+            kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
             members: Arc::clone(&hover.members),
             layer: 0,
         };
@@ -296,7 +296,7 @@ pub(super) mod tests {
         hit.port = true;
         assert!(!hover.matches(&hit));
         hit.port = false;
-        hit.kind = viewer_foundation::map::counter_hovers::unit_hits::Kind::Division;
+        hit.kind = viewer_native_gui::counter_hovers::unit_hits::Kind::Division;
         assert!(!hover.matches(&hit));
     }
 

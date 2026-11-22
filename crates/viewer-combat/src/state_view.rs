@@ -10,7 +10,7 @@ mod rule;
 mod stakeholders;
 pub(crate) use owner::OWNER_INFO_MODIFIERS;
 
-pub(crate) fn icon_modifier_names(windows: &viewer_foundation::map::native_windows::NativeWindows) -> Vec<String> {
+pub(crate) fn icon_modifier_names(windows: &viewer_native_gui::native_windows::NativeWindows) -> Vec<String> {
     windows.gui_type(WINDOW).map(province::icon_modifier_names).unwrap_or_default()
 }
 
@@ -27,9 +27,8 @@ use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::{
-    combat_selection::Selection, map::perspective::Vision, tooltip_text::displayable,
-};
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::{perspective::Vision, tooltip_text::displayable};
 
 pub(super) const WINDOW: &[u8] = b"countrystateview";
 

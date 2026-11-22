@@ -2,7 +2,8 @@
 use super::*;
 use viewer_aircraft::aircraft::AircraftAssets;
 use viewer_rail::trains::TrainAssets;
-use viewer_foundation::map::{native_resources::GuiResources, province_map::HeightField};
+use viewer_native_gui::native_resources::GuiResources;
+use viewer_gpu::province_map::HeightField;
 
 #[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
 pub enum SceneInput<'a> {
@@ -18,7 +19,7 @@ pub enum SceneInput<'a> {
     WarmPolitical {
         map: &'a content_reader_core::map::MapData,
         strategic_regions: &'a BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
-        field: &'a viewer_foundation::map::gradient_math::FieldDefines,
+        field: &'a viewer_gpu::gradient_math::FieldDefines,
         cache: &'a viewer_map_modes::political_gpu::Cache,
     },
     SetBorders {
@@ -49,14 +50,14 @@ pub enum SceneInput<'a> {
         positions: Box<
             dyn Iterator<
                     Item = (
-                        viewer_foundation::unit_handle::Unit,
-                        &'a viewer_foundation::map::counter_move::Position,
+                        viewer_runtime::unit_handle::Unit,
+                        &'a viewer_unit_reads::counter_move::Position,
                         f32,
                         f32,
                     ),
                 > + 'a,
         >,
-        history: &'a viewer_foundation::map::counter_move::SharedMovement,
+        history: &'a viewer_unit_reads::counter_move::SharedMovement,
     },
     ShareProvinceSchedule(&'a Shared),
     AdvanceProvinces {
@@ -65,17 +66,17 @@ pub enum SceneInput<'a> {
     },
     SetMovementArrows {
         epoch: (u64, i32, u32),
-        routes: Vec<viewer_foundation::map::movement_routes::Route>,
+        routes: Vec<viewer_unit_reads::movement_routes::Route>,
         warnings: Vec<String>,
         heights: HeightField<'a>,
         width: f32,
-        selected: &'a BTreeSet<viewer_foundation::unit_handle::Unit>,
+        selected: &'a BTreeSet<viewer_runtime::unit_handle::Unit>,
     },
     PrepareArrowBounds {
         map: &'a content_reader_core::map::MapData,
         known: &'a Arc<BTreeMap<u32, [f32; 4]>>,
     },
-    SetUnitSelection(&'a BTreeSet<viewer_foundation::unit_handle::Unit>),
+    SetUnitSelection(&'a BTreeSet<viewer_runtime::unit_handle::Unit>),
     SelectProvinces(BTreeSet<u32>),
     SetRaidUnits(Vec<(usize, viewer_models::ModelInstance)>),
     SetFactionHighlight {
@@ -94,7 +95,7 @@ pub enum SceneInput<'a> {
     SetStrategicStyles(&'a BTreeMap<u32, map_display_data::landscape::Style>),
     SetGraphics(dashboard_core::protocol::MapGraphics),
     SetPlayer(Option<PlayerModel<'a>>),
-    SetVisibility(viewer_foundation::map::mode_visibility::Visibility),
+    SetVisibility(viewer_foundation::mode_visibility::Visibility),
     LabelFrame(u64),
     CutProvinceFrame(f32),
 }

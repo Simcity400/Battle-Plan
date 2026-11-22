@@ -2,9 +2,9 @@
 use super::*;
 use content_reader_core::unit_leader::SubUnits;
 use replay_data::{rows::ShipModelRow, rows::ShipRow, rows::TaskForceRow};
-use viewer_foundation::map::counter_order;
-use viewer_foundation::map::msvc_stable_sort::sort;
-use viewer_foundation::map::naval_count_approx;
+use viewer_unit_reads::counter_order;
+use viewer_runtime::msvc_stable_sort::sort;
+use viewer_unit_reads::naval_count_approx;
 
 struct Member<'a> {
     force: &'a TaskForceRow,
@@ -490,7 +490,7 @@ mod tests {
         rows::Recorded, rows::ShipCounterInputs, rows::TableId, rows::TableRows,
         rows::TaskForceCounterInputRow,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn loc() -> Localisation {
         let mut loc = [
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn current_variant_depth_orders_exact_modded_composition() {
         content_reader_core::test_game::enter();
-        let content = viewer_foundation::map::test_support::equipment_from_documents(&[br"
+        let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_root = { is_archetype = yes type = destroyer }
                 mod_deep = { archetype = mod_root parent = mod_root }

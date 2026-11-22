@@ -8,7 +8,8 @@ use std::{
     sync::Arc,
 };
 use viewer_counters::map::counters::combat_markers::LandMarker;
-use viewer_foundation::{engagement_history::History, map::tables::core};
+use viewer_engagements::engagement_history::History;
+use viewer_foundation::tables::core;
 
 pub fn make_with(document: &Document, index: Option<Index>) -> Box<dyn Layer> {
     Box::new(LandMarkers::new(Arc::clone(&document.content) as Arc<dyn Front>, index))
