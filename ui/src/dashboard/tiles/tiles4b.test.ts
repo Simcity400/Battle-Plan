@@ -144,30 +144,30 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   assert.equal(other.current!.size, 3);
 });
 
-test('decoding a landing tile: what it costs on the thread it lands on', () => {
-  const measure = (keys: number) => {
-    const tags = Array.from({ length: keys }, (_, at) => `T${at}`);
-    const bytes = new Uint8Array(keys * TILE_BINS * (1 + 16 + 5));
-    bytes.fill(PRESENT, 0, keys * TILE_BINS);
-    const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
-    const rounds = 40;
-    tilesOf(reply, tags, 6, 10, tag => tag);
-    let started = performance.now();
-    for (let at = 0; at < rounds; at++) bytesOf(reply.bins);
-    const base64Ms = (performance.now() - started) / rounds;
-    started = performance.now();
-    for (let at = 0; at < rounds; at++) tilesOf(reply, tags, 6, 10, tag => tag);
-    const totalMs = (performance.now() - started) / rounds;
-    const decoded = { ...reply, bins: bytesOf(reply.bins as string) };
-    started = performance.now();
-    for (let at = 0; at < rounds; at++) tilesOf(decoded, tags, 6, 10, tag => tag);
-    const pageMs = (performance.now() - started) / rounds;
-    return { keys, bytes: reply.bins.length, base64Ms, totalMs, pageMs };
-  };
-  for (const keys of [8, TILE_GROUP, 100]) {
-    const { bytes, base64Ms, totalMs, pageMs } = measure(keys);
-    console.log(`decode a tile of ${keys} keys (${bytes} base64 bytes): base64 ${base64Ms.toFixed(3)} ms, all on one thread ${totalMs.toFixed(3)} ms, left on the page after the worker ${pageMs.toFixed(3)} ms`);
-    if (keys <= TILE_GROUP) assert.ok(pageMs < 1, `${pageMs} ms on the page for a tile of ${keys} keys`);
+test('a landing tile decoded off the page is read on the page without base64, each of its bytes copied once into its tiles', () => {
+  const native = Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array };
+  const { fromBase64 } = native, { atob } = globalThis;
+  let decodes = 0;
+  if (fromBase64) native.fromBase64 = text => { decodes++; return fromBase64(text); };
+  globalThis.atob = text => { decodes++; return atob(text); };
+  try {
+    for (const keys of [8, TILE_GROUP, 100]) {
+      const tags = Array.from({ length: keys }, (_, at) => `T${at}`);
+      const bytes = new Uint8Array(keys * TILE_BINS * (1 + 16 + 5));
+      bytes.fill(PRESENT, 0, keys * TILE_BINS);
+      const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
+      decodes = 0;
+      const decoded = { ...reply, bins: bytesOf(reply.bins) };
+      assert.equal(decodes, 1, 'the worker decodes the base64 once');
+      const tiles = tilesOf(decoded, tags, 6, 10, tag => tag);
+      assert.equal(decodes, 1, `the page decodes nothing for a tile of ${keys} keys`);
+      assert.equal(tiles.reduce((sum, tile) => sum + tile.bytes, 0), bytes.length, `each byte of a tile of ${keys} keys lands in one tile`);
+      tilesOf(reply, tags, 6, 10, tag => tag);
+      assert.equal(decodes, 2, 'a tile still in base64 is decoded once where it is read');
+    }
+  } finally {
+    if (fromBase64) native.fromBase64 = fromBase64;
+    globalThis.atob = atob;
   }
 });
 

@@ -157,12 +157,22 @@ test('conference choices bind campaign and branch and name an unrecorded war pla
 });
 
 test('balances scale linearly to 5,000 countries without a chosen cap', () => {
-  const moves: Move[] = [];
-  for (let id = 0; id < 5000; id++) moves.push(move(id, holder(id, `T${id}`, 100), holder((id + 1) % 5000, `T${(id + 1) % 5000}`, 101), 101));
-  const data = decodeTransfers(reply([deal('world', moves)]));
-  const started = performance.now();
-  const rows = countryBalances(data.all);
-  assert.equal(rows.length, 5000);
-  assert.ok(rows.every(row => row.gained === 1 && row.lost === 1 && netVictoryPoints(row) === 0n));
-  assert.ok(performance.now() - started < 1000);
+  const readsPerTransfer = (count: number) => {
+    const moves: Move[] = [];
+    for (let id = 0; id < count; id++) moves.push(move(id, holder(id, `T${id}`, 100), holder((id + 1) % count, `T${(id + 1) % count}`, 101), 101));
+    let reads = 0;
+    const seen = new WeakMap<object, object>();
+    const counted = <T,>(value: T): T => {
+      if (typeof value !== 'object' || value === null) return value;
+      let proxy = seen.get(value);
+      if (!proxy) seen.set(value, proxy = new Proxy(value, { get: (target, key) => { reads++; return counted(Reflect.get(target, key)); } }));
+      return proxy as T;
+    };
+    const transfers = decodeTransfers(reply([deal('world', moves)])).all.map(counted);
+    const rows = countryBalances(transfers), read = reads / count;
+    assert.equal(rows.length, count);
+    assert.ok(rows.every(row => row.gained === 1 && row.lost === 1 && netVictoryPoints(row) === 0n));
+    return read;
+  };
+  assert.equal(readsPerTransfer(5000), readsPerTransfer(50), 'a transfer among 5,000 countries is read as often as one among 50');
 });

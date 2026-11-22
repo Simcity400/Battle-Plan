@@ -77,17 +77,21 @@ test('each resource’s deals draw as one band, exports above the axis and impor
 });
 
 test('5,000 trading partners group in one pass over the deals', () => {
-  const count = 5000;
-  const big: TradeFlowsReply = { ...reply, countries: Array.from({ length: count + 1 }, (_, index) => `T${String(index).padStart(5, '0')}`),
-    countryIdentities: Array.from({ length: count + 1 }, (_, index) => ({ tag: `T${String(index).padStart(5, '0')}`, runs: [{ firstHour: 0, lastHour: 95, slot: index + 10, countryId: index + 10 }] })),
-    flows: Array.from({ length: count }, (_, index) => ({ seller: index + 1, buyer: 0, sellerIdentity: `[${index + 11},${index + 11}]`, buyerIdentity: '[10,10]',
-      resource: index % 2 ? 2 : 9, firstHours: [0], lastHours: [95], deliveredRaw: [String(index + 1)],
-      sellerTags: [index + 1], buyerTags: [0], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
-  const { imports } = countryTrade(decodeTrade(big), '[10,10]', null);
-  const started = performance.now();
-  const partners = countryParts(imports, 'imports', 'partner', 'current', 0, 50, big.known);
-  assert.equal(partners.length, count);
-  assert.equal(countryTotal(imports, 'current', 0, 50, big.known), BigInt(count * (count + 1) / 2));
-  assert.deepEqual(bandGroups(imports.map(flow => flow.resource.id)).length, 2, 'two resources draw two bands');
-  assert.ok(performance.now() - started < 2000);
+  const readsPerDeal = (count: number) => {
+    const big: TradeFlowsReply = { ...reply, countries: Array.from({ length: count + 1 }, (_, index) => `T${String(index).padStart(5, '0')}`),
+      countryIdentities: Array.from({ length: count + 1 }, (_, index) => ({ tag: `T${String(index).padStart(5, '0')}`, runs: [{ firstHour: 0, lastHour: 95, slot: index + 10, countryId: index + 10 }] })),
+      flows: Array.from({ length: count }, (_, index) => ({ seller: index + 1, buyer: 0, sellerIdentity: `[${index + 11},${index + 11}]`, buyerIdentity: '[10,10]',
+        resource: index % 2 ? 2 : 9, firstHours: [0], lastHours: [95], deliveredRaw: [String(index + 1)],
+        sellerTags: [index + 1], buyerTags: [0], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
+    let reads = 0;
+    const imports = countryTrade(decodeTrade(big), '[10,10]', null).imports
+      .map(flow => new Proxy(flow, { get: (target, key) => { reads++; return Reflect.get(target, key); } }));
+    const partners = countryParts(imports, 'imports', 'partner', 'current', 0, 50, big.known);
+    assert.equal(countryTotal(imports, 'current', 0, 50, big.known), BigInt(count * (count + 1) / 2));
+    const read = reads / count;
+    assert.equal(partners.length, count);
+    assert.deepEqual(bandGroups(imports.map(flow => flow.resource.id)).length, 2, 'two resources draw two bands');
+    return read;
+  };
+  assert.equal(readsPerDeal(5000), readsPerDeal(50), 'a deal among 5,000 partners is read as often as one among 50');
 });

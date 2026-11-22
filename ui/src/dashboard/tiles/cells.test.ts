@@ -130,15 +130,18 @@ test('following at 1,440 h/s with spend ticks on: a cluster once drawn never cha
   console.log(`following with 18-pixel cells at 1,440 h/s: ${initial} tiles to open, then ${moving} requests; ${checked} drawn clusters unchanged across frames, ${inside} head-cell clusters seen growing; ${renders} renders`);
 });
 
-function inert(): CanvasRenderingContext2D {
+function counting() {
+  const counts = { vertices: 0, strokes: 0 };
   const nothing = () => {};
-  const ctx: Record<string, unknown> = {};
-  for (const name of ['save', 'restore', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fill', 'rect', 'clip', 'arc', 'closePath', 'fillRect', 'setLineDash'])
+  const ctx: Record<string, unknown> = {
+    moveTo: () => { counts.vertices++; }, lineTo: () => { counts.vertices++; }, stroke: () => { counts.strokes++; },
+  };
+  for (const name of ['save', 'restore', 'beginPath', 'fill', 'rect', 'clip', 'arc', 'closePath', 'fillRect', 'setLineDash'])
     ctx[name] = nothing;
-  return ctx as unknown as CanvasRenderingContext2D;
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, counts, reset: () => { counts.vertices = 0; counts.strokes = 0; } };
 }
 
-test('a frame of eight lines and their spend ticks, clipped at a moving head, costs under half a millisecond', async () => {
+test('a frame of eight lines and their spend ticks, clipped at a moving head, strokes at most eight vertices a line for each bin from the start of the view to the head, and one tick a shown cluster', async () => {
   const tags = ['GER', 'ITA', 'JAP', 'SOV', 'USA', 'ENG', 'FRA', 'CHI'];
   const cache = new TileCache(), marks = lane(tags);
   const view = new TileView(cache, marks, () => {});
@@ -148,26 +151,17 @@ test('a frame of eight lines and their spend ticks, clipped at a moving head, co
   const lines = [...view.current!.values()];
   const frame = plotFrame(700, 300, { top: 10, right: 40, bottom: 20, left: 60 }, [at.from, head], [-300, 300], false, 0, false);
   const tokens = { lineWidth: { series: 2 }, surface: '#fff', muted: '#888' } as unknown as Parameters<typeof drawLineSummary>[2];
-  const ctx = inert();
+  const { ctx, counts, reset } = counting();
   const ticks = lines.map(line => ({ ...line.marks!, placement: 'ticks' as const }));
-  for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, head);
-  const frames = 120;
-  let perFrame = Infinity;
-  for (let batch = 0; batch < 5; batch++) {
-    const started = performance.now();
-    for (let step = 0; step < frames; step++) {
-      const now = head + step * 0.4;
-      for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, now);
-      for (const summary of ticks) drawMarkSummary(ctx, frame, tokens, summary, now);
-    }
-    perFrame = Math.min(perFrame, (performance.now() - started) / frames);
+  const binHours = lines[0].summary.tiles!.binHours;
+  for (let step = 0; step < 120; step++) {
+    const now = head + step * 0.4;
+    reset();
+    for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, now);
+    const bins = Math.ceil((now - frame.x[0]) / binHours) + 1;
+    assert.ok(counts.vertices <= lines.length * 8 * bins, `${counts.vertices} vertices for ${lines.length} lines of ${bins} bins at hour ${now}`);
+    reset();
+    for (const summary of ticks) drawMarkSummary(ctx, frame, tokens, summary, now);
+    assert.equal(counts.strokes, ticks.reduce((sum, summary) => sum + shownClusters(summary, now).length, 0), `one tick a shown cluster at hour ${now}`);
   }
-  let ticksOnly = Infinity;
-  for (let batch = 0; batch < 5; batch++) {
-    const started = performance.now();
-    for (let step = 0; step < frames; step++) for (const summary of ticks) drawMarkSummary(ctx, frame, tokens, summary, head + step * 0.4);
-    ticksOnly = Math.min(ticksOnly, (performance.now() - started) / frames);
-  }
-  console.log(`a frame of ${lines.length} tiled lines and their spend ticks (${ticks[0].clusters.length} clusters a line): ${perFrame.toFixed(3)} ms, of which the ticks ${ticksOnly.toFixed(3)} ms`);
-  assert.ok(perFrame < 0.5, `${perFrame} ms a frame`);
 });
