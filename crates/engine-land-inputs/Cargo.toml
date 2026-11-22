@@ -20,6 +20,7 @@ engine-executable.workspace = true
 engine-native.workspace = true
 
 [dev-dependencies]
+engine-allocation.workspace = true
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]

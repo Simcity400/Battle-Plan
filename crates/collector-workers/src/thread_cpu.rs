@@ -34,7 +34,9 @@ static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
 static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "worker_sampler")]
-pub struct StopOnThreadExit;
+#[derive(Default)]
+pub struct StopOnThreadExit(std::marker::PhantomData<*const ()>);
+
 #[cfg(feature = "worker_sampler")]
 impl Drop for StopOnThreadExit {
     fn drop(&mut self) {

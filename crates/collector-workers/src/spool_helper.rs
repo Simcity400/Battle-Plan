@@ -114,7 +114,7 @@ impl SpoolHelper {
             .spawn(move || {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
+                let _sampler_exit = crate::thread_cpu::StopOnThreadExit::default();
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
                 serve(&worker, priority);

@@ -186,7 +186,7 @@ pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io:
 }
 fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
     collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Status);
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Status);
     collector_memory::terminal::attempted_hour(None);

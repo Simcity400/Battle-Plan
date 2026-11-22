@@ -343,6 +343,7 @@ method:spawn
 method:stack_size
 method:step
 method:stop
+method:stop_spool
 method:store
 method:summary
 method:then
@@ -354,7 +355,6 @@ method:unwrap
 method:unwrap_or
 method:unwrap_or_else
 method:validation_refusals
-method:wake_spool
 method:with_file_name
 method:withheld
 method:without_history

@@ -783,7 +783,7 @@ pub struct Shared {
     pub dropped: AtomicU64,
     pub pool_bytes: engine_allocation::SharedBox<AtomicU64>,
     pub recording: AtomicBool,
-    pub stop_spool: AtomicBool,
+    stop_spool: AtomicBool,
     pub spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
     roster: UnsafeCell<Option<Box<Roster>>>,
@@ -1470,6 +1470,18 @@ impl Shared {
         true
     }
 
+    pub fn spool_stopping(&self) -> bool {
+        self.stop_spool.load(Ordering::Acquire)
+    }
+
+    /// # Safety
+    /// Recording must be disabled, and capture and decode must no longer
+    /// publish observations or update the pending loss buffer.
+    pub unsafe fn stop_spool(&self) {
+        self.stop_spool.store(true, Ordering::Release);
+        self.wake_spool();
+    }
+
     pub fn wake_spool(&self) {
         if let Some(spool) = self.spool_waker.get() {
             spool.unpark();
@@ -1806,7 +1818,7 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::SeqCst) != 0
 }
 
-pub fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Option<i64> {
+pub(crate) fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Option<i64> {
     let base = base.load(Ordering::Acquire);
     let tail = tail.load(Ordering::Acquire);
     (base > 0 && tail > 0).then(|| base.saturating_add(tail))

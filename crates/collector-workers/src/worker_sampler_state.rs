@@ -14,9 +14,9 @@ use windows_sys::Win32::{
 };
 
 static JOBS: Mutex<Vec<(u32, u64, Weak<AtomicU16>)>> = Mutex::new(Vec::new());
-pub static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
-pub static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
-pub static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
+pub(crate) static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
+pub(crate) static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
+pub(crate) static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static JOB_SLOT: RefCell<Option<Arc<AtomicU16>>> = const { RefCell::new(None) };
 }
@@ -65,13 +65,13 @@ impl JobSlot {
     }
 }
 
-pub struct JobGuard {
+pub(crate) struct JobGuard {
     slot: Option<JobSlot>,
     previous: u16,
     _thread: PhantomData<Rc<()>>,
 }
 
-pub fn job(id: u16, game_slot: impl FnOnce() -> Option<&'static AtomicU16>) -> JobGuard {
+pub(crate) fn job(id: u16, game_slot: impl FnOnce() -> Option<&'static AtomicU16>) -> JobGuard {
     let slot = JOB_SLOT
         .with_borrow(Clone::clone)
         .map(JobSlot::Worker)
@@ -94,20 +94,20 @@ impl Drop for JobGuard {
     }
 }
 
-pub struct SampledJob(Arc<AtomicU16>);
+pub(crate) struct SampledJob(Arc<AtomicU16>);
 
 impl SampledJob {
-    pub fn id(&self) -> u16 {
+    pub(crate) fn id(&self) -> u16 {
         self.0.load(Ordering::Acquire)
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn fixture(slot: Arc<AtomicU16>) -> Self {
+    pub(crate) fn fixture(slot: Arc<AtomicU16>) -> Self {
         Self(slot)
     }
 }
 
-pub fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
+pub(crate) fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
     JOBS.lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -115,23 +115,23 @@ pub fn registered_job(id: u32) -> Option<(u64, SampledJob)> {
         .and_then(|(_, created, job)| job.upgrade().map(|job| (*created, SampledJob(job))))
 }
 
-pub fn clear_jobs() {
+pub(crate) fn clear_jobs() {
     let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
     drop(jobs);
 }
 
-pub struct Control {
-    pub on_panic: fn(),
-    pub stop: Arc<AtomicBool>,
-    pub active: Arc<AtomicBool>,
-    pub thread: Mutex<Option<JoinHandle<()>>>,
-    pub ready: AtomicBool,
-    pub join_complete: AtomicBool,
+pub(crate) struct Control {
+    pub(crate) on_panic: fn(),
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) active: Arc<AtomicBool>,
+    pub(crate) thread: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) ready: AtomicBool,
+    pub(crate) join_complete: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
-    pub follower_waits: std::sync::atomic::AtomicUsize,
+    pub(crate) follower_waits: std::sync::atomic::AtomicUsize,
 }
 impl Control {
-    pub fn new(
+    pub(crate) fn new(
         stop: Arc<AtomicBool>,
         active: Arc<AtomicBool>,
         enabled: bool,
@@ -149,7 +149,7 @@ impl Control {
         }
     }
 
-    pub fn stop_join(&self) {
+    pub(crate) fn stop_join(&self) {
         self.stop.store(true, Ordering::Release);
         while !self.ready.load(Ordering::Acquire) {
             thread::yield_now();

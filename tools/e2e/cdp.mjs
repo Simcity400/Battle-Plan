@@ -41,6 +41,108 @@ export async function cdpSession(url) {
   return { send, on, close: () => socket.close() };
 }
 
+export function createIpcTracker({ on, getResponseBody, now = Date.now, wait = sleep }) {
+  const ipcCalls = new Map();
+  const ipcById = new Map();
+  const waiters = new Map();
+  const parseIpcBody = text => {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  const headerValue = (headers, name) => {
+    if (!headers || typeof headers !== 'object') return null;
+    const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+    return match && typeof match[1] === 'string' ? match[1].trim().toLowerCase() : null;
+  };
+  on('Network.requestWillBeSent', ({ requestId, request }) => {
+    const command = /^https?:\/\/ipc\.localhost\/([^/?]+)/.exec(request?.url ?? '')?.[1];
+    if (command !== 'export_map') return;
+    if ((request?.method ?? '').toUpperCase() !== 'POST') return;
+    let resolveDone;
+    const done = new Promise(resolve => { resolveDone = resolve; });
+    const entry = { id: requestId, command, at: now(), settled: false, ok: null, status: null, tauriResponse: null, result: null, error: null, done, resolveDone };
+    if (!ipcCalls.has(command)) ipcCalls.set(command, []);
+    ipcCalls.get(command).push(entry);
+    ipcById.set(requestId, entry);
+    const pending = waiters.get(command);
+    if (pending) {
+      for (const listener of [...pending]) listener(entry);
+    }
+  });
+  on('Network.responseReceived', ({ requestId, response }) => {
+    const entry = ipcById.get(requestId);
+    if (!entry) return;
+    entry.status = response?.status ?? null;
+    entry.tauriResponse = headerValue(response?.headers, 'tauri-response');
+  });
+  const finish = (entry, ok, result, error) => {
+    entry.ok = ok;
+    entry.result = ok ? result : null;
+    entry.error = ok ? null : error;
+    entry.settled = true;
+    entry.resolveDone(entry);
+  };
+  on('Network.loadingFinished', ({ requestId }) => {
+    const entry = ipcById.get(requestId);
+    if (!entry || entry.settled) return;
+    ipcById.delete(requestId);
+    const statusOk = entry.status !== null && entry.status >= 200 && entry.status < 300;
+    const ok = statusOk && entry.tauriResponse === 'ok';
+    const fallbackError = entry.tauriResponse === 'error'
+      ? 'Tauri command returned an error'
+      : `HTTP ${entry.status ?? 'error'} (Tauri-Response: ${entry.tauriResponse ?? 'missing'})`;
+    Promise.resolve(getResponseBody(requestId)).then(
+      reply => {
+        const body = reply?.body ?? '';
+        const text = reply?.base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
+        const parsed = parseIpcBody(text);
+        const error = typeof parsed === 'string' && parsed ? parsed : fallbackError;
+        finish(entry, ok, parsed, error);
+      },
+      () => finish(entry, ok, null, fallbackError),
+    );
+  });
+  on('Network.loadingFailed', ({ requestId, errorText }) => {
+    const entry = ipcById.get(requestId);
+    if (!entry || entry.settled) return;
+    ipcById.delete(requestId);
+    finish(entry, false, null, errorText || 'IPC request failed');
+  });
+  const format = entry => ({ ok: entry.ok, status: entry.status, result: entry.result, error: entry.error });
+  const waitForIpc = async (command, since, timeoutMs = 20_000) => {
+    const deadline = now() + timeoutMs;
+    const findMatch = () => (ipcCalls.get(command) ?? []).findLast(entry => entry.at >= since) ?? null;
+    let match = findMatch();
+    if (!match) {
+      const remaining = deadline - now();
+      if (remaining <= 0) return null;
+      match = await new Promise(resolve => {
+        if (!waiters.has(command)) waiters.set(command, new Set());
+        let done = false;
+        const cleanup = value => {
+          if (done) return;
+          done = true;
+          waiters.get(command)?.delete(onEntry);
+          resolve(value);
+        };
+        const onEntry = entry => { if (entry.at >= since) cleanup(entry); };
+        waiters.get(command).add(onEntry);
+        wait(remaining).then(() => cleanup(null));
+      });
+    }
+    if (!match) return null;
+    if (match.settled) return format(match);
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      await Promise.resolve();
+      return match.settled ? format(match) : null;
+    }
+    const finished = await Promise.race([match.done, wait(remaining).then(() => null)]);
+    return finished ? format(finished) : null;
+  };
+  return { waitForIpc };
+}
+
 export async function connect(port, { timeoutMs = 120_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let target = null;
@@ -84,6 +186,10 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
       : send('Network.getRequestPostData', { requestId }).then(reply => reply.postData, () => null);
     read.then(body => { if (body) sent.set(command, { at: Date.now(), args: JSON.parse(body) }); }, () => {});
   });
+  const { waitForIpc } = createIpcTracker({
+    on,
+    getResponseBody: requestId => send('Network.getResponseBody', { requestId }),
+  });
   await send('Network.enable', { maxPostDataSize: 1 << 20 });
   const native = await evaluate('!!window.__TAURI_INTERNALS__');
   if (!native) throw new Error('refusing to drive a page outside the desktop host');
@@ -97,6 +203,7 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   return {
     send, evaluate, on, messages,
     lastSent: command => sent.get(command) ?? null,
+    waitForIpc,
     setCase(label) { current = label; },
     get case() { return current; },
     mouse,

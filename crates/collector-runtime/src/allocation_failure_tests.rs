@@ -834,7 +834,11 @@ fn thread_label(phase: Phase) -> io::Result<()> {
         Phase::SpoolHelper => {
             let helper = collector_workers::spool_helper::SpoolHelper::start(None)?;
             let job = || drop(engine_allocation::vec::<u64>(usize::MAX));
-            helper.join(false, &job, || ());
+            collector_workers::spool_helper::Helpers {
+                pool: std::slice::from_ref(&helper),
+                backlogged: false,
+            }
+            .join_each(&job, || ());
         }
         Phase::Spool => collector_spool::spooling::write_behind_tests::idle_sync_refused(),
         #[cfg(feature = "alloc-fault-injection")]
@@ -1457,9 +1461,9 @@ fn exercise_pipeline(
                                 &mut divisions,
                                 &mut [0; 6],
                             );
-                            contained |= unsafe {
-                                collector_capture::decode::allocation_exercise(&shared, index, hour)
-                            };
+                            contained |= collector_capture::decode::allocation_exercise(
+                                &shared, index, hour,
+                            );
                         }
                     }
                     Phase::Extended => {
@@ -1565,8 +1569,7 @@ fn exercise_pipeline(
             }));
     let incomplete_published = failed
         && phase == Phase::Decode
-        && (shared.frames.slot(index).completed.load(Ordering::Acquire) != 0
-            || !shared.frames.ready_is_empty());
+        && (shared.frames.slot(index).decode_completed() || !shared.frames.ready_is_empty());
     let mut admitted_after_failure = false;
     unsafe {
         collector_capture::sampling::synthetic_callback(

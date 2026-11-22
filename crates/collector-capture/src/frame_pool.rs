@@ -60,8 +60,8 @@ const STAGES: [FrameStage; 7] = [
 
 pub struct Slot {
     pub(crate) frame: AtomicPtr<Captured>,
-    pub completed: AtomicI64,
-    pub callback_tail: AtomicI64,
+    pub(crate) completed: AtomicI64,
+    pub(crate) callback_tail: AtomicI64,
     pub bytes: AtomicU64,
     pub generation: AtomicU64,
     pub fence: AtomicU64,
@@ -74,6 +74,15 @@ pub struct Slot {
 }
 
 impl Slot {
+    pub fn completed_callback_ticks(&self) -> Option<i64> {
+        crate::sampling::completed_callback_ticks(&self.completed, &self.callback_tail)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn decode_completed(&self) -> bool {
+        self.completed.load(Ordering::Acquire) != 0
+    }
+
     pub(crate) fn load(&self, order: Ordering) -> *mut Captured {
         self.frame.load(order)
     }

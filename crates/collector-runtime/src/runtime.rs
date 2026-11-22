@@ -1608,7 +1608,8 @@ fn run(
         installation_error = Some(error);
     }
     if installation_error.is_none() && !collector_memory::terminal::failed() {
-        HOURLY_ADMISSION.open();
+        // SAFETY: the runtime has published the capture state and has not begun teardown.
+        unsafe { HOURLY_ADMISSION.open() };
         collector_capture::capture_point::set_beside(
             capture_thread.is_some() && collector_capture::command_batch::enabled(),
         );
@@ -1945,8 +1946,8 @@ fn run(
         })
     };
     progress.step("decode_drained", None);
-    shared.stop_spool.store(true, Ordering::Release);
-    shared.wake_spool();
+    // SAFETY: recording is disabled and the producers have been drained.
+    unsafe { shared.stop_spool() };
     let mut pending = usize::MAX;
     while !spool.is_finished() {
         let ready = shared.frames.ready_len();
@@ -2195,7 +2196,7 @@ impl ObserverState for RestoreFamily {
                 "land event callbacks did not quiesce; collector retained",
             ),
             Self::CommandBatch => (
-                collector_capture::command_batch::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_capture::command_batch::active(),
                 "command batch callbacks did not quiesce; collector retained",
             ),
             Self::Portrait => (
@@ -4201,15 +4202,14 @@ fn spool_status<'a>(
     })
 }
 
-pub(crate) fn wait_completed_callback(
-    base: &std::sync::atomic::AtomicI64,
-    tail: &std::sync::atomic::AtomicI64,
+fn wait_completed_callback(
+    slot: &collector_capture::frame_pool::Slot,
 ) -> Result<i64, &'static str> {
     loop {
         if collector_memory::terminal::failed() {
             return Err("collector allocation failed");
         }
-        if let Some(ticks) = sampling::completed_callback_ticks(base, tail) {
+        if let Some(ticks) = slot.completed_callback_ticks() {
             return Ok(ticks);
         }
         std::thread::yield_now();
@@ -4277,7 +4277,7 @@ fn spool_loop(
     history_requests: SpoolHistory,
 ) -> Result<SpoolOutcome, &'static str> {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
     let stop_recording = StopRecordingOnSpoolExit {
         recording: &shared.recording,
     };
@@ -4325,10 +4325,7 @@ fn spool_loop(
                 collector_workers::frame_priority::Role::Spool,
             );
             let span = phases.span(Phase::Receive);
-            let elapsed = wait_completed_callback(
-                &shared.frames.slot(index).completed,
-                &shared.frames.slot(index).callback_tail,
-            )?;
+            let elapsed = wait_completed_callback(shared.frames.slot(index))?;
             let frame = unsafe { shared.frames[index].captured_mut() };
             frame.total_ns = shared.ns(elapsed);
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
@@ -4386,7 +4383,7 @@ fn spool_loop(
                         }),
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
-                if shared.stop_spool.load(Ordering::Acquire) {
+                if shared.spool_stopping() {
                     stop_recording.stop();
                     let _ = processor.detach();
                     return Err("cannot open campaign spool; observations remain unwritten");
@@ -4529,8 +4526,7 @@ fn spool_loop(
             &shared.history_frames,
             shared.frames.slots().map(|slot| &slot.fence),
         );
-        if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
-        {
+        if reported.elapsed() >= Duration::from_secs(1) || shared.spool_stopping() {
             let _span = phases.span(Phase::Status);
             collector_memory::terminal::attempted_hour(None);
             let _status_phase =
@@ -4571,7 +4567,7 @@ fn spool_loop(
         processor
             .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
             .map_err(|_| "spool slow-frame allocation failed")?;
-        if shared.stop_spool.load(Ordering::Acquire) {
+        if shared.spool_stopping() {
             if !shared.frames.ready_is_empty() {
                 continue;
             }
@@ -5071,7 +5067,7 @@ fn frame_builder(shared: &Shared, sizing: &SizingShared) {
 
 fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let Some(mut state) = lock(&sizing.state).take() else {
         return;

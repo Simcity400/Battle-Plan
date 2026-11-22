@@ -1905,7 +1905,10 @@ pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount>
             located: &|slot| located.contains(&(base.id, slot)),
             standing: standing.get(&base.id).copied().unwrap_or(0),
         };
-        merge_count(out.entry((state, site_kind(base.kind))).or_default(), base_count(&facts, &census));
+        let count = base_count(&facts, &census);
+        out.entry((state, site_kind(base.kind)))
+            .and_modify(|into| merge_count(into, count))
+            .or_insert(count);
     }
     out
 }
@@ -2000,8 +2003,8 @@ pub fn wing_base_of(air_base: u64, base_override: u64) -> u64 {
 pub(super) fn merge(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     match (a, b) {
         (Some(true), _) | (_, Some(true)) => Some(true),
-        (None, other) | (other, None) => other,
         (Some(false), Some(false)) => Some(false),
+        _ => None,
     }
 }
 

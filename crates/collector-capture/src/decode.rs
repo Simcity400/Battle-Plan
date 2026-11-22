@@ -910,7 +910,7 @@ pub unsafe fn start_worker() -> Result<(), &'static str> {
             .spawn(|| {
                 collector_workers::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit;
+                let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
                 #[cfg(feature = "worker_sampler")]
                 collector_workers::thread_cpu::register_decode();
                 set_decode_worker(unsafe {

@@ -89,31 +89,33 @@ pub fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &Frame) -> bo
 }
 
 pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String, mut done: impl FnMut(&MapSide, &Frame) -> bool) {
-    for _ in 0..50_000_000u64 {
+    let last = side.entry().playhead().timeline().last();
+    let carried = |side: &MapSide| side.parts().map_or(0, |(_, layers)| layers.iter().map(|layer| layer.carried().entities).sum::<usize>());
+    loop {
+        assert!(side.entry().playhead().error().is_none(), "the playhead stopped while waiting for {}: {:?}", what(side), side.entry().playhead().error());
         reads_landed(side);
-        let head = side.entry().playhead().newest().unwrap_or(0);
-        let frame = side.frame(head).unwrap();
+        let before = side.entry().playhead().step_state();
+        let carried_before = carried(side);
+        let head = before.0.unwrap_or(0);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if done(side, &frame) {
             return;
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || carried(side) < carried_before {
+            continue;
         }
+        let more = side
+            .wait_step_after(before, last)
+            .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
+        assert!(more, "the map side reached the last recorded hour ({last}) without reaching {}: {}", what(side), seen(side));
     }
-    panic!("the map side never reached {}: {}", what(side), seen(side));
 }
 
 pub fn reads_landed(side: &MapSide) {
-    let playhead = side.entry().playhead();
-    for _ in 0..50_000_000u64 {
-        let (declared, counters) = (playhead.declarations(), playhead.held().2);
-        if counters.declarations_applied == declared && counters.joins_open == 0 {
-            return;
-        }
-        std::thread::yield_now();
-    }
-    let (declared, counters) = (playhead.declarations(), playhead.held().2);
-    panic!("the tables declared (declaration {declared}) were never read and landed: {counters:?}; {}", seen(side));
+    side.entry()
+        .playhead()
+        .wait_declarations()
+        .unwrap_or_else(|error| panic!("the playhead stopped while landing declarations: {error}; {}", seen(side)));
 }
 
 pub fn seen(side: &MapSide) -> String {

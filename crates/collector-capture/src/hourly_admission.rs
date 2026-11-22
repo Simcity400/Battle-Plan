@@ -21,7 +21,10 @@ impl CaptureAdmission {
         }
     }
 
-    pub fn open(&self) {
+    /// # Safety
+    /// Only the runtime owner may open hourly admission, after publishing the capture state
+    /// and before starting teardown. No previous runtime may still be using the gate.
+    pub unsafe fn open(&self) {
         self.closed.store(false, Ordering::SeqCst);
     }
 

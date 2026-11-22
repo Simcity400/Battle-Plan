@@ -8,7 +8,7 @@ use std::{
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static OBSERVED: AtomicBool = AtomicBool::new(false);
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BATCHING: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicU32 = AtomicU32::new(0);
@@ -88,6 +88,10 @@ impl Hooks {
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.hooks.iter().flat_map(Hook::executable_ranges)
     }
+}
+
+pub fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst) != 0
 }
 
 pub fn enabled() -> bool {

@@ -486,7 +486,7 @@ impl Reconciler {
             .spawn(move || {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
+                let _sampler_exit = crate::thread_cpu::StopOnThreadExit::default();
                 crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority);
                 let mut own = crate::priority::OwnPriority::frame_pipeline();
                 if !own.reconciler() {
