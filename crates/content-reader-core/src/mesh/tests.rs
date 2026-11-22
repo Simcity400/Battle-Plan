@@ -2249,6 +2249,7 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     use std::sync::atomic::AtomicBool;
 
     let unsettled = br#"
+        @unused = m
         entity = {
             game_data = { atlas_size = { @extra = overlay_only x = 4 } }
             name = @extra

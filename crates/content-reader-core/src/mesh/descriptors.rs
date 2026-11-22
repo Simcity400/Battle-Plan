@@ -626,13 +626,13 @@ enum ObjectNode {
 }
 
 fn read_object_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
-    read_object_items_mode(bytes, path, false)
+    read_object_items_mode(bytes, path, None)
 }
 
 fn read_object_items_mode(
     bytes: &[u8],
     path: &str,
-    recover: bool,
+    recovery: Option<parser::native::Recovery>,
 ) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
     use parser::native::{Mode, Shape, Top};
     let mut dispatch = |node: ObjectNode, field: &parser::native::Field<'_>| match node {
@@ -679,12 +679,13 @@ fn read_object_items_mode(
             _ => Shape::Skip,
         },
     };
-    let read = if recover {
+    let read = if let Some(recovery) = recovery {
         parser::native::read_recovering(
             bytes,
             Mode::SkipMark,
             Top::File(ObjectNode::Top),
             None,
+            recovery,
             &mut dispatch,
         )
     } else {
@@ -696,7 +697,7 @@ fn read_object_items_mode(
             &mut dispatch,
         )
     };
-    if recover {
+    if recovery.is_some() {
         Ok((read.items, Vec::new()))
     } else {
         check_native_read(read, path)
@@ -719,13 +720,13 @@ enum EntityNode {
 }
 
 fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
-    read_entity_items_mode(bytes, path, false)
+    read_entity_items_mode(bytes, path, None)
 }
 
 fn read_entity_items_mode(
     bytes: &[u8],
     path: &str,
-    recover: bool,
+    recovery: Option<parser::native::Recovery>,
 ) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
     use parser::native::{Mode, Shape, Top};
     let mut dispatch = |node: EntityNode, field: &parser::native::Field<'_>| match node {
@@ -810,12 +811,13 @@ fn read_entity_items_mode(
             _ => Shape::Skip,
         },
     };
-    let read = if recover {
+    let read = if let Some(recovery) = recovery {
         parser::native::read_recovering(
             bytes,
             Mode::SkipMark,
             Top::File(EntityNode::Top),
             None,
+            recovery,
             &mut dispatch,
         )
     } else {
@@ -827,7 +829,7 @@ fn read_entity_items_mode(
             &mut dispatch,
         )
     };
-    if recover {
+    if recovery.is_some() {
         Ok((read.items, Vec::new()))
     } else {
         check_native_read(read, path)
@@ -1016,7 +1018,7 @@ impl Roster {
         layers: &ResolvedLayers,
         file: &ScriptPath,
         words: &[&str],
-        native: fn(&[u8], &str, bool) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
+        native: fn(&[u8], &str, Option<parser::native::Recovery>) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
     ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
         let text = file.text();
         let path: &str = &text;
@@ -1039,7 +1041,7 @@ impl Roster {
         };
         let validate = |bytes: &[u8], document: &parser::Document| -> io::Result<_> {
             settled_state_carriers(document, path)?;
-            native(bytes, path, false)
+            native(bytes, path, None)
         };
         let (error, parsed) = match parse_tree(&bytes) {
             Ok(document) => match validate(&bytes, &document) {
@@ -1412,36 +1414,17 @@ fn recover_names(
     bytes: &[u8],
     document: &parser::Document,
     words: &[&str],
-    native: fn(&[u8], &str, bool) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
+    native: fn(&[u8], &str, Option<parser::native::Recovery>) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
 ) -> BTreeSet<String> {
-    let native_items = native(bytes, "", true)
-        .map(|(items, _)| items)
-        .unwrap_or_default();
-    let mut names = declared_names_from(&native_items, document, words);
-    variable_values(&document.items, &mut names);
+    use parser::native::Recovery;
+    let recovered = |recovery| {
+        native(bytes, "", Some(recovery))
+            .map(|(items, _)| items)
+            .unwrap_or_default()
+    };
+    let mut names = declared_names_from(&recovered(Recovery::Reached), document, words);
+    names.extend(declared_names_in(&recovered(Recovery::Skipped), words, false));
     names
-}
-
-fn variable_values(items: &[parser::Item], names: &mut BTreeSet<String>) {
-    for item in items {
-        match &item.value {
-            parser::Value::Scalar(raw) => {
-                if !item.key_quoted
-                    && item.key.as_deref().is_some_and(|key| key.starts_with(b"@"))
-                    && (item.quoted() || !raw.starts_with(b"@"))
-                    && let Ok(text) = std::str::from_utf8(raw)
-                {
-                    let name = unquote(text);
-                    if !name.is_empty() {
-                        names.insert(name);
-                    }
-                }
-            }
-            parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
-                variable_values(items, names);
-            }
-        }
-    }
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

@@ -571,7 +571,13 @@ pub struct Reader<'n> {
     names: Option<&'n KeyNames>,
     stopped: bool,
     effect_scope: Option<u32>,
-    recover_unsettled: bool,
+    recovery: Option<Recovery>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    Reached,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -587,7 +593,7 @@ pub fn read<S: Copy>(
     names: Option<&KeyNames>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, None, false, dispatch)
+    read_scoped(bytes, mode, top, names, None, None, dispatch)
 }
 
 pub(crate) fn read_recovering<S: Copy>(
@@ -595,9 +601,10 @@ pub(crate) fn read_recovering<S: Copy>(
     mode: Mode,
     top: Top<S>,
     names: Option<&KeyNames>,
+    recovery: Recovery,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, None, true, dispatch)
+    read_scoped(bytes, mode, top, names, None, Some(recovery), dispatch)
 }
 
 pub fn read_in_effect_scope<S: Copy>(
@@ -608,7 +615,7 @@ pub fn read_in_effect_scope<S: Copy>(
     scope: u32,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, Some(scope), false, dispatch)
+    read_scoped(bytes, mode, top, names, Some(scope), None, dispatch)
 }
 
 fn read_scoped<S: Copy>(
@@ -617,14 +624,14 @@ fn read_scoped<S: Copy>(
     top: Top<S>,
     names: Option<&KeyNames>,
     scope: Option<u32>,
-    recover_unsettled: bool,
+    recovery: Option<Recovery>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
     crate::content::io_counts::parse(std::any::type_name::<S>(), bytes);
     let mut reader = Reader::new(lex(bytes, mode));
     reader.names = names;
     reader.effect_scope = scope;
-    reader.recover_unsettled = recover_unsettled;
+    reader.recovery = recovery;
     let items = match top {
         Top::File(node) => reader.file(node, dispatch),
         Top::Persistent(node) => reader.object_with_notes(node, dispatch, true),
@@ -674,7 +681,7 @@ impl<'n> Reader<'n> {
             names: None,
             stopped: false,
             effect_scope: None,
-            recover_unsettled: false,
+            recovery: None,
         }
     }
 
@@ -1432,7 +1439,7 @@ impl<'n> Reader<'n> {
             }
             Shape::ByKey => {
                 if opens && self.current.kind != Kind::Open {
-                    if self.recover_unsettled {
+                    if self.recovery.is_some() {
                         return Value::Scalar(value.text.clone());
                     }
                     self.unsettled = Some(Misread {
@@ -1452,6 +1459,14 @@ impl<'n> Reader<'n> {
                             key.c_str().to_ascii_lowercase().as_slice(),
                             b"meta_effect" | b"meta_trigger"
                         );
+                    match self.recovery {
+                        Some(Recovery::Reached) => return Value::Block(self.generic(meta)),
+                        Some(Recovery::Skipped) => {
+                            self.skip();
+                            return Value::Block(Vec::new());
+                        }
+                        None => {}
+                    }
                     self.next_unknown_scope += 1;
                     let scope = self.next_unknown_scope;
                     self.unknown_scopes.push((scope, key.c_str().to_vec()));
@@ -1504,7 +1519,7 @@ impl<'n> Reader<'n> {
                 Value::Scalar(value.text.clone())
             }
             Shape::Unsettled(why) => {
-                if self.recover_unsettled {
+                if self.recovery.is_some() {
                     self.skip_reported();
                     return Value::Block(Vec::new());
                 }
@@ -2199,7 +2214,7 @@ impl<'n> Reader<'n> {
             return None;
         }
         if let Some(variable) = definition {
-            if self.recover_unsettled {
+            if self.recovery.is_some() {
                 self.skip_block();
                 return Some(Vec::new());
             }
