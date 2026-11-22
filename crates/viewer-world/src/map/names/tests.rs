@@ -4,6 +4,7 @@ struct TestFont {
     advance: f32,
     line_height: f32,
     kern: Option<(char, char, f32)>,
+    colors: HashMap<char, [f32; 4]>,
 }
 
 impl TestFont {
@@ -12,6 +13,7 @@ impl TestFont {
             advance: 6.0,
             line_height: 10.0,
             kern: None,
+            colors: HashMap::new(),
         }
     }
 
@@ -20,6 +22,11 @@ impl TestFont {
             kern: Some((a, b, amount)),
             ..TestFont::new()
         }
+    }
+
+    fn with_color(mut self, code: char, color: [f32; 4]) -> Self {
+        self.colors.insert(code, color);
+        self
     }
 
     fn known(ch: char) -> bool {
@@ -69,6 +76,10 @@ impl GlyphMetrics for TestFont {
             Some((ka, kb, amount)) if ka == a && kb == b => amount,
             _ => 0.0,
         }
+    }
+
+    fn text_color(&self, code: char) -> Option<[f32; 4]> {
+        self.colors.get(&code).copied()
     }
 }
 
@@ -480,4 +491,124 @@ fn inserted_spaces_surround_the_currency_control_and_it_ends_kerning() {
     assert!(spaces > 0, "the case must insert spaces");
     assert_eq!(placed.spaces_inserted, spaces);
     assert_eq!(placed.glyphs.len(), 2);
+}
+
+#[test]
+fn wide_raster_segment_and_degenerate_candidates_stay_raster_bounded() {
+    let width = 65_537u32;
+    let height = 4u32;
+    let mut canvas = Canvas::new(width, height);
+    canvas.rect(1, 0, 0, width - 1, height - 1);
+    let map = canvas.map();
+    let area = HashSet::from([1]);
+    let bridged = dry();
+    let (score, start, end) = best_run(
+        &map,
+        &area,
+        &bridged,
+        [0.0, 1.0],
+        [(width - 1) as f32, 1.0],
+        None,
+    )
+    .expect("wide raster horizontal segment");
+    assert_eq!(score, width as usize);
+    assert_eq!(start, [0.0, 1.0]);
+    assert_eq!(end, [(width - 1) as f32, 1.0]);
+
+    let placed = place("Wide", &canvas, &[1], &TestFont::new()).expect("wide raster placement");
+    assert_eq!(placed.glyphs.len(), 4);
+
+    let mut small = Canvas::new(20, 10);
+    small.rect(1, 0, 0, 19, 9);
+    let small_map = small.map();
+    let clipped = best_run(
+        &small_map,
+        &area,
+        &bridged,
+        [5.0, -2.0e7],
+        [5.0, 2.0e7],
+        None,
+    )
+    .expect("finite steep candidate clips to the raster");
+    assert_eq!(clipped.0, 10);
+    assert_eq!(clipped.1, [5.0, 0.0]);
+    assert_eq!(clipped.2, [5.0, 9.0]);
+
+    assert!(
+        best_run(
+            &small_map,
+            &area,
+            &bridged,
+            [-1.0e8, 5.0],
+            [1.0e8, 5.0],
+            None,
+        )
+        .is_none()
+    );
+    assert!(
+        best_run(
+            &small_map,
+            &area,
+            &bridged,
+            [f32::MAX, 0.0],
+            [0.0, 0.0],
+            None,
+        )
+        .is_none()
+    );
+
+    let mut tiny = Canvas::new(2, 2);
+    tiny.rect(1, 0, 0, 1, 1);
+    let tiny_map = tiny.map();
+    let extreme = (i64::MIN as f32, (1i64 << 62) as f32);
+    let diag = best_run(
+        &tiny_map,
+        &area,
+        &bridged,
+        [extreme.0, extreme.0],
+        [extreme.1, extreme.1],
+        None,
+    )
+    .expect("extreme i64 diagonal clips without overflowing");
+    assert_eq!(diag.0, 2);
+    assert_eq!(diag.1, [0.0, 0.0]);
+    assert_eq!(diag.2, [1.0, 1.0]);
+}
+
+#[test]
+fn authored_color_runs_measure_only_drawable_glyphs() {
+    let mut canvas = Canvas::new(200, 100);
+    canvas.rect(1, 20, 30, 179, 69);
+    let lower_green = [0.2, 0.8, 0.3, 1.0];
+    let upper_green = [0.0, 1.0, 0.0, 1.0];
+    let font = TestFont::with_kerning('A', 'B', -2.0)
+        .with_color('g', lower_green)
+        .with_color('G', upper_green);
+    let coloured = place("a\u{11}gb\u{11}!c", &canvas, &[1], &font).expect("coloured");
+    let drawn: String = coloured.glyphs.iter().map(|g| g.ch).collect();
+    assert_eq!(drawn, "ABC");
+    assert_eq!(
+        coloured.glyphs.iter().map(|g| g.color).collect::<Vec<_>>(),
+        vec![
+            None,
+            Some(viewer_foundation::map::native_text::packed(lower_green)),
+            None,
+        ]
+    );
+    let mut square = Canvas::new(40, 40);
+    square.rect(1, 0, 0, 39, 39);
+    let plain = place("ABAB", &square, &[1], &font).expect("plain");
+    let coloured_pair = place("A\u{11}GB\u{11}!AB", &square, &[1], &font).expect("coloured pair");
+    let pair_drawn: String = coloured_pair.glyphs.iter().map(|g| g.ch).collect();
+    assert_eq!(pair_drawn, "ABAB");
+    assert!(close(coloured_pair.scale, plain.scale * (20.0 / 22.0), 1e-4));
+    assert_eq!(
+        coloured_pair.glyphs.iter().map(|g| g.color).collect::<Vec<_>>(),
+        vec![
+            None,
+            Some(viewer_foundation::map::native_text::packed(upper_green)),
+            None,
+            None,
+        ]
+    );
 }

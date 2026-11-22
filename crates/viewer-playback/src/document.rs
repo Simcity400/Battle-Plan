@@ -2247,8 +2247,9 @@ impl Document {
                 })
             };
             let h_rivers = {
+                let (defines, art_defines) = (&defines, &art_defines);
                 let h_assets = h_assets.clone();
-                dag.add(&[h_assets.id()], move || {
+                dag.add(&[h_assets.id()], move || -> io::Result<_> {
                     let _stage = viewer_foundation::load_record::stage("wave2.rivers");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
@@ -2256,17 +2257,17 @@ impl Document {
                         height: assets.heightmap.height,
                         values: assets.heightmap_texels(),
                     };
-
-                    let started = Instant::now();
-                    let (river_mesh, river_trace) = rivers::build(
+                    load_rivers(
+                        layers,
+                        &art_defines,
+                        &defines,
                         &RiverImage {
                             width: assets.rivers.width,
                             height: assets.rivers.height,
                             indices: &assets.rivers.indices,
                         },
                         &heights,
-                    )?;
-                    Ok((river_mesh, river_trace, started.elapsed()))
+                    )
                 })
             };
             let h_trees = {
@@ -2530,9 +2531,10 @@ impl Document {
             let labels = h_label_content.take()?;
             let (straits, border_meshes, border_trace) = h_borders.take()?;
             let border_meshes = Arc::new(border_meshes);
-            let (river_mesh, river_trace, river_build) = h_rivers.take()?;
+            let (river_mesh, river_trace, river_build, river_warning) = h_rivers.take()?;
             let (tree_field, tree_assets, tree_geometry, tree_build, notes) = h_trees.take()?;
             let mut wave2_warnings = notes;
+            wave2_warnings.extend(river_warning);
             let (sprawl, sprawl_build, notes) = h_sprawl.take()?;
             wave2_warnings.extend(notes);
             let (rail_geometry, rail_build) = h_railgeom.take()?;
@@ -5102,6 +5104,37 @@ pub struct KeptConvoys {
     convoys: Arc<Vec<viewer_world::map::trade_routes::ConvoyLine>>,
 }
 
+fn load_rivers(
+    layers: &content_reader_core::ResolvedLayers,
+    art_defines: &content_reader_core::defines::Defines,
+    defines: &content_reader_core::defines::Defines,
+    image: &RiverImage<'_>,
+    heights: &HeightField<'_>,
+) -> io::Result<(RiverMesh, rivers::Trace, Duration, Option<String>)> {
+    let started = Instant::now();
+    match crate::map_assets::graphics_define(
+        layers,
+        "rivers",
+        art_defines,
+        defines,
+        rivers::RiverDefines::load,
+    ) {
+        Ok(river_defines) => {
+            let (river_mesh, river_trace) = rivers::build(image, heights, river_defines)?;
+            Ok((river_mesh, river_trace, started.elapsed(), None))
+        }
+        Err(error) => {
+            let river_trace = rivers::trace(image)?;
+            Ok((
+                RiverMesh::default(),
+                river_trace,
+                started.elapsed(),
+                Some(format!("Rivers are withheld and draw nothing: {error}")),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5681,5 +5714,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn missing_river_fade_defines_withhold_ribbons_without_failing_load() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_doc_missing_river_fade_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let layers =
+            content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+                .unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
+        defines
+            .load(
+                "common/defines/00_graphics.lua",
+                b"NDefines = { NGraphics = { RIVER_FADE_TO = 3.0 } }",
+            )
+            .unwrap();
+        let rows = [
+            "..........",
+            "...4......",
+            "...j......",
+            ".S3366777.",
+            "..........",
+        ];
+        let mut indices = Vec::with_capacity(50);
+        for row in rows {
+            for ch in row.chars() {
+                indices.push(match ch {
+                    '.' => 255,
+                    'S' => 0,
+                    'j' => 1,
+                    digit => digit.to_digit(10).unwrap() as u8,
+                });
+            }
+        }
+        let values = [120u8; 50];
+        let (mesh, trace, _, warning) = load_rivers(
+            &layers,
+            &defines,
+            &defines,
+            &RiverImage {
+                width: 10,
+                height: 5,
+                indices: &indices,
+            },
+            &HeightField {
+                width: 10,
+                height: 5,
+                values: &values,
+            },
+        )
+        .unwrap();
+        assert!(mesh.is_empty());
+        assert_eq!(mesh.ribbons, 0);
+        assert_eq!(trace.sources, 1);
+        assert_eq!(trace.junctions, 1);
+        assert_eq!(trace.junctions_used, 1);
+        assert_eq!(trace.rivers.len(), 2);
+        let warning = warning.expect("missing river fade define must report a warning");
+        assert!(
+            warning.contains("Rivers are withheld") && warning.contains("RIVER_FADE_FROM"),
+            "{warning}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
