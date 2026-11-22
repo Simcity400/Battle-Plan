@@ -387,7 +387,10 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
             countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
             base: 0,
             game_state: 0,
-            orders: collector_map_capture::map_capture::MapCapacities::default().orders(),
+            // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+            orders: unsafe {
+                collector_map_capture::map_capture::MapCapacities::default().orders()
+            },
             plans: Captured::with_capacities(&Capacities::default()),
             group_source: None,
         };
@@ -421,7 +424,8 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
         countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         base,
         game_state: 0,
-        orders: collector_map_capture::map_capture::MapCapacities::default().orders(),
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        orders: unsafe { collector_map_capture::map_capture::MapCapacities::default().orders() },
         plans: Captured::with_capacities(&Capacities::default()),
         group_source: None,
     };
@@ -694,11 +698,14 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         unsafe { end_order_parts(&shared, orders) };
         count
     };
-    let mut frames = [
-        MapCapacities::default().orders(),
-        MapCapacities::default().orders(),
-        MapCapacities::default().orders(),
-    ];
+    // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+    let mut frames = unsafe {
+        [
+            MapCapacities::default().orders(),
+            MapCapacities::default().orders(),
+            MapCapacities::default().orders(),
+        ]
+    };
     assert_eq!(hour(&mut frames[0], 3, false), 1);
     assert_eq!(hour(&mut frames[1], 0, true), MAX_PARTS);
     assert!(frames[1].parts_allocated_bytes() >= MAX_PARTS * size_of::<Part>());

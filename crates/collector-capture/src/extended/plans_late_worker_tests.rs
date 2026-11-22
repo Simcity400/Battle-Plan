@@ -15,7 +15,9 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         captured.plans = execution_capture();
         pass(&image, &mut captured.plans);
         let expected = captured.plans.tables();
-        let mut orders = collector_map_capture::map_capture::MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut orders =
+            unsafe { collector_map_capture::map_capture::MapCapacities::default().orders() };
         orders.walk_roots(&image, 0);
         orders.walk(&image, 0);
         let orders_outcome = orders.rows.outcome;

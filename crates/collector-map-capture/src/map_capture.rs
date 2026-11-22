@@ -81,7 +81,11 @@ impl Default for MapCapacities {
 }
 
 impl MapCapacities {
-    pub fn orders(&self) -> Orders {
+    /// # Safety
+    /// Only the active session's sizing owner or its designated allocator may use capacities
+    /// measured for that session. A test fixture may use its own capacities in a process without
+    /// a live attachment. Allocation failure can stop the recording.
+    pub unsafe fn orders(&self) -> Orders {
         Orders::new(
             self.rows[9],
             self.order_geometry,
@@ -440,7 +444,9 @@ impl MapCaptured {
             air_wing_name_failures: 0,
             owned_air_captured: false,
             air_capture_failure: None,
-            orders: capacity.orders(),
+            // SAFETY: The constructor requires measured capacities from the session sizing owner
+            // or capacities owned by an isolated fixture.
+            orders: unsafe { capacity.orders() },
             player_names: engine_allocation::owned_vec(engine_allocation::default_vec(
                 capacity.player_names,
             )),
@@ -1373,7 +1379,8 @@ mod tests {
 
     #[test]
     fn order_failure_keeps_storage_and_growth_demand_but_hides_sources() {
-        let mut orders = MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut orders = unsafe { MapCapacities::default().orders() };
         orders.rows.outcome = Outcome::Rows { len: 1 };
         orders.root_outcome = Outcome::Rows { len: 1 };
         orders.geometry_len = 3;
@@ -1485,9 +1492,11 @@ mod tests {
                 ..MapCapacities::default()
             },
         ] {
-            let mut own = capacity.orders();
+            // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+            let mut own = unsafe { capacity.orders() };
             own.walk(&memory, world.base);
-            let mut reused = capacity.orders();
+            // SAFETY: The test process has no live attachment and uses the same fixture capacities.
+            let mut reused = unsafe { capacity.orders() };
             reused.walk_roots(&memory, world.base);
             assert!(reused.roots_walked);
             reused.walk(&memory, world.base);
@@ -1513,7 +1522,8 @@ mod tests {
             };
             assert_eq!(observed(&reused), observed(&own));
         }
-        let mut orders = MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut orders = unsafe { MapCapacities::default().orders() };
         orders.walk_roots(&memory, world.base);
         orders.reset();
         assert!(!orders.roots_walked);
@@ -1529,7 +1539,8 @@ mod tests {
                 theatre_links: true,
             },
         );
-        let mut orders = MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut orders = unsafe { MapCapacities::default().orders() };
         let ((), counts) = world.counted(|memory| {
             orders.walk_roots(memory, world.base);
             orders.walk(memory, world.base);
@@ -1593,10 +1604,13 @@ mod tests {
             orders.plan_split();
             orders.next_split()
         };
-        let mut frames = [
-            MapCapacities::default().orders(),
-            MapCapacities::default().orders(),
-        ];
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut frames = unsafe {
+            [
+                MapCapacities::default().orders(),
+                MapCapacities::default().orders(),
+            ]
+        };
         let split = hour(&mut frames[0], Split::default(), 3);
         assert_eq!(split.parts(), MAX_PARTS);
         let next = hour(&mut frames[1], split, 0);
@@ -1616,10 +1630,12 @@ mod tests {
             }
         }
         let reason = "orders group identity unreadable";
-        let mut single = MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut single = unsafe { MapCapacities::default().orders() };
         single.fail_roots(reason);
         single.walk(&NoMemory, 0);
-        let mut parted = MapCapacities::default().orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut parted = unsafe { MapCapacities::default().orders() };
         parted.begin_parts(
             collector_divisions::orders_parts::Split::default(),
             10_000_000,
@@ -1645,7 +1661,8 @@ mod tests {
     #[test]
     fn worker_order_demand_replenishes_reuse_without_allocator_headroom() {
         let mut capacity = MapCapacities::default();
-        let mut orders = capacity.orders();
+        // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+        let mut orders = unsafe { capacity.orders() };
         orders
             .visits
             .resize(5_000, corder_instance::Visit::default());
@@ -1660,7 +1677,8 @@ mod tests {
         );
         assert!(capacity.order_visits >= 5_000);
         assert!(capacity.order_visits < worker_capacity);
-        assert_eq!(capacity.orders().visits.len(), capacity.order_visits);
+        // SAFETY: The test process has no live attachment and only this fixture grew the capacities.
+        assert_eq!(unsafe { capacity.orders() }.visits.len(), capacity.order_visits);
     }
 
     #[test]

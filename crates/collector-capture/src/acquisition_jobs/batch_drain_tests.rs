@@ -190,7 +190,10 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
             .unwrap(),
             base: 0,
             game_state: 0,
-            orders: collector_map_capture::map_capture::MapCapacities::default().orders(),
+            // SAFETY: The test process has no live attachment and uses fixture-owned capacities.
+            orders: unsafe {
+                collector_map_capture::map_capture::MapCapacities::default().orders()
+            },
             plans: Captured::with_capacities(&Capacities::default()),
             group_source: None,
         })
