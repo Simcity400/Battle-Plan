@@ -30,6 +30,7 @@ function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active
   const width = (value: bigint) => `${Number(value * 100_000n / axis) / 1000}%`;
   const difference = expectedTotal - elapsed - split.remaining;
   const segment = (s: ResearchSegment) => <span key={s.key} className={`is-${s.tone}${hovered?.key === s.key ? ' is-hovered' : ''}`}
+    data-tooltip={`${s.name}${s.kind ? ` (${s.kind})` : ''}: ${s.effect}`}
     style={{ flexGrow: Number(s.value), '--shade': s.index ?? 0 } as CSSProperties}
     onPointerEnter={() => setHoveredKey(s.key)} onPointerLeave={() => setHoveredKey(current => current === s.key ? null : current)} />;
   const summary = [...shown, ...took].map(s => `${s.name}${s.kind ? ` (${s.kind})` : ''}: ${s.effect}`).join('; ');
@@ -37,7 +38,7 @@ function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active
     <span className="research-time-label">Expected</span>
     <span className="research-time-track"><span className="research-time-row" style={{ width: width(shownTotal) }}>{shown.map(segment)}</span></span>
     <span className="research-time-value">{amount(expectedTotal)} d</span>
-    <span className="research-time-label">{active ? 'So far' : 'Took'}</span>
+    <span className="research-time-label">Actual</span>
     <span className="research-time-track"><span className="research-time-row" style={{ width: width(tookTotal) }}>{took.map(segment)}</span></span>
     <span className="research-time-value">{amount(elapsed)} d</span>
     <p className="research-time-readout" aria-hidden="true">

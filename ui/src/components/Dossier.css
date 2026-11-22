@@ -1,9 +1,8 @@
-.dossier { --dossier-line: color-mix(in srgb, var(--text) 8%, transparent); --dossier-tint: var(--accent); display: grid; container-type: inline-size; }
-.dossier.is-blueprint { --dossier-tint: var(--blueprint-border); }
+.dossier { --dossier-line: color-mix(in srgb, var(--text) 8%, transparent); display: grid; container-type: inline-size; }
 .dossier-hero { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px; padding: 16px 18px; }
 .dossier-art { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 14px;
-  background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--dossier-tint) 22%, transparent), color-mix(in srgb, var(--text) 3%, transparent) 70%);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dossier-tint) 30%, transparent), 0 6px 18px rgb(0 0 0 / .3); }
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent), 0 6px 18px rgb(0 0 0 / .3); }
 .dossier-art > img { max-width: 56px; max-height: 56px; object-fit: contain; }
 .dossier-art > .art-fallback { width: 100%; height: 100%; }
 .dossier-art.is-blueprint { width: 132px; height: 84px; border-radius: 10px; background: linear-gradient(160deg, color-mix(in srgb, var(--blueprint) 80%, var(--blueprint-border)), var(--blueprint));
