@@ -374,7 +374,7 @@ impl Ring {
         taken
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn has_ready(&self, id: usize, head: Hour) -> bool {
         let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else {
             return false;

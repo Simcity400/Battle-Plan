@@ -2533,3 +2533,50 @@ fn a_lead_builds_its_seconds_of_steps_past_the_head_sized_by_the_pace_and_stops_
     let capped = playhead.lead_held();
     assert!(capped.past < 30 && capped.bytes >= whole.bytes / 3, "stopped at its bytes, short of its steps: {capped:?}");
 }
+
+#[test]
+fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 40)]);
+    let log = Log::default();
+    let playhead = Playhead::new(
+        Arc::clone(&pages) as Arc<dyn Pages>,
+        Timeline::whole(&*pages).unwrap(),
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 4, speed: 4.0, rate: 1.0, ..Settings::default() },
+        None,
+    )
+    .unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let last = playhead.timeline().last();
+    let mut steps = Vec::new();
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= last) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, last).unwrap(), "playhead reached end before step {last}");
+    }
+    let at_end = playhead.step_state();
+    assert!(!consumer.wait_step_after(at_end, last).unwrap(), "at end with all tables caught up and ring drained, wait_step_after reports exhausted");
+    playhead.redeclare(reader, every(&[0, 1])).unwrap();
+    let after_redeclare = playhead.step_state();
+    assert!(
+        consumer.wait_step_after(after_redeclare, last).unwrap(),
+        "redeclaring table 1 at the last hour delivers a same-hour join step instead of reporting exhausted",
+    );
+    playhead.wait_until(|| playhead.held().2.joins_open == 0 && playhead.held().2.declarations_applied == playhead.declarations());
+    let queued = playhead.step_state();
+    assert!(
+        consumer.wait_step_after(queued, last).unwrap(),
+        "a join step already queued in the ring is observed even when published_steps has not moved since",
+    );
+    let before_take = steps.len();
+    consumer.take(last, &mut steps);
+    assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "the same-hour join step carries table 1");
+    let drained = playhead.step_state();
+    assert!(!consumer.wait_step_after(drained, last).unwrap(), "once the join step is drained at end, wait_step_after reports exhausted again");
+}

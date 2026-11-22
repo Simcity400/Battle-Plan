@@ -860,9 +860,10 @@ impl Consumer {
         try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
         loop {
+            let seen = lock(&self.shared.control).version;
             if lock(&self.shared.ring).has_ready(self.id, cap) {
                 return Ok(true);
             }
@@ -873,13 +874,15 @@ impl Consumer {
             if control.published_steps > before.1 {
                 return Ok(true);
             }
+            if control.version != seen {
+                continue;
+            }
             if control.newest.is_some_and(|newest| newest >= cap)
                 && control.caught_up_at.is_some_and(|at| at >= cap)
             {
                 return Ok(false);
             }
-            let version = control.version;
-            while control.version == version {
+            while control.version == seen {
                 if let Some(error) = &control.error {
                     return Err(error.clone());
                 }
@@ -1005,6 +1008,7 @@ impl Playhead {
             id = control.next_reader;
             control.next_reader += 1;
             control.selection += 1;
+            control.caught_up_at = None;
             let since = vec![control.selection; tables.len()];
             control.readers.insert(Reader(id), Declaration { tables, since, rebuild });
         });
@@ -1029,6 +1033,7 @@ impl Playhead {
                 held.since = tables.iter().map(|declared| held.tables.iter().position(|before| before == declared).map_or(stamp, |at| held.since[at])).collect();
                 held.tables = tables;
                 control.selection = stamp;
+                control.caught_up_at = None;
                 found = true;
             }
         });
@@ -1214,7 +1219,7 @@ impl Playhead {
         }
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn step_state(&self) -> (Option<Hour>, u64) {
         let control = lock(&self.shared.control);
         (control.newest, control.published_steps)
@@ -2103,7 +2108,12 @@ impl Stepper {
 
     fn caught_up_at(&self) -> Option<Hour> {
         let newest = self.newest?;
-        if !self.joining.is_empty() || !self.catching.is_empty() {
+        if !self.selection_applied
+            || !self.joining.is_empty()
+            || !self.catching.is_empty()
+            || !self.owed.is_empty()
+            || !self.lands.is_empty()
+        {
             return None;
         }
         self.slots
@@ -2329,7 +2339,11 @@ impl Stepper {
         self.counters.joins_at_head += ready.len() as u64;
         self.counters.joins_open = self.joining.len() as u64;
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            control.caught_up_at = caught_up;
+        });
         Ok(true)
     }
 
@@ -2371,7 +2385,7 @@ impl Stepper {
         self.shared.queue_joins(jobs);
         self.lend_join_threads(count);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        self.shared.nudge(|control| control.caught_up_at = None);
         true
     }
 
@@ -2666,7 +2680,11 @@ impl Stepper {
         }
         drop(ring);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            control.caught_up_at = caught_up;
+        });
         Ok(true)
     }
 
@@ -2800,7 +2818,11 @@ impl Stepper {
         let held = catch.lanes();
         self.shared.free(held);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|_| {});
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.published_steps += 1;
+            control.caught_up_at = caught_up;
+        });
         Ok(true)
     }
 
@@ -2822,6 +2844,9 @@ impl Stepper {
             }
             self.counters.landed_behind += 1;
             moved = true;
+        }
+        if moved {
+            self.shared.nudge(|control| control.caught_up_at = None);
         }
         moved
     }
