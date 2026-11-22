@@ -693,16 +693,19 @@ impl Store {
         self.pools.system(memory, base, state);
     }
     pub fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
-        crate::faction_companion_changes::demand(
-            self.minimum
-                .held
-                .len()
-                .max(self.doctrine.held.len())
-                .max(self.rules.held.len())
-                .max(self.programmes.held.len())
-                .max(self.manpower.held.len())
-                .max(self.unlocks.held.len()),
-        );
+        // SAFETY: Admitted faction-companion capture records measured owner demand.
+        unsafe {
+            crate::faction_companion_changes::demand(
+                self.minimum
+                    .held
+                    .len()
+                    .max(self.doctrine.held.len())
+                    .max(self.rules.held.len())
+                    .max(self.programmes.held.len())
+                    .max(self.manpower.held.len())
+                    .max(self.unlocks.held.len()),
+            );
+        }
         self.advisors.finish(complete, changes);
         (output.rows[11], output.failure[11]) = self.advisors.output();
         self.rules.finish(complete, changes, output);

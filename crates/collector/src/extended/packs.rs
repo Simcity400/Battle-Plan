@@ -1564,21 +1564,24 @@ impl OrdinaryPart {
             Self::TaskForces(packs) => {
                 scatter(
                     &naval_counters::TABLES,
-                    packs.naval_counters.acquire_with_hour(
-                        memory,
-                        base,
-                        game_state,
-                        hour,
-                        fresh_modifier_guard,
-                        naval_counters::Holds {
-                            world: crate::world_lifetime::token()
-                                .filter(|_| crate::world_input_changes::map_content_stable()),
-                            fleets: |fleet| {
-                                use crate::ship_model_changes::Changes;
-                                crate::ship_model_changes::Observer.sequence(fleet)
+                    // SAFETY: Admitted naval capture runs under the active session with live watches.
+                    unsafe {
+                        packs.naval_counters.acquire_with_hour(
+                            memory,
+                            base,
+                            game_state,
+                            hour,
+                            fresh_modifier_guard,
+                            naval_counters::Holds {
+                                world: crate::world_lifetime::token()
+                                    .filter(|_| crate::world_input_changes::map_content_stable()),
+                                fleets: |fleet| {
+                                    use crate::ship_model_changes::Changes;
+                                    crate::ship_model_changes::Observer.sequence(fleet)
+                                },
                             },
-                        },
-                    ),
+                        )
+                    },
                     &mut ticks,
                 );
                 packs.naval_counters.clear_fresh_owner_demands();

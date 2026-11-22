@@ -50,10 +50,12 @@ impl Captured {
                 * std::mem::size_of::<engine_air_history::air_loss_sites::RosterRow>()
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
-    /// while air-loss observer storage remains live and teardown is excluded.
+    /// Caller holds exclusive `&mut` access to this frame while air-loss observer storage stays
+    /// live for the active session (or an isolated test) and teardown is excluded. Different frames
+    /// may grow concurrently across spool and sizing threads because `EventLedger::prepare` locks
+    /// its spare and retired slots.
     pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
-        // SAFETY: Caller guarantees attach or serial sizing pass with live air-loss storage.
+        // SAFETY: Caller guarantees live air-loss observer storage with teardown excluded.
         unsafe { producer::presize(0) };
         capacity.events = capacity.events.max(producer::capacity());
         grow_vec(&mut self.rows.rows, capacity.events);

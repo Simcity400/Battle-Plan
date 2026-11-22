@@ -625,21 +625,25 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn observe_for_test(enabled: bool) {
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool) {
     crate::world_lifetime::observe_for_test(enabled);
     BASE.store(0, Ordering::Relaxed);
     bind_callers(0).unwrap();
     ENABLED.store(enabled, Ordering::SeqCst);
     CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     if enabled {
-        reset_log_for_test(4096);
+        // SAFETY: In-crate tests hold `test_lock()` with hooks quiescent before enabling.
+        unsafe { reset_log_for_test(4096) };
     }
     PENDING.set(NOTHING_PENDING);
 }
 
+/// # Safety
+/// Caller holds [`test_lock()`] (or exclusive fixture ownership) with line-output hooks disabled
+/// and quiescent.
 #[cfg(any(test, feature = "test-support"))]
-pub fn reset_log_for_test(capacity: usize) {
+pub unsafe fn reset_log_for_test(capacity: usize) {
     OBSERVATION.required.store(0, Ordering::Relaxed);
     SPILL.clear();
     let mut current = Storage::new(capacity).unwrap();
@@ -790,7 +794,8 @@ mod tests {
     fn a_live_population_larger_than_the_log_presizes_a_full_serial_pass() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         let population = 70_000;
         let before = drained(0).0.unwrap();
         let swaps = serde_json::to_value(status()).unwrap()["swaps"]
@@ -837,7 +842,8 @@ mod tests {
     fn a_burst_into_an_empty_log_is_handed_over_whole_and_grows_the_next_log() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(0);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(0) };
         assert_eq!(capacity_for_lines(0), 0);
         let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
             .as_u64()
@@ -879,7 +885,8 @@ mod tests {
     fn swaps_wait_for_pending_entries_and_writers_without_losing_or_duplicating_ticks() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         for line in 1..=3 {
             let _writer = Call::enter();
             append(tick(line));
@@ -1184,7 +1191,8 @@ mod tests {
     fn bursts_past_the_log_disabled_hooks_and_epochs_are_handed_over_as_they_are() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         let a = Line::new(0x41_0000_0021, 0xa_0000_0046, 0);
         let (before, _) = drained(1);
         let before = before.unwrap();

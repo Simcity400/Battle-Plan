@@ -29,8 +29,9 @@ impl Capacities {
         grow_capacity(&mut self.bytes, bytes);
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass (or an isolated test
-    /// owning the global operation log), while storage remains live and teardown is excluded.
+    /// Run only while operation-log storage remains live for the active session (or an isolated
+    /// test owning the global log) and `operation_outcomes::release` is excluded; once attached,
+    /// concurrent growth calls rely on the log's internal `LOGS` and `byte_rings` locks.
     pub unsafe fn prepare(&self) {
         hooks::presize(self.entries, self.bytes);
     }
@@ -56,14 +57,15 @@ impl Captured {
         self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass, while operation-log
-    /// storage remains live and teardown is excluded.
+    /// Caller holds exclusive `&mut` access to this frame while operation-log storage stays live
+    /// for the active session (or an isolated test) and `operation_outcomes::release` is excluded.
+    /// Different frames may grow concurrently across spool and sizing threads via internal locks.
     pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        // SAFETY: Caller guarantees attach or serial sizing pass with live operation-log storage.
+        // SAFETY: Caller guarantees active-session liveness with `release` excluded.
         unsafe { capacity.prepare() };
     }
     pub fn outcomes(&self) -> [Outcome; N] {

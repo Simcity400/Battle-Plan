@@ -85,8 +85,9 @@ fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> 
 }
 
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
-/// land-event observation), while storage remains live and teardown is excluded.
+/// Run only while land-event storage remains live for the active session (or an isolated test
+/// owning land-event observation) and teardown is excluded; spare allocation is serialized under
+/// `LOG_SWAP`.
 pub unsafe fn prepare() {
     unless_foreign(|| (), || engine_allocation::advisory(prepare_storage));
 }
@@ -116,8 +117,9 @@ fn prepare_storage() {
 }
 
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
-/// land-event observation), while storage remains live and teardown is excluded.
+/// Run only while land-event storage remains live for the active session (or an isolated test
+/// owning land-event observation) and teardown is excluded; spare allocation is serialized under
+/// `LOG_SWAP`.
 pub unsafe fn presize(words: usize) {
     unless_foreign(
         || (),
@@ -522,7 +524,7 @@ pub struct Drain {
     pub lost: u64,
     pub reason: &'static str,
 }
-pub fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+pub(crate) fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
     drain_buffer(
         engine_native::walk::Buffer::Growing(output),
         hour,
@@ -2842,7 +2844,8 @@ mod tests {
                 // SAFETY: test holds `exclusive()` with no live land-event hooks.
                 unsafe { frame.grow(&mut capacities) };
             }
-            frames[(hour as usize - 10) % 4].drain(hour, hour == 10);
+            // SAFETY: test holds `exclusive()` with no live land-event hooks.
+            unsafe { frames[(hour as usize - 10) % 4].drain(hour, hour == 10) };
             assert_eq!(capacities.words, 9);
             assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), 9);
             assert_eq!(LOG_CAPACITY.load(Ordering::Acquire), 16);

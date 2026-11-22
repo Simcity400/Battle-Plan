@@ -563,16 +563,19 @@ mod tests {
         for workers in [0, 1, 3] {
             let bytes = fixture();
             let snapshot = snapshot(&bytes, 256);
-            let pool = collector_workers::acquisition::Pool::start(
-                workers,
-                1,
-                move |request: &mut Request| {
-                    request.run(&SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    })
-                },
-            )
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                collector_workers::acquisition::Pool::start(
+                    workers,
+                    1,
+                    move |request: &mut Request| {
+                        request.run(&SliceMemory {
+                            base: 0,
+                            bytes: &bytes,
+                        })
+                    },
+                )
+            }
             .unwrap();
             let mut rows = vec![ccountry::Row::default(); 2];
             let mut links = vec![ccountry::LinkRow::default(); 8];

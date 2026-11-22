@@ -197,7 +197,7 @@ impl State {
             failure: Some(UNREAD),
         }
     }
-    pub fn begin(&mut self, signal: i64, full: bool) {
+    pub(crate) fn begin(&mut self, signal: i64, full: bool) {
         let retry = REBASE_REQUIRED.swap(false, Ordering::AcqRel);
         let drained = history_events::drain(&mut self.drained);
         self.begin_observed(signal, full || retry, drained.as_ref().ok().copied());
@@ -300,7 +300,7 @@ impl State {
         }
         Ok(&mut self.slots[id as usize])
     }
-    pub fn acquire(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+    pub(crate) fn acquire(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         if let Err(reason) = self.acquire_observed(memory, base, game_state, history_events::quiet)
         {
             self.refuse(reason);

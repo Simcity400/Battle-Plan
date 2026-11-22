@@ -44,10 +44,11 @@ impl Captured {
         self.words.capacity() * size_of::<u64>()
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
-    /// while land-event observer storage remains live and teardown is excluded.
+    /// Caller holds exclusive `&mut` access to this frame while land-event storage stays live for
+    /// the active session (or an isolated test) and teardown is excluded. Different frames may grow
+    /// concurrently across spool and sizing threads because `land_events::prepare` locks `LOG_SWAP`.
     pub unsafe fn grow(&mut self, c: &mut Capacities) {
-        // SAFETY: Caller guarantees attach or serial sizing pass with live land-event storage.
+        // SAFETY: Caller guarantees live land-event storage with teardown excluded.
         unsafe { crate::land_events::prepare() };
         c.words = c.words.max(crate::land_events::capacity());
         if let Some(d) = self.drained {
@@ -55,14 +56,18 @@ impl Captured {
         }
         grow_vec(&mut self.words, c.words);
     }
-    pub fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test owning land-event
+    /// observation) may drain the shared land-event log and install offered storage while storage
+    /// remains live and teardown is excluded.
+    pub unsafe fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
         let start = collector_primitives::clock::qpc();
         self.drained = Some(crate::land_events::drain(
             &mut self.words,
             hour,
             invalidating,
         ));
-        // SAFETY: Runs on the sole observer-boundary drain path with no competing swap or teardown.
+        // SAFETY: Caller guarantees sole observer-boundary ownership with teardown excluded.
         unsafe { crate::land_events::install_offered() };
         collector_primitives::clock::qpc()
             .saturating_sub(start)
@@ -607,12 +612,16 @@ mod tests {
         let _guard = test_support::own();
         test_support::reset_with_words(0);
         let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.drain(10, true);
-        captured.drain(11, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe {
+            captured.drain(10, true);
+            captured.drain(11, false);
+        }
         let payload = vec![0; (1 << 20) + 17];
         let lost = test_support::thread_lost();
         test_support::append_record(&payload);
-        captured.drain(12, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(12, false) };
         let drained = captured.drained.unwrap();
         assert!(drained.complete, "{}", drained.reason);
         assert_eq!(drained.words, payload.len() + 1);
@@ -654,7 +663,8 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
-        captured.drain(10, true);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(10, true) };
         let first = captured.tables();
         let epoch = complete_coverage(&first).epoch;
         assert!(!complete_coverage(&first).complete);
@@ -663,7 +673,8 @@ mod tests {
             .unwrap();
         test_support::append_record(&[7, 11, 17, 4999, 1500, 9, 10, 41, 2, 42, 42]);
         captured.reset();
-        captured.drain(11, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(11, false) };
         let refreshed = captured.tables();
         let coverage = complete_coverage(&refreshed);
         assert_eq!(coverage.epoch, epoch);
@@ -701,13 +712,17 @@ mod tests {
         let _guard = test_support::own();
         test_support::reset();
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
-        captured.drain(10, true);
-        captured.drain(11, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe {
+            captured.drain(10, true);
+            captured.drain(11, false);
+        }
         let initial = complete_coverage(&captured.tables()).epoch;
         for (hour, invalidating) in [(20, true), (30, false)] {
             test_support::append_record(&[7, hour as u64, 17, 1, 2, 9, 10, 41, 0]);
             captured.reset();
-            captured.drain(hour, invalidating);
+            // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+            unsafe { captured.drain(hour, invalidating) };
             let unknown = captured.tables();
             let coverage = complete_coverage(&unknown);
             assert!(!coverage.complete);
@@ -716,7 +731,8 @@ mod tests {
             assert!(matches!(unknown[1], TableView::Unavailable { .. }));
             let epoch = coverage.epoch;
             captured.reset();
-            captured.drain(hour + 1, false);
+            // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+            unsafe { captured.drain(hour + 1, false) };
             let recovered = captured.tables();
             let coverage = complete_coverage(&recovered);
             assert!(coverage.complete);
@@ -736,20 +752,24 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
-        captured.drain(10, true);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(10, true) };
         decoder
             .advance(&encode_land(&mut encoder, 10, captured.tables(), false))
             .unwrap();
-        captured.drain(11, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(11, false) };
         decoder
             .advance(&encode_land(&mut encoder, 11, captured.tables(), false))
             .unwrap();
         test_support::append_record(&[7, 12, 17, 1, 2, 9, 10, 41, 0]);
-        captured.drain(12, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(12, false) };
         assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 1 });
         let dropped_epoch = complete_coverage(&captured.tables()).epoch;
         captured.reset();
-        captured.drain(13, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { captured.drain(13, false) };
         let next = captured.tables();
         let coverage = complete_coverage(&next);
         assert!(coverage.complete);
@@ -829,8 +849,11 @@ mod tests {
         let _guard = test_support::own();
         test_support::reset_with_words(8);
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
-        c.drain(10, true);
-        c.drain(11, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe {
+            c.drain(10, true);
+            c.drain(11, false);
+        }
         let terminal = [
             8,
             41,
@@ -845,7 +868,8 @@ mod tests {
         ];
         let lost = test_support::thread_lost();
         test_support::append_record(&terminal);
-        c.drain(12, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { c.drain(12, false) };
         let drained = c.drained.unwrap();
         assert!(drained.complete, "{}", drained.reason);
         assert_eq!(drained.words, terminal.len() + 1);
@@ -853,7 +877,8 @@ mod tests {
         assert_eq!(c.words[1..drained.words], terminal);
         assert_eq!(test_support::thread_lost(), lost);
         collector_test_support::with_allocations_denied(|| test_support::append_record(&terminal));
-        c.drain(13, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { c.drain(13, false) };
         assert_eq!(
             c.drained.unwrap().reason,
             "land event storage allocation failed"
@@ -863,7 +888,8 @@ mod tests {
         assert!(!coverage.complete);
         assert!(coverage.lost_events > 0);
         assert!(matches!(tables[0], TableView::Unavailable { .. }));
-        c.drain(14, false);
+        // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+        unsafe { c.drain(14, false) };
         assert!(complete_coverage(&c.tables()).complete);
         test_support::disable();
     }

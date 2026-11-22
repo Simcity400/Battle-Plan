@@ -262,7 +262,7 @@ fn lane_index(log: &Log) -> usize {
     })
 }
 
-pub fn publish(
+pub(crate) fn publish(
     family: u8,
     hour: i32,
     world: u64,
@@ -629,9 +629,9 @@ impl Assembled {
     }
 
     /// # Safety
-    /// Acknowledge a confirmed writer receipt, before the originating session releases the observer
-    /// lanes retained by this publication.
-    pub unsafe fn commit(&self) {
+    /// Acknowledge a confirmed writer receipt once, in assembly order, before the originating
+    /// session releases the observer lanes retained by this publication.
+    pub unsafe fn commit(self) {
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)

@@ -1,7 +1,10 @@
 use super::*;
 use crate::raw::CountrySlots;
 
-pub fn copy_economy_rest_refresh(
+/// # Safety
+/// Run only during admitted economy acquisition (or an isolated test) while market observer
+/// storage remains live and teardown is excluded.
+pub unsafe fn copy_economy_rest_refresh(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
     job: &mut EconomyRestJob,

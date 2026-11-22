@@ -31,10 +31,12 @@ impl Captured {
         self.rows.allocated_bytes()
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
-    /// while building-bombing observer storage remains live and teardown is excluded.
+    /// Caller holds exclusive `&mut` access to this frame while building-bombing observer storage
+    /// stays live for the active session (or an isolated test) and teardown is excluded. Different
+    /// frames may grow concurrently across spool and sizing threads because `EventLedger::prepare`
+    /// locks its spare and retired slots.
     pub unsafe fn grow(&mut self, c: &mut Capacities) {
-        // SAFETY: Caller guarantees attach or serial sizing pass with live bombing storage.
+        // SAFETY: Caller guarantees live building-bombing observer storage with teardown excluded.
         unsafe { producer::presize(0) };
         *c = (*c).max(producer::capacity());
         grow_vec(&mut self.rows.rows, *c);

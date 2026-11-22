@@ -157,9 +157,12 @@ impl Store {
                     .ok_or("faction member array address overflow")?;
                 self.array = Array::read(memory, self.header, native::STRIDE)
                     .ok_or("faction member array invalid")?;
-                crate::faction_companion_changes::demand_accounts(
-                    self.array.count as usize * 2 + 1,
-                );
+                // SAFETY: Admitted faction-accounts capture records measured account demand.
+                unsafe {
+                    crate::faction_companion_changes::demand_accounts(
+                        self.array.count as usize * 2 + 1,
+                    );
+                }
                 changes
                     .sequence(FAMILY, self.header)
                     .ok_or("faction member array registration unavailable")?;

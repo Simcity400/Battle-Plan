@@ -184,11 +184,14 @@ impl Store {
         }
     }
     pub fn finish(&mut self, complete: bool, changes: &impl Changes) {
-        crate::faction_companion_changes::demand(
-            self.owners.iter().fold(self.owners.len(), |n, owner| {
-                n.saturating_add(owner.slots.len())
-            }),
-        );
+        // SAFETY: Admitted faction-advisor capture records measured owner demand.
+        unsafe {
+            crate::faction_companion_changes::demand(
+                self.owners.iter().fold(self.owners.len(), |n, owner| {
+                    n.saturating_add(owner.slots.len())
+                }),
+            );
+        }
         if !complete {
             self.failure = Some("faction advisor identity roster incomplete");
         }

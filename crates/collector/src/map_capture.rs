@@ -503,12 +503,15 @@ impl MapCaptured {
                 .max(collector_air::sizing::air_wing_name_bytes()),
         );
         grow_vec(&mut self.air_wing_names, capacities.air_wing_names);
-        self.orders.grow(
-            &mut capacities.rows[9],
-            &mut capacities.order_geometry,
-            &mut capacities.order_groups,
-            &mut capacities.order_visits,
-        );
+        // SAFETY: Caller holds exclusive `&mut` access to this map frame at the frame-growth boundary.
+        unsafe {
+            self.orders.grow(
+                &mut capacities.rows[9],
+                &mut capacities.order_geometry,
+                &mut capacities.order_groups,
+                &mut capacities.order_visits,
+            );
+        }
         grow_capacity(&mut capacities.player_names, self.player_names_required);
         grow_capacity(
             &mut capacities.land_participants,
@@ -1535,12 +1538,15 @@ mod tests {
         orders.visits.reserve_exact(100_003);
         orders.visits_required = 5_000;
         let worker_capacity = orders.visits.capacity();
-        orders.grow(
-            &mut capacity.rows[9],
-            &mut capacity.order_geometry,
-            &mut capacity.order_groups,
-            &mut capacity.order_visits,
-        );
+        // SAFETY: Isolated unit test owns `orders` and `capacity`.
+        unsafe {
+            orders.grow(
+                &mut capacity.rows[9],
+                &mut capacity.order_geometry,
+                &mut capacity.order_groups,
+                &mut capacity.order_visits,
+            );
+        }
         assert!(capacity.order_visits >= 5_000);
         assert!(capacity.order_visits < worker_capacity);
         assert_eq!(capacity.orders().visits.len(), capacity.order_visits);

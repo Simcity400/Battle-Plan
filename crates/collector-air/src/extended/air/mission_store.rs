@@ -150,7 +150,10 @@ impl MissionStore {
         self.previous.clear();
         self.plans.clear();
         self.measure_transfers();
-        collector_missions::mission_changes::record(&self.counts, complete.then_some(countries));
+        // SAFETY: Called from admitted air-mission capture with measured country demand.
+        unsafe {
+            collector_missions::mission_changes::record(&self.counts, complete.then_some(countries));
+        }
     }
 
     pub fn measure_transfers(&mut self) {

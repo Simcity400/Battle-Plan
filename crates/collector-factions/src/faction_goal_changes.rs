@@ -53,7 +53,10 @@ pub fn collect() {
     let _exclusive = tests::exclusive();
     WATCHES.collect();
 }
-pub fn demand(owners: usize) {
+/// # Safety
+/// Run only during active session sizing or admitted faction capture (or an isolated test) with
+/// measured owner demand.
+pub unsafe fn demand(owners: usize) {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
     DEMAND.fetch_max(owners, Ordering::Relaxed);

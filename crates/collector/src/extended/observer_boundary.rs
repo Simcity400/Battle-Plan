@@ -92,7 +92,8 @@ impl ObserverBoundaryRequest {
         crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
         crate::character_changes::boundary(!self.continuous || self.recovery);
         crate::war_changes::boundary(!self.continuous || self.recovery);
-        self.land.drain(self.hour, !self.continuous);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while land-event storage lives.
+        unsafe { self.land.drain(self.hour, !self.continuous) };
         self.finished[0] = true;
         report.ticks[0] = elapsed(boundaries);
         let begin = qpc();
@@ -341,8 +342,12 @@ mod tests {
             }
         }
         for population in [1500u32, 5000] {
-            crate::construction_ic::reset_log_for_test(0);
-            crate::line_output::reset_log_for_test(0);
+            // SAFETY: Test holds both `construction_ic::test_lock()` and `line_output::test_lock()`
+            // with no live hooks installed.
+            unsafe {
+                crate::construction_ic::reset_log_for_test(0);
+                crate::line_output::reset_log_for_test(0);
+            }
             let mut memory = Loaded(kit::fixture());
             let set = |bytes: &mut [u8], address: usize, value: &[u8]| {
                 bytes[address - kit::BASE..address - kit::BASE + value.len()]

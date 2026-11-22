@@ -243,7 +243,7 @@ pub struct Counts {
     pub rereads: u64,
 }
 
-pub fn record(counts: &Counts, templates: Option<usize>) {
+pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
     for (target, value) in READS
         .iter()
         .zip([counts.carried, counts.read, counts.rereads])

@@ -16,7 +16,11 @@ static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static RUNTIME_ENABLED: AtomicBool = AtomicBool::new(true);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DESCRIPTION_DEMAND: AtomicUsize = AtomicUsize::new(0);
@@ -429,8 +433,9 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
 }
 
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
-/// `tests::serial()`), while operation-log storage remains live and [`release`] is excluded.
+/// Run only while operation-log storage remains live for the active session (or an isolated test
+/// holding `tests::serial()`) and [`release`] is excluded; once attached, concurrent growth calls
+/// rely on `LOGS` and per-lane `byte_rings` locks.
 pub unsafe fn resize(entries: usize) {
     presize(entries, 0);
 }
@@ -1286,20 +1291,24 @@ pub mod tests {
         log.registered.store(1, Ordering::Relaxed);
         log
     }
-    pub fn drain(log: &Log) -> Result<(Vec<Event>, Vec<u8>), &'static str> {
+    fn drain(log: &Log) -> Result<(Vec<Event>, Vec<u8>), &'static str> {
+        let _exclusive = exclusive();
         let mut cursors = vec![LaneCursor::default()];
-        // SAFETY: test helpers serialize access to `log` with `serial()` and own `cursors`.
+        // SAFETY: `_exclusive` serializes fixture access and `cursors` is locally owned.
         let handoff =
             unsafe { handoff_buffer(log, engine_native::walk::Buffer::Growing(&mut cursors)) }?;
         let mut events = vec![Event::default(); handoff.pending()];
         let mut bytes = vec![0; handoff.description_capacity(&cursors).unwrap()];
-        // SAFETY: `handoff` was just sealed from `log` and this helper is the sole consumer.
+        // SAFETY: `handoff` was sealed from `log` under `_exclusive` as the sole consumer.
         let drained = unsafe { handoff.drain(&cursors, &mut events, &mut bytes) }?;
         events.truncate(drained.copied);
         bytes.truncate(drained.bytes);
         Ok((events, bytes))
     }
-    pub fn prime(log: &Log) {
+    /// # Safety
+    /// Caller holds [`serial()`] and exclusively owns `log` with no live hooks or concurrent
+    /// consumers.
+    pub unsafe fn prime(log: &Log) {
         assert!(drain(log).is_err());
         assert_eq!(drain(log).unwrap().0.len(), 0);
     }
@@ -1348,7 +1357,8 @@ pub mod tests {
         use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"retained");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
@@ -1403,7 +1413,8 @@ pub mod tests {
     fn operation_completion_player_and_ai_are_owned_before_same_update_deletion() {
         let _serial = serial();
         let log = new_log(2, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         for (owner, description) in [(1, b"player".as_slice()), (2, b"AI".as_slice())] {
             let fixture = Fixture::new(description);
             fixture.identify(owner, owner);
@@ -1426,7 +1437,8 @@ pub mod tests {
     fn operation_completion_auto_repeat_has_distinct_instances_and_invalidation_emits_none() {
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(&[0xff, 0, b'x']);
         fixture.identify(42, 700);
         complete(&log, &fixture, 1);
@@ -1444,7 +1456,8 @@ pub mod tests {
     fn operation_completion_past_the_lane_spills_whole_and_retains_exact_growth() {
         let _serial = serial();
         let log = new_log(1, 2);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let first = Fixture::new(b"ok");
         complete(&log, &first, 1);
         let long = Fixture::new(&vec![0xfd; 40_000]);
@@ -1463,7 +1476,8 @@ pub mod tests {
         assert_eq!(&bytes[2..], vec![0xfd; 40_000]);
         assert!(log.shared.is_drained());
         let grown = new_log(2, 40_000);
-        prime(&grown);
+        // SAFETY: Test holds `serial()` and exclusively owns `grown`.
+        unsafe { prime(&grown) };
         complete(&grown, &long, 1);
         assert_eq!(drain(&grown).unwrap().1, vec![0xfd; 40_000]);
     }
@@ -1471,7 +1485,8 @@ pub mod tests {
     fn operation_completion_a_burst_past_the_lane_keeps_every_attempt_and_sizes_the_next() {
         let _serial = serial();
         let log = new_log(1, 16);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"burst");
         for _ in 0..5_000 {
             complete(&log, &fixture, 1);
@@ -1496,7 +1511,8 @@ pub mod tests {
         use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = serial();
         let log = new_log(2, 4);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
             // SAFETY: test holds `serial()` as the sole consumer of `log`.
@@ -1560,7 +1576,8 @@ pub mod tests {
         let _serial = serial();
         spill_refused();
         let old = new_log(2, 16);
-        prime(&old);
+        // SAFETY: Test holds `serial()` and exclusively owns `old`.
+        unsafe { prime(&old) };
         let fixture = Fixture::new(b"outcome");
         complete(&old, &fixture, 1);
         let first = drain(&old).unwrap().0[0].sequence;
@@ -1584,7 +1601,8 @@ pub mod tests {
     fn operation_completion_every_country_keeps_native_values_without_status_gate() {
         let _serial = serial();
         let log = new_log(40, 16);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"modded outcome");
         for owner in 1..=40 {
             fixture.identify(owner, owner * 7);
@@ -1607,7 +1625,8 @@ pub mod tests {
     fn operation_completion_live_description_floor_prepares_the_first_burst() {
         let _serial = serial();
         let log = new_log(5000, 0);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let description = vec![b'x'; 5001];
         for lane in &log.lanes {
             lane.grow_bytes_for(5000 * description.len()).unwrap();
@@ -1665,7 +1684,8 @@ pub mod tests {
     fn operation_completion_refused_native_form_withholds_interval() {
         let _serial = serial();
         let log = new_log(1, 16);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"invalid");
         fixture.bytes.borrow_mut()[INSTANCE + operation::DETECTED] = 2;
         complete(&log, &fixture, 1);
@@ -1696,7 +1716,8 @@ pub mod tests {
         use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"outcome");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
@@ -1757,7 +1778,8 @@ pub mod tests {
         let _serial = serial();
         let log = Log::new(4, 65_536, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let description: Vec<_> = (0..40_000)
             .map(|index| ((index * 17 + index / 7) % 256) as u8)
             .collect();
@@ -1775,7 +1797,8 @@ pub mod tests {
     fn operation_completion_native_demand_above_old_budget_grows_and_records_exact_bytes() {
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let description = vec![0xff; (1 << 20) + 1];
         let fixture = Fixture::new(&description);
         fixture.identify(5_000, 91);
@@ -1801,7 +1824,8 @@ pub mod tests {
     fn operation_completion_byte_growth_preserves_pending_records_and_epoch() {
         let _serial = serial();
         let log = new_log(4, 4);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         complete(&log, &Fixture::new(b"before"), 1);
         let long = Fixture::new(&vec![0xfc; 40_000]);
         let epoch = EPOCH.load(Ordering::Acquire);
@@ -1832,7 +1856,8 @@ pub mod tests {
     fn operation_completion_byte_demand_drain_excludes_later_unsealed_callback() {
         let _serial = serial();
         let log = new_log(4, 4);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         complete(&log, &Fixture::new(b"sealed"), 1);
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
@@ -1861,7 +1886,8 @@ pub mod tests {
         let _serial = serial();
         let log = Log::new(4, 64, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         complete(&log, &Fixture::new(&[0xfa; 60]), 1);
         assert_eq!(drain(&log).unwrap().1.len(), 60);
         complete(&log, &Fixture::new(b"inline-wrap"), 1);
@@ -1887,7 +1913,8 @@ pub mod tests {
     fn operation_completion_failed_payload_demand_does_not_accumulate_after_empty_publication() {
         let _serial = serial();
         let log = new_log(4, 16);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         struct FailPayload(Fixture);
         impl Memory for FailPayload {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -1944,7 +1971,8 @@ pub mod tests {
         presize(4_097, description.len());
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
-        prime(old);
+        // SAFETY: Test holds `serial()` and exclusively owns `old`.
+        unsafe { prime(old) };
         complete(old, &Fixture::new(description), 1);
         let pointer = LOG.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
@@ -1962,7 +1990,8 @@ pub mod tests {
     fn operation_completion_resumed_attachment_continues_finalized_sequence() {
         let _serial = serial();
         let log = new_log(2, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let saved = EVENT_SEQUENCE.load(Ordering::Relaxed).saturating_add(17);
         restore_sequence(saved).unwrap();
         complete(&log, &Fixture::new(b"after reattach"), 1);
@@ -1983,7 +2012,8 @@ pub mod tests {
     fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
         let _serial = serial();
         let log = new_log(8, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let epoch = EPOCH.load(Ordering::Acquire);
         std::thread::scope(|scope| {
             for owner in 1..=3_u32 {
@@ -2015,7 +2045,8 @@ pub mod tests {
     fn operation_completion_shared_slot_short_spills_whole_and_sizes_the_next_slot() {
         let _serial = serial();
         let log = new_log(2, 4);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let long = vec![0xfe; 9];
         observe_return(
             &log,
@@ -2062,7 +2093,8 @@ pub mod tests {
         use std::sync::mpsc;
         let _serial = serial();
         let log = new_log(1, 8);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let held = Fixture::new(b"held");
         for _ in 0..3 {
             complete(&log, &held, 1);
@@ -2109,7 +2141,8 @@ pub mod tests {
         presize(8, 64);
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
-        prime(old);
+        // SAFETY: Test holds `serial()` and exclusively owns `old`.
+        unsafe { prime(old) };
         complete(old, &Fixture::new(b"before growth"), 1);
         let epoch = EPOCH.load(Ordering::Acquire);
         REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
@@ -2142,7 +2175,8 @@ pub mod tests {
         use replay_frame::{frame::TableInput, frame::TableView};
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let lane = &log.lanes[0];
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
@@ -2245,7 +2279,8 @@ pub mod tests {
     fn operation_completion_lost_queue_assembles_again_from_the_written_interval() {
         let _serial = serial();
         let log = new_log(4, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         complete(&log, &Fixture::new(b"written"), 1);
         assert_eq!(drain(&log).unwrap().1, b"written");
         complete(&log, &Fixture::new(b"lost"), 1);
@@ -2320,7 +2355,8 @@ pub mod tests {
     fn operation_completion_queued_backlog_raises_entry_demand_past_one_interval() {
         let _serial = serial();
         let log = new_log(2, 32);
-        prime(&log);
+        // SAFETY: Test holds `serial()` and exclusively owns `log`.
+        unsafe { prime(&log) };
         let fixture = Fixture::new(b"held");
         for _ in 0..2 {
             complete(&log, &fixture, 1);
@@ -2343,7 +2379,8 @@ pub mod tests {
         presize(8, 64);
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
-        prime(old);
+        // SAFETY: Test holds `serial()` and exclusively owns `old`.
+        unsafe { prime(old) };
         complete(old, &Fixture::new(b"held by the old generation"), 1);
         REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
         presize(8, 64);

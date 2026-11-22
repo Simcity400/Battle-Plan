@@ -315,8 +315,11 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let mut events = crate::extended::land_events::Captured::with_capacities(
         &crate::extended::land_events::Capacities { words: 0 },
     );
-    events.drain(10, true);
-    events.drain(11, false);
+    // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
+    unsafe {
+        events.drain(10, true);
+        events.drain(11, false);
+    }
     let mut captured = Captured::with_capacities(&Capacities {
         rows: 1,
         variants: 1,

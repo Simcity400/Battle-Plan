@@ -260,13 +260,16 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         }
     });
     let job_barrier = Arc::clone(&barrier);
-    let pool = collector_workers::acquisition::Pool::start(1, 1, move |_: &mut ()| {
-        let _job = job(collector_workers::roles::Role::World);
-        let _ = entered_tx.send(());
-        let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
-        job_barrier.wait();
-        7_u8
-    })
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+    let pool = unsafe {
+        collector_workers::acquisition::Pool::start(1, 1, move |_: &mut ()| {
+            let _job = job(collector_workers::roles::Role::World);
+            let _ = entered_tx.send(());
+            let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
+            job_barrier.wait();
+            7_u8
+        })
+    }
     .unwrap();
     let mut target = pool
         .thread_ids()

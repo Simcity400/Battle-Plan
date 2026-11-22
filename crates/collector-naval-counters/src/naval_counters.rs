@@ -155,8 +155,8 @@ collector_primitives::capacity_max!(Capacities {
 
 impl Capacities {
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass against the authenticated
-    /// session image, while fleet-region observer storage remains live and teardown is excluded.
+    /// Run only against the authenticated session image while fleet-region watches remain live for
+    /// the active session (or an isolated test) and `WatchRegistry::release` is excluded.
     pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
@@ -230,7 +230,7 @@ impl Capacities {
         })?;
         demand.task_forces = demand.task_forces.max(tasks);
         demand.fleets = demand.fleets.max(fleets);
-        // SAFETY: Caller guarantees attach or serial sizing pass with live fleet-region watches.
+        // SAFETY: Caller guarantees live fleet-region watches with `release` excluded.
         unsafe {
             collector_observers::fleet_region_changes::demand(fleets);
             collector_observers::fleet_region_changes::presize();
@@ -415,11 +415,12 @@ impl Captured {
     }
 
     /// # Safety
-    /// Allocate only during attach, frame building, or the active session's sizing pass (or in an
-    /// isolated fixture) while fleet-region observer watches remain live and teardown is excluded.
+    /// Allocate only while fleet-region watches remain live for the active session (or an isolated
+    /// test) and `WatchRegistry::release` is excluded; `WatchRegistry::offer` atomically swaps
+    /// offered tables if frame construction overlaps with sizing.
     pub unsafe fn with_capacities(capacity: &Capacities) -> Self {
         if capacity.fleets != 0 {
-            // SAFETY: Caller guarantees attach/frame-sizing pass with live fleet-region watches.
+            // SAFETY: Caller guarantees live fleet-region watches with `release` excluded.
             unsafe {
                 collector_observers::fleet_region_changes::demand(capacity.fleets);
                 collector_observers::fleet_region_changes::presize();
@@ -535,8 +536,11 @@ impl Captured {
         self.port_bytes.grow(&mut capacity.port_bytes);
         self.port_answers.grow(&mut capacity.port_answers);
     }
+    /// # Safety
+    /// Run only during admitted naval capture (or an isolated fixture) while fleet-region watches
+    /// remain live and teardown is excluded.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    pub unsafe fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.capture_at(
             memory,
             base,
@@ -547,7 +551,7 @@ impl Captured {
     }
 
     #[cfg(test)]
-    pub fn capture_with_hour(
+    pub(crate) fn capture_with_hour(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -558,7 +562,10 @@ impl Captured {
         self.capture_at(memory, base, state, Some(hour), modifier_guard)
     }
 
-    pub fn acquire_with_hour(
+    /// # Safety
+    /// Run only during admitted naval capture (or an isolated fixture) while fleet-region watches
+    /// remain live and teardown is excluded.
+    pub unsafe fn acquire_with_hour(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -1425,7 +1432,8 @@ mod tests {
                 port_answers: 0,
             })
         };
-        capture.capture(&memory, 0, 0);
+        // SAFETY: synthetic unit test with no live naval observer hooks.
+        unsafe { capture.capture(&memory, 0, 0) };
         assert!(
             capture
                 .tables()

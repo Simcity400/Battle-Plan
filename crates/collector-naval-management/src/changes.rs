@@ -158,16 +158,16 @@ fn admit(registry: &WatchRegistry, refused: &AtomicBool, pointer: usize) -> bool
     }
     available
 }
-pub fn register_force(pointer: usize) -> bool {
+pub(crate) fn register_force(pointer: usize) -> bool {
     admit(&FORCES, &FORCES_REFUSED, pointer)
 }
-pub fn register_base(pointer: usize) -> bool {
+pub(crate) fn register_base(pointer: usize) -> bool {
     admit(&BASES, &BASES_REFUSED, pointer)
 }
-pub fn take_forces(visit: impl FnMut(usize)) -> Option<u64> {
+pub(crate) fn take_forces(visit: impl FnMut(usize)) -> Option<u64> {
     FORCES.take(visit)
 }
-pub fn take_bases(visit: impl FnMut(usize)) -> Option<u64> {
+pub(crate) fn take_bases(visit: impl FnMut(usize)) -> Option<u64> {
     BASES.take(visit)
 }
 pub fn enabled() -> bool {

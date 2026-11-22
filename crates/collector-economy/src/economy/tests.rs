@@ -251,7 +251,8 @@ fn owned_resource_group_matches_direct_rows_and_all_independent_capacity_limits(
                 let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
                 let mut first = resource_job();
                 let native = read_accounting::Capture::new();
-                let report = copy_economy_rest_refresh(&memory, ctx, &mut first);
+                // SAFETY: Synthetic unit-test memory with no live market hooks.
+                let report = unsafe { copy_economy_rest_refresh(&memory, ctx, &mut first) };
                 assert!(report.raw_ok);
                 let counts = read_accounting::snapshot();
                 let mut expected_counts = read_accounting::ZERO;
@@ -322,7 +323,8 @@ fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_liv
     assert!(job.resources.exchanges.is_empty());
     assert!(job.resources.scratch.is_empty());
     let native = read_accounting::Capture::new();
-    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    assert!(unsafe { copy_economy_rest_refresh(&memory, ctx, &mut job) }.raw_ok);
     let reads = read_accounting::snapshot();
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert_eq!(native.finish(), reads);
@@ -344,7 +346,8 @@ fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     let context = captured.resource_copy_context(0, 0x1000, 0, false);
     assert!(context.resources_active);
     let mut job = resource_job();
-    let report = copy_economy_rest_refresh(&memory, context, &mut job);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    let report = unsafe { copy_economy_rest_refresh(&memory, context, &mut job) };
     assert!(report.raw_ok);
     assert!(matches!(
         job.resources.outcomes[0],
@@ -390,7 +393,8 @@ fn owned_resource_value_faults_recover_once_and_remain_local() {
     let mut captured = Captured::with_capacities(&e_capacities());
     let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
     let mut job = resource_job();
-    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    assert!(unsafe { copy_economy_rest_refresh(&memory, ctx, &mut job) }.raw_ok);
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
     assert_eq!(captured.definitions.outcome, Outcome::Rows { len: 1 });
@@ -407,7 +411,8 @@ fn owned_resource_value_faults_recover_once_and_remain_local() {
     let mut captured = Captured::with_capacities(&e_capacities());
     let ctx = captured.resource_copy_context(0, 0x1000, 10, false);
     let mut job = resource_job();
-    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    assert!(unsafe { copy_economy_rest_refresh(&memory, ctx, &mut job) }.raw_ok);
     captured.decode_economy_rest_payload(0, &job, &mut [0; N]);
     assert!(matches!(
         captured.resources.outcome,
@@ -437,7 +442,8 @@ fn owned_resource_shared_fault_is_terminal() {
     });
     let mut job = resource_job();
     let native = read_accounting::Capture::new();
-    assert!(copy_economy_rest_refresh(&memory, ctx, &mut job).raw_ok);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    assert!(unsafe { copy_economy_rest_refresh(&memory, ctx, &mut job) }.raw_ok);
     let mut expected_counts = read_accounting::ZERO;
     expected_counts[TABLES[2].index()] = engine_native::memory::ReadCounts {
         copy_calls: 2,
@@ -504,7 +510,8 @@ fn worker_supply_growth_stages_and_decodes_mod_sized_rows_in_the_same_hour() {
         resources_active: false,
         other_active: false,
     };
-    assert!(copy_economy_rest_refresh(&memory, context, &mut job).raw_ok);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    assert!(unsafe { copy_economy_rest_refresh(&memory, context, &mut job) }.raw_ok);
     assert!(!job.log.overflowed);
     let native_reads = memory.reads.borrow().len();
     let mut capacity = e_capacities();
@@ -555,7 +562,8 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
         let context = captured.resource_copy_context(0, GAME, hour, force_full);
         let mut job = resource_job();
         let native = read_accounting::Capture::new();
-        let report = copy_economy_rest_refresh(&memory, context, &mut job);
+        // SAFETY: Synthetic unit-test memory with no live market hooks.
+    let report = unsafe { copy_economy_rest_refresh(&memory, context, &mut job) };
         assert!(report.raw_ok);
         assert!(job.staging_failure.is_none());
         assert!(job.log.fault[0]);
@@ -1119,7 +1127,8 @@ fn e_split(
     let mut captured = Captured::with_capacities(cap);
     let ctx = captured.resource_copy_context(E_BASE, E_GAME, 0, true);
     let mut first = e_job();
-    let report = crate::economy::copy_economy_rest_refresh(memory, ctx, &mut first);
+    // SAFETY: Synthetic unit-test memory with no live market hooks.
+    let report = unsafe { crate::economy::copy_economy_rest_refresh(memory, ctx, &mut first) };
     assert!(report.raw_ok);
     captured.rest_raw_mode = report.raw_ok;
     let mut ticks = [0u64; N];
@@ -1451,7 +1460,8 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
             let typed_counts = native.finish();
             let context = split.resource_copy_context(E_BASE, E_GAME, hour, force_full);
             let native = read_accounting::Capture::new();
-            let report = copy_economy_rest_refresh(&memory, context, &mut job);
+            // SAFETY: Synthetic unit-test memory with no live market hooks.
+    let report = unsafe { copy_economy_rest_refresh(&memory, context, &mut job) };
             assert!(report.raw_ok);
             let raw_counts = read_accounting::snapshot();
             split.set_schedule(0, true);

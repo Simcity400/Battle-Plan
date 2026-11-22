@@ -35,7 +35,8 @@ fn append_burst(count: usize) {
 fn zero_native_demand_installs_empty_storage_and_a_burst_into_it_is_kept_whole() {
     let _lock = test_lock();
     observe_for_test(true, 0);
-    reset_log_for_test(0);
+    // SAFETY: Test holds `test_lock()` with construction-IC hooks quiescent.
+    unsafe { reset_log_for_test(0) };
     *LOG_SWAP.lock().unwrap() = LogSwap::default();
     LOG.store(ptr::null_mut(), Ordering::SeqCst);
     assert_eq!(presize_from_live(&Menu, 0), Ok(()));
@@ -73,7 +74,8 @@ fn zero_native_demand_installs_empty_storage_and_a_burst_into_it_is_kept_whole()
 fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
     let _lock = test_lock();
     observe_for_test(true, 0);
-    reset_log_for_test(5_000);
+    // SAFETY: Test holds `test_lock()` with construction-IC hooks quiescent.
+    unsafe { reset_log_for_test(5_000) };
     append_burst(5_000);
     let cursor = CURSOR.load(Ordering::SeqCst);
     let epoch = OBSERVATION.epoch.load(Ordering::SeqCst);
@@ -113,7 +115,8 @@ fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
 fn a_burst_past_the_log_is_kept_whole_and_its_demand_survives_consumption() {
     let _lock = test_lock();
     observe_for_test(true, 0);
-    reset_log_for_test(5_000);
+    // SAFETY: Test holds `test_lock()` with construction-IC hooks quiescent.
+    unsafe { reset_log_for_test(5_000) };
     append_burst(70_003);
     let mut output = Vec::new();
     let loss = drain(&mut output).unwrap();
@@ -133,7 +136,8 @@ fn a_burst_past_the_log_is_kept_whole_and_its_demand_survives_consumption() {
 fn failed_live_hint_retains_full_original_burst_pressure() {
     let _lock = test_lock();
     observe_for_test(true, 0);
-    reset_log_for_test(0);
+    // SAFETY: Test holds `test_lock()` with construction-IC hooks quiescent.
+    unsafe { reset_log_for_test(0) };
     append_burst(10_003);
     let mut output = Vec::new();
     let loss = drain(&mut output).unwrap();

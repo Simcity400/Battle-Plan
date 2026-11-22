@@ -156,7 +156,10 @@ pub struct Counts {
     pub read_rows: u64,
 }
 
-pub fn record(table: Table, counts: &Counts, pools: Option<usize>) {
+/// # Safety
+/// Run only during admitted advisor capture (or an isolated test) with measured pool demand for
+/// the active session.
+pub unsafe fn record(table: Table, counts: &Counts, pools: Option<usize>) {
     for (target, value) in READS[table as usize].iter().zip([
         counts.reused,
         counts.read,

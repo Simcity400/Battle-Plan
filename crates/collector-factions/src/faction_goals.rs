@@ -272,11 +272,14 @@ impl Store {
 
     pub fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
         self.unpublished |= self.changed;
-        crate::faction_goal_changes::demand(
-            self.held.iter().fold(self.held.len(), |count, held| {
-                count.saturating_add(held.data.goals.len())
-            }),
-        );
+        // SAFETY: Admitted faction-goal capture records measured owner demand.
+        unsafe {
+            crate::faction_goal_changes::demand(
+                self.held.iter().fold(self.held.len(), |count, held| {
+                    count.saturating_add(held.data.goals.len())
+                }),
+            );
+        }
         if !complete {
             self.failure
                 .get_or_insert("faction goal identity roster incomplete");

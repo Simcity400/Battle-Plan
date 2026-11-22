@@ -2352,12 +2352,11 @@ impl ObserverState for RestoreFamily {
                 "fuel callbacks did not quiesce; collector retained",
             ),
             Self::OperationOutcomes => (
-                collector_operation_outcomes::operation_outcomes::ACTIVE.load(Ordering::SeqCst)
-                    != 0,
+                collector_operation_outcomes::operation_outcomes::active() != 0,
                 "operation completion callbacks did not quiesce; collector retained",
             ),
             Self::Politics => (
-                crate::politics_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::politics_changes::active() != 0,
                 "politics callbacks did not quiesce; collector retained",
             ),
             Self::Logistics => (

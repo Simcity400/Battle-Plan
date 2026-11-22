@@ -264,7 +264,8 @@ macro_rules! pack_frame {
         naval_combat_sources::Captured::without_home($capacity)
     };
     (naval_counters, $capacity:expr) => {
-        // SAFETY: Frame allocation runs in attach, sizing, or an isolated fixture with live watches.
+        // SAFETY: Allocates frame storage while fleet-region watches remain live and teardown is
+        // excluded; `WatchRegistry::offer` atomically swaps offered tables.
         unsafe { naval_counters::Captured::with_capacities($capacity) }
     };
     ($pack:ident, $capacity:expr) => {
@@ -274,23 +275,33 @@ macro_rules! pack_frame {
 
 macro_rules! grow_pack {
     (operation_outcomes, $pack:expr, $capacity:expr) => {
-        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while operation-log storage
+        // stays live and teardown is excluded; shared log growth is synchronized by `LOGS` and
+        // per-lane `byte_rings` locks across concurrent spool/sizing growth.
         unsafe { $pack.grow($capacity) }
     };
     (politics, $pack:expr, $capacity:expr) => {
-        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while politics staging stays
+        // live and teardown is excluded; shared log growth is serialized by `LOGS` across
+        // concurrent spool/sizing growth.
         unsafe { $pack.grow($capacity) }
     };
     (air_losses, $pack:expr, $capacity:expr) => {
-        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while air-loss observer
+        // storage stays live and teardown is excluded; `EventLedger::prepare` synchronizes spare
+        // and retired buffers across concurrent spool/sizing growth.
         unsafe { $pack.grow($capacity) }
     };
     (building_bombing, $pack:expr, $capacity:expr) => {
-        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while building-bombing
+        // observer storage stays live and teardown is excluded; `EventLedger::prepare` synchronizes
+        // spare and retired buffers across concurrent spool/sizing growth.
         unsafe { $pack.grow($capacity) }
     };
     (land_events, $pack:expr, $capacity:expr) => {
-        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while land-event storage stays
+        // live and teardown is excluded; `land_events::prepare` serializes spare allocation under
+        // `LOG_SWAP` across concurrent spool/sizing growth.
         unsafe { $pack.grow($capacity) }
     };
     ($name:ident, $pack:expr, $capacity:expr) => {

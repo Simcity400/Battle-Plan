@@ -93,8 +93,9 @@ impl Captured {
             + self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
     /// # Safety
-    /// Run only during attach or the active session's serial sizing pass, while politics observer
-    /// storage remains live and teardown is excluded.
+    /// Caller holds exclusive `&mut` access to this frame while politics staging stays live for the
+    /// active session (or an isolated test) and `politics_changes::release` is excluded. Different
+    /// frames may grow concurrently across spool and sizing threads because `resize` locks `LOGS`.
     pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         if let Some(Ok(drain)) = self.drained {
             grow_capacity(&mut capacity.entries, drain.pending);
@@ -106,7 +107,7 @@ impl Captured {
                 len.saturating_add(unread_rows as usize),
             );
         }
-        // SAFETY: Caller guarantees attach or serial sizing pass with live politics staging.
+        // SAFETY: Caller guarantees live politics staging with `release` excluded; `resize` locks `LOGS`.
         unsafe { hooks::resize(capacity.entries, 0) };
     }
     pub fn outcomes(&self) -> [Outcome; N] {

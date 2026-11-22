@@ -9,7 +9,8 @@ use std::sync::atomic::Ordering;
 fn table_retry_preserves_admitted_operation_completion() {
     let _serial = serial();
     let log = new_log(1, 32);
-    prime(&log);
+    // SAFETY: Test holds `serial()` and exclusively owns `log` on the stack.
+    unsafe { prime(&log) };
     let fixture = Fixture::new(b"modded outcome");
     complete(&log, &fixture, 1);
     let mut cursors = vec![LaneCursor::default()];

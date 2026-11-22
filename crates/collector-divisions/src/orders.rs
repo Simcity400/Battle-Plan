@@ -96,7 +96,11 @@ impl Orders {
             .map(|part| part.allocated_bytes())
             .sum()
     }
-    pub fn grow(
+    /// # Safety
+    /// Run only at the map sizing or frame-growth boundary with exclusive `&mut` access to this
+    /// buffer (or in an isolated fixture). Nonzero growth invokes the process-wide collector
+    /// allocation-failure handler on OOM.
+    pub unsafe fn grow(
         &mut self,
         rows: &mut usize,
         geometry: &mut usize,

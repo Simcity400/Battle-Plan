@@ -74,10 +74,16 @@ impl Changes for Observer {
         }
     }
 }
-pub fn demand(owners: usize) {
+/// # Safety
+/// Run only during active session sizing or admitted faction capture (or an isolated test) with
+/// measured owner demand.
+pub unsafe fn demand(owners: usize) {
     DEMAND.fetch_max(owners, Ordering::Relaxed);
 }
-pub fn demand_accounts(count: usize) {
+/// # Safety
+/// Run only during active session sizing or admitted faction capture (or an isolated test) with
+/// measured account demand.
+pub unsafe fn demand_accounts(count: usize) {
     ACCOUNT_DEMAND.fetch_max(count, Ordering::Relaxed);
 }
 pub fn active() -> usize {

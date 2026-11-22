@@ -804,32 +804,49 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     pub fn set_on_completed(&self, completed: OnCompleted<J, R>) {
         assert!(self.shared.on_completed.set(completed).is_ok());
     }
+    /// # Safety
+    /// Spawned workers register with `collector_timing::capture_gate::reader()`, exempting them
+    /// from blocking on the process-wide capture gate. Caller must hold active collector session
+    /// ownership (or exclusive fixture control) and stop or drop the pool before teardown releases
+    /// shared capture-gate or native resources.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn start(
+    pub unsafe fn start(
         worker_count: usize,
         capacity: usize,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_boosted(worker_count, capacity, false, run)
+        // SAFETY: Caller upholds the pool startup contract.
+        unsafe { Self::start_boosted(worker_count, capacity, false, run) }
     }
-    pub fn start_with_class(
+    /// # Safety
+    /// Spawned workers register with `collector_timing::capture_gate::reader()`, exempting them
+    /// from blocking on the process-wide capture gate. Caller must hold active collector session
+    /// ownership (or exclusive fixture control) and stop or drop the pool before teardown releases
+    /// shared capture-gate or native resources.
+    pub unsafe fn start_with_class(
         worker_count: usize,
         capacity: usize,
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_classified_boosted(worker_count, capacity, false, classes, run)
+        // SAFETY: Caller upholds the pool startup contract.
+        unsafe { Self::start_classified_boosted(worker_count, capacity, false, classes, run) }
     }
+    /// # Safety
+    /// Same requirements as [`Pool::start_with_class`].
     #[cfg(any(test, feature = "test-support"))]
-    fn start_boosted(
+    unsafe fn start_boosted(
         worker_count: usize,
         capacity: usize,
         wake_boost: bool,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_classified_boosted(worker_count, capacity, wake_boost, None, run)
+        // SAFETY: Caller upholds the pool startup contract.
+        unsafe { Self::start_classified_boosted(worker_count, capacity, wake_boost, None, run) }
     }
-    fn start_classified_boosted(
+    /// # Safety
+    /// Same requirements as [`Pool::start_with_class`].
+    unsafe fn start_classified_boosted(
         worker_count: usize,
         capacity: usize,
         wake_boost: bool,
@@ -1908,7 +1925,8 @@ mod tests {
 
     #[test]
     fn a_published_join_does_not_take_the_queue_lock() {
-        let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
         let ticket = submit(&pool, &mut Some(7));
         wait_until(|| pool.is_complete(ticket));
         let released = AtomicBool::new(false);
@@ -1952,15 +1970,16 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(2, 2, move |gated: &mut bool| {
+            let run = move |gated: &mut bool| {
                 let worker = unsafe { GetCurrentThreadId() };
                 if *gated {
                     entered_tx.send(worker).unwrap();
                     wait_until(|| release.load(Ordering::Acquire));
                 }
                 (worker, unsafe { GetThreadPriority(GetCurrentThread()) })
-            })
-            .unwrap()
+            };
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe { Pool::start(2, 2, run) }.unwrap()
         };
         let release = Gate(release);
         let ids = pool.thread_ids();
@@ -2005,12 +2024,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 1, move |job: &mut u8| {
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job += 1;
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(1, 1, move |job: &mut u8| {
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job += 1;
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2036,12 +2058,15 @@ mod tests {
         }
         for workers in [0, 1] {
             let (entered_tx, entered_rx) = mpsc::channel();
-            let pool = Pool::start(workers, 2, move |job: &mut Request| {
-                let address = job as *mut Request as usize;
-                job.bytes[0] = 42;
-                entered_tx.send(address).unwrap();
-                address
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                Pool::start(workers, 2, move |job: &mut Request| {
+                    let address = job as *mut Request as usize;
+                    job.bytes[0] = 42;
+                    entered_tx.send(address).unwrap();
+                    address
+                })
+            }
             .unwrap();
             let ticket = submit(&pool, &mut Some(Request { bytes: [0; 4096] }));
             let cell_begin = pool.shared.cells[ticket.slot].pointer() as usize;
@@ -2070,7 +2095,8 @@ mod tests {
 
     #[test]
     fn published_collection_is_single_use_even_with_racing_collectors() {
-        let pool = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(1, 1, |job: &mut u8| *job) }.unwrap();
         let ticket = submit(&pool, &mut Some(42));
         wait_until(|| pool.is_complete(ticket));
         let gate = Barrier::new(3);
@@ -2096,11 +2122,14 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 1, move |job: &mut u64| {
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(1, 1, move |job: &mut u64| {
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         pool.reserve_worker_slots(1).unwrap();
@@ -2165,12 +2194,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 2, move |job: &mut u8| {
-                assert_eq!(*job, 1, "cancelled queued job ran");
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(1, 2, move |job: &mut u8| {
+                    assert_eq!(*job, 1, "cancelled queued job ran");
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2222,12 +2254,15 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start(1, 2, move |job: &mut u8| {
-                assert_eq!(*job, 1, "settle ran a queued job");
-                entered_tx.send(()).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(1, 2, move |job: &mut u8| {
+                    assert_eq!(*job, 1, "settle ran a queued job");
+                    entered_tx.send(()).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2267,7 +2302,8 @@ mod tests {
 
     #[test]
     fn the_generation_word_bound_also_refuses_parking_without_taking_the_job() {
-        let pool = Pool::start(0, 1, |job: &mut u8| *job).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(0, 1, |job: &mut u8| *job) }.unwrap();
         pool.shared.lock().generation = MAX_GENERATION - 1;
         let last = submit(&pool, &mut Some(1));
         assert_eq!(last.generation, MAX_GENERATION);
@@ -2288,11 +2324,14 @@ mod tests {
             let (entered_tx, entered_rx) = mpsc::channel();
             let pool = {
                 let release = Arc::clone(&release);
-                Pool::start(0, 1, move |job: &mut u8| {
-                    entered_tx.send(()).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                    *job
-                })
+                // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+                unsafe {
+                    Pool::start(0, 1, move |job: &mut u8| {
+                        entered_tx.send(()).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                        *job
+                    })
+                }
                 .unwrap()
             };
             let release = Gate(release);
@@ -2342,15 +2381,18 @@ mod tests {
             let release = Arc::clone(&release);
             let classes: Option<Classes<(u8, u8)>> =
                 classified.then_some((2, |job: &(u8, u8)| usize::from(job.1)));
-            Pool::start_with_class(1, 3, classes, move |job: &mut (u8, u8)| {
-                if job.0 == 0 {
-                    entered_tx.send(()).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                } else {
-                    ran_tx.send(std::thread::current().id()).unwrap();
-                }
-                std::thread::current().id()
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start_with_class(1, 3, classes, move |job: &mut (u8, u8)| {
+                    if job.0 == 0 {
+                        entered_tx.send(()).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                    } else {
+                        ran_tx.send(std::thread::current().id()).unwrap();
+                    }
+                    std::thread::current().id()
+                })
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2455,18 +2497,21 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                2,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    std::thread::current().id()
-                },
-            )
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    2,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        std::thread::current().id()
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2509,20 +2554,23 @@ mod tests {
         let (ran_tx, ran_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                4,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    } else {
-                        ran_tx.send((*job, std::thread::current().id())).unwrap();
-                    }
-                    *job
-                },
-            )
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    4,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        } else {
+                            ran_tx.send((*job, std::thread::current().id())).unwrap();
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2565,18 +2613,21 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                JOIN_HELP_ATTEMPTS + 3,
-                Some((2, |job: &usize| usize::from(*job != 0))),
-                move |job: &mut usize| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    *job
-                },
-            )
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    JOIN_HELP_ATTEMPTS + 3,
+                    Some((2, |job: &usize| usize::from(*job != 0))),
+                    move |job: &mut usize| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2640,18 +2691,21 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
-                1,
-                2,
-                Some((2, |job: &u8| usize::from(*job != 0))),
-                move |job: &mut u8| {
-                    if *job == 0 {
-                        entered_tx.send(()).unwrap();
-                        wait_until(|| release.load(Ordering::Acquire));
-                    }
-                    *job
-                },
-            )
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start_with_class(
+                    1,
+                    2,
+                    Some((2, |job: &u8| usize::from(*job != 0))),
+                    move |job: &mut u8| {
+                        if *job == 0 {
+                            entered_tx.send(()).unwrap();
+                            wait_until(|| release.load(Ordering::Acquire));
+                        }
+                        *job
+                    },
+                )
+            }
             .unwrap()
         };
         let release = Gate(release);
@@ -2730,7 +2784,8 @@ mod tests {
         }
         let dropped = Arc::new(AtomicU64::new(0));
         {
-            let pool = Pool::start(0, 3, |_: &mut OwnedDrop| ()).unwrap();
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe { Pool::start(0, 3, |_: &mut OwnedDrop| ()) }.unwrap();
             let first = submit(&pool, &mut Some(OwnedDrop(Arc::clone(&dropped))));
             let _second = submit(&pool, &mut Some(OwnedDrop(Arc::clone(&dropped))));
             let _parked = pool
@@ -2764,7 +2819,8 @@ mod tests {
             }
         }
         let dropped: [Arc<AtomicUsize>; 3] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
-        let pool = Pool::start(0, 3, |_: &mut Request| ()).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(0, 3, |_: &mut Request| ()) }.unwrap();
         let parked = pool
             .park(
                 &mut Some(Request {
@@ -2811,8 +2867,9 @@ mod tests {
     #[test]
     fn executor_profile_orders_reached_stages_and_marks_canceled_work() {
         for workers in [0, 1] {
-            let pool =
-                Pool::start(workers, 1, |_: &mut u8| unsafe { GetCurrentThreadId() }).unwrap();
+            let run = |_: &mut u8| unsafe { GetCurrentThreadId() };
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe { Pool::start(workers, 1, run) }.unwrap();
             let mut job = Some(7);
             let ticket = unsafe { pool.submit(&mut job) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
@@ -2830,7 +2887,8 @@ mod tests {
             assert!(stages[0] > 0);
             assert!(stages.windows(2).all(|pair| pair[0] <= pair[1]));
         }
-        let pool = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(0, 1, |_: &mut u8| ()) }.unwrap();
         let mut job = Some(7);
         let ticket = unsafe { pool.submit(&mut job) }.unwrap();
         pool.shutdown().unwrap();
@@ -2858,7 +2916,8 @@ mod tests {
 
     #[test]
     fn reserved_worker_job_cannot_be_claimed_by_its_collector() {
-        let pool = Pool::start(1, 3, |_: &mut u8| std::thread::current().id()).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(1, 3, |_: &mut u8| std::thread::current().id()) }.unwrap();
         assert!(pool.reserve_worker_slots(4).is_err());
         pool.reserve_worker_slots(2).unwrap();
         let ordinary = submit(&pool, &mut Some(1));
@@ -2893,14 +2952,16 @@ mod tests {
             std::thread::current().id()
         );
         assert!(pool.finish(ordinary).is_some());
-        let stopped = Pool::start(0, 1, |_: &mut u8| ()).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let stopped = unsafe { Pool::start(0, 1, |_: &mut u8| ()) }.unwrap();
         assert!(stopped.reserve_worker_slots(1).is_err());
     }
 
     #[test]
     fn a_parked_request_never_runs_and_returns_once_to_its_submitter() {
         for workers in [1, 2] {
-            let pool = Pool::start(workers, 3, |request: &mut u8| *request).unwrap();
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe { Pool::start(workers, 3, |request: &mut u8| *request) }.unwrap();
             pool.reserve_worker_slots(2).unwrap();
             pool.shutdown().unwrap();
             let mut request = Some(7);
@@ -2939,7 +3000,8 @@ mod tests {
             );
             assert_eq!(pool.shared.lock().parked, 0);
         }
-        let pool = Pool::start(1, 1, |request: &mut u8| *request + 1).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(1, 1, |request: &mut u8| *request + 1) }.unwrap();
         let (idle_tx, idle) = mpsc::channel();
         pool.set_work_wait_hook(move || {
             let _ = idle_tx.send(());
@@ -2964,9 +3026,12 @@ mod tests {
 
     #[test]
     fn parked_rejection_completes_in_its_heap_cell_without_allocating_or_running() {
-        let pool = Pool::start(1, 1, |_: &mut Box<[u8; 4096]>| -> u8 {
-            panic!("rejected worker must never run")
-        })
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(1, 1, |_: &mut Box<[u8; 4096]>| -> u8 {
+                panic!("rejected worker must never run")
+            })
+        }
         .unwrap();
         let owner = Box::new([7; 4096]);
         let allocation = owner.as_ptr();
@@ -3005,7 +3070,8 @@ mod tests {
 
     #[test]
     fn panicking_parked_rejection_keeps_the_job_owned_for_drain() {
-        let pool = Pool::start(1, 1, |request: &mut u8| *request).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(1, 1, |request: &mut u8| *request) }.unwrap();
         let ticket = pool.park(&mut Some(7), true).unwrap();
         let mut out = None;
         assert!(
@@ -3032,7 +3098,8 @@ mod tests {
     #[test]
     fn owned_buffers_return_and_fixed_slots_reuse_without_replacement() {
         for workers in [0, 2, MAX_WORKERS] {
-            let pool = Pool::start(workers, 1, change_owned).unwrap();
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe { Pool::start(workers, 1, change_owned) }.unwrap();
             let mut ids = pool.thread_ids();
             assert_eq!(ids.len(), workers);
             assert!(ids.iter().all(|&id| id != 0));
@@ -3066,7 +3133,8 @@ mod tests {
 
     #[test]
     fn caller_claims_awaited_ticket_and_keeps_other_slots_owned() {
-        let pool = Pool::start(0, 2, |request: &mut u8| *request + 1).unwrap();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe { Pool::start(0, 2, |request: &mut u8| *request + 1) }.unwrap();
         let first = submit(&pool, &mut Some(1));
         let second = submit(&pool, &mut Some(2));
         assert_eq!(pool.finish(second).unwrap().report, Ok(3));
@@ -3095,8 +3163,9 @@ mod tests {
 
     #[test]
     fn stale_foreign_and_exhausted_tickets_never_consume_another_request() {
-        let first_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
-        let other_pool = Pool::start(0, 1, |request: &mut u8| *request).unwrap();
+        // SAFETY: Test owns these local acquisition pools and drops them before test exit.
+        let first_pool = unsafe { Pool::start(0, 1, |request: &mut u8| *request) }.unwrap();
+        let other_pool = unsafe { Pool::start(0, 1, |request: &mut u8| *request) }.unwrap();
         let old = submit(&first_pool, &mut Some(1));
         let other = submit(&other_pool, &mut Some(2));
         assert!(other_pool.finish(old).is_none());
@@ -3124,17 +3193,20 @@ mod tests {
 
         let calls = Arc::new(AtomicU64::new(0));
         let count = Arc::clone(&calls);
-        let pool = Pool::start(0, 2, move |request: &mut Owned| -> usize {
-            count.fetch_add(1, Ordering::Relaxed);
-            let _reads = collector_memory::read_accounting::table(TableId::Divisions);
-            let memory = CountedMemory::new(SliceMemory {
-                base: 0x1000,
-                bytes: &request.payload,
-            });
-            assert!(memory.copy(0x1000, &mut [0]));
-            request.payload[0] = 42;
-            panic!("synthetic acquisition failure");
-        })
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(0, 2, move |request: &mut Owned| -> usize {
+                count.fetch_add(1, Ordering::Relaxed);
+                let _reads = collector_memory::read_accounting::table(TableId::Divisions);
+                let memory = CountedMemory::new(SliceMemory {
+                    base: 0x1000,
+                    bytes: &request.payload,
+                });
+                assert!(memory.copy(0x1000, &mut [0]));
+                request.payload[0] = 42;
+                panic!("synthetic acquisition failure");
+            })
+        }
         .unwrap();
         let make = || Owned { payload: vec![7] };
         let first = submit(&pool, &mut Some(make()));
@@ -3172,8 +3244,10 @@ mod tests {
     #[test]
     fn shutdown_cancels_pending_without_running_and_returns_arc_leases() {
         let mut owner = Arc::new(vec![7]);
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let pool: Pool<Arc<Vec<u8>>, ()> =
-            Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")).unwrap();
+            unsafe { Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")) }
+                .unwrap();
         let ticket = submit(&pool, &mut Some(Arc::clone(&owner)));
         pool.shutdown().unwrap();
         assert!(Arc::get_mut(&mut owner).is_none());
@@ -3198,12 +3272,15 @@ mod tests {
             }
         }
         for panics in [false, true] {
-            let pool = Pool::start(1, 1, move |live: &mut Arc<AtomicBool>| {
-                live.store(true, Ordering::Release);
-                let _lease = Lease(live);
-                assert!(!panics, "synthetic reader failure");
-                true
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                Pool::start(1, 1, move |live: &mut Arc<AtomicBool>| {
+                    live.store(true, Ordering::Release);
+                    let _lease = Lease(live);
+                    assert!(!panics, "synthetic reader failure");
+                    true
+                })
+            }
             .unwrap();
             let live = Arc::new(AtomicBool::new(false));
             let ticket = submit(&pool, &mut Some(Arc::clone(&live)));
@@ -3225,18 +3302,21 @@ mod tests {
         let gate = Arc::new(Barrier::new(2));
         let worker_gate = Arc::clone(&gate);
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(1, 3, move |request: &mut u8| {
-            if *request == 1 {
-                entered_tx.send(()).unwrap();
-                worker_gate.wait();
-                *request = 10;
-                10
-            } else {
-                assert_ne!(*request, 3, "canceled job must never run");
-                *request = 20;
-                panic!("synthetic caller failure");
-            }
-        })
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(1, 3, move |request: &mut u8| {
+                if *request == 1 {
+                    entered_tx.send(()).unwrap();
+                    worker_gate.wait();
+                    *request = 10;
+                    10
+                } else {
+                    assert_ne!(*request, 3, "canceled job must never run");
+                    *request = 20;
+                    panic!("synthetic caller failure");
+                }
+            })
+        }
         .unwrap();
         let running = submit(&pool, &mut Some(1));
         entered_rx.recv().unwrap();
@@ -3269,20 +3349,23 @@ mod tests {
         let panic_gate = Arc::new(Barrier::new(2));
         let panic_release = Arc::clone(&panic_gate);
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 3, move |request: &mut u8| {
-            entered_tx.send(*request).unwrap();
-            match *request {
-                1 => {
-                    successful_gate.wait();
-                    10
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(2, 3, move |request: &mut u8| {
+                entered_tx.send(*request).unwrap();
+                match *request {
+                    1 => {
+                        successful_gate.wait();
+                        10
+                    }
+                    2 => {
+                        panic_gate.wait();
+                        panic!("synthetic worker failure")
+                    }
+                    _ => panic!("canceled queued job ran"),
                 }
-                2 => {
-                    panic_gate.wait();
-                    panic!("synthetic worker failure")
-                }
-                _ => panic!("canceled queued job ran"),
-            }
-        })
+            })
+        }
         .unwrap();
         let first = submit(&pool, &mut Some(1));
         let first_started = entered_rx.recv().unwrap();
@@ -3314,11 +3397,14 @@ mod tests {
     #[test]
     fn split_notifications_wake_work_and_release_idle_peer_on_panic_stop() {
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 1, move |request: &mut u8| -> u8 {
-            entered_tx.send(()).unwrap();
-            *request = 9;
-            panic!("synthetic split-notification failure");
-        })
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(2, 1, move |request: &mut u8| -> u8 {
+                entered_tx.send(()).unwrap();
+                *request = 9;
+                panic!("synthetic split-notification failure");
+            })
+        }
         .unwrap();
         let ticket = submit(&pool, &mut Some(1));
         entered_rx.recv().unwrap();
@@ -3348,12 +3434,15 @@ mod tests {
     fn workers_and_callback_execute_disjoint_owned_jobs_together() {
         let meet = Arc::new(Barrier::new(3));
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = Pool::start(2, 3, move |request: &mut u8| {
-            entered_tx.send(*request).unwrap();
-            meet.wait();
-            *request += 1;
-            *request
-        })
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(2, 3, move |request: &mut u8| {
+                entered_tx.send(*request).unwrap();
+                meet.wait();
+                *request += 1;
+                *request
+            })
+        }
         .unwrap();
         let first = submit(&pool, &mut Some(1));
         assert_eq!(entered_rx.recv().unwrap(), 1);
@@ -3374,13 +3463,16 @@ mod tests {
         let gate = Arc::new(Barrier::new(2));
         let release = Arc::clone(&gate);
         let (entered_tx, entered_rx) = mpsc::channel();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let pool = Arc::new(
-            Pool::start(0, 1, move |request: &mut u8| {
-                entered_tx.send(()).unwrap();
-                gate.wait();
-                *request += 1;
-                *request
-            })
+            unsafe {
+                Pool::start(0, 1, move |request: &mut u8| {
+                    entered_tx.send(()).unwrap();
+                    gate.wait();
+                    *request += 1;
+                    *request
+                })
+            }
             .unwrap(),
         );
         let ticket = submit(&pool, &mut Some(7));
@@ -3422,11 +3514,14 @@ mod tests {
         let (claimed_tx, claimed) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release.0);
-            Pool::start(1, 4, move |job: &mut u64| {
-                claimed_tx.send(*job).unwrap();
-                wait_until(|| release.load(Ordering::Acquire));
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(1, 4, move |job: &mut u64| {
+                    claimed_tx.send(*job).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                    *job
+                })
+            }
             .unwrap()
         };
         pool.reserve_worker_slots(4).unwrap();
@@ -3472,18 +3567,21 @@ mod tests {
         let panic_gate = Arc::new(AtomicBool::new(false));
         let slow_gate = Arc::new(AtomicBool::new(false));
         let (panic_now, slow_done) = (Arc::clone(&panic_gate), Arc::clone(&slow_gate));
-        let pool = Pool::start(2, 4, move |value: &mut u64| {
-            let gate = if *value == 99 { &panic_now } else { &slow_done };
-            if *value == 99 || *value == 50 {
-                while !gate.load(Ordering::Acquire) {
-                    std::thread::yield_now();
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(2, 4, move |value: &mut u64| {
+                let gate = if *value == 99 { &panic_now } else { &slow_done };
+                if *value == 99 || *value == 50 {
+                    while !gate.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
                 }
-            }
-            if *value == 99 {
-                panic!("synthetic acquisition panic");
-            }
-            *value
-        })
+                if *value == 99 {
+                    panic!("synthetic acquisition panic");
+                }
+                *value
+            })
+        }
         .unwrap();
         pool.reserve_worker_slots(4).unwrap();
         let slow = unsafe { pool.submit_with_priority(&mut Some(50), 0, true, true) }.unwrap();
@@ -3534,7 +3632,8 @@ mod tests {
         assert_eq!(worker_count_for_topology(1), 1);
         assert_eq!(worker_count_for_topology(0), 1);
         assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
-        assert!(Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request).is_err());
+        // SAFETY: Test validates rejection of an excessive worker count before spawning threads.
+        assert!(unsafe { Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request) }.is_err());
     }
 
     #[test]
@@ -3546,13 +3645,16 @@ mod tests {
                 let (entered, started) = mpsc::channel();
                 let pool = {
                     let (gate, ran) = (Arc::clone(&gate), Arc::clone(&ran));
-                    Pool::start(workers, 8, move |job: &mut usize| {
-                        ran.lock().unwrap().push(std::thread::current().id());
-                        if *job < workers {
-                            entered.send(()).unwrap();
-                            wait_until(|| gate.load(Ordering::Acquire));
-                        }
-                    })
+                    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+                    unsafe {
+                        Pool::start(workers, 8, move |job: &mut usize| {
+                            ran.lock().unwrap().push(std::thread::current().id());
+                            if *job < workers {
+                                entered.send(()).unwrap();
+                                wait_until(|| gate.load(Ordering::Acquire));
+                            }
+                        })
+                    }
                     .unwrap()
                 };
                 let release = Gate(gate);
@@ -3600,13 +3702,16 @@ mod tests {
         let (entered, started) = mpsc::channel();
         let pool = {
             let gate = Arc::clone(&gate);
-            Pool::start(WORKERS, 8, move |job: &mut usize| {
-                if *job < WORKERS {
-                    entered.send(()).unwrap();
-                    wait_until(|| gate.load(Ordering::Acquire));
-                }
-                *job
-            })
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            unsafe {
+                Pool::start(WORKERS, 8, move |job: &mut usize| {
+                    if *job < WORKERS {
+                        entered.send(()).unwrap();
+                        wait_until(|| gate.load(Ordering::Acquire));
+                    }
+                    *job
+                })
+            }
             .unwrap()
         };
         let release = Gate(gate);
@@ -3657,28 +3762,27 @@ mod worker_join_tests {
             let binding = Arc::new(OnceLock::<Weak<Pool<u8, u32>>>::new());
             let worker_binding = Arc::clone(&binding);
             let caller = unsafe { GetCurrentThreadId() };
-            let pool = Arc::new(
-                Pool::start(2, 3, move |request: &mut u8| {
-                    let thread = unsafe { GetCurrentThreadId() };
-                    assert_ne!(thread, caller);
-                    if *request == 1 {
-                        assert!(!panic_child, "synthetic child acquisition failure");
-                        return thread;
-                    }
-                    let pool = worker_binding.get().unwrap().upgrade().unwrap();
-                    let mut child = Some(1);
-                    let ticket =
-                        unsafe { pool.submit_with_priority(&mut child, 0, true, true) }.unwrap();
-                    let mut completed = None;
-                    assert!(pool.finish_worker_into(ticket, &mut completed));
-                    match completed.unwrap().report {
-                        Ok(child) => assert_ne!(thread, child),
-                        Err(failure) => assert_eq!(failure, Failure::Panicked),
-                    }
-                    thread
-                })
-                .unwrap(),
-            );
+            let run = move |request: &mut u8| {
+                let thread = unsafe { GetCurrentThreadId() };
+                assert_ne!(thread, caller);
+                if *request == 1 {
+                    assert!(!panic_child, "synthetic child acquisition failure");
+                    return thread;
+                }
+                let pool = worker_binding.get().unwrap().upgrade().unwrap();
+                let mut child = Some(1);
+                let ticket =
+                    unsafe { pool.submit_with_priority(&mut child, 0, true, true) }.unwrap();
+                let mut completed = None;
+                assert!(pool.finish_worker_into(ticket, &mut completed));
+                match completed.unwrap().report {
+                    Ok(child) => assert_ne!(thread, child),
+                    Err(failure) => assert_eq!(failure, Failure::Panicked),
+                }
+                thread
+            };
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = Arc::new(unsafe { Pool::start(2, 3, run) }.unwrap());
             pool.reserve_worker_slots(2).unwrap();
             binding.set(Arc::downgrade(&pool)).unwrap();
             let mut parent = Some(0);
@@ -3693,8 +3797,11 @@ mod worker_join_tests {
     }
 }
 
+/// # Safety
+/// Spawns acquisition workers registered with `collector_timing::capture_gate::reader()`. Caller
+/// must hold exclusive fixture control while the temporary pool runs.
 #[cfg(any(test, feature = "test-support"))]
-pub fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
+pub unsafe fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
     workers: usize,
     capacity: usize,
     classes: Classes<J>,
@@ -3702,8 +3809,11 @@ pub fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
 ) {
     let runner_bytes = size_of_val(&run);
     assert!(runner_bytes > 0, "fixture must cover the boxed runner");
-    let pool =
-        Pool::start_classified_boosted(workers, capacity, false, Some(classes), run).unwrap();
+    // SAFETY: Caller holds exclusive fixture control; pool is shut down before returning.
+    let pool = unsafe {
+        Pool::start_classified_boosted(workers, capacity, false, Some(classes), run)
+    }
+    .unwrap();
     assert_eq!(pool.shared.cells.len(), capacity);
     assert_eq!(pool.shared.words.len(), capacity);
     assert_eq!(size_of::<Cell<J, R>>(), size_of::<Completion<J, R>>());
@@ -3744,8 +3854,11 @@ pub fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
     pool.shutdown().unwrap();
 }
 
+/// # Safety
+/// Spawns acquisition workers registered with `collector_timing::capture_gate::reader()`. Caller
+/// must hold exclusive fixture control while the benchmark pools run.
 #[cfg(feature = "test-support")]
-pub fn dispatch_and_release_bench<J, R, const JOB: usize>() {
+pub unsafe fn dispatch_and_release_bench<J, R, const JOB: usize>() {
     use std::time::{Duration, Instant};
     struct Request<const JOB: usize> {
         micros: u64,
@@ -3792,14 +3905,17 @@ pub fn dispatch_and_release_bench<J, R, const JOB: usize>() {
             })
             .collect();
         for (wake_boost, wake_all) in [(true, true), (false, true), (true, false), (false, false)] {
-            let pool = Pool::start_boosted(
-                MAX_WORKERS,
-                111,
-                wake_boost,
-                |request: &mut Request<JOB>| {
-                    spin(request.micros);
-                },
-            )
+            // SAFETY: Caller holds exclusive fixture control; pool is shut down each iteration.
+            let pool = unsafe {
+                Pool::start_boosted(
+                    MAX_WORKERS,
+                    111,
+                    wake_boost,
+                    |request: &mut Request<JOB>| {
+                        spin(request.micros);
+                    },
+                )
+            }
             .unwrap();
             let wake = |jobs: usize| {
                 if wake_all {

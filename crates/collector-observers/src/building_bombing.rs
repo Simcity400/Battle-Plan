@@ -84,8 +84,9 @@ pub fn buildings() -> usize {
     BUILDINGS.load(Ordering::Acquire)
 }
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
-/// building-bombing observation), while observer storage remains live and teardown is excluded.
+/// Run only while building-bombing observer storage remains live for the active session (or an
+/// isolated test owning building-bombing observation) and teardown is excluded;
+/// `EventLedger::prepare` synchronizes spare and retired buffers across concurrent growth callers.
 pub unsafe fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {

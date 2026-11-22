@@ -64,7 +64,11 @@ impl<T> Deref for Padded<T> {
         &self.0
     }
 }
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
@@ -615,8 +619,8 @@ fn log() -> Option<&'static Log> {
     }
 }
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
-/// `staging_test()`), while politics staging remains live and [`release`] is excluded.
+/// Run only while politics staging remains live for the active session (or an isolated test holding
+/// `staging_test()`) and [`release`] is excluded; concurrent growth calls are serialized by `LOGS`.
 pub unsafe fn resize(entries: usize, keys: usize) {
     engine_allocation::advisory(|| resize_storage(entries, keys));
 }
@@ -713,11 +717,11 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
 }
 
 /// # Safety
-/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
-/// `staging_test()`), while politics staging remains live and [`release`] is excluded.
+/// Run only while politics staging remains live for the active session (or an isolated test holding
+/// `staging_test()`) and [`release`] is excluded; concurrent calls are serialized by `LOGS`.
 pub unsafe fn prepare() {
     if let Some(log) = log() {
-        // SAFETY: Caller guarantees serial sizing or isolated test ownership while staging is live.
+        // SAFETY: Caller guarantees live politics staging with `release` excluded.
         unsafe { resize(log.entries, log.key_stride) };
     }
 }
@@ -1007,7 +1011,7 @@ fn copy_keys(
     }
     Ok(())
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
 fn append_raw_lane(
     log: &Log,
@@ -1170,8 +1174,10 @@ impl Handoff {
             .saturating_add(spilled)
     }
     /// # Safety
-    /// The log captured by this [`Handoff`] must still be alive at its original address, `cursors`
-    /// must cover `self.lanes`, and only the single spool consumer or isolated fixture may drain it.
+    /// The log captured by this [`Handoff`] must remain live at its original address (`release`
+    /// excluded), `cursors` must be the exact unmodified slice populated when this [`Handoff`] was
+    /// sealed (covering at least `self.lanes`), and only the single spool consumer (or isolated
+    /// fixture) may drain handoffs in strict seal order without concurrent consumption.
     pub unsafe fn drain(
         self,
         cursors: &[LaneCursor],
@@ -2453,18 +2459,18 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
     }
     identity
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_identity(kind: PowerDailyCostKind, receiver: usize) -> Identity {
+pub(crate) fn bench_identity(kind: PowerDailyCostKind, receiver: usize) -> Identity {
     if kind == PowerDailyCostKind::Relation {
         relation_identity(receiver)
     } else {
         mio_identity(receiver)
     }
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_upkeep_identity(record: usize) -> Identity {
+pub(crate) fn bench_upkeep_identity(record: usize) -> Identity {
     upkeep_identity(record)
 }
 
@@ -3150,10 +3156,10 @@ pub fn stage_fixture(events: &[Event], memory: &impl Memory) -> (Drained, Vec<Ev
     bytes.truncate(drain.bytes);
     (drain, output, bytes)
 }
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_begin(base: usize, entries: usize, keys: usize) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_begin(base: usize, entries: usize, keys: usize) {
     BASE.store(base, Ordering::Relaxed);
-    // SAFETY: Isolated benchmark harness owns the global politics staging log.
+    // SAFETY: Caller holds `staging_test()` and owns the global politics staging log.
     unsafe { resize(entries, keys) };
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
@@ -3169,23 +3175,23 @@ pub fn bench_begin(base: usize, entries: usize, keys: usize) {
         .store(EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_scope(f: impl FnOnce()) {
+pub(crate) fn bench_scope(f: impl FnOnce()) {
     let _active = Call::enter();
     DAILY_HOUR.set(event_hour());
     f();
     DAILY_HOUR.set(None);
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[inline(always)]
-pub fn bench_observe(event: Event) {
+pub(crate) fn bench_observe(event: Event) {
     let _active = Call::enter();
     append_record(fixture_record(&event), event.identity.keys);
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_daily_country(country: u32, receivers: &[usize]) {
+#[cfg(test)]
+pub(crate) fn bench_daily_country(country: u32, receivers: &[usize]) {
     let owner = native::Owner {
         country,
         instance: 0,
@@ -3264,8 +3270,8 @@ pub fn bench_daily_country(country: u32, receivers: &[usize]) {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
+#[cfg(test)]
+pub(crate) fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
     let mut registers: Registers = unsafe { std::mem::zeroed() };
     registers.r13 = status;
     registers.rbp = modifier_frame;
@@ -3279,13 +3285,13 @@ pub fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize)
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_drain(events: &mut [Event], bytes: &mut [u8]) -> Drained {
+#[cfg(test)]
+pub(crate) unsafe fn bench_drain(events: &mut [Event], bytes: &mut [u8]) -> Drained {
     drain_from(log().unwrap(), events, bytes).unwrap()
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_staging_parts(events: &[Event]) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_staging_parts(events: &[Event]) {
     use std::{hint::black_box, time::Instant};
     let packed: Vec<_> = events
         .iter()
@@ -3294,7 +3300,8 @@ pub fn bench_staging_parts(events: &[Event]) {
     for mode in ["guard", "direct_lane", "append_record", "expanded_fixture"] {
         let mut times = Vec::new();
         for _ in 0..100 {
-            bench_begin(base(), events.len(), 32);
+            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
+            unsafe { bench_begin(base(), events.len(), 32) };
             let log = log().unwrap();
             let index = lane_index(log).unwrap();
             let start = Instant::now();
@@ -3332,13 +3339,13 @@ pub fn bench_staging_parts(events: &[Event]) {
         );
     }
 }
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_end() {
+#[cfg(test)]
+pub(crate) fn bench_end() {
     ENABLED.store(false, Ordering::SeqCst);
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn bench_midnight_parts(receivers: &[usize]) {
+#[cfg(test)]
+pub(crate) unsafe fn bench_midnight_parts(receivers: &[usize]) {
     use std::{hint::black_box, time::Instant};
     let count = receivers.len() / 8;
     let owners: Vec<_> = receivers.chunks_exact(8).map(|r| r[0] - 0x2200).collect();
@@ -3381,7 +3388,8 @@ pub fn bench_midnight_parts(receivers: &[usize]) {
     ] {
         let mut times = Vec::new();
         for iteration in 0..110 {
-            bench_begin(base(), events.len(), 32);
+            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
+            unsafe { bench_begin(base(), events.len(), 32) };
             let start = Instant::now();
             bench_scope(|| match mode {
                 "owner_status" => {

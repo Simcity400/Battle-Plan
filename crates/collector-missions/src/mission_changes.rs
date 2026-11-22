@@ -115,7 +115,10 @@ pub struct Counts {
     pub quiet: bool,
 }
 
-pub fn record(counts: &Counts, countries: Option<usize>) {
+/// # Safety
+/// Run only during admitted air-mission capture (or an isolated test) with measured country demand
+/// for the active session.
+pub unsafe fn record(counts: &Counts, countries: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,

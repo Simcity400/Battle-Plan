@@ -707,10 +707,11 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn observe_for_test(enabled: bool, base: usize) {
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool, base: usize) {
     if enabled {
-        reset_log_for_test(crate::output_log::CAPACITY);
+        // SAFETY: In-crate tests hold `test_lock()` with hooks quiescent before enabling.
+        unsafe { reset_log_for_test(crate::output_log::CAPACITY) };
     }
     BASE.store(base, Ordering::Relaxed);
     bind_returns(base).unwrap();
@@ -719,8 +720,11 @@ pub fn observe_for_test(enabled: bool, base: usize) {
     RAILWAY_LINE.set((0, 0));
 }
 
+/// # Safety
+/// Caller holds [`test_lock()`] (or exclusive fixture ownership) with construction-IC hooks
+/// disabled and quiescent (`ACTIVE == 0`).
 #[cfg(any(test, feature = "test-support"))]
-pub fn reset_log_for_test(capacity: usize) {
+pub unsafe fn reset_log_for_test(capacity: usize) {
     assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     let mut current = Storage::new(capacity).unwrap();
     let pointer = &mut *current as *mut Storage;
