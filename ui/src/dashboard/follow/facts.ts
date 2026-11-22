@@ -99,6 +99,16 @@ export class Facts<V> {
     return true;
   }
 
+  stamp(route: number, seek: number) {
+    const at = this.route(route);
+    if (seek <= at.seek) return;
+    for (const sub of this.subs.values()) if (sub.route === route && (sub.facts.length || sub.carried)) return;
+    at.seek = seek;
+    const due = at.early.filter(([stamp]) => stamp <= seek);
+    at.early = at.early.filter(([stamp]) => stamp > seek);
+    for (const [, again] of due) again();
+  }
+
   seek(route: number, seek: number, target: number) {
     const at = this.route(route);
     if (seek <= at.seek) return;

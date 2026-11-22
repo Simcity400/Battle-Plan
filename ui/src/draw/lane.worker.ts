@@ -45,7 +45,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToLane>) => {
   if (!lane) return;
   switch (m.type) {
     case 'follow': lane.follow(m.sub, m.channel, m.product); break;
-    case 'route': lane.bindRoute(m.sub, m.route, m.native); break;
+    case 'route': lane.bindRoute(m.sub, m.route, m.native, m.seek); break;
     case 'unfollow': lane.unfollow(m.sub); break;
     case 'rank': lane.rank(m.sub, m.version); break;
     case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;

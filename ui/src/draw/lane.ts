@@ -123,13 +123,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (channel === 'pinned') this.facts.follow(sub, -1, 'pinned');
   }
 
-  bindRoute(sub: number, route: number, native: number) {
+  bindRoute(sub: number, route: number, native: number, seek = 0) {
     const held = this.subs.get(sub);
     if (!held || held.route !== null) return;
     held.route = route;
     this.routes.set(native, route);
     this.natives.set(route, native);
     this.facts.follow(sub, route, held.channel);
+    this.facts.stamp(route, seek);
     this.replay();
     this.after();
   }

@@ -55,6 +55,7 @@ export class Pipeline {
   private nextWidget = 1;
   private nextRoute = 1;
   private opened: Promise<void> | null = null;
+  private readonly ports: readonly MessagePort[];
   private changed = new Set<WidgetState>();
   private dated = false;
   private framing = false;
@@ -68,6 +69,9 @@ export class Pipeline {
     this.nextSub = Array.from({ length: count }, () => 1);
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
+    const channels = host.lanes.map(() => host.channel());
+    channels.forEach((channel, lane) => host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: host.rate() }, [channel.port1]));
+    this.ports = channels.map(channel => channel.port2);
     this.stopPublish = clock.onPublish((previous, next) => this.published(previous, next), true);
     this.stopClock = clock.subscribe(() => this.anchor());
     const s = clock.getSnapshot();
@@ -84,11 +88,7 @@ export class Pipeline {
   }
 
   private open(): Promise<void> {
-    if (!this.opened) {
-      const channels = this.host.lanes.map(() => this.host.channel());
-      channels.forEach((channel, lane) => this.host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: this.lanes, port: channel.port1, rate: this.host.rate() }, [channel.port1]));
-      this.opened = this.host.open(channels.map(channel => channel.port2));
-    }
+    this.opened ??= this.host.open(this.ports);
     return this.opened;
   }
 
@@ -340,7 +340,7 @@ export class Pipeline {
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         sub.status = 'followed';
         sub.route.native = data.route!;
-        this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route! });
+        this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek });
         for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
         sub.route.told = null;
         this.anchor();
