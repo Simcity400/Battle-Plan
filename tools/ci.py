@@ -11,9 +11,9 @@ GitHub's hosted CI (.github/workflows/ci.yml) is the only test runner and the on
 `changes` job gives each job its gate from the files alone and writes the matrix of legs; each leg
 runs `job` for its group, or for its share of a sharded job. `times` prepares a target folder
 restored from a cache, and `warm` fills one for the cache. `weights` writes the measured crate
-costs the legs are balanced by, from a cold run's timings and test report. `check` is a quick run here before a
-push: the jobs a change touches that compile and test nothing on this machine, with Clippy on
-Boat. Exit 0 on success, 1 on a failure, 2 when a job that should have run could not.
+costs the legs are balanced by, from a cold run's timings and test report. `check` is a quick run
+here before a push: the jobs a change touches that compile and test nothing on this machine, with
+Clippy on Boat. Exit 0 on success, 1 on a failure, 2 when a job that should have run could not.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
