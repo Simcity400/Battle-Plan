@@ -68,6 +68,10 @@ export class Facts<V> {
 
   has(id: number) { return this.subs.has(id); }
 
+  owns(id: number) { return this.subs.has(id) || this.groups.has(id); }
+
+  latest(id: number): V | undefined { return (this.subs.get(id) ?? this.groups.get(id))?.facts.at(-1)?.value; }
+
   follow(id: number, route: number, channel: Channel) {
     if (channel !== 'pinned') this.route(route);
     this.subs.set(id, { id, route, channel, facts: [], open: false, stepped: false, carried: null, uses: new Set() });
@@ -253,7 +257,7 @@ export class Facts<V> {
     return sub.carried && sub.carried.h <= target ? sub.carried : null;
   }
 
-  window(id: number, target: number, picture = this.select(id, target)): Window | null {
+  window(id: number, target: number, picture: Picture<V> | null = this.select(id, target)): Window | null {
     const sub = this.subs.get(id);
     if (!sub || !picture) return null;
     const points = new Set<number>();
