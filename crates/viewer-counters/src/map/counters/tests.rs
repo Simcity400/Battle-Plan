@@ -197,8 +197,8 @@ fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical
     let draw_row = |row: replay_data::rows::DivisionStatusRow,
                     thresholds: counter_status::SupplyThresholds,
                     coarse: bool| {
-        let mut frame = viewer_foundation::map::test_support::test_frame(1);
-        viewer_foundation::map::test_support::test_put(
+        let mut frame = viewer_foundation::test_support::test_frame(1);
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionStatus(vec![row]),
         );
@@ -208,11 +208,11 @@ fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical
         };
         panel.panel_stats[0] = Some(1_000_000);
         panel.panel_stats[1] = Some(1_000_000);
-        viewer_foundation::map::test_support::test_put(
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionPanelStats(vec![panel]),
         );
-        viewer_foundation::map::test_support::test_put(
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionMovement(vec![replay_data::rows::DivisionMovementRow {
                 division: 1,
@@ -392,8 +392,8 @@ fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement()
                      with_maxima: bool,
                      with_movement: bool,
                      coarse: bool| {
-        let mut frame = viewer_foundation::map::test_support::test_frame(1);
-        viewer_foundation::map::test_support::test_put(
+        let mut frame = viewer_foundation::test_support::test_frame(1);
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionStatus(vec![row]),
         );
@@ -404,13 +404,13 @@ fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement()
             };
             panel.panel_stats[0] = Some(1_000_000);
             panel.panel_stats[1] = Some(1_000_000);
-            viewer_foundation::map::test_support::test_put(
+            viewer_foundation::test_support::test_put(
                 &mut frame,
                 TableRows::DivisionPanelStats(vec![panel]),
             );
         }
         if with_movement {
-            viewer_foundation::map::test_support::test_put(
+            viewer_foundation::test_support::test_put(
                 &mut frame,
                 TableRows::DivisionMovement(vec![replay_data::rows::DivisionMovementRow {
                     division: 1,
@@ -582,12 +582,12 @@ fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement()
     let draw_stack = |statuses_rows: Vec<replay_data::rows::DivisionStatusRow>,
                       movements_rows: Vec<replay_data::rows::DivisionMovementRow>,
                       order: &[u64]| {
-        let mut frame = viewer_foundation::map::test_support::test_frame(1);
-        viewer_foundation::map::test_support::test_put(
+        let mut frame = viewer_foundation::test_support::test_frame(1);
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionStatus(statuses_rows),
         );
-        viewer_foundation::map::test_support::test_put(
+        viewer_foundation::test_support::test_put(
             &mut frame,
             TableRows::DivisionMovement(movements_rows),
         );
