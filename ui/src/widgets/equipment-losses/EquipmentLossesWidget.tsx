@@ -68,7 +68,7 @@ function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, nam
   return withHead(withShips(reply, hour), hour, (leaf: LossLeaf) => {
     if (!named.has(leaf.key)) return null;
     const key = liveKey(leaf.key, 'total');
-    return cells.get(key) ?? cells.missing(key);
+    return cells.raw?.(key) ?? cells.get(key) ?? cells.missing(key);
   });
 }
 

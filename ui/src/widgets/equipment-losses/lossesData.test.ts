@@ -559,6 +559,38 @@ test('withHead records explicit exact absence for missing live cells and preserv
   const preciseHead = withHead(preciseBase, 105, () => Number(9007199254740993n));
   assert.equal(pointAt(preciseHead.causes[0].leaves[0], 105)?.totalRaw, '9007199254740993');
   assert.equal(lossesTotal(lossItems(preciseHead, live(105))).exact, 9007199254740993n);
+
+  const betweenBase = destruction();
+  betweenBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 101, totalRaw: '9007199254740993' }], exact: [] })],
+    }),
+  ];
+  const exactBigIntHead = withHead(betweenBase, 106, () => 9007199254740993n);
+  assert.equal(pointAt(exactBigIntHead.causes[0].leaves[0], 106)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(exactBigIntHead, live(106))).exact, 9007199254740993n);
+
+  const roundedFloatHead = withHead(betweenBase, 106, () => Number(9007199254740993n));
+  assert.equal(pointAt(roundedFloatHead.causes[0].leaves[0], 106), null);
+  assert.equal(lossesTotal(lossItems(roundedFloatHead, live(106))).exact, null);
+
+  const coarseZero = destruction();
+  coarseZero.from = 120;
+  coarseZero.to = 130;
+  coarseZero.width = 1;
+  coarseZero.exactHours = [124];
+  coarseZero.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+  coarseZero.destructionCoverage = [{ firstHour: 121, lastHour: 130, reason: null }];
+  coarseZero.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 121, totalRaw: '100000' }, { hour: 125, totalRaw: '100000' }], exact: [{ hour: 124, totalRaw: '0' }] })],
+    }),
+  ];
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 124, end: 130, campaign: false })).exact, 0n);
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+  assert.equal(lossesTotal(lossItems(coarseZero, { first: 120, hour: 126, end: 130, campaign: false })).exact, 100000n);
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {

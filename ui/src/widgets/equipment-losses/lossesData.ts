@@ -129,13 +129,19 @@ export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLea
       let raw: string;
       if (typeof value === 'bigint') {
         raw = value.toString();
+      } else if (Number.isSafeInteger(value)) {
+        raw = BigInt(value).toString();
       } else {
         const existingExact = exactPointAt(leaf, hour)?.totalRaw ?? null;
-        const existingBin = binPointAt(leaf, hour);
-        const recorded = existingExact ?? (existingBin && existingBin.hour === hour ? existingBin.totalRaw : null);
-        raw = recorded !== null && !Number.isSafeInteger(value) && Number(BigInt(recorded)) === value
-          ? recorded
-          : BigInt(Math.round(value)).toString();
+        if (existingExact !== null && Number(BigInt(existingExact)) === value) {
+          raw = existingExact;
+        } else {
+          missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: 'Exact 64-bit total unavailable' });
+          return {
+            ...leaf,
+            exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: null }],
+          };
+        }
       }
       return {
         ...leaf,

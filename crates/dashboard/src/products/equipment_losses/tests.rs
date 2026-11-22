@@ -918,7 +918,10 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
         .expect("land combat cause");
     assert_eq!(land_124.leaves.len(), 1);
     assert_eq!(land_124.leaves[0].exact, vec![ExactLossPoint { hour: 124, total_raw: None }]);
-    assert_eq!(land_124.leaves[0].points, vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }]);
+    assert_eq!(
+        land_124.leaves[0].points,
+        vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }, LossPoint { hour: 125, total_raw: "100000".to_owned() }]
+    );
 
     let coarse_121 = load_at(120, 1, vec![121]);
     let land_121 = coarse_121
@@ -930,7 +933,7 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
     assert_eq!(land_121.leaves[0].exact, vec![ExactLossPoint { hour: 121, total_raw: None }]);
     assert_eq!(
         land_121.leaves[0].points,
-        vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }],
+        vec![LossPoint { hour: 121, total_raw: "100000".to_owned() }, LossPoint { hour: 125, total_raw: "100000".to_owned() }],
         "exact absence at bin start 121 must not erase the bin's hour-125 loss from the chart"
     );
 
@@ -1008,4 +1011,93 @@ fn exact_read_at_unavailable_totals_hour_records_explicit_absence() {
     assert_eq!(land.leaves.len(), 1);
     assert_eq!(land.leaves[0].exact, vec![ExactLossPoint { hour: 102, total_raw: None }]);
     assert!(!land.leaves[0].points.is_empty());
+
+    let ending_unavail = LossesParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 100,
+        to: 102,
+        width: 1,
+        reads: vec![101, 102],
+    };
+    let short = EquipmentLosses::load(&source, &ending_unavail, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let short_land = short
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(short_land.leaves.len(), 1, "ending on unavailable hour 102 must still keep leaf discovered at 101");
+    assert_eq!(
+        short_land.leaves[0].exact,
+        vec![ExactLossPoint { hour: 101, total_raw: Some("500000".to_owned()) }, ExactLossPoint { hour: 102, total_raw: None }]
+    );
+}
+
+#[test]
+fn exact_zero_inside_coarse_bin_preserves_bin_end_for_later_first_loss() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as base_frame};
+    use replay::campaign::Replay;
+    use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let variant = (8_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let partial = vec![EquipmentDestructionRow {
+        coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+        unavailable_reason: Recorded::Value("startup partial".to_owned()),
+        ..Default::default()
+    }];
+    let loss = vec![EquipmentDestructionRow {
+        country: 9001,
+        cause: EquipmentDestructionCause::LandCombat,
+        variant,
+        amount_raw: 100_000,
+        coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+        unavailable_reason: Recorded::Value(String::new()),
+    }];
+    let frames: Vec<_> = (120..=130)
+        .map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+            *frame.tables[TableId::EquipmentDestruction.index()] = match hour {
+                120 => TableView::Complete(TableRows::EquipmentDestruction(partial.clone())),
+                125 => TableView::Complete(TableRows::EquipmentDestruction(loss.clone())),
+                _ => TableView::Complete(TableRows::EquipmentDestruction(Vec::new())),
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(
+        crate::SourceKey { source_id: "losses-coarse-zero".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let params = LossesParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 120,
+        to: 130,
+        width: 1,
+        reads: vec![124],
+    };
+    let reply = EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let land = reply
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(land.leaves.len(), 1);
+    assert_eq!(land.leaves[0].exact, vec![ExactLossPoint { hour: 124, total_raw: Some("0".to_owned()) }]);
+    assert!(
+        land.leaves[0].points.iter().any(|point| point.hour == 125 && point.total_raw == "100000"),
+        "bin end at 125 must be preserved to supersede exact zero at 124: {:?}",
+        land.leaves[0].points
+    );
 }

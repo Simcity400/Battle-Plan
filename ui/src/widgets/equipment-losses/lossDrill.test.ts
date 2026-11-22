@@ -218,6 +218,23 @@ test('exact hover inside a rising multi-hour bin keeps the newer total without d
   assert.equal(chart.model.hours.includes(123), false);
   assert.deepEqual(edgeAt(lossHistory(data, 123, 123), 123), [{ low: 0, high: 5 }]);
   assert.deepEqual(edgeAt(lossHistory(data, 125, 125), 125), [{ low: 0, high: 5 }]);
+
+  const coarse = reply(1);
+  coarse.from = 120;
+  coarse.to = 130;
+  coarse.width = 1;
+  coarse.exactHours = [124];
+  coarse.landSource = 'destruction';
+  coarse.destructionRuns = [{ firstHour: 120, lastHour: 130, countedFrom: 121, withheldFrom: null }];
+  coarse.destructionCoverage = [{ firstHour: 121, lastHour: 130, reason: null }];
+  coarse.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  coarse.causes[0].leaves[0].points = [{ hour: 121, totalRaw: '100000' }, { hour: 125, totalRaw: '100000' }];
+  coarse.causes[0].leaves[0].exact = [{ hour: 124, totalRaw: '0' }];
+  const coarseChart = lossHistory(coarse, 120, 130);
+  assert.deepEqual(edgeAt(coarseChart, 124), [{ low: 0, high: 0 }]);
+  assert.deepEqual(edgeAt(coarseChart, 125), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(lossHistory(coarse, 126, 126), 126), [{ low: 0, high: 1 }]);
+  assert.deepEqual(lossRows(coarse, { first: 120, hour: 126, end: 130, campaign: false, from: null }).map(row => row.exact), [100000n]);
 });
 
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {

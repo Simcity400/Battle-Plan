@@ -335,7 +335,19 @@ struct Leaf {
     incomplete_from: Option<i32>,
 }
 
+fn has_exact_in(exact_hours: &[i32], low: i32, high: i32) -> bool {
+    if low > high {
+        return false;
+    }
+    let at = exact_hours.partition_point(|&hour| hour < low);
+    exact_hours.get(at).is_some_and(|&hour| hour <= high)
+}
+
 pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32) -> Vec<(i32, i64)> {
+    bin_points_for(bins, first_bin_hour, bin_hours, from, to, &[])
+}
+
+fn bin_points_for(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32, exact_hours: &[i32]) -> Vec<(i32, i64)> {
     let mut out: Vec<(i32, i64)> = Vec::new();
     for (at, bin) in bins.iter().enumerate() {
         if bin.hours == 0 {
@@ -346,10 +358,11 @@ pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i
         if start > end {
             continue;
         }
-        if out.last().is_none_or(|&(_, value)| value != bin.first) {
+        let crossed_exact = out.last().is_some_and(|&(prev, _)| has_exact_in(exact_hours, prev, start.saturating_sub(1)));
+        if out.last().is_none_or(|&(_, value)| value != bin.first) || crossed_exact {
             out.push((start, bin.first));
         }
-        if bin.last != bin.first && end > start {
+        if end > start && (bin.last != bin.first || has_exact_in(exact_hours, start, end - 1)) {
             out.push((end, bin.last));
         }
     }
@@ -469,10 +482,24 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             continue;
         }
         let last = totals_at(query, stretch.last, (low, high))?.unwrap_or_default();
-        let keys: Vec<u128> = last.keys().copied().collect();
+        let mut stretch_keys: BTreeSet<u128> = last.keys().copied().collect();
+        let stretch_reads: Vec<i32> = reads.iter().copied().filter(|hour| (stretch.first..=stretch.last).contains(hour)).collect();
+        let mut stretch_found = Vec::with_capacity(stretch_reads.len());
+        for &hour in &stretch_reads {
+            crate::metadata::check_cancel(cancelled)?;
+            let found = totals_at(query, hour, (low, high))?;
+            if let Some(found) = &found {
+                for (&key, &(_, incomplete_from)) in found {
+                    stretch_keys.insert(key);
+                    leaves.entry(key).or_default().incomplete_from = incomplete_from;
+                }
+            }
+            stretch_found.push((hour, found));
+        }
         for (&key, &(_, incomplete_from)) in &last {
             leaves.entry(key).or_default().incomplete_from = incomplete_from;
         }
+        let keys: Vec<u128> = stretch_keys.iter().copied().collect();
         let (first, end) = (stretch.first.max(from), stretch.last.min(to));
         if !keys.is_empty() && first <= end {
             let charts = dashboard_query::series::charts_within(recording, stretch.run, (TableId::EquipmentLossTotals, column), Some(&keys[..]), (first, end), level, bin_hours)?;
@@ -490,15 +517,14 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
                         continue;
                     }
                     let leaf = leaves.entry(key).or_default();
-                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end) {
+                    for (hour, value) in bin_points_for(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end, &stretch_reads) {
                         leaf.points.insert(hour, value);
                     }
                 }
             }
         }
-        for &hour in reads.iter().filter(|hour| (stretch.first..=stretch.last).contains(*hour)) {
-            crate::metadata::check_cancel(cancelled)?;
-            let Some(found) = totals_at(query, hour, (low, high))? else {
+        for (hour, found) in stretch_found {
+            let Some(found) = found else {
                 for leaf in leaves.values_mut() {
                     leaf.exact.insert(hour, None);
                 }
@@ -513,7 +539,7 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
                     } else {
                         match found.get(key) {
                             Some(&(total, _)) => total,
-                            None if last.contains_key(key) && destruction_complete => Some(0),
+                            None if stretch_keys.contains(key) && destruction_complete => Some(0),
                             None => None,
                         }
                     }
