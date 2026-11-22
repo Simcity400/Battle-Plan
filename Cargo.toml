@@ -41,7 +41,6 @@ unify-miniz_oxide-0-9 = { package = "miniz_oxide", version = "0.9.1", default-fe
 unify-num-traits = { package = "num-traits", version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 unify-once_cell = { package = "once_cell", version = "1.21.4", default-features = false, features = ["alloc", "default", "race", "std"] }
 unify-parking_lot = { package = "parking_lot", version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
-unify-proc-macro2 = { package = "proc-macro2", version = "1.0.107", default-features = false, features = ["default", "proc-macro"] }
 unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
 unify-simd-adler32 = { package = "simd-adler32", version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
 unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
@@ -223,6 +222,11 @@ collector-naval-results = { path = "crates/collector-naval-results", default-fea
 collector-operation-outcomes = { path = "crates/collector-operation-outcomes", default-features = false }
 collector-plans = { path = "crates/collector-plans", default-features = false }
 collector-states = { path = "crates/collector-states", default-features = false }
+collector-capture = { path = "crates/collector-capture", default-features = false }
+collector-map-capture = { path = "crates/collector-map-capture", default-features = false }
+collector-player-commands = { path = "crates/collector-player-commands", default-features = false }
+collector-spool = { path = "crates/collector-spool", default-features = false }
+collector-runtime = { path = "crates/collector-runtime", default-features = false }
 collector-workers = { path = "crates/collector-workers", default-features = false }
 blake3 = "1"
 bytemuck = "1"
@@ -425,6 +429,21 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [profile.release-lto.package.collector-states]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-capture]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-map-capture]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-player-commands]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-spool]
+debug = "line-tables-only"
+
+[profile.release-lto.package.collector-runtime]
 debug = "line-tables-only"
 
 [profile.release-lto.package.collector-workers]

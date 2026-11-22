@@ -292,7 +292,11 @@ pub fn off_hold_path() {
 }
 
 fn side() -> usize {
-    if unsafe { (*thread()).off_hold } { OTHER } else { HOLD }
+    if unsafe { (*thread()).off_hold } {
+        OTHER
+    } else {
+        HOLD
+    }
 }
 
 struct Depot {
@@ -666,7 +670,10 @@ impl PrivateHeap {
         !self.heap().is_null()
     }
 
-    pub fn thread_exit(&self) {
+    /// # Safety
+    /// Only the collector DLL's thread-detach path may flush this thread's heap state, after its
+    /// collector work has ended and while the heap is still live.
+    pub unsafe fn thread_exit(&self) {
         let Some(domain) = self.heap.get() else {
             return;
         };

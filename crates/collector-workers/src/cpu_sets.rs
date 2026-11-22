@@ -3,9 +3,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicU64, Ordering},
 };
-use windows_sys::Win32::{
-    System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets},
-};
+use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets};
 
 const GROUP_PROCESSORS: usize = 64;
 
@@ -105,12 +103,15 @@ pub fn prepare() {
     let _ = cores();
 }
 
-pub fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
+pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
 }
 
-pub fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
+/// # Safety
+/// The caller must own the target thread's scheduling policy and keep its handle live. Change only
+/// collector worker affinity as part of that session's policy.
+pub unsafe fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
     let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
         (sets.as_ptr(), sets.len() as u32)
     });
@@ -118,8 +119,13 @@ pub fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
     unsafe { SetThreadSelectedCpuSets(thread.as_raw_handle(), list, count) != 0 }
 }
 
-pub fn select_away(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
-    let selected = select(thread, sets);
+/// # Safety
+/// The caller must own the target thread's scheduling policy and keep its handle live. Change only
+/// collector worker affinity as part of that session's policy.
+pub unsafe fn select_away(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
+    let selected =
+    // SAFETY: The live handle belongs to a worker whose affinity this policy owns.
+    unsafe { select(thread, sets) };
     if !selected {
         AWAY_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
@@ -145,7 +151,9 @@ impl AwayFromGame {
         if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
             return;
         }
-        if select_away(unsafe { BorrowedHandle::borrow_raw(GetCurrentThread()) }, sets) {
+        if
+        // SAFETY: This policy controls the target collector worker and its handle is live.
+        unsafe { select_away(BorrowedHandle::borrow_raw(GetCurrentThread()), sets) } {
             self.applied = sets;
         }
     }

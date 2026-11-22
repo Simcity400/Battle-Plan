@@ -80,8 +80,9 @@ def check(normal, all_targets):
         path = path_to(all_targets, name, forbidden | content)
         if path:
             failures.append(" -> ".join(path) + ": recording layers must stay independent")
+    replay_consumers = {"collector-runtime", "collector-spool", "collector-player-commands"}
     for name in sorted(normal):
-        if name.startswith("collector-"):
+        if name.startswith("collector-") and name not in replay_consumers:
             path = path_to(normal, name, {"replay"})
             if path:
                 failures.append(" -> ".join(path) + ": capture helpers must not pull in recording I/O")

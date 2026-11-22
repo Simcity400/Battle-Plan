@@ -6,4 +6,4 @@ Decode receives owned rows and buffers without rereading game memory. It transfe
 
 The synthetic comparison uses a typed walk with matching pooled capacities. It covers a country alias, null relationships, signed equipment amounts and delivery states. Compare only the outcome-certified rows, including retained truncation prefixes, because owned transfer may retain different headroom. A failed or unadopted batch must still drain every accepted lease.
 
-[Division acquire and decode](../../crates/collector/src/sampling/divisions.rs) · [Synthetic comparison](../../crates/collector/src/sampling/divisions/divisions_test_kit.rs)
+[Division acquire and decode](../../crates/collector-capture/src/sampling/divisions.rs) · [Synthetic comparison](../../crates/collector-capture/src/sampling/divisions/divisions_test_kit.rs)

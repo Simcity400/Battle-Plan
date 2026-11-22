@@ -181,3 +181,14 @@ impl Steps {
         let _ = self.0.send(step.to_string());
     }
 }
+
+#[cfg(windows)]
+pub fn qpc_frequency() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+    let mut frequency = 0;
+    unsafe { QueryPerformanceFrequency(&mut frequency) };
+    frequency.max(1) as u64
+}

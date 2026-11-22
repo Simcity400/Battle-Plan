@@ -120,7 +120,8 @@ fn drain(hour: i32) -> replay_data::rows::MapEventsRow {
     let mut assembled = lanes::Assembled::default();
     lanes::assemble(sealed.seal, &mut assembled).unwrap();
     let row = interval::row(&sealed, &assembled).unwrap();
-    assembled.commit();
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { assembled.commit() };
     row
 }
 
@@ -386,7 +387,8 @@ fn an_event_left_pending_by_an_ended_world_is_never_listed_by_the_next_one() {
         let mut assembled = lanes::Assembled::default();
         lanes::assemble(sealed.seal, &mut assembled).unwrap();
         let row = interval::row(&sealed, &assembled).unwrap();
-        assembled.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { assembled.commit() };
         row
     };
     let critical = |world| {
@@ -465,7 +467,8 @@ fn a_world_change_while_the_operands_are_read_refuses_the_event() {
     let mut assembled = lanes::Assembled::default();
     lanes::assemble(sealed.seal, &mut assembled).unwrap();
     let row = interval::row(&sealed, &assembled).unwrap();
-    assembled.commit();
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { assembled.commit() };
     assert_eq!(
         row.events
             .iter()
@@ -591,7 +594,8 @@ fn hook_cost_map_events() {
         let mut assembled = lanes::Assembled::default();
         lanes::assemble(sealed.seal, &mut assembled).unwrap();
         std::hint::black_box(interval::row(&sealed, &assembled).unwrap());
-        assembled.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { assembled.commit() };
     };
     drain();
     let native = collector_test_support::per_call_ns(CALLS, || {
@@ -687,13 +691,16 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
             "hour {hour}"
         );
         assert!(row.health[family.index()].complete, "hour {hour}");
-        assembled.admitted();
+        // SAFETY: This is the spool's actual queue admission while its originating observer
+        // remains live.
+        unsafe { assembled.admitted() };
         queued.push(assembled);
     }
     assert_eq!(hooks::missed(family), missed);
     assert!(lanes::capacity().spill_pending > 0);
     for assembled in queued {
-        assembled.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { assembled.commit() };
     }
     assert_eq!(lanes::capacity().spill_pending, 0);
     assert!(drain(5).events.is_empty());
