@@ -355,7 +355,11 @@ class ReviewOfFourteen(unittest.TestCase):
 
 class Sharding(unittest.TestCase):
     WORKSPACE = crates(hub=[], mid=["hub"], app=["mid", "hub"], tool=["hub"], leaf=[], other=["leaf"])
-    WEIGHTS = {"hub": 50, "mid": 20, "app": 40, "tool": 10, "leaf": 30, "other": 5}
+    COSTS = {"hub": (600, 900), "mid": (300, 600), "app": (300, 1200), "tool": (100, 900), "leaf": (500, 300), "other": (50, 100)}
+
+    @staticmethod
+    def table(costs):
+        return ci.json.dumps({"crates": {name: {"build": build, "test": test} for name, (build, test) in costs.items()}})
 
     def sharded(self, changed, tier="check", shards=2):
         pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', f'command = ["boat", "test", "{{packages}}"]\nshards = {shards}\n')
@@ -364,26 +368,53 @@ class Sharding(unittest.TestCase):
         ctx.pipeline = ci.load_pipeline(pipeline)
         ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
         ctx.everything = tier != "check"
-        sizes = {f"crates/{name}/src/lib.rs": weight for name, weight in self.WEIGHTS.items()}
-        return ctx, [ci.decide(job, ctx, tier) for job in ctx.pipeline.jobs], sizes
+        return ctx, [ci.decide(job, ctx, tier) for job in ctx.pipeline.jobs], self.table(self.COSTS)
 
     def test_every_crate_runs_once_and_a_dependent_joins_the_runner_building_its_dependencies(self):
-        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
-        split = ci.shard_crates(self.WORKSPACE, sorted(self.WORKSPACE), weights, 2)
+        everything = frozenset(self.WORKSPACE)
+        split, _ = ci.shard_crates(self.WORKSPACE, sorted(self.WORKSPACE), self.COSTS, everything, 2)
         self.assertEqual(sorted(name for shard in split for name in shard), sorted(self.WORKSPACE))
-        self.assertEqual(split, ci.shard_crates(self.WORKSPACE, list(reversed(sorted(self.WORKSPACE))), weights, 2))
+        self.assertEqual(split, ci.shard_crates(self.WORKSPACE, list(reversed(sorted(self.WORKSPACE))), self.COSTS, everything, 2)[0])
         clusters = crates(hub=[], app=["hub"], leaf=[], other=["leaf"])
-        weights = {"hub": 50, "app": 10, "leaf": 50, "other": 10}
-        self.assertEqual(sorted(ci.shard_crates(clusters, sorted(clusters), weights, 2)), [["app", "hub"], ["leaf", "other"]])
+        costs = {"hub": (500, 0), "app": (0, 100), "leaf": (500, 0), "other": (0, 100)}
+        split, load = ci.shard_crates(clusters, sorted(clusters), costs, frozenset(clusters), 2)
+        self.assertEqual((sorted(split), load), ([["app", "hub"], ["leaf", "other"]], 600))
 
-    def test_the_workspace_takes_every_runner_and_one_crate_takes_one(self):
-        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
-        self.assertEqual(ci.shard_count(self.WORKSPACE, sorted(self.WORKSPACE), weights, 4), 4)
-        self.assertEqual(ci.shard_count(self.WORKSPACE, ["other"], weights, 4), 1)
+    def test_a_library_the_restored_cache_holds_costs_nothing(self):
+        _, load = ci.shard_crates(self.WORKSPACE, ["app"], self.COSTS, frozenset(self.WORKSPACE), 1)
+        self.assertEqual(load, 1200 + 300 + 300 + 600)
+        _, load = ci.shard_crates(self.WORKSPACE, ["app"], self.COSTS, frozenset({"app"}), 1)
+        self.assertEqual(load, 1200 + 300)
+        _, decisions, _ = self.sharded(["crates/mid/src/lib.rs"])
+        self.assertEqual(next(d for d in decisions if d.job.name == "test").dirty, {"mid", "app"})
+        _, decisions, _ = self.sharded(["crates/mid/src/lib.rs", "Cargo.lock"])
+        self.assertEqual(next(d for d in decisions if d.job.name == "test").dirty, set(self.WORKSPACE))
+
+    def test_a_runner_is_added_only_while_it_saves_more_than_the_slack(self):
+        pair = crates(a=[], b=[])
+        small = {"a": (0, ci.LEG_SLACK / 2), "b": (0, ci.LEG_SLACK / 2)}
+        self.assertEqual(ci.split_crates(pair, ["a", "b"], small, frozenset(pair), 4), [["a", "b"]])
+        large = {"a": (0, 4 * ci.LEG_SLACK), "b": (0, 4 * ci.LEG_SLACK)}
+        self.assertEqual(ci.split_crates(pair, ["a", "b"], large, frozenset(pair), 4), [["a"], ["b"]])
+        self.assertEqual(ci.split_crates(pair, ["a"], large, frozenset(pair), 4), [["a"]])
+
+    def test_a_crate_the_table_lacks_takes_the_median_and_no_table_weighs_all_alike(self):
+        weights = ci.load_weights(crates(a=[], b=[], c=[], new=[]), self.table({"a": (1, 10), "b": (2, 20), "c": (3, 30), "gone": (9, 90)}))
+        self.assertEqual(weights, {"a": (1, 10), "b": (2, 20), "c": (3, 30), "new": (2, 20)})
+        self.assertEqual(ci.load_weights(crates(a=[]), ""), {"a": (1.0, 1.0)})
+
+    def test_a_cold_runs_timings_and_test_report_give_each_crate_its_build_and_test(self):
+        units = [{"name": "app", "target": "", "duration": 10}, {"name": "app", "target": " build script (run)", "duration": 1},
+                 {"name": "app", "target": " lib (test)", "duration": 20}, {"name": "app", "target": ' bin "x" (test)', "duration": 5},
+                 {"name": "app", "target": ' example "e"', "duration": 2}, {"name": "serde", "target": "", "duration": 99}]
+        timings = f"<script>const UNIT_DATA = {ci.json.dumps(units)};\nconst CONCURRENCY_DATA = [];</script>"
+        report = ('<testsuites><testsuite name="app"><testcase name="a" time="1.5"/></testsuite>'
+                  '<testsuite name="app::bin/x"><testcase name="b" time="0.5"/></testsuite></testsuites>')
+        self.assertEqual(ci.measured_costs(timings, report, crates(app=[])), {"app": [11.0, 29.0]})
 
     def test_changes_and_each_runner_split_a_job_alike(self):
-        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
-        legs = ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes)
+        ctx, decisions, table = self.sharded(["crates/hub/src/lib.rs"])
+        legs = ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, table)
         tests = [leg for leg in legs if leg["jobs"] == "test"]
         self.assertEqual([leg["shard"].rsplit("/", 1)[0] for leg in tests], ["1/2", "2/2"])
         self.assertEqual([leg["name"] for leg in tests], ["test 1/2", "test 2/2"])
@@ -391,20 +422,20 @@ class Sharding(unittest.TestCase):
         self.assertIn("clippy", next(leg for leg in legs if leg["shard"] == "")["jobs"].split())
         taken = []
         for leg in tests:
-            cut, refused = ci.take_shard([d for d in decisions if d.job.name == "test"], leg["shard"], ctx.crates, sizes)
+            cut, refused = ci.take_shard([d for d in decisions if d.job.name == "test"], leg["shard"], ctx.crates, table)
             self.assertEqual(refused, [])
             taken += cut[0].arguments[1::2]
         self.assertEqual(sorted(taken), ["app", "hub", "mid", "tool"])
 
     def test_a_runner_that_would_split_otherwise_fails_its_leg(self):
-        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
+        ctx, decisions, table = self.sharded(["crates/hub/src/lib.rs"])
         mine = [d for d in decisions if d.job.name == "test"]
-        legs = [leg for leg in ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes) if leg["jobs"] == "test"]
+        legs = [leg for leg in ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, table) if leg["jobs"] == "test"]
         digest = legs[0]["shard"].rsplit("/", 1)[1]
         for shard in (f"3/3/{digest}", f"1/1/{digest}", "1/2/000000000000", "1/2", "x"):
-            _, refused = ci.take_shard(mine, shard, ctx.crates, sizes)
+            _, refused = ci.take_shard(mine, shard, ctx.crates, table)
             self.assertEqual([o.state for o in refused], ["fail"], shard)
-        moved = dict(sizes, **{"crates/tool/src/lib.rs": 500})
+        moved = self.table(dict(self.COSTS, tool=(100, 5000)))
         _, refused = ci.take_shard(mine, legs[0]["shard"], ctx.crates, moved)
         self.assertEqual([o.state for o in refused], ["fail"])
 

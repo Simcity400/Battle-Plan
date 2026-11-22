@@ -34,7 +34,7 @@ setup = ["node"]
 setup = ["node"]
 
 [group.rust]
-setup = ["python", "rust"]
+setup = ["rust"]
 
 [[job]]
 name = "machine-paths"
