@@ -196,28 +196,46 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
         store.script_known(memory, base, generation, world.hour()?, value)
     });
 }
-pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
+pub fn candidates(
+    status: usize,
+    kind: u8,
+    items: &[(usize, u32, u32)],
+) {
+    if items.is_empty() {
+        return;
+    }
     access(true, |store, world, memory, base, generation| {
-        store.decision_key(
-            world,
-            memory,
-            base,
-            generation,
-            country(memory, base, status)?,
-            DecisionChange {
-                operation: Operation::Candidate,
-                container: kind,
-                flags: 0,
-                ordinal: target,
-                political_power: None,
-            },
-            engine_native::msvc_string::Descriptor::read(
+        let country_ptr = country(memory, base, status)?;
+        let owner = world.country_object(country_ptr)?;
+        let hour = world.hour()?;
+        for &(definition, target, root) in items {
+            let token = engine_native::msvc_string::Descriptor::read(
                 memory,
                 definition + engine_decisions::cdecision::TOKEN,
-            )?,
-            Some(root),
-        )
+            )?;
+            store.decision_key_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                owner,
+                hour,
+                DecisionChange {
+                    operation: Operation::Candidate,
+                    container: kind,
+                    flags: 0,
+                    ordinal: target,
+                    political_power: None,
+                },
+                token,
+                Some(root),
+            )?;
+        }
+        Ok(())
     });
+}
+pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
+    candidates(status, kind, &[(definition, target, root)]);
 }
 pub fn ignored(country: usize, token: usize, ignored: bool) {
     access(false, |store, world, memory, base, generation| {

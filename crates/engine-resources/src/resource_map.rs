@@ -1599,6 +1599,26 @@ pub fn walk_region_weights(
     mut output: Buffer<'_, RegionWeightRow>,
 ) -> Outcome {
     use engine_native::cstrategic_region as region;
+    const BATCH: usize = 64;
+    const FIELDS: [RecordField; 3] = [
+        RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        },
+        RecordField {
+            source_offset: region::ID,
+            destination_offset: 8,
+            len: 4,
+        },
+        RecordField {
+            source_offset: region::ROUTE_WEIGHT,
+            destination_offset: 12,
+            len: 4,
+        },
+    ];
+    const LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&FIELDS, 16).expect("valid strategic region layout");
     let mut len = 0;
     let mut unread = 0;
     let result = (|| -> Result<(), &'static str> {
@@ -1609,43 +1629,92 @@ pub fn walk_region_weights(
             8,
             "strategic region roster unreadable",
         )?;
-        for slot in 0..roster.count {
-            let pointer = element(
-                memory,
-                roster,
-                slot,
-                8,
-                "strategic region roster slot unreadable",
-            )?;
-            if pointer == 0 {
-                continue;
+        let mut ptr_bytes = [0_u8; BATCH * 8];
+        let mut pointers = [0_usize; BATCH];
+        let mut records = [0_u8; BATCH * 16];
+        let mut first = 0_u32;
+        while first < roster.count {
+            let count = ((roster.count - first) as usize).min(BATCH);
+            let start = roster
+                .element(first, 8)
+                .ok_or("strategic region roster slot unreadable")?;
+            let batch_ptrs = engine_native::read_slice(memory, start, &mut ptr_bytes[..count * 8]);
+            let mut live = 0_usize;
+            for offset in 0..count {
+                let pointer = if batch_ptrs {
+                    usize::try_from(u64::from_le_bytes(
+                        ptr_bytes[offset * 8..(offset + 1) * 8].try_into().unwrap(),
+                    ))
+                    .map_err(|_| "strategic region roster slot unreadable")?
+                } else {
+                    element(
+                        memory,
+                        roster,
+                        first + offset as u32,
+                        8,
+                        "strategic region roster slot unreadable",
+                    )?
+                };
+                if pointer == 0 {
+                    continue;
+                }
+                at(pointer, region::ID)?;
+                at(pointer, region::ROUTE_WEIGHT)?;
+                pointers[live] = pointer;
+                live += 1;
             }
-            let mut identity = [0; 8];
-            let mut id = [0; 4];
-            let mut weight = [0; 4];
-            if memory.copy_scattered(
-                [
-                    pointer,
-                    at(pointer, region::ID)?,
-                    at(pointer, region::ROUTE_WEIGHT)?,
-                ],
-                &mut [&mut identity, &mut id, &mut weight],
-            ) != 3
-            {
-                return Err("strategic region route weight unreadable");
+            if live != 0 {
+                let copied = memory.copy_records(
+                    RecordSources::Pointers(&pointers[..live]),
+                    &LAYOUT,
+                    &mut records[..live * 16],
+                );
+                let complete = copied / FIELDS.len();
+                for index in 0..live {
+                    let (vtable_word, id_val, weight_val) = if index < complete {
+                        let rec = &records[index * 16..(index + 1) * 16];
+                        (
+                            u64::from_le_bytes(rec[..8].try_into().unwrap()),
+                            u32::from_le_bytes(rec[8..12].try_into().unwrap()),
+                            i32::from_le_bytes(rec[12..16].try_into().unwrap()),
+                        )
+                    } else {
+                        let pointer = pointers[index];
+                        let mut identity = [0; 8];
+                        let mut id = [0; 4];
+                        let mut weight = [0; 4];
+                        if memory.copy_scattered(
+                            [
+                                pointer,
+                                at(pointer, region::ID)?,
+                                at(pointer, region::ROUTE_WEIGHT)?,
+                            ],
+                            &mut [&mut identity, &mut id, &mut weight],
+                        ) != 3
+                        {
+                            return Err("strategic region route weight unreadable");
+                        }
+                        (
+                            u64::from_le_bytes(identity),
+                            u32::from_le_bytes(id),
+                            i32::from_le_bytes(weight),
+                        )
+                    };
+                    if vtable_word != expected {
+                        return Err("strategic region vtable mismatch");
+                    }
+                    push(
+                        &mut output,
+                        &mut len,
+                        &mut unread,
+                        RegionWeightRow {
+                            region: id_val,
+                            weight: weight_val,
+                        },
+                    )?;
+                }
             }
-            if u64::from_le_bytes(identity) != expected {
-                return Err("strategic region vtable mismatch");
-            }
-            push(
-                &mut output,
-                &mut len,
-                &mut unread,
-                RegionWeightRow {
-                    region: u32::from_le_bytes(id),
-                    weight: i32::from_le_bytes(weight),
-                },
-            )?;
+            first += count as u32;
         }
         Ok(())
     })();
@@ -1693,34 +1762,75 @@ pub fn walk_temporary(
             8,
             "state table unreadable",
         )?;
-        let mut keys = Vec::new();
-        allocation::reserve(&mut keys, descriptors.len())
-            .map_err(|_| "resource temporary key allocation failed")?;
+        let mut keys_loaded = false;
+        let mut descriptor_keys = Vec::new();
+        let mut sorted_keys = Vec::new();
+        let mut sorted_values = Vec::new();
+        let mut operands_cache: Vec<Option<modifier_definition::Operands>> = Vec::new();
         let mut gated = |state: usize, count: i32, flag: u8| -> Result<(), &'static str> {
             if count == 0 && flag == 0 {
                 return Ok(());
             }
             let id = read::<u32>(memory, at(state, cstate::ID)?).ok_or("state id unreadable")?;
             let accumulator = at(state, cstate::BASE_MODIFIERS)?;
-            for (index, descriptor) in descriptors.iter().enumerate() {
-                let key = match keys.get(index) {
-                    Some(&key) => key,
-                    None => {
-                        let key = read::<u32>(
-                            memory,
-                            at(descriptor.address, cstrategic_resource::TEMPORARY_KEY)?,
-                        )
-                        .ok_or("resource temporary key unreadable")?;
-                        keys.push(key);
-                        key
+            if !keys_loaded {
+                allocation::reserve(&mut descriptor_keys, descriptors.len())
+                    .map_err(|_| "resource temporary key allocation failed")?;
+                allocation::reserve(&mut sorted_keys, descriptors.len())
+                    .map_err(|_| "resource temporary key allocation failed")?;
+                for descriptor in descriptors {
+                    let key = read::<u32>(
+                        memory,
+                        at(descriptor.address, cstrategic_resource::TEMPORARY_KEY)?,
+                    )
+                    .ok_or("resource temporary key unreadable")?;
+                    descriptor_keys.push(key);
+                    if key != 0 {
+                        sorted_keys.push(key);
                     }
-                };
+                }
+                sorted_keys.sort_unstable();
+                sorted_keys.dedup();
+                allocation::reserve(&mut sorted_values, sorted_keys.len())
+                    .map_err(|_| "resource temporary key allocation failed")?;
+                sorted_values.resize(sorted_keys.len(), modifier_accumulator::Value::default());
+                allocation::reserve(&mut operands_cache, sorted_keys.len())
+                    .map_err(|_| "resource temporary key allocation failed")?;
+                operands_cache.resize(sorted_keys.len(), None);
+                keys_loaded = true;
+            }
+            if sorted_keys.is_empty() {
+                return Ok(());
+            }
+            modifier_accumulator::lookup_many_at(
+                memory,
+                accumulator,
+                &sorted_keys,
+                &mut sorted_values,
+            )?;
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                let key = descriptor_keys[index];
                 if key == 0 {
                     continue;
                 }
-                let amount =
-                    modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)?
-                        .effective;
+                let slot = sorted_keys.binary_search(&key).unwrap();
+                let value = sorted_values[slot];
+                if !value.present {
+                    continue;
+                }
+                let amount = if memory.modifier_definitions().is_some() {
+                    modifier_definition::effective(memory, base, key, value.raw)?
+                } else {
+                    let operands = match operands_cache[slot] {
+                        Some(operands) => operands,
+                        None => {
+                            let operands = modifier_definition::operands(memory, base, key)?;
+                            operands_cache[slot] = Some(operands);
+                            operands
+                        }
+                    };
+                    operands.effective(value.raw)
+                };
                 if amount != 0 {
                     push(
                         &mut output,

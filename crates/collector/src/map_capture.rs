@@ -207,7 +207,7 @@ impl ShipCensus {
         );
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
-        let naval = cfleet::walk_timed_with_management(
+        let naval = cfleet::walk_timed_with_management_and_names(
             memory,
             base,
             state,
@@ -219,34 +219,20 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| {
-                let captured = cship::capture_names_and_crew(
-                    memory,
-                    base,
-                    pointer,
-                    row.id,
-                    &mut self.ship_names,
-                    &mut name_len,
-                    &mut name_required,
-                    &mut self.ship_overrides,
-                    &mut override_len,
-                    &mut override_required,
-                    collector_observers::crew_changes::quiet,
-                );
-                row.name = captured.name;
-                if let Some((_, len)) = row.name {
-                    name_len += len;
-                }
-                row.naming = captured.naming;
-                if let Some(naming) = row.naming {
-                    override_len += naming.override_name.1;
-                }
-                row.acquired_manpower = captured.crew.map(|value| value[0]);
-                row.required_manpower = captured.crew.map(|value| value[1]);
                 models.visit_source(pointer, row);
                 management.borrow_mut().ship(pointer, row);
             },
             &mut self.fleet_names,
             |visit| management.borrow_mut().visit(visit),
+            cfleet::ShipNaming {
+                ship_names: &mut self.ship_names,
+                name_len: &mut name_len,
+                name_required: &mut name_required,
+                ship_overrides: &mut self.ship_overrides,
+                override_len: &mut override_len,
+                override_required: &mut override_required,
+                quiet: collector_observers::crew_changes::quiet,
+            },
         );
         self.ship_names.truncate(name_len);
         self.ship_overrides.truncate(override_len);

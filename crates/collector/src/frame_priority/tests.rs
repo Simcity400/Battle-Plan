@@ -415,4 +415,30 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
         background_sets(Some(&cores), Some(0)),
         Some(&[258, 259][..])
     );
+    let eight = Cores::from_sets(&[
+        (0, 0, 256),
+        (1, 0, 257),
+        (2, 1, 258),
+        (3, 1, 259),
+        (4, 2, 260),
+        (5, 2, 261),
+        (6, 3, 262),
+        (7, 3, 263),
+        (8, 4, 264),
+        (9, 4, 265),
+        (10, 5, 266),
+        (11, 5, 267),
+        (12, 6, 268),
+        (13, 6, 269),
+        (14, 7, 270),
+        (15, 7, 271),
+    ])
+    .unwrap();
+    assert_eq!(eight.physical_cores, 8);
+    assert_eq!(
+        background_sets(Some(&eight), Some(0)),
+        Some(&[268, 269, 270, 271][..])
+    );
+    assert_eq!(for_role(TICKING, Role::Decode.slot()), TICK_DECODE);
+    assert_eq!(for_role(TICKING, Role::Spool.slot()), TICK);
 }

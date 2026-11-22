@@ -41,6 +41,7 @@ impl Role {
 const UNKNOWN: u32 = 3;
 const TICK: u32 = 4;
 const TICK_PRESSED: u32 = 5;
+const TICK_DECODE: u32 = 6;
 const TICKING: u32 = 1 << 8;
 const PRESSED: u32 = 1 << 9;
 const NO_PROCESSOR: u32 = u32::MAX;
@@ -60,6 +61,7 @@ fn level(free: usize) -> u32 {
 fn priority(level: u32) -> i32 {
     match level {
         TICK => THREAD_PRIORITY_IDLE,
+        TICK_DECODE => THREAD_PRIORITY_LOWEST,
         TICK_PRESSED => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
         1 => THREAD_PRIORITY_ABOVE_NORMAL,
@@ -70,6 +72,8 @@ fn for_role(pressure: u32, role: usize) -> u32 {
     if pressure & TICKING != 0 {
         return if pressure & PRESSED != 0 {
             TICK_PRESSED
+        } else if role == Role::Decode.slot() {
+            TICK_DECODE
         } else {
             TICK
         };
@@ -223,11 +227,16 @@ impl Cores {
             let mut chosen = [false; GROUP_PROCESSORS];
             let mut picked = 0;
             if cores.physical_cores >= BACKGROUND_CORES_MIN_PHYSICAL {
+                let limit = if cores.physical_cores >= 8 {
+                    2
+                } else {
+                    BACKGROUND_CORES_COUNT
+                };
                 for &candidate in unique.iter() {
                     if candidate != core {
                         chosen[candidate] = true;
                         picked += 1;
-                        if picked == BACKGROUND_CORES_COUNT {
+                        if picked == limit {
                             break;
                         }
                     }
@@ -449,7 +458,7 @@ impl Pipeline {
         if word == 0 || word == NO_PROCESSOR {
             return 0;
         }
-        let narrow = value == 0 || value == TICK;
+        let narrow = value == 0 || value == TICK || value == TICK_DECODE;
         (word << 1) | u32::from(narrow)
     }
     pub(crate) fn callback(&self) -> Callback<'_> {

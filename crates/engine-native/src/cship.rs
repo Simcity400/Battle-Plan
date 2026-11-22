@@ -7,7 +7,10 @@ use engine_sites::Rva;
 
 mod air_capacity;
 mod naming;
-pub use naming::{NamingOperands, ShipNamesAndCrew, capture_names_and_crew, naming};
+pub use naming::{
+    EquipmentMemo, NamingOperands, ShipNamesAndCrew, capture_names_and_crew,
+    decode_batched_names_and_crew, naming,
+};
 mod gathered;
 mod hull_variant;
 mod naval_power;
@@ -609,6 +612,33 @@ pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
 pub(crate) const ROW_STRIDE: usize = 64;
 pub(crate) const ROW_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
+
+pub(crate) const ROW_EXTENDED_FIELDS: [crate::memory::RecordField; 9] = {
+    use crate::memory::RecordField;
+    [
+        ROW_FIELDS[0],
+        ROW_FIELDS[1],
+        ROW_FIELDS[2],
+        ROW_FIELDS[3],
+        ROW_FIELDS[4],
+        ROW_FIELDS[5],
+        ROW_FIELDS[6],
+        RecordField {
+            source_offset: ACQUIRED_MANPOWER,
+            destination_offset: 64,
+            len: 8,
+        },
+        RecordField {
+            source_offset: NAME_MEMBER,
+            destination_offset: 72,
+            len: 8,
+        },
+    ]
+};
+pub(crate) const ROW_EXTENDED_STRIDE: usize = 80;
+pub(crate) const ROW_EXTENDED_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&ROW_EXTENDED_FIELDS, ROW_EXTENDED_STRIDE)
+        .expect("valid extended ship row layout");
 
 pub(crate) fn decode_row(
     record: &[u8],

@@ -909,12 +909,7 @@ impl SpeedTerms {
         states.sort_unstable();
         states.dedup();
         reserve(&mut self.state_facts, states.len())?;
-        for &state in states.iter() {
-            self.state_facts.push((
-                state,
-                engine_native::cstate::id_and_controller(memory, state),
-            ));
-        }
+        engine_native::cstate::ids_and_controllers(memory, states, &mut self.state_facts);
         let templates = &mut self.scratch.templates;
         templates.clear();
         reserve(templates, self.movers.len())?;
@@ -1158,17 +1153,47 @@ impl SpeedTerms {
                             }
                         }?;
                         let (selected, len) = state_keys(branch);
-                        let army = accumulator::lookup_requested_at(memory, at, selected[0])?;
-                        let relation = if len == 2 {
-                            let value = accumulator::lookup_requested_at(memory, at, selected[1])?;
-                            Some(value)
+                        let mut query = [0_u32; 3];
+                        let mut found = [Value::default(); 3];
+                        query[0] = selected[0];
+                        let mut count = 1;
+                        if len == 2 {
+                            query[count] = selected[1];
+                            count += 1;
+                        }
+                        if attacking {
+                            query[count] = STATE_KEYS[3];
+                            count += 1;
+                        }
+                        let (army, relation, attack) = if accumulator::lookup_requested_many_at(
+                            memory,
+                            at,
+                            &query[..count],
+                            &mut found[..count],
+                        )
+                        .is_ok()
+                        {
+                            let army = found[0];
+                            let relation = (len == 2).then_some(found[1]);
+                            let attack = if attacking {
+                                Ok(found[count - 1])
+                            } else {
+                                Ok(Value::default())
+                            };
+                            (army, relation, attack)
                         } else {
-                            None
-                        };
-                        let attack = if attacking {
-                            accumulator::lookup_requested_at(memory, at, STATE_KEYS[3])
-                        } else {
-                            Ok(Value::default())
+                            let army = accumulator::lookup_requested_at(memory, at, selected[0])?;
+                            let relation = if len == 2 {
+                                Some(accumulator::lookup_requested_at(memory, at, selected[1])?)
+                            } else {
+                                None
+                            };
+                            let attack = if attacking {
+                                accumulator::lookup_requested_at(memory, at, STATE_KEYS[3])
+                            } else {
+                                Ok(Value::default())
+                            };
+                            (army, relation, attack)
                         };
                         Ok(owned::StateInputs {
                             army,
@@ -1369,9 +1394,31 @@ impl SpeedTerms {
                             .checked_add(ccountry::MODIFIER_ACCUMULATOR)
                             .ok_or("country accumulator address overflow")?;
                         let at_values = values.len();
-                        values.extend(group.iter().map(|&(_, key)| {
-                            accumulator::lookup_requested_at(memory, at, key)
-                        }));
+                        let mut key_buf = [0_u32; 64];
+                        let mut val_buf = [Value::default(); 64];
+                        let mut offset = 0;
+                        while offset < group.len() {
+                            let count = (group.len() - offset).min(64);
+                            let slice = &group[offset..offset + count];
+                            for (dst, &(_, key)) in key_buf[..count].iter_mut().zip(slice) {
+                                *dst = key;
+                            }
+                            if accumulator::lookup_requested_many_at(
+                                memory,
+                                at,
+                                &key_buf[..count],
+                                &mut val_buf[..count],
+                            )
+                            .is_ok()
+                            {
+                                values.extend(val_buf[..count].iter().copied().map(Ok));
+                            } else {
+                                values.extend(slice.iter().map(|&(_, key)| {
+                                    accumulator::lookup_requested_at(memory, at, key)
+                                }));
+                            }
+                            offset += count;
+                        }
                         Ok(at_values)
                     }),
                 };
@@ -1412,7 +1459,7 @@ impl SpeedTerms {
             return self.finish(Ok(0), 3);
         }
         let mut crossings = std::mem::take(&mut self.crossings);
-        let ready = crossings.begin(memory, base, game);
+        let mut ready: Option<Result<(), &'static str>> = None;
         let result = held_crossings(|held| {
             let world = crate::world_lifetime::generation();
             if held.world != Some(world) || world == u64::MAX {
@@ -1423,7 +1470,8 @@ impl SpeedTerms {
                 if let Some(&answer) = held.answers.get(&(from, to)) {
                     return Ok(answer);
                 }
-                let answer = ready.and_then(|()| crossings.acquire_crossing(memory, from, to))?;
+                let begun = *ready.get_or_insert_with(|| crossings.begin(memory, base, game));
+                let answer = begun.and_then(|()| crossings.acquire_crossing(memory, from, to))?;
                 if held.world.is_some()
                     && engine_allocation::advisory(|| {
                         engine_allocation::reserve_map(&mut held.answers, 1)
@@ -1442,7 +1490,9 @@ impl SpeedTerms {
             });
             result
         });
-        crossings.clear();
+        if ready.is_some() {
+            crossings.clear();
+        }
         self.crossings = crossings;
         result
     }

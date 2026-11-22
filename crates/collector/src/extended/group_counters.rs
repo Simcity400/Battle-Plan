@@ -1,7 +1,6 @@
 use crate::{
     projection::{Projection, project_table},
     sampling::qpc,
-    spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
 use engine_allocation::{default_vec, owned_vec};
@@ -10,7 +9,7 @@ use replay_data::{
     rows::CommanderAttackStats, rows::CommanderMovementStats, rows::OrdersGroupCounterInputRow,
     rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
 };
-use replay_frame::frame::{TableInput, TableView};
+use replay_frame::frame::TableInput;
 use std::mem::size_of;
 #[cfg(test)]
 mod startup_tests;

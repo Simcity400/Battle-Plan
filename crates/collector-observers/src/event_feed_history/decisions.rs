@@ -1037,7 +1037,23 @@ impl Store {
         token: engine_native::msvc_string::Descriptor,
         root: Option<u32>,
     ) -> Result<(), &'static str> {
-        let mut value = fact(memory, world.country_object(country)?, change, None);
+        let owner = world.country_object(country)?;
+        let hour = world.hour()?;
+        self.decision_key_resolved(world, memory, base, generation, owner, hour, change, token, root)
+    }
+    pub(crate) fn decision_key_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        owner: CountryIdentity,
+        hour: i32,
+        change: DecisionChange,
+        token: engine_native::msvc_string::Descriptor,
+        root: Option<u32>,
+    ) -> Result<(), &'static str> {
+        let mut value = fact(memory, owner, change, None);
         value.token = token;
         value.script.country_target = root;
         if change.operation == Operation::Candidate
@@ -1046,7 +1062,7 @@ impl Store {
         {
             value.target = world.country(change.ordinal)?;
         }
-        self.script_known(memory, base, generation, world.hour()?, value)
+        self.script_known(memory, base, generation, hour, value)
     }
     fn decision_roster_baseline<M: Memory>(
         &mut self,
