@@ -42,6 +42,16 @@ collector_primitives::capacity_max!(Capacities {
     demand { inputs, lines, bytes, children, candidates, values },
 });
 impl Capacities {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(inputs: usize, lines: usize, bytes: usize) -> Self {
+        Self {
+            inputs,
+            lines,
+            bytes,
+            demand: native::Demand::default(),
+        }
+    }
+
     pub fn raise_for_countries(&mut self, slots: usize) {
         let inputs = crate::country_scale::rows(slots, 1);
         self.inputs = self.inputs.max(inputs);
@@ -152,6 +162,11 @@ impl Captured {
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
         self.phase_ticks = [0; 4];
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_keys(&mut self, keys: native::Keys) {
+        self.keys = Some(keys);
     }
 
     pub fn capture(

@@ -950,6 +950,122 @@ fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired()
         assert_eq!(walked.lines[2].kind, Kind::Static);
         assert_eq!(text(&walked, walked.lines[2].identity), b"country_is_at_war");
     }
+
+    let mut endpoint_fault = fixture();
+    endpoint_fault.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
+    endpoint_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    endpoint_fault.u64(RELATIONS, ATTACHE_REL as u64);
+    endpoint_fault.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
+    endpoint_fault.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+    let walked = walk(&endpoint_fault, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 4 });
+    assert_eq!(walked.input.stability_raw, 50_000);
+    assert_eq!(walked.lines[0].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[0].text), b"Attache");
+    assert_eq!(walked.lines[2].kind, Kind::Static);
+    assert_eq!(text(&walked, walked.lines[2].identity), b"country_is_at_war");
+    assert_same_walk(
+        &observed_walk(&Copies::new(&endpoint_fault), true, &mut Memo::default(), 16, None),
+        &observed_walk(&Copies::new(&endpoint_fault), false, &mut Memo::default(), 16, None),
+    );
+
+    let mut withheld_site = fixture();
+    withheld_site.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
+    withheld_site.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    withheld_site.u64(RELATIONS, ATTACHE_REL as u64);
+    withheld_site.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
+    withheld_site.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+    withheld_site.u32(ATTACHE_REL + crelation::FIRST_COUNTRY, 1);
+    withheld_site.u32(ATTACHE_REL + crelation::SECOND_COUNTRY, 2);
+    let _ = engine_sites::take_taint();
+    let (old, new, taint) = engine_sites::with_synthetic_withheld(
+        cattache_relation::VTABLE_RVA,
+        || {
+            let old = observed_walk(&Copies::new(&withheld_site), true, &mut Memo::default(), 16, None);
+            let new = observed_walk(&Copies::new(&withheld_site), false, &mut Memo::default(), 16, None);
+            (old, new, engine_sites::take_taint())
+        },
+    );
+    assert_eq!(taint, None);
+    assert_same_walk(&old, &new);
+    assert_eq!(new.result.unwrap().lines, Outcome::Rows { len: 4 });
+    assert_eq!(new.lines[0].kind, Kind::Unpaired);
+    assert_eq!(text(&new, new.lines[0].text), b"Attache");
+    assert_eq!(new.lines[2].kind, Kind::Static);
+    assert_eq!(text(&new, new.lines[2].identity), b"country_is_at_war");
+}
+
+#[test]
+fn verified_attache_sender_prevails_over_malformed_attache_relations_in_any_order() {
+    const ATTACHE: usize = 0x3b400;
+    const GOOD_REL: usize = 0x31400;
+    const BAD_REL: usize = 0x31500;
+
+    #[derive(Clone, Copy)]
+    enum Fault {
+        WrongVtable,
+        UnreadableEndpoint,
+        BadLink,
+    }
+
+    for fault in [Fault::WrongVtable, Fault::UnreadableEndpoint, Fault::BadLink] {
+        for (sender, expected_kind) in [(1, Kind::Static), (2, Kind::Unpaired)] {
+            for order in [[GOOD_REL, BAD_REL], [BAD_REL, GOOD_REL]] {
+                let mut w = world();
+                w.u64(DATABASE + 0x90, ATTACHE as u64);
+                w.vtable(ATTACHE, cstatic_modifier::VTABLE_RVA.0);
+                w.modifier(ATTACHE, &[(WAR_SUPPORT_KEY, 4_000)], b"Attache");
+                w.string(ATTACHE + STATIC_NAME, b"attache_sent");
+                w.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
+                w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 2);
+                w.u64(RELATIONS, order[0] as u64);
+                w.u64(RELATIONS + 8, order[1] as u64);
+
+                w.vtable(GOOD_REL, cattache_relation::VTABLE_RVA.0);
+                w.u32(GOOD_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+                w.u32(GOOD_REL + crelation::FIRST_COUNTRY, sender);
+                w.u32(GOOD_REL + crelation::SECOND_COUNTRY, 3 - sender);
+
+                w.vtable(
+                    BAD_REL,
+                    match fault {
+                        Fault::WrongVtable => cwar_relation::VTABLE_RVA.0,
+                        Fault::UnreadableEndpoint | Fault::BadLink => {
+                            cattache_relation::VTABLE_RVA.0
+                        }
+                    },
+                );
+                w.u32(BAD_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+                match fault {
+                    Fault::WrongVtable => {
+                        w.u32(BAD_REL + crelation::FIRST_COUNTRY, 2);
+                        w.u32(BAD_REL + crelation::SECOND_COUNTRY, 1);
+                    }
+                    Fault::UnreadableEndpoint => {}
+                    Fault::BadLink => {
+                        w.u32(BAD_REL + crelation::FIRST_COUNTRY, 99);
+                        w.u32(BAD_REL + crelation::SECOND_COUNTRY, 2);
+                    }
+                }
+                w.children(&[
+                    (&[(WAR_SUPPORT_KEY, 4_000)], b"Attache"),
+                    (&[(STABILITY_KEY, 5_000)], b"At war"),
+                ]);
+                let old = observed_walk(&Copies::new(&w), true, &mut Memo::default(), 16, None);
+                let new = observed_walk(&Copies::new(&w), false, &mut Memo::default(), 16, None);
+                assert_same_walk(&old, &new);
+                assert_eq!(new.result.unwrap().lines, Outcome::Rows { len: 2 });
+                assert_eq!(new.lines[0].kind, expected_kind);
+                if expected_kind == Kind::Static {
+                    assert_eq!(text(&new, new.lines[0].identity), b"attache_sent");
+                } else {
+                    assert_eq!(text(&new, new.lines[0].text), b"Attache");
+                }
+                assert_eq!(new.lines[1].kind, Kind::Static);
+                assert_eq!(text(&new, new.lines[1].identity), b"country_is_at_war");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1646,12 +1762,12 @@ fn stability_failed_source_preparation_acquires_no_missing_scalars() {
 fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
     let expected = [
         (
-            [2, 16, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
-            [2, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
+            [2, 17, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
+            [2, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
         ),
         (
-            [2, 16, 4, 5, 6, 12, 1, 11, 8, 3, 9, 6, 13, 0, 50, 9],
-            [2, 16, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 0, 0, 6],
+            [2, 17, 4, 5, 6, 12, 1, 11, 8, 3, 9, 6, 13, 0, 50, 9],
+            [2, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 0, 0, 6],
         ),
     ];
     for (w, (before, after)) in [world(), scaled_world()].into_iter().zip(expected) {

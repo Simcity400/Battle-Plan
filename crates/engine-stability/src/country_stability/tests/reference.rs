@@ -216,7 +216,7 @@ fn war_flags<M: Memory>(
     }
     let owned = Array::from_header(owned, 8).ok_or("owned relation array invalid")?;
     let war_vtable = site(base, cwar_relation::VTABLE_RVA)? as u64;
-    let attache_vtable = site(base, cattache_relation::VTABLE_RVA)
+    let attache_vtable = engine_sites::resolve(base, cattache_relation::VTABLE_RVA)
         .ok()
         .map(|address| address as u64);
     let same = |raw: u32| -> Result<bool, &'static str> {
@@ -227,33 +227,30 @@ fn war_flags<M: Memory>(
     };
     let (mut at_war, mut offensive, mut defensive) = (false, false, false);
     let mut has_war_relation = false;
-    let mut attache_sent = attache_vtable.map(|_| false);
+    let mut attache_verified = false;
+    let mut attache_unknown = attache_vtable.is_none();
     pointer_pages(memory, owned, |relation| {
-        let header = read::<[u8; 0x18]>(memory, relation).ok_or("relation unreadable")?;
+        let prefix = read::<[u8; 0x0c]>(memory, relation).ok_or("relation unreadable")?;
         let type_id = u32::from_le_bytes(
-            header[crelation::TYPE_ID..crelation::TYPE_ID + 4]
+            prefix[crelation::TYPE_ID..crelation::TYPE_ID + 4]
                 .try_into()
                 .unwrap(),
         );
         if type_id == cattache_relation::TYPE {
             if let Some(expected_vtable) = attache_vtable {
-                if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected_vtable {
-                    attache_sent = None;
-                } else {
-                    let first = u32::from_le_bytes(
-                        header[crelation::FIRST_COUNTRY..crelation::FIRST_COUNTRY + 4]
-                            .try_into()
-                            .unwrap(),
-                    );
+                if u64::from_le_bytes(prefix[..8].try_into().unwrap()) != expected_vtable {
+                    attache_unknown = true;
+                } else if let Some(first) = at(relation, crelation::FIRST_COUNTRY)
+                    .ok()
+                    .and_then(|address| read::<u32>(memory, address))
+                {
                     match same(first) {
-                        Ok(true) => {
-                            if let Some(sent) = attache_sent.as_mut() {
-                                *sent = true;
-                            }
-                        }
+                        Ok(true) => attache_verified = true,
                         Ok(false) => {}
-                        Err(_) => attache_sent = None,
+                        Err(_) => attache_unknown = true,
                     }
+                } else {
+                    attache_unknown = true;
                 }
             }
             return Ok(());
@@ -261,12 +258,14 @@ fn war_flags<M: Memory>(
         if type_id != cwar_relation::TYPE {
             return Ok(());
         }
-        if u64::from_le_bytes(header[..8].try_into().unwrap()) != war_vtable {
+        if u64::from_le_bytes(prefix[..8].try_into().unwrap()) != war_vtable {
             return Err("war relation vtable mismatch");
         }
         has_war_relation = true;
-        let first = u32::from_le_bytes(header[0x10..0x14].try_into().unwrap());
-        let second = u32::from_le_bytes(header[0x14..0x18].try_into().unwrap());
+        let endpoints = read::<[u8; 8]>(memory, at(relation, crelation::FIRST_COUNTRY)?)
+            .ok_or("war relation endpoints unreadable")?;
+        let first = u32::from_le_bytes(endpoints[0..4].try_into().unwrap());
+        let second = u32::from_le_bytes(endpoints[4..8].try_into().unwrap());
         let instigator = read::<u8>(memory, at(relation, cwar_relation::FIRST_WAS_INSTIGATOR)?)
             .ok_or("war relation instigator unreadable")?;
         let (attacker, defender) = if instigator != 0 {
@@ -285,6 +284,13 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
+    let attache_sent = if attache_verified {
+        Some(true)
+    } else if attache_unknown {
+        None
+    } else {
+        Some(false)
+    };
     let at_war_mode0 = if has_war_relation {
         Some(true)
     } else {
