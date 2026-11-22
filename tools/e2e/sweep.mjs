@@ -282,7 +282,10 @@ await phase('visual', async () => {
   } catch (error) { visual.fail('state/tooltip', 'state', error.message); }
   await app.mouse('mouseMoved', 1, 1);
   const native = new NativeInput(desktop, appPid, input);
-  try { await mapPictures(s, native, visual, meta.viewport.dpr, work, SEEKS); } finally { native.close(); }
+  try {
+    const pictures = await mapPictures(s, native, visual, meta.viewport.dpr, work, SEEKS);
+    await zoomedMapPicture(s, native, visual, meta.viewport.dpr, work, SEEKS.at(-1), pictures.at(-1)?.state ?? null);
+  } finally { native.close(); }
 });
 
 await phase('map', async () => {
@@ -696,7 +699,6 @@ await phase('playback', async () => {
     await save();
   }
   await setSpeed(1);
-  if (phases.includes('visual')) zoomedMapPicture(visual, SEEKS.at(-1));
 });
 
 await phase('catalogue', async () => {

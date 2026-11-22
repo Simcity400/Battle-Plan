@@ -1753,7 +1753,7 @@ impl Viewer {
             return;
         }
         if let Some(mut document) = self.document.take() {
-            let result = self.map(ui, frame, &mut document);
+            let result = self.map(ui, frame, &mut document, Some(target.id.as_str()));
             self.after_frame_with_visual_mods(&document, result.as_ref().err());
             if let Err(error) = result {
                 self.refuse_capture(&error, ui.ctx());
@@ -3636,11 +3636,12 @@ impl Viewer {
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        self.map_with_state(ui, state, document)
+        self.map_with_state(ui, state, document, view_id)
     }
 
     pub(crate) fn window_frame(
@@ -3653,7 +3654,7 @@ impl Viewer {
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 let result = match state {
-                    Some(state) => self.map_with_state(ui, state, document),
+                    Some(state) => self.map_with_state(ui, state, document, None),
                     None => Err("WGPU renderer is unavailable".to_owned()),
                 };
                 self.after_frame_with_visual_mods(document, result.as_ref().err());
@@ -3674,10 +3675,11 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let tables = document.content.tables;
         let result = engine_executable::executable_tables::scope(tables, || {
-            self.draw_map(ui, state, document)
+            self.draw_map(ui, state, document, view_id)
         });
         if !self.drew_frame {
             self.silence_unshown();
@@ -3690,6 +3692,7 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
@@ -4513,6 +4516,12 @@ impl Viewer {
                 self.camera_manual = true;
                 ui.ctx().request_repaint();
             }
+        }
+        if let Some(target) = crate::suite_input::take_camera(view_id) {
+            self.zoom.reset();
+            self.orbit.reset();
+            self.camera_manual = crate::suite_input::apply_camera(camera, target, pixels, &floor);
+            ui.ctx().request_repaint();
         }
         let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {

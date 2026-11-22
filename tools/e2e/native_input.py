@@ -14,6 +14,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
     {"op": "drag", "points": [[x, y], ...], "interval_ms": 16}          (a middle-button drag)
     {"op": "click", "x": x, "y": y}                                     (a primary click on the map)
     {"op": "mods", "ctrl": b, "shift": b, "alt": b}                     (the modifiers held from then on)
+    {"op": "camera", "view": id, "center": [x, z], "height": h}         (sets a repeatable map camera pose; or "reset": true)
     {"op": "save_dialog", "path": "C:/...png", "seconds": 20}          (fills and confirms the host's save dialog)
     {"op": "color_dialog", "rgb": [r, g, b], "seconds": 10}            (fills and confirms a colour input's dialog)
 """
@@ -21,6 +22,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
 import argparse
 import ctypes as c
 import json
+import math
 import socket
 import sys
 import time
@@ -157,6 +159,24 @@ class Desktop:
     def mods(self, ctrl=False, shift=False, alt=False):
         return {"posted": [self.send({"ctrl": ctrl, "shift": shift, "alt": alt})]}
 
+    def camera(self, view=None, center=None, height=None, reset=False):
+        payload = {}
+        if view is not None:
+            payload["view"] = str(view)
+        if reset:
+            if center is not None or height is not None:
+                raise ValueError("camera reset takes neither center nor height")
+            payload["reset"] = True
+        else:
+            if not isinstance(center, (list, tuple)) or len(center) != 2 or height is None:
+                raise ValueError("camera placement requires center [x, z] and height")
+            cx, cz, h = float(center[0]), float(center[1]), float(height)
+            if not (math.isfinite(cx) and math.isfinite(cz) and math.isfinite(h) and h > 0):
+                raise ValueError("camera placement requires finite center and positive height")
+            payload["center"] = [cx, cz]
+            payload["height"] = h
+        return {"posted": [self.send({"camera": payload})]}
+
     def save_dialog(self, path, seconds):
         """Fills the host's save dialog's file name and confirms it, as a user does."""
         deadline = time.monotonic() + seconds
@@ -226,7 +246,7 @@ def main():
             command = json.loads(line)
             op = command.pop("op")
             reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
-                     "mods": desktop.mods, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
+                     "mods": desktop.mods, "camera": desktop.camera, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
         except Exception as error:
             reply = {"error": f"{type(error).__name__}: {error}"}
         print(json.dumps(reply), flush=True)

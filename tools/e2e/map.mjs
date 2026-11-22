@@ -210,35 +210,107 @@ export async function hover(s, input, dpr) {
   await s.record({ area: 'map', item: 'interaction: hover', label: 'paused', pass: true, reasons: [], from, to: Date.now(), screenshot: false });
 }
 
+export const CLOSE_CAMERA_ZOOM_SHARE = 0.06;
+export const CLOSE_CAMERA_MIN_HEIGHT = 120;
+export const CLOSE_CAMERA_TOLERANCE = 0.5;
+
+export function deriveCloseCameraPose(state) {
+  if (!Array.isArray(state?.center) || state.center.length !== 2 || !state.center.every(Number.isFinite)
+    || !Number.isFinite(state?.zoom) || state.zoom <= 0) {
+    throw new Error('the map reported no default camera center and zoom to derive a close camera pose from');
+  }
+  const height = Math.round(Math.min(state.zoom * 0.5, Math.max(CLOSE_CAMERA_MIN_HEIGHT, state.zoom * CLOSE_CAMERA_ZOOM_SHARE)) * 100) / 100;
+  const center = [Math.round(state.center[0] * 100) / 100, Math.round(state.center[1] * 100) / 100];
+  return { center, height };
+}
+
+export function cameraPoseMatches(state, pose, hour = null, tolerance = 0.5) {
+  if (!state || state.loading || state.error) return false;
+  if (hour !== null && state.hour !== hour) return false;
+  if (!Array.isArray(state.center) || state.center.length !== 2 || !Number.isFinite(state.zoom)) return false;
+  return Math.abs(state.zoom - pose.height) <= tolerance
+    && Math.abs(state.center[0] - pose.center[0]) <= tolerance
+    && Math.abs(state.center[1] - pose.center[1]) <= tolerance;
+}
+
+const poseCheck = (pose, hour, tolerance = CLOSE_CAMERA_TOLERANCE) =>
+  `x => (${cameraPoseMatches.toString()})(x, ${JSON.stringify(pose)}, ${JSON.stringify(hour)}, ${tolerance})`;
+
 export async function mapPictures(s, input, visual, dpr, work, seeks) {
   const area = await mapArea(s, dpr);
   const exportAs = caseId => exportPicture(s, input, visual, work, caseId);
+  const results = [];
   for (const [label, fraction] of seeks) {
     const line = await s.timeline();
     const before = Date.now();
     await s.app.click(Session.timelineX(line, fraction), line.y);
     const drawn = await drawnState(s, area.view, before, 'x => !x.loading && x.hour != null', 15_000);
+    results.push({ label, fraction, state: drawn });
     if (!drawn) { visual.fail(`map/default camera/${label}`, 'map', 'the map never drew the sought hour'); continue; }
     await exportAs(`map/default camera/${label}`);
   }
   log('map pictures', visual.items.filter(item => item.kind === 'map').length);
+  return results;
 }
 
-export function zoomedMapPicture(visual, [label]) {
-  visual.fail(`map/zoomed camera/${label}`, 'map', "no repeatable close camera: wheel zoom moves by frame time, as the game's does, and no command sets the camera");
+export async function zoomedMapPicture(s, input, visual, dpr, work, [label, fraction], defaultState = null, { timeoutMs = 15_000, stepDelayMs = 150 } = {}) {
+  const caseId = `map/zoomed camera/${label}`;
+  const area = await mapArea(s, dpr);
+  let base = defaultState;
+  if (!base || base.loading || base.error || base.hour == null || !Array.isArray(base.center) || !Number.isFinite(base.zoom)) {
+    const line = await s.timeline();
+    const before = Date.now();
+    await s.app.click(Session.timelineX(line, fraction), line.y);
+    base = await drawnState(s, area.view, before, 'x => !x.loading && !x.error && x.hour != null && Array.isArray(x.center) && Number.isFinite(x.zoom)', timeoutMs);
+    if (!base) {
+      visual.fail(caseId, 'map', 'the map never drew the sought hour with a default camera before the close-camera capture');
+      return;
+    }
+  }
+  let pose;
+  try { pose = deriveCloseCameraPose(base); } catch (error) {
+    visual.fail(caseId, 'map', error.message);
+    return;
+  }
+  let sent = false;
+  try {
+    const before = Date.now();
+    await input.ask({ op: 'camera', view: area.view, center: pose.center, height: pose.height });
+    sent = true;
+    const reached = await drawnState(s, area.view, before, poseCheck(pose, base.hour), timeoutMs);
+    if (!reached) {
+      const last = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
+      const shown = last ? `center=${JSON.stringify(last.center ?? null)}, zoom=${last.zoom ?? null}, hour=${last.hour ?? null}, loading=${last.loading}` : 'no state';
+      visual.fail(caseId, 'map', `the map never drew the requested close camera pose (${pose.center.join(', ')} at height ${pose.height}, hour ${base.hour}; last ${shown})`);
+      return;
+    }
+    await exportPicture(s, input, visual, work, caseId, { stepDelayMs });
+  } catch (error) {
+    visual.fail(caseId, 'map', `close camera capture failed: ${error.message}`);
+  } finally {
+    if (sent) {
+      try {
+        const resetBefore = Date.now();
+        await input.ask({ op: 'camera', view: area.view, reset: true });
+        await drawnState(s, area.view, resetBefore, poseCheck({ center: base.center, height: base.zoom }, base.hour), timeoutMs);
+      } catch (error) {
+        log('close camera reset failed', error.message);
+      }
+    }
+  }
 }
 
-async function exportPicture(s, input, visual, work, caseId) {
+async function exportPicture(s, input, visual, work, caseId, { stepDelayMs = 150 } = {}) {
   const folder = path.join(work, 'map-exports');
   await mkdir(folder, { recursive: true });
   const file = path.join(folder, `${caseId.replace(/[^\w.-]+/g, '_')}.png`);
   if (existsSync(file)) await unlink(file);
   await s.click('article.dash-widget.kind-map button[aria-label="Map settings"]');
-  await sleep(150);
+  if (stepDelayMs > 0) await sleep(stepDelayMs);
   await s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Export map', partial: true });
   await input.ask({ op: 'save_dialog', path: file, seconds: 20 });
   for (const end = Date.now() + 20_000; !existsSync(file) && Date.now() < end;) await sleep(100);
-  await sleep(300);
+  if (stepDelayMs > 0) await sleep(stepDelayMs * 2);
   if (!existsSync(file)) { visual.fail(caseId, 'map', 'the export wrote no image within 20 s'); return; }
   await visual.addFile(caseId, 'map', file);
   await s.escape();

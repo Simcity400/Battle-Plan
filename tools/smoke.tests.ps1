@@ -16,7 +16,11 @@ $driverAst = [Management.Automation.Language.Parser]::ParseFile($Driver, [ref]$t
 if ($errors.Count) { throw $errors[0] }
 foreach ($definition in $driverAst.FindAll({param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -in @('Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection', 'Copy-ShaderCompiler')
+    $node.Name -in @(
+        'Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection', 'Copy-ShaderCompiler',
+        'Invoke-WithFocusRetry', 'Get-UiRegionBox', 'Invoke-ObservedUiStep', 'Invoke-BoundedUiSequence',
+        'Invoke-ExitThenVerify', 'Read-SharedUtf8Text', 'Start-SmokeTool', 'Wait-SmokeTool'
+    )
 }, $false)) { . ([scriptblock]::Create($definition.Extent.Text)) }
 try { $ScratchRoot = Resolve-LaunchUserDirectory $ScratchRoot }
 catch { throw "ScratchRoot prerequisite failed: supply an existing physical, hyphen-free directory without junctions, symbolic links or subst drives. $($_.Exception.Message)" }
@@ -204,6 +208,170 @@ try {
     if ($full.paused -ne 0 -or $null -eq $full.paused -or -not $full.presentation_valid -or $full.eye[2] -ne 900.25 -or $full.viewport[3] -ne 1440) { throw 'A full clock line was not read.' }
     if ($full.Same($bare) -or -not $full.Same($full) -or $null -ne (ConvertTo-GameClock $null $null)) { throw 'Clock agreement or an unreadable clock was misread.' }
     $script:Passed++; Write-Host 'PASS clock lines keep withheld fields absent and named'
+
+    $focusCalls = 0; $focusPauses = 0
+    $focusResult = Invoke-WithFocusRetry -MaxAttempts 4 -Pause { $script:focusPauses++ } -Action {
+        $script:focusCalls++
+        if ($script:focusCalls -lt 3) { throw 'Windows refused to focus the game; input was not sent.' }
+        'focused'
+    }
+    if ($focusResult -cne 'focused' -or $focusCalls -ne 3 -or $focusPauses -ne 2) { throw "Focus retry recovered unexpectedly: result=$focusResult calls=$focusCalls pauses=$focusPauses" }
+    $lostCalls = 0
+    $lostResult = Invoke-WithFocusRetry -MaxAttempts 3 -Pause {} -Action {
+        $script:lostCalls++
+        if ($script:lostCalls -eq 1) { throw 'Game focus was lost; input was not sent.' }
+        'recovered'
+    }
+    if ($lostResult -cne 'recovered' -or $lostCalls -ne 2) { throw "Focus-lost retry failed: result=$lostResult calls=$lostCalls" }
+    $exhaustedCalls = 0; $exhaustedError = $null
+    try {
+        $null = Invoke-WithFocusRetry -MaxAttempts 3 -Pause {} -Action {
+            $script:exhaustedCalls++
+            throw 'Windows refused to focus the game; input was not sent.'
+        }
+    } catch { $exhaustedError = $_.Exception.Message }
+    if ($exhaustedCalls -ne 3 -or $exhaustedError -notlike '*Windows refused to focus the game*') { throw "Bounded focus retry did not stop at limit: calls=$exhaustedCalls error=$exhaustedError" }
+    $nonFocusCalls = 0; $nonFocusError = $null
+    try {
+        $null = Invoke-WithFocusRetry -MaxAttempts 4 -Pause {} -Action {
+            $script:nonFocusCalls++
+            throw 'The game window no longer belongs to the selected process.'
+        }
+    } catch { $nonFocusError = $_.Exception.Message }
+    if ($nonFocusCalls -ne 1 -or $nonFocusError -notlike '*no longer belongs*') { throw "Non-focus error was retried: calls=$nonFocusCalls error=$nonFocusError" }
+    $script:Passed++; Write-Host 'PASS focus-borrow retries recover transiently and stay bounded'
+
+    $box = Get-UiRegionBox @(10, 20) 1920 1080 120 60
+    if (($box -join ',') -cne '0,0,130,80') { throw "Clamped top-left UI box mismatch: $($box -join ',')" }
+    $edgeBox = Get-UiRegionBox @(1910, 1070) 1920 1080 120 60
+    if (($edgeBox -join ',') -cne '1790,1010,1920,1080') { throw "Clamped bottom-right UI box mismatch: $($edgeBox -join ',')" }
+
+    $stepPolls = 0; $stepActed = 0
+    $observed = Invoke-ObservedUiStep -MaxPolls 4 -Pause {} -Act { $script:stepActed++ } -Observe {
+        $script:stepPolls++
+        $script:stepPolls -ge 3
+    }
+    if (-not $observed -or $stepActed -ne 1 -or $stepPolls -ne 3) { throw "Observed step failed: observed=$observed acted=$stepActed polls=$stepPolls" }
+    $missedPolls = 0
+    $missed = Invoke-ObservedUiStep -MaxPolls 3 -Pause {} -Act {} -Observe { $script:missedPolls++; $false }
+    if ($missed -or $missedPolls -ne 3) { throw "Missed observed step should return false after bound: missed=$missed polls=$missedPolls" }
+
+    $seqAttempts = 0; $seqResets = 0
+    $seqResult = Invoke-BoundedUiSequence -Name 'exit' -MaxAttempts 3 -FailureMessage 'The game did not exit through its confirmation dialog.' -Reset { $script:seqResets++ } -Attempt {
+        param($attempt)
+        $script:seqAttempts++
+        if ($attempt -lt 2) { return [pscustomobject]@{ Done=$false; Reason='exit_game did not open confirmation' } }
+        return [pscustomobject]@{ Done=$true; Reason=$null }
+    }
+    if (-not $seqResult.Done -or $seqResult.Attempts -ne 2 -or $seqAttempts -ne 2 -or $seqResets -ne 1 -or $seqResult.Failures.Count -ne 1) {
+        throw "Observed sequence retry did not recover on second attempt."
+    }
+    $exhaustedSeqError = $null; $exhaustedSeqAttempts = 0
+    try {
+        $null = Invoke-BoundedUiSequence -Name 'save' -MaxAttempts 3 -FailureMessage 'The UI did not produce a complete text save.' -Reset {} -Attempt {
+            $script:exhaustedSeqAttempts++
+            return [pscustomobject]@{ Done=$false; Reason='save_menu did not open save dialog' }
+        }
+    } catch { $exhaustedSeqError = $_.Exception.Message }
+    if ($exhaustedSeqAttempts -ne 3 -or $exhaustedSeqError -notlike '*The UI did not produce a complete text save.*' -or $exhaustedSeqError -notlike '*save_menu did not open save dialog*') {
+        throw "Exhausted sequence error mismatch: attempts=$exhaustedSeqAttempts error=$exhaustedSeqError"
+    }
+    $invariantAttempts = 0; $invariantError = $null
+    try {
+        $null = Invoke-BoundedUiSequence -Name 'save' -MaxAttempts 3 -FailureMessage 'The UI did not produce a complete text save.' -Reset {} -Attempt {
+            $script:invariantAttempts++
+            throw 'Game advanced during the save.'
+        }
+    } catch { $invariantError = $_.Exception.Message }
+    if ($invariantAttempts -ne 1 -or $invariantError -notlike '*Game advanced during the save.*') {
+        throw "Invariant error was retried: attempts=$invariantAttempts error=$invariantError"
+    }
+    $script:Passed++; Write-Host 'PASS observed UI steps and sequences retry boundedly and stop on invariants'
+
+    $exitOkReport = [ordered]@{}
+    $exitOkVerified = $false
+    Invoke-ExitThenVerify -Report $exitOkReport -ExitGame {} -Verify { $script:exitOkVerified = $true; $exitOkReport.oracle_differences = 0 }
+    if (-not $exitOkVerified -or -not $exitOkReport.normal_game_exit -or $exitOkReport.oracle_differences -ne 0) {
+        throw 'Clean exit path did not run verification or record normal_game_exit.'
+    }
+    $exitFailReport = [ordered]@{}
+    $exitFailVerified = $false
+    $exitFailThrown = $null
+    try {
+        Invoke-ExitThenVerify -Report $exitFailReport -ExitGame { throw 'The game did not exit through its confirmation dialog.' } -Verify {
+            $script:exitFailVerified = $true
+            $exitFailReport.oracle_differences = 0
+            $exitFailReport.window_headless_identical = $true
+        }
+    } catch { $exitFailThrown = $_.Exception.Message }
+    if (-not $exitFailVerified -or $exitFailReport.normal_game_exit -ne $false -or $exitFailReport.oracle_differences -ne 0 -or
+        -not $exitFailReport.window_headless_identical -or $exitFailReport.exit_error -cne 'The game did not exit through its confirmation dialog.' -or
+        $exitFailThrown -cne 'The game did not exit through its confirmation dialog.') {
+        throw "Failed exit hid verdicts or did not rethrow honestly: verified=$exitFailVerified thrown=$exitFailThrown"
+    }
+    $bothFailReport = [ordered]@{}
+    $bothFailThrown = $null
+    try {
+        Invoke-ExitThenVerify -Report $bothFailReport -ExitGame { throw 'Windows refused to focus the game; input was not sent.' } -Verify {
+            throw 'Fresh-save oracle did not establish complete matching coverage.'
+        }
+    } catch { $bothFailThrown = $_.Exception.Message }
+    if ($bothFailReport.exit_error -cne 'Windows refused to focus the game; input was not sent.' -or
+        $bothFailThrown -cne 'Fresh-save oracle did not establish complete matching coverage.') {
+        throw "Dual exit+verify failure lost exit_error or verify exception: exit_error=$($bothFailReport.exit_error) thrown=$bothFailThrown"
+    }
+    $script:Passed++; Write-Host 'PASS oracle and render verdicts still run when game exit fails'
+
+    $toolDir = Join-Path $root 'toollogs'
+    $null = New-Item -ItemType Directory -Path $toolDir
+    $python = (Get-Command python -ErrorAction Stop).Source
+    $toolReport = [ordered]@{ checks = @() }
+    $okRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('ok stdout'); print('ok stderr', file=sys.stderr)") -Name 'ok-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    $okOut = Wait-SmokeTool -Run $okRun -Seconds 15 -Report $toolReport -WriteReport {} -Utf8 $utf8
+    if ($okOut.Trim() -cne 'ok stdout' -or (Read-SharedUtf8Text $okRun.StdoutPath).Trim() -cne 'ok stdout' -or
+        (Read-SharedUtf8Text $okRun.StderrPath).Trim() -cne 'ok stderr' -or
+        (Read-SharedUtf8Text $okRun.LogPath) -notmatch 'ok stdout' -or (Read-SharedUtf8Text $okRun.LogPath) -notmatch 'ok stderr' -or
+        $toolReport.checks.Count -ne 1 -or $toolReport.checks[0].exit -ne 0) {
+        throw 'Completed tool did not persist stdout, stderr and combined log files.'
+    }
+
+    $failRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('bad stdout'); print('bad stderr', file=sys.stderr); sys.exit(9)") -Name 'fail-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    $failMsg = $null
+    try { $null = Wait-SmokeTool -Run $failRun -Seconds 15 -Report $toolReport -WriteReport {} -Utf8 $utf8 } catch { $failMsg = $_.Exception.Message }
+    if ($failMsg -notlike '*fail-tool failed with exit 9*' -or (Read-SharedUtf8Text $failRun.StderrPath).Trim() -cne 'bad stderr') {
+        throw "Failed tool error or stderr log mismatch: $failMsg"
+    }
+
+    $readyFile = Join-Path $toolDir 'ready'
+    $stopFile = Join-Path $toolDir 'stop'
+    $watcher = [IO.FileSystemWatcher]::new($toolDir, 'ready')
+    $liveCode = "import os, sys, time; print('live stdout', flush=True); print('live stderr', file=sys.stderr, flush=True); open(sys.argv[1], 'w').close(); deadline = time.monotonic() + 15; " +
+        "exec('while not os.path.exists(sys.argv[2]) and time.monotonic() < deadline: time.sleep(0.02)')"
+    $liveRun = Start-SmokeTool -Exe $python -Arguments @('-c', $liveCode, $readyFile, $stopFile) -Name 'live-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    try {
+        if (-not (Test-Path -LiteralPath $readyFile)) {
+            $changed = $watcher.WaitForChanged([IO.WatcherChangeTypes]::Created, 10000)
+            if ($changed.TimedOut -and -not (Test-Path -LiteralPath $readyFile)) { throw 'Synthetic live tool did not signal readiness.' }
+        }
+        $liveStdout = Read-SharedUtf8Text $liveRun.StdoutPath
+        $liveStderr = Read-SharedUtf8Text $liveRun.StderrPath
+        if ($liveStdout.Trim() -cne 'live stdout' -or $liveStderr.Trim() -cne 'live stderr') {
+            throw "Tool streams were not persisted while running: out=[$liveStdout] err=[$liveStderr]"
+        }
+        $timeoutMsg = $null
+        try { $null = Wait-SmokeTool -Run $liveRun -TimeoutMs 1 -Report $toolReport -WriteReport {} -Utf8 $utf8 } catch { $timeoutMsg = $_.Exception.Message }
+        if ($timeoutMsg -notlike '*Timed out: live-tool*' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stdout' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stderr') {
+            throw "Timed-out tool did not retain streamed output: $timeoutMsg"
+        }
+        [IO.File]::WriteAllText($stopFile, 'stop')
+        $null = $liveRun.Process.WaitForExit(10000)
+    } finally {
+        $watcher.Dispose()
+        if (-not $liveRun.Process.HasExited) {
+            try { $liveRun.Process.Kill(); $null = $liveRun.Process.WaitForExit(5000) } catch {}
+        }
+    }
+    $script:Passed++; Write-Host 'PASS tool stdout and stderr stream to files on disk while running and across timeout'
     Write-Host "$script:Passed offline checks passed."
 } finally {
     if ($substDrive) { & (Join-Path $env:SystemRoot 'System32\subst.exe') $substDrive /D }
