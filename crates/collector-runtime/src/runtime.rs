@@ -15,6 +15,7 @@ use collector_spool::history::PreparedCampaigns;
 #[cfg(test)]
 use collector_spool::spooling::HistoryReply;
 use collector_spool::spooling::Processor;
+use collector_workers::Owner as CollectorOwner;
 use collector_workers::spool_phases::Phase;
 use engine_executable::build::hash_executable;
 use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
@@ -22,7 +23,7 @@ use replay_data::identity::IdentityCodec;
 use replay_data::{codec::Decoder, identity::SessionStart};
 
 use crate::status_file::{write_status, write_status_bytes};
-use collector_capture::hourly_admission::{CaptureAdmission, HOURLY_ADMISSION};
+use collector_capture::hourly_admission::{CaptureAdmission, runtime_admission};
 use collector_workers::{
     event::Event,
     priority::{BACKGROUND_STACK_BYTES, OwnPriority},
@@ -272,7 +273,20 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     let result = match &witness {
         Ok((file, session, process_start)) => {
             collector_memory::terminal::prepare(file, *session, *process_start);
-            run(module, *session, *process_start, &mut spool_final)
+            // SAFETY: DllMain starts the exclusive runtime worker once, and
+            // a refused detach retains its published state and owner.
+            let lifecycle = unsafe { claim_lifecycle_owner() };
+            let result = run(
+                &lifecycle,
+                module,
+                *session,
+                *process_start,
+                &mut spool_final,
+            );
+            if SHARED.is_published() {
+                std::mem::forget(lifecycle);
+            }
+            result
         }
         Err(error) => Err(*error),
     };
@@ -444,21 +458,36 @@ mod bootstrap_witness_tests {
     }
 }
 /// # Safety
+/// The caller owns the runtime attach and retains the capability until quiescence.
+unsafe fn claim_lifecycle_owner() -> CollectorOwner {
+    // SAFETY: the caller owns the attach and its quiescence protocol.
+    unsafe { CollectorOwner::claim() }
+}
+
+#[cfg(test)]
+pub(crate) fn test_lifecycle_owner() -> CollectorOwner {
+    // SAFETY: the separate test process owns its isolated lifecycle.
+    unsafe { claim_lifecycle_owner() }
+}
+
+/// # Safety
 /// Only the attach owner may build and bind a capture state. Keep it alive until any
 /// published doctrine callbacks have been restored and are quiescent.
 pub(crate) unsafe fn attach_capture_state(
+    owner: &CollectorOwner,
     base: usize,
     trampoline: usize,
     frequency: u64,
     sizing: &collector_capture::country_scale::Sizing,
 ) -> std::io::Result<Shared> {
-    let shared = Shared::with_sizing(base, trampoline, frequency, sizing)?;
+    let shared = Shared::with_sizing(owner, base, trampoline, frequency, sizing)?;
     // SAFETY: the caller owns the binding and retains the store while callbacks can run.
-    unsafe { shared.bind_doctrine_observer() };
+    unsafe { shared.bind_doctrine_observer(owner) };
     Ok(shared)
 }
 
 fn run(
+    lifecycle: &CollectorOwner,
     module: HMODULE,
     prepared_session: u64,
     prepared_process_start: u64,
@@ -466,14 +495,14 @@ fn run(
 ) -> Result<(), &'static str> {
     engine_sites::production();
     collector_timing::hook_timing::start();
-    // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
-    unsafe {
-        collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime);
-    }
+    let worker = lifecycle.worker().bind();
+    let admission = runtime_admission(lifecycle);
+    let capture_access = lifecycle.capture();
+    collector_workers::thread_cpu::register(&worker, collector_workers::thread_cpu::Role::Runtime);
     #[cfg(feature = "worker_sampler")]
     // SAFETY: this runtime owns the sampler and is preparing it before starting workers.
     unsafe {
-        collector_workers::worker_sampler::prepare()
+        collector_workers::worker_sampler::prepare(lifecycle)
     };
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
@@ -557,10 +586,10 @@ fn run(
     if session.identity.collector_hash != dll.sha256 {
         return Err("collector DLL hash differs from session identity");
     }
-    let ready = Event::create(&config.ready_event)?;
-    let detach = Event::create(&config.detach_event)?;
-    let done = Event::create(&config.done_event)?;
-    let idle = Event::create(&config.idle_event)?;
+    let ready = Event::create(lifecycle, &config.ready_event)?;
+    let detach = Event::create(lifecycle, &config.detach_event)?;
+    let done = Event::create(lifecycle, &config.done_event)?;
+    let idle = Event::create(lifecycle, &config.idle_event)?;
     let status_path = config.output_dir.join("status.json");
     collector_hook_failures::configure(
         &config.output_dir,
@@ -688,12 +717,8 @@ fn run(
     collector_observers::building_bombing::restore_sequence(bombing_sequence)?;
     collector_observers::nuclear_strikes::restore_sequence(nuclear_sequence)?;
     collector_observers::market_changes::restore_sequence(market_sequence)?;
-    // SAFETY: this attach owns the spool and transfers ownership to its processor.
-    let spool_owner =
-        unsafe { sampling::SpoolOwner::claim() }.ok_or("collector spool already owned")?;
-    let mut processor =
-        Processor::new(&config.output_dir, history, session.clone(), spool_owner)
-            .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
+    let mut processor = Processor::new(lifecycle, &config.output_dir, history, session.clone())
+        .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let mut hook =
         unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }.map_err(
             |cause| {
@@ -882,6 +907,7 @@ fn run(
         // alive until the command callbacks have quiesced.
         Ok::<_, &'static str>(unsafe {
             collector_player_commands::player_commands::Hooks::new(
+                lifecycle,
                 &memory,
                 base,
                 sampling::sample_command_roster,
@@ -1023,6 +1049,7 @@ fn run(
     collector_observers::occupation_changes::demand(sizing.core[3].saturating_mul(9));
     collector_observers::occupation_changes::prepare();
     if let Err(reason) = collector_capture::country_scale::table_demand::presize(
+        &capture_access,
         &memory,
         base,
         &mut sizing.map,
@@ -1030,7 +1057,10 @@ fn run(
     ) {
         processor.observe_input_demand_error(reason);
     }
-    if let Err(reason) = sizing.extended.presize_live_inputs(&memory, base) {
+    if let Err(reason) = sizing
+        .extended
+        .presize_live_inputs(&capture_access, &memory, base)
+    {
         processor.observe_input_demand_error(reason);
     }
     collector_land_events::land_events::install_offered();
@@ -1199,7 +1229,7 @@ fn run(
     {
         sizing.extended.economy.demand.raise(demand);
     }
-    sizing.extended.operation_outcomes.prepare();
+    sizing.extended.operation_outcomes.prepare(&capture_access);
     progress.step("inputs_sized", None);
     let combat_hints = CombatHints::observe(&memory, base);
     for reason in combat_hints.failures.into_iter().flatten() {
@@ -1285,16 +1315,23 @@ fn run(
     ranges.extend(operation_hooks.executable_ranges());
     ranges.extend(politics_hooks.executable_ranges());
     // SAFETY: the attach owner binds before publishing hooks and retains Shared until they quiesce.
-    let mut shared =
-        unsafe { attach_capture_state(base, hook.trampoline(), frequency as u64, &sizing) }
-            .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
+    let mut shared = unsafe {
+        attach_capture_state(
+            lifecycle,
+            base,
+            hook.trampoline(),
+            frequency as u64,
+            &sizing,
+        )
+    }
+    .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
     shared.capture_mode = session.capture_mode;
     shared.tick_idle = Some(idle);
     shared.prepare_roster(&memory);
     shared.prepare_clock_capture(&memory);
     let shared = engine_allocation::shared(shared)
         .map_err(|e| error_reason(e, "collector state allocation failed"))?;
-    processor.account_writer(shared.pool_bytes.clone());
+    processor.account_writer(shared.pool_accounting(&capture_access));
     progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
@@ -1307,17 +1344,18 @@ fn run(
         &mut spool_state.applied_combat_hints,
     );
     let acquisition = acquisition::Pool::start(
+        lifecycle,
         collector_workers::acquisition::recommended_worker_count(),
         collector_workers::roles::MAX_JOBS,
     )?;
     shared
-        .pool_bytes
+        .pool_accounting(&capture_access)
         .fetch_add(acquisition.allocated_bytes() as u64, Ordering::Relaxed);
     // SAFETY: capture state is unpublished and this attach owns pool shutdown.
     let acquisition = unsafe { shared.install_acquisition(acquisition) }
         .map_err(|_| "acquisition pool already initialized")?;
     // SAFETY: the runtime owns the pools and retains them until its hooks and workers quiesce.
-    let _payload_pools = unsafe { decode::prepare_payload_pools(config.game_score) }
+    let _payload_pools = unsafe { decode::prepare_payload_pools(lifecycle, config.game_score) }
         .map_err(|e| error_reason(e, "payload pools allocation failed"))?;
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation");
@@ -1329,20 +1367,20 @@ fn run(
     // SAFETY: the attach owner starts the reconciler and registers the helper roles.
     let pipeline = unsafe { shared.priority_pipeline() };
     let mut priority_reconciler =
-        collector_workers::frame_priority::Reconciler::start(pipeline.clone())?;
+        collector_workers::frame_priority::Reconciler::start(lifecycle, pipeline.clone())?;
     owned_workers.push(priority_reconciler.thread_id());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
+        lifecycle.worker(),
         config.output_dir.clone(),
         config.replay_dir.clone(),
-        Some(collector_capture::capture_point::settle_next),
+        Some(collector_capture::capture_point::refresh_request(lifecycle)),
     )
     .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
     for index in 0..collector_workers::spool_helper::pool_size() {
-        let Ok(helper) = collector_workers::spool_helper::SpoolHelper::start(Some((
-            pipeline.clone(),
-            collector_workers::frame_priority::Role::Helper(index),
-        ))) else {
+        let Ok(helper) =
+            collector_workers::spool_helper::SpoolHelper::start(lifecycle, pipeline.clone(), index)
+        else {
             break;
         };
         let id = helper.thread_id();
@@ -1352,15 +1390,16 @@ fn run(
         owned_workers.push(id);
         // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
         unsafe {
-            collector_workers::thread_cpu::register_helper(index, id);
+            collector_workers::thread_cpu::register_helper(lifecycle, index, id);
         }
     }
-    let sizing = SizingThread::start(shared.clone(), spool_state);
+    let sizing = SizingThread::start(lifecycle, shared.clone(), spool_state);
     if let Some(id) = sizing.thread_id() {
         owned_workers.push(id);
         // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
         unsafe {
             collector_workers::thread_cpu::register_id(
+                lifecycle,
                 collector_workers::thread_cpu::Role::SpoolSizing,
                 id,
             );
@@ -1371,6 +1410,7 @@ fn run(
         // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
         unsafe {
             collector_workers::thread_cpu::register_id(
+                lifecycle,
                 collector_workers::thread_cpu::Role::FrameBuilder,
                 id,
             );
@@ -1380,8 +1420,9 @@ fn run(
     let spool_thread_id = Arc::clone(&spool_id);
     let spool_shared = shared.clone();
     let spool_status = status_path.clone();
-    let mut status_writer = crate::status_writer::StatusWriter::start(write_status_bytes)
-        .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
+    let mut status_writer =
+        crate::status_writer::StatusWriter::start(lifecycle.worker(), write_status_bytes)
+            .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let spool_writer = status_writer.handle();
     let teardown_status = Arc::new(OnceLock::new());
     let spool_teardown_status = Arc::clone(&teardown_status);
@@ -1390,17 +1431,20 @@ fn run(
     let sampler_config = config.worker_sampler.clone();
     #[cfg(feature = "worker_sampler")]
     let sampler_output = config.output_dir.clone();
+    let spool_start = lifecycle.worker();
     let spool = std::thread::Builder::new()
         .name("hoi4-spool".into())
         .stack_size(BACKGROUND_STACK_BYTES)
         .spawn(move || {
             collector_workers::private_heap::off_hold_path();
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
-            unsafe {
-                collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Spool);
-            }
+            let worker = spool_start.bind();
+            collector_workers::thread_cpu::register(
+                &worker,
+                collector_workers::thread_cpu::Role::Spool,
+            );
             spool_loop(
+                &worker,
                 &spool_shared,
                 &config,
                 session,
@@ -1413,9 +1457,9 @@ fn run(
             )
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
-    let decode_panic_hook = collector_workers::panic_failure::HookGuard::install();
+    let decode_panic_hook = collector_workers::panic_failure::HookGuard::install(lifecycle)?;
     // SAFETY: no capture is published yet. This runtime will join and drain this worker.
-    let mut installation_error = unsafe { decode::start_worker() }.err();
+    let mut installation_error = unsafe { decode::start_worker(lifecycle) }.err();
     while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
         std::thread::yield_now();
     }
@@ -1424,7 +1468,7 @@ fn run(
         collector_workers::thread_cpu::decode_worker(),
     ]);
     let mut capture_thread =
-        collector_capture::capture_point::Thread::start(BACKGROUND_STACK_BYTES).ok();
+        collector_capture::capture_point::Thread::start(lifecycle, BACKGROUND_STACK_BYTES).ok();
     owned_workers.extend(capture_thread.as_ref().map(|thread| thread.id()));
     collector_hook_failures::workers_started();
     progress.step("workers_started", None);
@@ -1432,6 +1476,7 @@ fn run(
     // SAFETY: this runtime prepared the sampler and owns the registered acquisition workers.
     let mut sampler = match unsafe {
         collector_workers::worker_sampler::start(
+            lifecycle,
             sampler_config.as_deref(),
             &sampler_output,
             acquisition.thread_ids(),
@@ -1459,7 +1504,7 @@ fn run(
     if collector_memory::terminal::failed() {
         installation_error = Some("collector allocation failed before hooks");
     }
-    unsafe { SHARED.publish(&shared) };
+    unsafe { SHARED.publish(lifecycle, &shared) };
     let mut deadline = Instant::now() + Duration::from_secs(15);
     let stage = crate::progress::Stage::new(&progress, "world_lifetime");
     while installation_error.is_none() && !collector_memory::terminal::failed() {
@@ -1578,7 +1623,10 @@ fn run(
                     ("experience_gains", &mut || {
                         experience_hooks.set_enabled(true)
                     }),
-                    ("player_commands", &mut || command_hooks.set_enabled(true)),
+                    ("player_commands", &mut || {
+                        // SAFETY: this publication round retains command_hooks through commit.
+                        unsafe { command_hooks.set_enabled(lifecycle, true) }
+                    }),
                     ("operation_outcomes", &mut || {
                         operation_hooks.set_enabled(true)
                     }),
@@ -1665,9 +1713,9 @@ fn run(
     }
     if installation_error.is_none() && !collector_memory::terminal::failed() {
         // SAFETY: the runtime has published the capture state and has not begun teardown.
-        unsafe { HOURLY_ADMISSION.open() };
+        unsafe { admission.open() };
         // SAFETY: the runtime owns the thread through hourly admission and capture quiescence.
-        unsafe { collector_capture::capture_point::set_beside(capture_thread.as_ref()) };
+        unsafe { collector_capture::capture_point::set_beside(lifecycle, capture_thread.as_ref()) };
         progress.step("ready", None);
         ready.set();
     } else {
@@ -1707,7 +1755,7 @@ fn run(
                 .or_else(collector_workers::worker_panic::first)
                 .unwrap_or(reason);
             refuse_detach!(error, |_error| {
-                shared.stop_recording();
+                shared.stop_recording(lifecycle);
                 status_writer.finish();
                 if !collector_memory::terminal::failed() {
                     let status = collector_status::status::status!({
@@ -1751,14 +1799,15 @@ fn run(
         Some(u64::from(restored[RestoreFamily::Hourly as usize])),
     );
     if !restored[RestoreFamily::Hourly as usize] {
-        shared.stop_recording();
+        shared.stop_recording(lifecycle);
     }
     // SAFETY: the runtime attempted hourly restoration and still owns hourly admission.
-    let drained =
-        unsafe { collector_capture::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT) };
+    let drained = unsafe {
+        collector_capture::capture_point::drain(lifecycle, Instant::now() + FINAL_HOUR_WAIT)
+    };
     progress.step("final_hour_read", Some(u64::from(drained)));
-    HOURLY_ADMISSION.close();
-    if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
+    admission.close();
+    if let Err(reason) = wait_acquisitions(admission, detach_started) {
         progress.step("acquisitions_refused", None);
         retain_detach!(
             reason,
@@ -1772,7 +1821,7 @@ fn run(
         owned_workers.retain(|worker| *worker != id);
     }
     // SAFETY: the runtime closed hourly admission, waited for captures and stopped the worker.
-    let unread = unsafe { collector_capture::capture_point::take_unread() };
+    let unread = unsafe { collector_capture::capture_point::take_unread(lifecycle) };
     if unread != 0 {
         // SAFETY: no capture runs or can start.
         unsafe { sampling::record_lost(&shared, unread) };
@@ -1838,7 +1887,10 @@ fn run(
             RestoreFamily::ProvinceCombats => province_combat_hooks.set_enabled(false),
             RestoreFamily::AirBaseCarry => air_base_carry_hooks.set_enabled(false),
             RestoreFamily::Experience => experience_hooks.set_enabled(false),
-            RestoreFamily::PlayerCommands => command_hooks.set_enabled(false),
+            RestoreFamily::PlayerCommands => {
+                // SAFETY: this restoration owns and retains the command taps.
+                unsafe { command_hooks.set_enabled(lifecycle, false) }
+            }
             RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
             RestoreFamily::Fuel => fuel_hooks.set_enabled(false),
             RestoreFamily::OperationOutcomes => operation_hooks
@@ -1952,11 +2004,12 @@ fn run(
         installation_error,
     });
     if restore_result.is_err() {
-        shared.stop_recording();
+        shared.stop_recording(lifecycle);
     }
     let hooks = HookLifetime {
         restored: restore_result.is_ok(),
         shared: &SHARED,
+        owner: Some(lifecycle),
     };
     if hooks.restored
         && let Err(reason) = wait_quiet(
@@ -1983,7 +2036,7 @@ fn run(
         },
         None,
     );
-    shared.stop_recording();
+    shared.stop_recording(lifecycle);
     if let Err(reason) = acquisition.shutdown() {
         progress.step("acquisition_refused", None);
         retain_detach!(
@@ -1996,7 +2049,7 @@ fn run(
     let mut logged = Instant::now();
     // SAFETY: capture and acquisition have stopped, and the runtime retains state and pools.
     let decode_outcome = unsafe {
-        decode::detach_drain(|count| {
+        decode::detach_drain(lifecycle, |count| {
             if logged.elapsed() >= Duration::from_secs(1) {
                 logged = Instant::now();
                 progress.step("decode_draining", Some(count));
@@ -2070,7 +2123,7 @@ fn run(
         }
         if let Some(hooks) = command_hooks.inner.as_mut() {
             // SAFETY: the command taps are restored and their callbacks have quiesced.
-            unsafe { hooks.release_after_quiet() };
+            unsafe { hooks.release_after_quiet(lifecycle) };
         }
         let _ = match event_feed_hooks
             .inner
@@ -2213,7 +2266,7 @@ fn run(
     #[cfg(feature = "worker_sampler")]
     if restore_result.is_ok() {
         // SAFETY: the runtime joined the sampler and quiesced its users.
-        unsafe { collector_workers::worker_sampler::release() };
+        unsafe { collector_workers::worker_sampler::release(lifecycle) };
     }
     if let Err(error) = spool_result
         && !collector_memory::terminal::failed()
@@ -2722,6 +2775,7 @@ fn restore_hourly(
 struct HookLifetime<'a> {
     restored: bool,
     shared: &'a SharedSlot,
+    owner: Option<&'a CollectorOwner>,
 }
 
 impl HookLifetime<'_> {
@@ -2734,8 +2788,15 @@ impl HookLifetime<'_> {
     fn release<T>(self, hooks: T, wait: impl FnOnce()) {
         self.wait_quiet(wait);
         if self.restored {
-            // SAFETY: restoration succeeded and the quiescence wait completed.
-            unsafe { self.shared.clear() };
+            if let Some(owner) = self.owner {
+                // SAFETY: restoration succeeded and the quiescence wait completed.
+                unsafe { self.shared.clear(owner) };
+            } else {
+                #[cfg(test)]
+                self.shared.clear_for_test();
+                #[cfg(not(test))]
+                unreachable!("live quiescence has an owner");
+            }
             drop(hooks);
         } else {
             std::mem::forget(hooks);
@@ -2961,7 +3022,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         }
     }
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS)
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS)
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     // SAFETY: this fixture owns the unpublished pool and shuts it down below.
     let pool = unsafe { shared.install_acquisition(pool) }
@@ -3320,6 +3381,7 @@ mod detach_policy_tests {
             HookLifetime {
                 restored: true,
                 shared: &shared,
+                owner: None,
             }
             .release(hooks, || {});
             let exit = finish_worker(&shared, (), |()| {
@@ -4255,7 +4317,7 @@ fn spool_status<'a>(
         state: if pinned { "pinned" } else { state },
         session: session.id,
         pool_bytes: shared.pool_total(),
-        dropped_frames: shared.dropped.load(Ordering::Relaxed),
+        dropped_frames: shared.dropped_frames(),
         dropped_spool_stalled: shared.frames().stalled_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
@@ -4308,9 +4370,9 @@ fn verify_content_roster(
     writer: &crate::status_writer::StatusHandle,
 ) -> Result<(), &'static str> {
     if let Some(roster) = processor.owner().take_sampled_roster(shared) {
-        shared
-            .pool_bytes
-            .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
+        processor
+            .owner()
+            .account_roster(shared, roster.allocated_bytes());
         let verification = roster.verify(
             &mut session.identity,
             &config.expected_mounts,
@@ -4336,6 +4398,7 @@ fn verify_content_roster(
 
 #[allow(clippy::too_many_arguments)]
 fn spool_loop(
+    worker: &collector_workers::Worker,
     shared: &Shared,
     config: &Config,
     mut session: SessionStart,
@@ -4347,8 +4410,8 @@ fn spool_loop(
     history_requests: SpoolHistory,
 ) -> Result<SpoolOutcome, &'static str> {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
-    let stop_recording = StopRecordingOnSpoolExit(|| shared.stop_recording());
+    let _sampler_exit = worker.sampled();
+    let stop_recording = StopRecordingOnSpoolExit(processor.owner().recording_stop(shared));
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
     let mut last_warning = None;
@@ -4357,8 +4420,12 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     // SAFETY: this is the runtime-owned spool worker and uses its assigned role.
     let pipeline = unsafe { shared.priority_pipeline() };
-    let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
+    let mut priority = OwnPriority::frame_pipeline(worker);
+    priority.follow_pipeline(
+        worker,
+        pipeline,
+        collector_workers::frame_priority::Role::Spool,
+    );
     processor.owner().register_thread(shared);
     let phases = &collector_workers::spool_phases::SPOOL;
     loop {
@@ -4371,23 +4438,30 @@ fn spool_loop(
         }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
-        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
+        priority.follow_pipeline(
+            worker,
+            pipeline,
+            collector_workers::frame_priority::Role::Spool,
+        );
         let mut received = false;
-        while let Some(index) = processor.owner().pop_ready(shared) {
-            shared.frame_stage(index, sampling::FrameStage::Spool);
+        while let Some(mut ready) = processor.owner().pop_ready(shared) {
+            let index = ready.index();
+            // SAFETY: the ready frame guard owns this slot.
+            unsafe { shared.mark_owned_frame(index, sampling::FrameStage::Spool) };
             let watch = collector_spool::slow_hours::SpoolWatch::start();
-            let watched_hour = unsafe { shared.frames()[index].captured() }
-                .clock
-                .as_ref()
-                .map(|clock| clock.hour);
+            let watched_hour = ready.captured().clock.as_ref().map(|clock| clock.hour);
             received = true;
             if collector_memory::terminal::failed() {
                 return Err("collector allocation failed");
             }
-            priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
+            priority.follow_pipeline(
+                worker,
+                pipeline,
+                collector_workers::frame_priority::Role::Spool,
+            );
             let span = phases.span(Phase::Receive);
             let elapsed = wait_completed_callback(shared.frames().slot(index))?;
-            let frame = unsafe { shared.frames()[index].captured_mut() };
+            let frame = ready.captured_mut();
             frame.total_ns = shared.ns(elapsed);
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
                 campaign_id: frame
@@ -4418,7 +4492,7 @@ fn spool_loop(
             }
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             let mut stalled = false;
-            while let Err(error) = processor.prepare(frame) {
+            while let Err(error) = processor.prepare_ready_campaign(&ready) {
                 if !stalled {
                     stalled = true;
                     processor.owner().set_stalled(shared, true);
@@ -4439,7 +4513,7 @@ fn spool_loop(
                         collector_status::status::status!({
                             "state":"campaign spool unavailable", "session":session.id,
                             "warning":last_warning, "drain_complete":false,
-                            "dropped_frames":shared.dropped.load(Ordering::Relaxed),
+                            "dropped_frames":shared.dropped_frames(),
                             "dropped_spool_stalled":shared.frames().stalled_drops(),
                         }),
                     )
@@ -4457,6 +4531,7 @@ fn spool_loop(
             if startup_unknown != 0 {
                 processor.unknown_loss(std::mem::take(&mut startup_unknown));
             }
+            let frame = ready.captured();
             if frame.dropped_before.unknown_count != 0 {
                 processor.unknown_loss(frame.dropped_before.unknown_count);
             }
@@ -4467,7 +4542,7 @@ fn spool_loop(
             }
             span.finish();
             processor.set_backlogged(shared.buffers_backlogged());
-            let pending_write = match processor.prepare_frame(frame) {
+            let pending_write = match processor.prepare_ready_frame(&mut ready) {
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
                 Ok(prepared) => {
                     if let Err(error) = processor.write_prepared(prepared) {
@@ -4488,7 +4563,10 @@ fn spool_loop(
                     None
                 }
                 Err(error) => {
-                    frame.extended.discard_spooled_event_feed(processor.owner());
+                    ready
+                        .captured_mut()
+                        .extended
+                        .discard_spooled_event_feed(processor.owner());
                     collector_equipment_destruction::equipment_destruction::lost_drain();
                     collector_naval_results::naval_result_sources::lost_drain();
                     collector_experience_gains::experience_gains::lost_drain();
@@ -4510,16 +4588,18 @@ fn spool_loop(
                 return Err("collector allocation failed");
             }
             if processor.take_retry_full() {
-                shared.request_retry_full();
+                processor.owner().request_retry_full(shared);
             }
             let unpublished = processor.take_unpublished_families();
             if unpublished != 0 {
-                shared.request_forget_families(unpublished);
+                processor
+                    .owner()
+                    .request_forget_families(shared, unpublished);
             }
             if pending_write.is_none() {
                 collector_memory::terminal::attempted_hour(None);
             }
-            sizing.sizing.recycle_frame(shared, index);
+            sizing.sizing.recycle_frame(shared, ready.into_index());
             span.finish();
             if let Some(prepared) = pending_write
                 && let Err(error) = processor.write_prepared(prepared)
@@ -4542,7 +4622,7 @@ fn spool_loop(
             if let Err(error) = processor.flush_commands(false) {
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
-            history_requests.poll(&mut processor, |fence| shared.history_pending(fence));
+            history_requests.poll(&mut processor, shared);
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
                 .map_err(|_| "spool slow-frame allocation failed")?;
@@ -4576,7 +4656,7 @@ fn spool_loop(
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         span.finish();
-        history_requests.poll(&mut processor, |fence| shared.history_pending(fence));
+        history_requests.poll(&mut processor, shared);
         if reported.elapsed() >= Duration::from_secs(1) || shared.spool_stopping() {
             let _span = phases.span(Phase::Status);
             collector_memory::terminal::attempted_hour(None);
@@ -4768,6 +4848,8 @@ type SizingCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 struct SizingShared {
     capacities: engine_allocation::SharedBox<collector_capture::frame_capacities::Capacities>,
     idle_growth_requested: AtomicBool,
+    pool_bytes: engine_allocation::SharedBox<AtomicU64>,
+    capture_access: Option<collector_workers::CaptureAccess>,
     country_intel_accounted: AtomicUsize,
     template_home_accounted: AtomicUsize,
     naval_combat_home_accounted: AtomicUsize,
@@ -4787,12 +4869,26 @@ struct SizingShared {
 }
 
 impl SizingShared {
-    fn new(shared: &Shared, capacities: BufferCapacities, state: Option<SizingState>) -> Self {
+    fn new(
+        shared: &Shared,
+        capacities: BufferCapacities,
+        state: Option<SizingState>,
+        capture_access: Option<collector_workers::CaptureAccess>,
+    ) -> Self {
+        let pool_bytes = match capture_access {
+            Some(access) => shared.pool_accounting(&access),
+            #[cfg(test)]
+            None => shared.pool_accounting_for_test(),
+            #[cfg(not(test))]
+            None => unreachable!("live sizing has an owner"),
+        };
         // SAFETY: this runtime's sizing state owns the capacity publisher.
         let published = unsafe { shared.sizing_capacities() };
         *published.lock() = capacities;
         Self {
             capacities: published,
+            pool_bytes,
+            capture_access,
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel_bytes()),
             template_home_accounted: AtomicUsize::new(0),
@@ -4871,14 +4967,14 @@ impl SizingShared {
             ),
         ] {
             let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
-            shared
-                .pool_bytes
+            self.pool_bytes
                 .fetch_add(bytes.saturating_sub(previous) as u64, Ordering::Relaxed);
         }
     }
 
     fn recycle_frame(&self, shared: &Shared, index: usize) {
-        shared.frame_stage(index, sampling::FrameStage::Recycle);
+        // SAFETY: the spool owns the slot until this recycling pass returns it.
+        unsafe { shared.mark_owned_frame(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
         if !collector_workers::tick_gate::game_ticking() {
             let live = unsafe { LiveMemory::new() };
@@ -4942,7 +5038,11 @@ struct SizingThread {
 }
 
 impl SizingThread {
-    fn start(shared: engine_allocation::SharedBox<Shared>, state: SpoolState) -> Self {
+    fn start(
+        owner: &CollectorOwner,
+        shared: engine_allocation::SharedBox<Shared>,
+        state: SpoolState,
+    ) -> Self {
         let sizing = Arc::new(SizingShared::new(
             &shared,
             BufferCapacities {
@@ -4958,8 +5058,10 @@ impl SizingThread {
                 capacity_census: SizingBackoff::new(),
                 politics_frames: sampling::BUFFERS,
             }),
+            Some(owner.capture()),
         ));
         let builder = {
+            let start = owner.worker();
             let shared = shared.clone();
             let sizing = Arc::clone(&sizing);
             std::thread::Builder::new()
@@ -4967,29 +5069,28 @@ impl SizingThread {
                 .stack_size(BACKGROUND_STACK_BYTES)
                 .spawn(move || {
                     collector_workers::private_heap::off_hold_path();
-                    // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
-                    unsafe {
-                        collector_workers::thread_cpu::register(
-                            collector_workers::thread_cpu::Role::FrameBuilder,
-                        );
-                    }
-                    frame_builder(&shared, &sizing);
+                    let worker = start.bind();
+                    collector_workers::thread_cpu::register(
+                        &worker,
+                        collector_workers::thread_cpu::Role::FrameBuilder,
+                    );
+                    frame_builder(&worker, &shared, &sizing);
                 })
                 .ok()
         };
         let worker = Arc::clone(&sizing);
+        let start = owner.worker();
         let thread = std::thread::Builder::new()
             .name("hoi4-spool-sizing".into())
             .stack_size(BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                // SAFETY: the runtime owns this collector worker and its sampler exit protocol.
-                unsafe {
-                    collector_workers::thread_cpu::register(
-                        collector_workers::thread_cpu::Role::SpoolSizing,
-                    );
-                }
-                sizing_loop(&shared, &worker);
+                let registration = start.bind();
+                collector_workers::thread_cpu::register(
+                    &registration,
+                    collector_workers::thread_cpu::Role::SpoolSizing,
+                );
+                sizing_loop(&registration, &shared, &worker);
             })
             .ok();
         Self {
@@ -5097,13 +5198,17 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
     (id != 0).then_some(id)
 }
 
-fn frame_builder(shared: &Shared, sizing: &SizingShared) {
+fn frame_builder(worker: &collector_workers::Worker, shared: &Shared, sizing: &SizingShared) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     // SAFETY: this is the runtime-owned frame builder worker and uses its assigned role.
     let pipeline = unsafe { shared.priority_pipeline() };
-    let mut priority = OwnPriority::frame_pipeline();
-    let built = shared.build_ahead_until(&sizing.stop, || {
-        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Builder);
+    let mut priority = OwnPriority::frame_pipeline(worker);
+    let built = shared.build_ahead_until(worker, &sizing.stop, || {
+        priority.follow_pipeline(
+            worker,
+            pipeline,
+            collector_workers::frame_priority::Role::Builder,
+        );
         collector_memory::terminal::set_context(*lock(&sizing.context));
     });
     if let Err(error) = built {
@@ -5114,9 +5219,9 @@ fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     }
 }
 
-fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
+fn sizing_loop(worker: &collector_workers::Worker, shared: &Shared, sizing: &SizingShared) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
+    let _sampler_exit = worker.sampled();
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let Some(mut state) = lock(&sizing.state).take() else {
         return;
@@ -5124,11 +5229,19 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     let phases = &collector_workers::spool_phases::SIZING;
     // SAFETY: this is the runtime-owned sizing worker and uses its assigned role.
     let pipeline = unsafe { shared.priority_pipeline() };
-    let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Sizing);
+    let mut priority = OwnPriority::frame_pipeline(worker);
+    priority.follow_pipeline(
+        worker,
+        pipeline,
+        collector_workers::frame_priority::Role::Sizing,
+    );
     let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !collector_memory::terminal::failed() {
-        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Sizing);
+        priority.follow_pipeline(
+            worker,
+            pipeline,
+            collector_workers::frame_priority::Role::Sizing,
+        );
         collector_memory::terminal::set_context(*lock(&sizing.context));
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
@@ -5272,9 +5385,13 @@ fn sizing_pass(
         extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
         extended.land_events.words = extended.land_events.words.max(land_event_capacity);
     });
+    let access = sizing
+        .capture_access
+        .as_ref()
+        .expect("live sizing has a capture owner");
     let operations =
         sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-    operations.prepare();
+    operations.prepare(access);
     collector_experience_gains::experience_gains::prepare(registry.slots);
     collector_output::line_output::collect();
     collector_output::construction_ic::collect();
@@ -5369,12 +5486,12 @@ fn sizing_pass(
         });
         if changed {
             // SAFETY: teardown joins the sizing path before releasing the decode pools.
-            unsafe { decode::presize_weather_jobs() };
+            unsafe { decode::presize_weather_jobs(access) };
         }
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         collector_primitives::country_slots::note_slots(slots);
-        collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
+        collector_operation_outcomes::operation_outcomes::resize(access, slots.max(1));
         collector_politics::politics_changes::resize(
             collector_capture::country_scale::observe_politics_demand(
                 &live,
@@ -5394,7 +5511,7 @@ fn sizing_pass(
         collector_observers::world_input_changes::presize(slots);
         collector_air_histories::history_changes::presize(slots, regions);
         // SAFETY: teardown joins the sizing path before releasing the decode pools.
-        unsafe { decode::presize_country_pools() };
+        unsafe { decode::presize_country_pools(access) };
         let country_cells = sizing.raise(shared, |capacities| {
             let mut raised = collector_capture::country_scale::Sizing {
                 core: capacities.core,
@@ -5451,6 +5568,7 @@ fn sizing_pass(
         sizing.raise_from_live_observation(shared, |capacities| {
             [
                 collector_capture::country_scale::table_demand::presize_periodic(
+                    access,
                     &live,
                     base,
                     &mut capacities.map,
@@ -5460,7 +5578,7 @@ fn sizing_pass(
                 .err(),
                 capacities
                     .extended
-                    .presize_live_inputs_periodic(&live, base, capacity_census)
+                    .presize_live_inputs_periodic(access, &live, base, capacity_census)
                     .err(),
             ]
         });
@@ -5495,7 +5613,7 @@ fn sizing_pass(
     {
         collector_air::sizing::note_air_wing_name_bytes(bytes);
         // SAFETY: teardown joins the sizing path before releasing the decode pools.
-        unsafe { decode::presize_air_wing_names() };
+        unsafe { decode::presize_air_wing_names(access) };
         sizing.raise(shared, |capacities| {
             capacities.map.raise_for_air_wing_names(bytes)
         });
@@ -5515,7 +5633,7 @@ fn sizing_pass(
             && collector_air::sizing::note_carrier_demand(carrier)
         {
             // SAFETY: teardown joins the sizing path before releasing the decode pools.
-            unsafe { decode::presize_country_pools() };
+            unsafe { decode::presize_country_pools(access) };
         }
         for reason in demand.map_refusals() {
             sizing.error(reason);
@@ -5584,7 +5702,7 @@ fn sizing_pass(
             capacities.extended.game_score.raise(demand)
         }) {
             // SAFETY: teardown joins the sizing path before releasing the decode pools.
-            unsafe { decode::presize_country_pools() };
+            unsafe { decode::presize_country_pools(access) };
         }
     }
     if capacity_census
@@ -5627,7 +5745,7 @@ fn sizing_pass(
         });
         let operations =
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-        operations.prepare();
+        operations.prepare(access);
     }
     if capacity_census
         && let Some(slots) = sizing
@@ -6672,7 +6790,7 @@ mod tests {
             extended: sizing.extended,
         };
         let thread = SizingThread {
-            sizing: Arc::new(SizingShared::new(&shared, capacities, None)),
+            sizing: Arc::new(SizingShared::new(&shared, capacities, None, None)),
             thread: None,
             builder: None,
         };
@@ -6986,7 +7104,11 @@ mod tests {
                 let builder = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
-                        frame_builder(&fixture.0, &fixture.1.sizing)
+                        frame_builder(
+                            &collector_workers::WorkerStart::for_test().bind(),
+                            &fixture.0,
+                            &fixture.1.sizing,
+                        )
                     })
                 };
                 struct End<'a>(
@@ -7560,7 +7682,11 @@ mod tests {
         memory.1.set(2_500);
         watch.last_game_score = None;
         assert!(watch.poll_game_score(&memory, 0).is_some());
-        assert!(capacities.presize_live_inputs(&memory, 0).is_err());
+        assert!(
+            capacities
+                .presize_inputs_for_test(&memory, 0, true)
+                .is_err()
+        );
         assert_eq!(capacities.air.scores.regions, 2_500);
     }
 
@@ -8153,8 +8279,12 @@ mod tests {
         );
 
         let shared = Shared::new(0, 0, 1);
-        shared.stop_recording();
-        let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
+        shared.stop_recording_for_test();
+        let writer = crate::status_writer::StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
         let status = serde_json::to_value(
             spool_status(
                 &processor,
@@ -8208,8 +8338,12 @@ mod tests {
         let processor =
             test_processor(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
         let shared = Shared::new(0, 0, 1);
-        shared.stop_recording();
-        let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
+        shared.stop_recording_for_test();
+        let writer = crate::status_writer::StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            |_, _| Ok(()),
+        )
+        .unwrap();
         for (warning, error, installation_error, drain_complete) in [
             (None, None, None, true),
             (Some("earlier write retried"), None, None, true),

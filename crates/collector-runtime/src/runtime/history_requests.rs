@@ -68,9 +68,24 @@ impl SpoolHistory {
     pub(super) fn poll(
         &self,
         processor: &mut Processor,
+        shared: &collector_capture::sampling::Shared,
+    ) {
+        self.poll_with_result(|text, fence| {
+            match processor.try_history_request(shared, fence, text) {
+                collector_spool::spooling::HistoryAttempt::Fenced => None,
+                collector_spool::spooling::HistoryAttempt::Ready(result) => Some(result),
+            }
+        });
+        self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
+    }
+
+    #[cfg(test)]
+    fn poll_fixture(
+        &self,
+        processor: &mut Processor,
         pending: impl FnOnce(&mut Option<u64>) -> bool,
     ) {
-        self.poll_fenced_with(pending, |text| processor.try_history_request(text));
+        self.poll_fenced_with(pending, |text| processor.history_request_for_test(text));
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
     }
 
@@ -88,10 +103,28 @@ impl SpoolHistory {
         self.poll_fenced_with(|_| false, begin);
     }
 
+    #[cfg(test)]
     fn poll_fenced_with(
         &self,
         pending: impl FnOnce(&mut Option<u64>) -> bool,
         mut begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
+    ) {
+        self.poll_with_result(|text, fence| {
+            if matches!(text.split_whitespace().nth(1), Some("close" | "release")) && pending(fence)
+            {
+                return None;
+            }
+            *fence = None;
+            Some(begin(text))
+        });
+    }
+
+    fn poll_with_result(
+        &self,
+        begin: impl FnOnce(
+            &str,
+            &mut Option<u64>,
+        ) -> Option<io::Result<Option<(HistoryReply, Option<File>)>>>,
     ) {
         let Ok(mut mailbox) = self.0.try_lock() else {
             return;
@@ -100,12 +133,10 @@ impl SpoolHistory {
         let Some(Command::Begin(text)) = command.as_ref() else {
             return;
         };
-        if matches!(text.split_whitespace().nth(1), Some("close" | "release")) && pending(fence) {
+        let Some(result) = begin(text, fence) else {
             return;
-        }
-        *fence = None;
-        let result =
-            begin(text).and_then(|reply| reply.ok_or_else(|| io::ErrorKind::WouldBlock.into()));
+        };
+        let result = result.and_then(|reply| reply.ok_or_else(|| io::ErrorKind::WouldBlock.into()));
         mailbox.command = None;
         mailbox.response = Some(Response::Began(result));
     }
@@ -187,6 +218,7 @@ pub(super) struct HistoryWorker {
 }
 impl HistoryWorker {
     pub(super) fn start(
+        start: collector_workers::WorkerStart,
         session: PathBuf,
         replay_directory: PathBuf,
         refresh: Option<fn()>,
@@ -208,7 +240,7 @@ impl HistoryWorker {
                 collector_workers::private_heap::off_hold_path();
                 let _phase =
                     collector_memory::terminal::enter(collector_memory::terminal::Phase::History);
-                collector_workers::priority::OwnPriority::new().follow(false);
+                collector_workers::priority::OwnPriority::new(&start.bind()).follow(false);
                 worker_id.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                     Ordering::Release,
@@ -602,7 +634,7 @@ mod tests {
                 processor,
                 || now,
                 |processor, text| {
-                    let (reply, lease) = processor.try_history_request(text)?.unwrap();
+                    let (reply, lease) = processor.history_request_for_test(text)?.unwrap();
                     drop(lease);
                     Ok(reply)
                 },
@@ -1038,12 +1070,18 @@ mod tests {
     fn shutdown_cancels_a_fenced_close_before_releasing_history() {
         let root = root();
         request(&root, "0001", "close");
-        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone(), None).unwrap();
+        let (mut worker, handoff) = HistoryWorker::start(
+            collector_workers::WorkerStart::for_test(),
+            root.clone(),
+            root.clone(),
+            None,
+        )
+        .unwrap();
         while handoff.0.lock().unwrap().command.is_none() {
             assert!(!worker.thread.as_ref().unwrap().is_finished());
             std::thread::yield_now();
         }
-        let frames = collector_workers::frame_fence::Frames::default();
+        let frames = collector_workers::frame_fence::Frames::new_for_test();
         let acquiring = frames.capture();
         handoff.poll_fenced_with(
             |fence| frames.pending_snapshot(fence, std::iter::empty()),
@@ -1064,7 +1102,13 @@ mod tests {
         let recording = root.join("history");
         fs::write(&recording, b"synthetic history").unwrap();
         let lease = collector_spool::history::lease(&recording).unwrap();
-        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone(), None).unwrap();
+        let (mut worker, handoff) = HistoryWorker::start(
+            collector_workers::WorkerStart::for_test(),
+            root.clone(),
+            root.clone(),
+            None,
+        )
+        .unwrap();
         handoff.0.lock().unwrap().command = Some(Command::Retake(CAMPAIGN.to_owned(), Some(lease)));
         drop(handoff);
         assert!(
@@ -1096,6 +1140,7 @@ mod tests {
         fs::write(&requests, "not a folder").unwrap();
         static ACCEPTED: AtomicU32 = AtomicU32::new(0);
         let (mut worker, handoff) = HistoryWorker::start(
+            collector_workers::WorkerStart::for_test(),
             root.clone(),
             root.clone(),
             Some(|| _ = ACCEPTED.fetch_add(1, Ordering::SeqCst)),
@@ -1179,7 +1224,7 @@ mod tests {
         use collector_spool::spooling::campaign_frame;
         let root = root();
         let live = root.join("sessions/1");
-        let frames = collector_workers::frame_fence::Frames::default();
+        let frames = collector_workers::frame_fence::Frames::new_for_test();
         let owned = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
@@ -1196,7 +1241,7 @@ mod tests {
         frames.recycle(&owned[0]);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0001 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(mailbox.lock().unwrap().response.is_none());
@@ -1204,7 +1249,7 @@ mod tests {
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 11))
             .unwrap();
         frames.recycle(&owned[1]);
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         let Some(Response::Began(Ok((HistoryReply::Closing { receipt, .. }, None)))) =
@@ -1217,7 +1262,7 @@ mod tests {
         }
         assert_eq!(receipt.result(), Some(Ok(())));
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0002 release {CAMPAIGN}")));
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(matches!(mailbox.lock().unwrap().response.take(),
@@ -1256,7 +1301,7 @@ mod tests {
         use collector_spool::history::PreparedCampaigns;
         use collector_spool::spooling::campaign_frame;
         let root = root();
-        let frames = collector_workers::frame_fence::Frames::default();
+        let frames = collector_workers::frame_fence::Frames::new_for_test();
         let owned = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let spool = SpoolHistory(Arc::clone(&mailbox));
@@ -1266,12 +1311,12 @@ mod tests {
         let capture = frames.capture();
         capture.frame(&owned[0]);
         mailbox.lock().unwrap().command = Some(Command::Begin(format!("0001 release {CAMPAIGN}")));
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(mailbox.lock().unwrap().response.is_none());
         drop(capture);
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(mailbox.lock().unwrap().response.is_none());
@@ -1279,7 +1324,7 @@ mod tests {
             .frame(&campaign_frame(CAMPAIGN.as_bytes(), 1234, 10))
             .unwrap();
         frames.recycle(&owned[0]);
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(matches!(mailbox.lock().unwrap().response.take(),
@@ -1289,7 +1334,7 @@ mod tests {
         drop(capture);
         mailbox.lock().unwrap().command =
             Some(Command::Begin(format!("0002 close {CAMPAIGN} 1234")));
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(mailbox.lock().unwrap().response.is_none());
@@ -1299,7 +1344,7 @@ mod tests {
         frames.recycle(&owned[1]);
         let later_b = frames.capture();
         later_b.frame(&owned[2]);
-        spool.poll(&mut processor, |fence| {
+        spool.poll_fixture(&mut processor, |fence| {
             frames.pending_snapshot(fence, &owned)
         });
         assert!(matches!(mailbox.lock().unwrap().response.take(),

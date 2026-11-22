@@ -800,6 +800,8 @@ pub struct Pool<J: Send + 'static, R: Copy + Send + 'static> {
     shared: Arc<Shared<J, R>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     allocated_bytes: usize,
+    #[cfg(feature = "worker_sampler")]
+    sampled: bool,
 }
 
 impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
@@ -815,12 +817,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Self::start_boosted(worker_count, capacity, false, run)
     }
     pub fn start_with_class(
+        _owner: &crate::Owner,
         worker_count: usize,
         capacity: usize,
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_classified_boosted(worker_count, capacity, false, classes, run)
+        Self::start_inner(worker_count, capacity, false, classes, run, true)
     }
     #[cfg(any(test, feature = "test-support"))]
     fn start_boosted(
@@ -831,12 +834,34 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     ) -> Result<Self, &'static str> {
         Self::start_classified_boosted(worker_count, capacity, wake_boost, None, run)
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn start_classified_for_test(
+        worker_count: usize,
+        capacity: usize,
+        classes: Option<Classes<J>>,
+        run: impl Fn(&mut J) -> R + Send + Sync + 'static,
+    ) -> Result<Self, &'static str> {
+        Self::start_inner(worker_count, capacity, false, classes, run, false)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     fn start_classified_boosted(
         worker_count: usize,
         capacity: usize,
         wake_boost: bool,
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
+    ) -> Result<Self, &'static str> {
+        Self::start_inner(worker_count, capacity, wake_boost, classes, run, false)
+    }
+
+    fn start_inner(
+        worker_count: usize,
+        capacity: usize,
+        wake_boost: bool,
+        classes: Option<Classes<J>>,
+        run: impl Fn(&mut J) -> R + Send + Sync + 'static,
+        sampled: bool,
     ) -> Result<Self, &'static str> {
         if worker_count > MAX_WORKERS || capacity == 0 {
             return Err("acquisition pool requires an admitted worker count and nonzero capacity");
@@ -979,14 +1004,22 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             shared,
             threads: Mutex::new(threads),
             allocated_bytes,
+            #[cfg(feature = "worker_sampler")]
+            sampled,
         };
         for index in 0..worker_count {
             let shared = Arc::clone(&pool.shared);
             match std::thread::Builder::new()
                 .name(format!("native-acquisition-{index}"))
                 .stack_size(WORKER_STACK_BYTES)
-                .spawn(move || worker_loop(shared, index, wake_boost))
-            {
+                .spawn(move || {
+                    worker_loop(
+                        shared,
+                        index,
+                        wake_boost,
+                        crate::WorkerStart { live: sampled }.bind(),
+                    )
+                }) {
                 Ok(thread) => pool
                     .threads
                     .lock()
@@ -1726,7 +1759,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub fn shutdown(&self) -> Result<(), &'static str> {
         #[cfg(feature = "worker_sampler")]
-        crate::worker_sampler_state::stop_before_thread_exit();
+        if self.sampled {
+            crate::worker_sampler_state::stop_before_thread_exit();
+        }
         self.shared.stop();
         let mut threads = self
             .threads
@@ -1755,17 +1790,18 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     shared: Arc<Shared<J, R>>,
     index: usize,
     wake_boost: bool,
+    worker: crate::Worker,
 ) {
     collector_timing::capture_gate::reader();
     #[cfg(feature = "worker_sampler")]
-    let _sampler_registration = crate::worker_sampler_state::register_worker();
+    let _sampler_registration = crate::worker_sampler_state::register_worker(&worker);
     {
         if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
         }
     }
     let mut priority = i32::MIN;
-    let mut away = crate::cpu_sets::AwayFromGame::default();
+    let mut away = crate::cpu_sets::AwayFromGame::new(&worker);
     let mut hurried = 0;
     shared.thread_ids[index].store(unsafe { GetCurrentThreadId() }, Ordering::Release);
     crate::hour_stages::enter_worker(index);
@@ -1787,7 +1823,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         if hurry != hurried {
             hurried = hurry;
             priority = THREAD_PRIORITY_ABOVE_NORMAL;
-            away = crate::cpu_sets::AwayFromGame::default();
+            away = crate::cpu_sets::AwayFromGame::new(&worker);
         }
         let wanted = shared.priority.load(Ordering::Acquire);
         if wanted != priority {
@@ -2345,7 +2381,7 @@ mod tests {
             let release = Arc::clone(&release);
             let classes: Option<Classes<(u8, u8)>> =
                 classified.then_some((2, |job: &(u8, u8)| usize::from(job.1)));
-            Pool::start_with_class(1, 3, classes, move |job: &mut (u8, u8)| {
+            Pool::start_classified_for_test(1, 3, classes, move |job: &mut (u8, u8)| {
                 if job.0 == 0 {
                     entered_tx.send(()).unwrap();
                     wait_until(|| release.load(Ordering::Acquire));
@@ -2457,7 +2493,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
+            Pool::start_classified_for_test(
                 1,
                 2,
                 Some((2, |job: &u8| usize::from(*job != 0))),
@@ -2511,7 +2547,7 @@ mod tests {
         let (ran_tx, ran_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
+            Pool::start_classified_for_test(
                 1,
                 4,
                 Some((2, |job: &u8| usize::from(*job != 0))),
@@ -2567,7 +2603,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
+            Pool::start_classified_for_test(
                 1,
                 JOIN_HELP_ATTEMPTS + 3,
                 Some((2, |job: &usize| usize::from(*job != 0))),
@@ -2642,7 +2678,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
-            Pool::start_with_class(
+            Pool::start_classified_for_test(
                 1,
                 2,
                 Some((2, |job: &u8| usize::from(*job != 0))),

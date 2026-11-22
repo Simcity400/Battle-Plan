@@ -15,6 +15,7 @@ default = ["politics_capture"]
 politics_capture = []
 
 [dependencies]
+collector-workers.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-decisions.workspace = true
@@ -55,6 +56,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
+collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

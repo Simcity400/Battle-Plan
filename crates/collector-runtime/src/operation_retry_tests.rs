@@ -14,7 +14,7 @@ fn table_retry_preserves_admitted_operation_completion() {
     let mut cursors = vec![LaneCursor::default()];
     let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
     let shared = collector_capture::sampling::Shared::new(0, 0, 1);
-    shared.request_retry_full();
+    shared.request_retry_full_for_test();
     let (recovery, refresh) = shared.take_retry_for_test();
     if recovery {
         invalidate();

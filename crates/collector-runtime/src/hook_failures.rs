@@ -278,7 +278,6 @@ family_hooks!(
     collector_observers::province_combat_changes,
     collector_observers::air_base_carry_changes,
     collector_experience_gains::experience_gains,
-    collector_player_commands::player_commands,
     collector_fuel_awards::fuel_awards,
     collector_operation_outcomes::operation_outcomes,
     collector_politics::politics_changes,
@@ -291,6 +290,27 @@ family_hooks!(
     collector_observers::event_feed_observer,
     collector_lifetime::world_lifetime
 );
+impl FamilyHooks<collector_player_commands::player_commands::Hooks> {
+    /// # Safety
+    /// The runtime retains the tap owner through any queued publication round.
+    pub(crate) unsafe fn set_enabled(
+        &mut self,
+        owner: &collector_workers::Owner,
+        enabled: bool,
+    ) -> Result<bool, &'static str> {
+        self.toggle(enabled, |hooks, enabled| {
+            // SAFETY: the caller retains the tap owner until publication completes.
+            unsafe { hooks.set_enabled(owner, enabled) }.map_err(Into::into)
+        })
+    }
+
+    pub(crate) fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.inner
+            .iter()
+            .flat_map(|hooks| hooks.executable_ranges())
+    }
+}
+
 impl FamilyHooks<collector_map_events::hooks::Hooks> {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         self.toggle(enabled, |hooks, enabled| {
@@ -482,6 +502,7 @@ mod tests {
             assert_eq!(failure["stage"], "publication");
             assert!(!failure["site"].as_str().unwrap().is_empty());
             if family == Family::PlayerCommands {
+                let lifecycle = crate::runtime::test_lifecycle_owner();
                 let memory = engine_native::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
@@ -490,6 +511,7 @@ mod tests {
                     // SAFETY: this fixture has no executable sites and cannot publish any taps.
                     Ok::<_, &'static str>(unsafe {
                         collector_player_commands::player_commands::Hooks::new(
+                            &lifecycle,
                             &memory,
                             0,
                             collector_capture::sampling::sample_command_roster,
@@ -498,12 +520,14 @@ mod tests {
                 })
                 .unwrap();
                 for enabled in [true, false] {
-                    assert_eq!(hooks.set_enabled(enabled), Ok(true));
+                    // SAFETY: the test uses no pending publication round.
+                    assert_eq!(unsafe { hooks.set_enabled(&lifecycle, enabled) }, Ok(true));
                     assert_eq!(hooks.executable_ranges().count(), 0);
                 }
                 // SAFETY: the fixture has no executable sites and never enables or publishes taps.
                 let mut command_hooks = unsafe {
                     collector_player_commands::player_commands::Hooks::new(
+                        &lifecycle,
                         &memory,
                         0,
                         collector_capture::sampling::sample_command_roster,

@@ -147,7 +147,7 @@ pub struct OwnPriority {
 }
 
 impl OwnPriority {
-    pub const fn new() -> Self {
+    pub const fn new(_worker: &crate::Worker) -> Self {
         Self {
             boosts_disabled: false,
             frame_pipeline: false,
@@ -158,10 +158,10 @@ impl OwnPriority {
         }
     }
 
-    pub fn frame_pipeline() -> Self {
+    pub fn frame_pipeline(worker: &crate::Worker) -> Self {
         let mut priority = Self {
             frame_pipeline: true,
-            ..Self::new()
+            ..Self::new(worker)
         };
         priority.follow(false);
         priority
@@ -169,6 +169,7 @@ impl OwnPriority {
 
     pub fn follow_pipeline(
         &mut self,
+        worker: &crate::Worker,
         pipeline: &crate::frame_priority::Pipeline,
         role: crate::frame_priority::Role,
     ) {
@@ -181,7 +182,7 @@ impl OwnPriority {
             crate::tick_gate::copy_only(false);
             return;
         }
-        pipeline.register(role);
+        pipeline.register(worker, role);
         pipeline.refresh();
         crate::tick_gate::copy_only(
             !matches!(role, crate::frame_priority::Role::Sizing)
@@ -356,7 +357,7 @@ pub fn background_cpu_sets_failure_exercise(ordinal: usize, query_failure: Optio
     );
     if expected != "selected" {
         assert!(sets.is_empty());
-        let mut priority = OwnPriority::new();
+        let mut priority = OwnPriority::new(&crate::WorkerStart::for_test().bind());
         priority.follow(false);
         assert!(priority.lowest == Some(true) || PRIORITY_FAILURES.load(Ordering::Relaxed) > 0);
         assert!(priority.eco_qos == Some(true) || ECO_QOS_FAILURES.load(Ordering::Relaxed) > 0);
@@ -402,9 +403,9 @@ mod tests {
     fn frame_pipeline_never_lowers_even_with_all_four_frames_free() {
         let pipeline = OwnPriority {
             frame_pipeline: true,
-            ..OwnPriority::new()
+            ..OwnPriority::new(&crate::WorkerStart::for_test().bind())
         };
-        let sizing = OwnPriority::new();
+        let sizing = OwnPriority::new(&crate::WorkerStart::for_test().bind());
         for backlogged in [false, true, false] {
             assert!(!pipeline.should_lower(backlogged));
             assert_eq!(sizing.should_lower(backlogged), !backlogged);
@@ -414,7 +415,7 @@ mod tests {
     #[test]
     fn frame_pipeline_applies_normal_policy_before_waiting_and_keeps_it_between_jobs() {
         std::thread::spawn(|| {
-            let mut priority = OwnPriority::frame_pipeline();
+            let mut priority = OwnPriority::frame_pipeline(&crate::WorkerStart::for_test().bind());
             for backlogged in [false, true, false] {
                 priority.follow(backlogged);
                 assert_eq!(priority.lowest, Some(false));

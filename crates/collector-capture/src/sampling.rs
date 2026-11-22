@@ -82,7 +82,7 @@ impl SharedSlot {
 
     #[doc = "# Safety"]
     #[doc = "Only the runtime owner may publish, from an empty slot. Keep the shared state alive until all users have quiesced and the slot has been cleared."]
-    pub unsafe fn publish(&self, shared: &Shared) {
+    pub unsafe fn publish(&self, _owner: &collector_workers::Owner, shared: &Shared) {
         self.0
             .store(std::ptr::from_ref(shared).cast_mut(), Ordering::Release);
     }
@@ -90,7 +90,13 @@ impl SharedSlot {
     /// # Safety
     /// All hooks and workers that can use the published state must have quiesced.
     /// The caller must prevent any new access until the next publication.
-    pub unsafe fn clear(&self) {
+    pub unsafe fn clear(&self, _owner: &collector_workers::Owner) {
+        self.0.store(ptr::null_mut(), Ordering::Release);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn clear_for_test(&self) {
+        assert!(!std::ptr::eq(self, &SHARED));
         self.0.store(ptr::null_mut(), Ordering::Release);
     }
 
@@ -436,10 +442,20 @@ impl Captured {
         frame
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_capacities(
         capacities: &[usize; 12],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
+    ) -> std::io::Result<Self> {
+        Self::with_capture_access(capacities, map_capacities, extended_capacities, None)
+    }
+
+    fn with_capture_access(
+        capacities: &[usize; 12],
+        map_capacities: &MapCapacities,
+        extended_capacities: &extended::Capacities,
+        access: Option<collector_workers::CaptureAccess>,
     ) -> std::io::Result<Self> {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
@@ -448,8 +464,14 @@ impl Captured {
             world_generation: collector_lifetime::world_lifetime::generation(),
             capture_seq: 0,
             fixed_layout: None,
-            map: MapCaptured::with_capacities(map_capacities),
-            extended: extended::Captured::frame(extended_capacities),
+            map: match access {
+                Some(access) => MapCaptured::for_capture(map_capacities, access),
+                #[cfg(any(test, feature = "test-support"))]
+                None => MapCaptured::with_capacities(map_capacities),
+                #[cfg(not(any(test, feature = "test-support")))]
+                None => unreachable!("live capture has an owner"),
+            },
+            extended: extended::Captured::frame_with_capture(extended_capacities, access),
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
             },
@@ -763,20 +785,27 @@ impl WaitCounter {
 }
 
 static SPOOL_OWNED: AtomicBool = AtomicBool::new(false);
+static SPOOL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct SpoolOwner {
     live: bool,
+    generation: u64,
 }
 
 impl SpoolOwner {
-    /// # Safety
-    /// Only the exclusive attach owner may claim the spool. Transfer it to the
-    /// processor that handles this session's live frames and observer buffers.
-    pub unsafe fn claim() -> Option<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_fixture(&self) -> bool {
+        !self.live
+    }
+
+    pub fn claim(_owner: &collector_workers::Owner) -> Option<Self> {
         SPOOL_OWNED
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Self { live: true })
+            .map(|_| Self {
+                live: true,
+                generation: SPOOL_GENERATION.fetch_add(1, Ordering::Relaxed),
+            })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -784,7 +813,10 @@ impl SpoolOwner {
     /// The caller owns all fixture inputs and any observer buffers it uses.
     /// A fixture must never access a live collector's state.
     pub unsafe fn fixture() -> Self {
-        Self { live: false }
+        Self {
+            live: false,
+            generation: 0,
+        }
     }
 
     pub fn register_thread(&mut self, shared: &Shared) {
@@ -799,8 +831,33 @@ impl SpoolOwner {
         shared.prepare_frame_clocks(memory);
     }
 
-    pub fn pop_ready(&mut self, shared: &Shared) -> Option<usize> {
-        shared.frames.pop_ready()
+    pub fn recording_stop<'a>(&mut self, shared: &'a Shared) -> impl Fn() + use<'a> {
+        move || shared.stop_recording_inner()
+    }
+
+    pub fn request_retry_full(&mut self, shared: &Shared) {
+        shared.request_retry_full();
+    }
+
+    pub fn request_forget_families(&mut self, shared: &Shared, families: u32) {
+        shared.request_forget_families(families);
+    }
+
+    pub fn account_roster(&mut self, shared: &Shared, bytes: usize) {
+        shared.pool_bytes.fetch_sub(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn pop_ready<'a>(&mut self, shared: &'a Shared) -> Option<ReadyFrame<'a>> {
+        if !self.live {
+            return None;
+        }
+        let index = shared.frames.pop_ready()?;
+        Some(ReadyFrame {
+            shared,
+            index,
+            generation: self.generation,
+            prepared: false,
+        })
     }
 
     pub fn take_sampled_roster(&mut self, shared: &Shared) -> Option<Box<Roster>> {
@@ -815,6 +872,41 @@ impl SpoolOwner {
     }
 }
 
+pub struct ReadyFrame<'a> {
+    shared: &'a Shared,
+    index: usize,
+    generation: u64,
+    prepared: bool,
+}
+
+impl ReadyFrame<'_> {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn into_index(self) -> usize {
+        self.index
+    }
+
+    pub fn captured(&self) -> &Captured {
+        // SAFETY: the sole spool consumer popped this occupied slot and has not returned it.
+        unsafe { self.shared.frames[self.index].captured() }
+    }
+
+    pub fn captured_mut(&mut self) -> &mut Captured {
+        // SAFETY: the ready guard owns this occupied slot and is exclusively borrowed.
+        unsafe { self.shared.frames[self.index].captured_mut() }
+    }
+
+    pub fn claim_preparation(&mut self, owner: &SpoolOwner) -> Option<&Captured> {
+        if self.prepared || owner.generation != self.generation {
+            return None;
+        }
+        self.prepared = true;
+        Some(self.captured())
+    }
+}
+
 impl Drop for SpoolOwner {
     fn drop(&mut self) {
         if self.live {
@@ -824,8 +916,9 @@ impl Drop for SpoolOwner {
 }
 
 pub struct Shared {
+    capture_access: Option<collector_workers::CaptureAccess>,
     acquisition: OnceLock<acquisition::Pool>,
-    pub acquisition_panics: AtomicU64,
+    acquisition_panics: AtomicU64,
     #[cfg(feature = "callback_profile")]
     pub profile: ProfilePhases,
     pub native_tick_ns: AtomicU64,
@@ -842,8 +935,8 @@ pub struct Shared {
     pub heap_waits: WaitCounter,
     pub(crate) frame_priority:
         engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
-    pub dropped: AtomicU64,
-    pub pool_bytes: engine_allocation::SharedBox<AtomicU64>,
+    dropped: AtomicU64,
+    pub(crate) pool_bytes: engine_allocation::SharedBox<AtomicU64>,
     recording: AtomicBool,
     stop_spool: AtomicBool,
     spool_waker: OnceLock<std::thread::Thread>,
@@ -1030,11 +1123,38 @@ impl Shared {
         self.recording.load(Ordering::Acquire)
     }
 
-    pub fn stop_recording(&self) {
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn pool_accounting(
+        &self,
+        _access: &collector_workers::CaptureAccess,
+    ) -> engine_allocation::SharedBox<AtomicU64> {
+        self.pool_bytes.clone()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pool_accounting_for_test(&self) -> engine_allocation::SharedBox<AtomicU64> {
+        self.frames.assert_test_access();
+        self.pool_bytes.clone()
+    }
+
+    pub fn stop_recording(&self, _owner: &collector_workers::Owner) {
+        self.stop_recording_inner();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stop_recording_for_test(&self) {
+        self.frames.assert_test_access();
+        self.stop_recording_inner();
+    }
+
+    fn stop_recording_inner(&self) {
         self.recording.store(false, Ordering::Release);
     }
 
-    pub fn request_forget_families(&self, families: u32) {
+    fn request_forget_families(&self, families: u32) {
         self.forget_families.fetch_or(families, Ordering::Release);
     }
 
@@ -1069,7 +1189,13 @@ impl Shared {
         self.frame_capacities.clone()
     }
 
-    pub fn request_retry_full(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn request_retry_full_for_test(&self) {
+        self.frames.assert_test_access();
+        self.request_retry_full();
+    }
+
+    fn request_retry_full(&self) {
         self.refresh_next.store(true, Ordering::Release);
     }
 
@@ -1091,18 +1217,28 @@ impl Shared {
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
-        let mut shared = Self::with_sizing(base, trampoline, frequency, sizing)?;
+        let mut shared = Self::without_frames_for_test(base, trampoline, frequency, sizing)?;
+        shared.publish_steady_frames()?;
         shared.frames.enable_test_access();
         Ok(shared)
     }
 
     pub fn with_sizing(
+        owner: &collector_workers::Owner,
         base: usize,
         trampoline: usize,
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
-        let shared = Self::without_frames(base, trampoline, frequency, sizing)?;
+        let shared = Self::without_frames(
+            base,
+            trampoline,
+            frequency,
+            sizing,
+            Some(owner.capture()),
+            || collector_workers::frame_priority::Pipeline::new(owner),
+            || collector_workers::frame_fence::Frames::new(owner),
+        )?;
         shared.publish_steady_frames()?;
         Ok(shared)
     }
@@ -1110,7 +1246,7 @@ impl Shared {
     /// # Safety
     /// The exclusive runtime owner must bind before publishing doctrine callbacks and keep
     /// this state alive until those callbacks are restored and quiescent.
-    pub unsafe fn bind_doctrine_observer(&self) {
+    pub unsafe fn bind_doctrine_observer(&self, _owner: &collector_workers::Owner) {
         // SAFETY: the runtime owns the binding and keeps the store alive for all callbacks.
         unsafe {
             collector_observers::doctrine_changes::bind(
@@ -1134,11 +1270,32 @@ impl Shared {
         Ok(())
     }
 
-    pub fn without_frames(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn without_frames_for_test(
         base: usize,
         trampoline: usize,
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
+    ) -> std::io::Result<Self> {
+        Self::without_frames(
+            base,
+            trampoline,
+            frequency,
+            sizing,
+            None,
+            collector_workers::frame_priority::Pipeline::new_for_test,
+            collector_workers::frame_fence::Frames::new_for_test,
+        )
+    }
+
+    fn without_frames(
+        base: usize,
+        trampoline: usize,
+        frequency: u64,
+        sizing: &crate::country_scale::Sizing,
+        capture_access: Option<collector_workers::CaptureAccess>,
+        priority: impl FnOnce() -> collector_workers::frame_priority::Pipeline,
+        fences: impl FnOnce() -> collector_workers::frame_fence::Frames,
     ) -> std::io::Result<Self> {
         #[cfg(any(test, feature = "test-support"))]
         let fixed_layout_bytes = if engine_executable::executable_tables::is_initialized() {
@@ -1247,8 +1404,7 @@ impl Shared {
             cfg!(feature = "appearance_changes"),
             collector_country_counters::country_appearance::AppearanceStore::default,
         )?;
-        let frame_priority =
-            engine_allocation::shared(collector_workers::frame_priority::Pipeline::new())?;
+        let frame_priority = engine_allocation::shared(priority())?;
         let army_stat_store = cfg!(feature = "army_stat_changes")
             .then(|| {
                 collector_divisions::extended::division_presentation::held_store::Slot::new(
@@ -1307,12 +1463,15 @@ impl Shared {
         ))?;
         let air_wing_parts =
             std::array::from_fn(|_| collector_air::extended::air::AirWingJob::part());
-        collector_factions::faction_goal_changes::prime();
-        collector_factions::faction_companion_changes::prime();
+        if capture_access.is_some() {
+            collector_factions::faction_goal_changes::prime();
+            collector_factions::faction_companion_changes::prime();
+        }
         if collector_memory::terminal::failed() {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
         let shared = Self {
+            capture_access,
             acquisition: OnceLock::new(),
             acquisition_panics: AtomicU64::new(0),
             #[cfg(feature = "callback_profile")]
@@ -1327,7 +1486,7 @@ impl Shared {
             tick_idle: None,
             frames: crate::frame_pool::FramePool::new(),
             frame_capacities,
-            history_frames: collector_workers::frame_fence::Frames::default(),
+            history_frames: fences(),
             heap_waits: WaitCounter::new(),
             frame_priority,
             dropped: AtomicU64::new(0),
@@ -1506,10 +1665,11 @@ impl Shared {
     }
 
     fn frame_for(&self, capacities: &FrameCapacities) -> std::io::Result<Box<Captured>> {
-        let mut frame = engine_allocation::boxed(Captured::with_capacities(
+        let mut frame = engine_allocation::boxed(Captured::with_capture_access(
             &capacities.core,
             &capacities.map,
             &capacities.extended,
+            self.capture_access,
         )?)?;
         frame.extended.share_country_intel(&self.country_intel);
         frame.extended.share_template_home(&self.template_home);
@@ -1548,9 +1708,16 @@ impl Shared {
 
     pub fn build_ahead_until(
         &self,
+        worker: &collector_workers::Worker,
         stop: &AtomicBool,
         mut follow: impl FnMut(),
     ) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if !worker.is_owned() {
+            self.frames.assert_test_access();
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = worker;
         self.builder_waker
             .set(std::thread::current())
             .map_err(|_| std::io::ErrorKind::AlreadyExists)?;
@@ -1646,7 +1813,13 @@ impl Shared {
         held
     }
 
-    pub fn frame_stage(&self, index: usize, stage: FrameStage) {
+    /// # Safety
+    /// The caller owns the indexed frame for the next stage.
+    pub unsafe fn mark_owned_frame(&self, index: usize, stage: FrameStage) {
+        self.frame_stage(index, stage);
+    }
+
+    pub(crate) fn frame_stage(&self, index: usize, stage: FrameStage) {
         self.frames.stage(index, stage, qpc() as u64);
     }
 
@@ -3336,7 +3509,11 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 queue!(acquisition::Job::Players(acquisition::RawRequest {
                     countries: engine_allocation::SharedBox::clone(&country_snapshot),
                     context: players_ctx,
-                    payload: decode::acquire_players_job(),
+                    payload: {
+                        let mut payload = decode::acquire_players_job();
+                        frame.map.begin_players_job(&mut payload);
+                        payload
+                    },
                 }))
             };
             let air_stats_ctx = collector_air::extended::air::AirStatsCopyContext {
@@ -4708,7 +4885,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             let failure = failure.or((!report.raw_ok)
                                 .then_some("Players owned acquisition could not complete"));
                             players_report = report;
-                            frame.map.players_raw_mode = report.raw_ok || failure.is_some();
+                            frame
+                                .map
+                                .finish_players_job(&request.payload, report.raw_ok, failure);
                             if report.raw_ok && failure.is_none() {
                                 *players_payload = Some(request.payload);
                             } else {

@@ -104,7 +104,7 @@ pub unsafe fn capture(
         reads: Mutex::new(Vec::new()),
         roles: Mutex::new(Vec::new()),
     });
-    let _payloads = unsafe { decode::prepare_payload_pools(true) }.unwrap();
+    let _payloads = unsafe { decode::prepare_payload_pools_for_test(true) }.unwrap();
     let mut sizing = crate::country_scale::Sizing::for_slots(5);
     sizing.core[1] = 8;
     sizing.core[3] = 8;

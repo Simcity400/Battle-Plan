@@ -224,7 +224,10 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
         backlogged: false,
         comparison: Box::default(),
         writer: writer(&store),
-        journal_thread: crate::columnar::JournalThread::start().unwrap(),
+        journal_thread: crate::columnar::JournalThread::start(
+            collector_workers::WorkerStart::for_test(),
+        )
+        .unwrap(),
         queued: std::collections::VecDeque::new(),
         flight: None,
         writer_error: None,

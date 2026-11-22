@@ -2,6 +2,7 @@ use collector_divisions::orders::Orders;
 use collector_primitives::clock::qpc;
 use collector_primitives::table_capture::{CaptureRows, grow_capacity, grow_vec};
 use collector_raw::raw::RawLog;
+use collector_workers::CaptureAccess;
 use engine_native::{
     Memory, cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, cship,
     ctask_force, walk::Outcome,
@@ -10,6 +11,13 @@ use engine_native::{
 use engine_native::{corder_instance, corders_group};
 use replay_data::rows::TableId;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+fn request_id() -> u64 {
+    NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)
+}
 
 pub const MAP_TABLES: usize = 10;
 
@@ -153,6 +161,7 @@ impl MapCapacities {
 }
 
 pub struct ShipCensus {
+    access: Option<CaptureAccess>,
     pub management: collector_naval_management::forces::Captured,
     management_owned: Option<collector_naval_management::forces::Owned>,
     pub fleets: CaptureRows<cfleet::Row>,
@@ -165,8 +174,9 @@ pub struct ShipCensus {
 }
 
 impl ShipCensus {
-    fn new(rows: &[usize]) -> Self {
+    fn new(rows: &[usize], access: Option<CaptureAccess>) -> Self {
         Self {
+            access,
             management: Default::default(),
             management_owned: None,
             fleets: CaptureRows::new(rows[0]),
@@ -179,7 +189,7 @@ impl ShipCensus {
         }
     }
     pub fn vacant() -> Self {
-        Self::new(&[0; 3])
+        Self::new(&[0; 3], None)
     }
     fn reset(&mut self) {
         self.discard_owned();
@@ -214,17 +224,22 @@ impl ShipCensus {
         models: &mut collector_ship_models::ship_models::Captured,
     ) {
         let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
-        let mut reads = collector_memory::read_accounting::table(tables[0]);
+        let mut reads = collector_memory::read_accounting::table_with_recording(
+            tables[0],
+            self.access.is_some(),
+        );
         let begin = qpc();
         self.discard_owned();
         models.begin_sources();
-        let management =
-            std::cell::RefCell::new(collector_naval_management::forces::Session::begin_owned(
+        let management = std::cell::RefCell::new(self.access.as_ref().map(|access| {
+            collector_naval_management::forces::Session::begin_owned(
+                access,
                 memory,
                 base,
                 state,
                 collector_workers::panic_failure::owned_failed,
-            ));
+            )
+        }));
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
         let naval = cfleet::walk_timed_with_management(
@@ -271,15 +286,24 @@ impl ShipCensus {
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.required_manpower = crew.map(|value| value[1]);
                 models.visit_source(pointer, row);
-                management.borrow_mut().ship(pointer, row);
+                if let Some(management) = management.borrow_mut().as_mut() {
+                    management.ship(pointer, row);
+                }
             },
             &mut self.fleet_names,
-            |visit| management.borrow_mut().visit(visit),
+            |visit| {
+                if let Some(management) = management.borrow_mut().as_mut() {
+                    management.visit(visit);
+                }
+            },
         );
         self.ship_names.truncate(name_len);
         self.ship_overrides.truncate(override_len);
-        (self.management, self.management_owned) =
-            management.into_inner().finish_owned(naval.capture);
+        (self.management, self.management_owned) = management
+            .into_inner()
+            .map_or_else(Default::default, |management| {
+                management.finish_owned(naval.capture)
+            });
         models.finish_sources(naval.capture.ships);
         self.fleets.outcome = naval.capture.fleets;
         self.task_forces.outcome = naval.capture.task_forces;
@@ -313,6 +337,9 @@ impl ShipCensus {
 }
 
 pub struct MapCaptured {
+    access: Option<CaptureAccess>,
+    combat_request: Option<u64>,
+    players_ticket: Option<u64>,
     pub players: CaptureRows<chuman::Row>,
     pub human_controllers: CaptureRows<chuman::ControllerRow>,
     pub land_combats: CaptureRows<cland_combat::Row>,
@@ -325,7 +352,7 @@ pub struct MapCaptured {
     air_wing_names_required: usize,
     pub(crate) air_wing_name_failures: usize,
     pub orders: Orders,
-    pub players_raw_mode: bool,
+    players_raw_mode: bool,
     owned_air_captured: bool,
     air_capture_failure: Option<&'static str>,
     pub player_names: Vec<u8>,
@@ -342,7 +369,7 @@ pub struct MapCaptured {
 
 impl MapCaptured {
     pub fn install_owned_air(&mut self, job: &mut collector_air::extended::air::AirWingJob) -> u64 {
-        if self.air_capture_failure.is_some() {
+        if self.air_capture_failure.is_some() || !job.claim_map() {
             return 0;
         }
         let begin = qpc();
@@ -387,12 +414,24 @@ impl MapCaptured {
         Self::with_capacities(&MapCapacities::default())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_capacities(capacity: &MapCapacities) -> Self {
+        engine_allocation::advisory(|| Self::allocate(capacity, None))
+    }
+
+    pub fn for_capture(capacity: &MapCapacities, access: CaptureAccess) -> Self {
+        Self::allocate(capacity, Some(access))
+    }
+
+    fn allocate(capacity: &MapCapacities, access: Option<CaptureAccess>) -> Self {
         Self {
+            access,
+            combat_request: None,
+            players_ticket: None,
             players: CaptureRows::new(capacity.rows[0]),
             human_controllers: CaptureRows::new(capacity.rows[1]),
             land_combats: CaptureRows::new(capacity.rows[2]),
-            naval: ShipCensus::new(&capacity.rows[3..6]),
+            naval: ShipCensus::new(&capacity.rows[3..6], access),
             naval_combats: CaptureRows::new(capacity.rows[6]),
             naval_combat_participants: CaptureRows::new(capacity.rows[7]),
             air_wings: CaptureRows::new(capacity.rows[8]),
@@ -463,6 +502,8 @@ impl MapCaptured {
         self.land_participants_required = 0;
         self.naval_groups_required = 0;
         self.players_raw_mode = false;
+        self.players_ticket = None;
+        self.combat_request = None;
         self.combat_ticks = None;
     }
 
@@ -482,6 +523,14 @@ impl MapCaptured {
     }
 
     pub fn grow(&mut self, capacities: &mut MapCapacities) {
+        if self.access.is_some() {
+            self.grow_buffers(capacities);
+        } else {
+            engine_allocation::advisory(|| self.grow_buffers(capacities));
+        }
+    }
+
+    fn grow_buffers(&mut self, capacities: &mut MapCapacities) {
         self.players.grow(&mut capacities.rows[0]);
         self.human_controllers.grow(&mut capacities.rows[1]);
         self.land_combats.grow(&mut capacities.rows[2]);
@@ -528,7 +577,10 @@ impl MapCaptured {
     ) -> [u64; MAP_TABLES] {
         let mut ticks = self.combat_ticks.unwrap_or([0; MAP_TABLES]);
         if !self.players_raw_mode {
-            let mut reads = collector_memory::read_accounting::table(TableId::Players);
+            let mut reads = collector_memory::read_accounting::table_with_recording(
+                TableId::Players,
+                self.access.is_some(),
+            );
             let begin = qpc();
             let names = chuman::walk(
                 memory,
@@ -549,7 +601,10 @@ impl MapCaptured {
             ticks[1] = (qpc() - begin).max(0) as u64;
         }
 
-        let mut reads = collector_memory::read_accounting::table(TableId::LandCombats);
+        let mut reads = collector_memory::read_accounting::table_with_recording(
+            TableId::LandCombats,
+            self.access.is_some(),
+        );
         if self.combat_ticks.is_none() {
             let begin = qpc();
             let mut nested = sources.begin_land();
@@ -606,6 +661,8 @@ const P_CONTROLLERS: u32 = 0x02;
 
 #[derive(Debug, Default)]
 pub struct PlayersJob {
+    access: Option<CaptureAccess>,
+    ticket: Option<u64>,
     pub log: RawLog<2>,
     pub game_state: usize,
 }
@@ -615,6 +672,8 @@ impl PlayersJob {
         Self {
             log: RawLog::new(0, 0),
             game_state: 0,
+            access: None,
+            ticket: None,
         }
     }
 
@@ -829,7 +888,10 @@ pub fn copy_players_refresh(
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
 ) -> PlayersCopyReport {
-    let _reads = collector_memory::read_accounting::table(TableId::Players);
+    let _reads = collector_memory::read_accounting::table_with_recording(
+        TableId::Players,
+        job.access.is_some(),
+    );
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
@@ -841,6 +903,23 @@ pub fn copy_players_refresh(
 }
 
 impl MapCaptured {
+    pub fn begin_players_job(&mut self, job: &mut PlayersJob) {
+        let ticket = request_id();
+        self.players_ticket = Some(ticket);
+        job.ticket = Some(ticket);
+        job.access = self.access;
+    }
+
+    pub fn finish_players_job(
+        &mut self,
+        job: &PlayersJob,
+        raw_ok: bool,
+        failure: Option<&'static str>,
+    ) {
+        assert!(self.players_ticket.is_some() && self.players_ticket == job.ticket);
+        self.players_raw_mode = raw_ok || failure.is_some();
+    }
+
     pub fn fail_players_capture(&mut self, reason: &'static str) {
         self.players.outcome = Outcome::Unavailable { reason };
         self.human_controllers.outcome = Outcome::Unavailable { reason };
@@ -854,6 +933,10 @@ impl MapCaptured {
         job: &PlayersJob,
         decode_ticks: &mut [u64; 2],
     ) {
+        if self.players_ticket != job.ticket || (self.access.is_some() && job.ticket.is_none()) {
+            self.fail_players_capture("Players payload belongs to another frame");
+            return;
+        }
         let recorded = match collector_raw::raw::Recorded::build(&job.log) {
             Ok(recorded) => recorded,
             Err(reason) => {

@@ -328,18 +328,22 @@ pub struct Sampler {
 /// # Safety
 /// Only the runtime owner may prepare the sampler. The previous sampler and its users must
 /// have stopped before this call, and this runtime's sampled workers must not have started.
-pub unsafe fn prepare() {
+pub unsafe fn prepare(_owner: &crate::Owner) {
     EARLY_EXIT.store(false, Ordering::Release);
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
 }
 /// # Safety
 /// Only the runtime owner may release the sampler, after it has joined and its users
 /// have quiesced.
-pub unsafe fn release() {
+pub unsafe fn release(_owner: &crate::Owner) {
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
     worker_sampler_state::clear_jobs();
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
 }
+pub fn before_joining_worker(_owner: &crate::Owner) {
+    worker_sampler_state::stop_before_thread_exit();
+}
+
 pub fn thread_id() -> u32 {
     SAMPLER_ID.load(Ordering::Acquire)
 }
@@ -347,6 +351,7 @@ pub fn thread_id() -> u32 {
 /// Only the runtime owner may start one sampler after preparation. The acquisition IDs
 /// must be those of this runtime's workers, which participate in the sampler exit handshake.
 pub unsafe fn start(
+    owner: &crate::Owner,
     config: Option<&str>,
     output_dir: &Path,
     acquisition_ids: Vec<u32>,
@@ -380,12 +385,13 @@ pub unsafe fn start(
         .map_err(|e| format!("worker_sampler output: {e}"))?;
     let (thread_stop, thread_active) = (Arc::clone(&stop), Arc::clone(&active));
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&control);
+    let worker = owner.worker();
     let handle = thread::Builder::new()
         .name("worker-sampler".into())
         .spawn(move || {
             SAMPLER_ID.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-            // SAFETY: this is the owned sampler and it does not sample itself.
-            unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::Sampler) };
+            let worker = worker.bind();
+            crate::thread_cpu::register(&worker, crate::thread_cpu::Role::Sampler);
             unsafe {
                 SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }

@@ -292,7 +292,11 @@ pub fn off_hold_path() {
 }
 
 fn side() -> usize {
-    if unsafe { (*thread()).off_hold } { OTHER } else { HOLD }
+    if unsafe { (*thread()).off_hold } {
+        OTHER
+    } else {
+        HOLD
+    }
 }
 
 struct Depot {
@@ -666,7 +670,9 @@ impl PrivateHeap {
         !self.heap().is_null()
     }
 
-    pub fn thread_exit(&self) {
+    /// # Safety
+    /// Call at DLL thread detach, when the exiting thread can no longer use this heap.
+    pub unsafe fn thread_exit(&self) {
         let Some(domain) = self.heap.get() else {
             return;
         };

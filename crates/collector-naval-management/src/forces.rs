@@ -147,11 +147,18 @@ pub struct Session<'a, M: Memory> {
     navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
 }
 impl<'a, M: Memory> Session<'a, M> {
-    pub fn begin(memory: &'a M, base: usize, state: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn begin(memory: &'a M, base: usize, state: usize) -> Self {
         Self::begin_inner(memory, base, state, None)
     }
 
-    pub fn begin_owned(memory: &'a M, base: usize, state: usize, stopped: fn() -> bool) -> Self {
+    pub fn begin_owned(
+        _access: &collector_workers::CaptureAccess,
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        stopped: fn() -> bool,
+    ) -> Self {
         Self::begin_inner(memory, base, state, Some(stopped))
     }
 

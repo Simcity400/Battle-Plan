@@ -103,6 +103,13 @@ impl Captured {
                 len.saturating_add(unread_rows as usize),
             );
         }
+    }
+
+    pub fn prepare_live(
+        &mut self,
+        _access: &collector_workers::CaptureAccess,
+        capacity: &mut Capacities,
+    ) {
         hooks::resize(capacity.entries, 0);
     }
     pub fn outcomes(&self) -> [Outcome; N] {

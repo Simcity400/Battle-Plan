@@ -96,6 +96,7 @@ pub(crate) struct StatusWriter {
 }
 impl StatusWriter {
     pub(crate) fn start(
+        start: collector_workers::WorkerStart,
         write: impl Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync + 'static,
     ) -> io::Result<Self> {
         let inner = Arc::new(Inner {
@@ -107,8 +108,9 @@ impl StatusWriter {
             .name("collector-status".into())
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                collector_workers::priority::OwnPriority::new().follow(false);
-                run(&worker, &write)
+                let registration = start.bind();
+                collector_workers::priority::OwnPriority::new(&registration).follow(false);
+                run(&registration, &worker, &write)
             })?;
         Ok(Self {
             handle: StatusHandle { inner },
@@ -184,11 +186,14 @@ pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io:
     bytes.push(b'}');
     Ok(())
 }
-fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
+fn run(
+    worker: &collector_workers::Worker,
+    inner: &Inner,
+    write: &impl Fn(&Path, &[u8]) -> io::Result<()>,
+) {
     #[cfg(feature = "worker_sampler")]
-    let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
-    // SAFETY: this is the owned status worker with an exit guard.
-    unsafe { collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Status) };
+    let _sampler_exit = worker.sampled();
+    collector_workers::thread_cpu::register(worker, collector_workers::thread_cpu::Role::Status);
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Status);
     collector_memory::terminal::attempted_hour(None);
     let mut stopping_since: Option<Instant> = None;
@@ -274,7 +279,10 @@ impl AllocationProbe {
         std::fs::write(directory.join("spool.0001"), [0; 23])?;
         let status = directory.join("status.json");
         Ok(Self {
-            writer: StatusWriter::start(crate::status_file::write_status_bytes)?,
+            writer: StatusWriter::start(
+                collector_workers::WorkerStart::for_test(),
+                crate::status_file::write_status_bytes,
+            )?,
             status,
             directory,
         })
@@ -345,8 +353,11 @@ mod tests {
         let (entered_tx, entered) = mpsc::channel();
         let (release_tx, released) = mpsc::channel();
         let written = Arc::new(Mutex::new(Vec::new()));
-        let mut writer =
-            StatusWriter::start(stalling(entered_tx, released, Arc::clone(&written))).unwrap();
+        let mut writer = StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            stalling(entered_tx, released, Arc::clone(&written)),
+        )
+        .unwrap();
         let release = Release(release_tx);
         let status = Path::new("status.json");
         let content = Path::new("content.json");
@@ -389,8 +400,11 @@ mod tests {
         let (entered_tx, entered) = mpsc::channel();
         let (release_tx, released) = mpsc::channel();
         let written = Arc::new(Mutex::new(Vec::new()));
-        let mut writer =
-            StatusWriter::start(stalling(entered_tx, released, Arc::clone(&written))).unwrap();
+        let mut writer = StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            stalling(entered_tx, released, Arc::clone(&written)),
+        )
+        .unwrap();
         let release = Release(release_tx);
         let spool = writer.handle();
         spool
@@ -420,16 +434,17 @@ mod tests {
         let wrote_tx = Mutex::new(wrote_tx);
         let attempts = Arc::new(Mutex::new(0));
         let count = Arc::clone(&attempts);
-        let mut writer = StatusWriter::start(move |_, _| {
-            let mut attempts = count.lock().unwrap();
-            *attempts += 1;
-            if *attempts <= 2 {
-                return Err(io::Error::from_raw_os_error(32));
-            }
-            let _ = wrote_tx.lock().unwrap().send(());
-            Ok(())
-        })
-        .unwrap();
+        let mut writer =
+            StatusWriter::start(collector_workers::WorkerStart::for_test(), move |_, _| {
+                let mut attempts = count.lock().unwrap();
+                *attempts += 1;
+                if *attempts <= 2 {
+                    return Err(io::Error::from_raw_os_error(32));
+                }
+                let _ = wrote_tx.lock().unwrap().send(());
+                Ok(())
+            })
+            .unwrap();
         let handle = writer.handle();
         handle
             .publish(Path::new("status.json"), json!({ "hour": 1 }))
@@ -453,23 +468,26 @@ mod tests {
         let wrote_tx = Mutex::new(wrote_tx);
         let attempts = Arc::new(Mutex::new(Vec::<Value>::new()));
         let record = Arc::clone(&attempts);
-        let mut writer = StatusWriter::start(move |_, value| {
-            let first = record.lock().unwrap().is_empty();
-            record
-                .lock()
-                .unwrap()
-                .push(serde_json::from_slice(value).unwrap());
-            if first {
-                let _ = entered_tx.lock().unwrap().send(());
-                let _ = proceed
+        let mut writer = StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            move |_, value| {
+                let first = record.lock().unwrap().is_empty();
+                record
                     .lock()
                     .unwrap()
-                    .recv_timeout(collector_test_support::TEST_HANG_GUARD);
-                return Err(io::Error::from_raw_os_error(32));
-            }
-            let _ = wrote_tx.lock().unwrap().send(());
-            Ok(())
-        })
+                    .push(serde_json::from_slice(value).unwrap());
+                if first {
+                    let _ = entered_tx.lock().unwrap().send(());
+                    let _ = proceed
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD);
+                    return Err(io::Error::from_raw_os_error(32));
+                }
+                let _ = wrote_tx.lock().unwrap().send(());
+                Ok(())
+            },
+        )
         .unwrap();
         let release = Release(proceed_tx);
         let handle = writer.handle();
@@ -503,13 +521,16 @@ mod tests {
         fs::write(directory.join("other.bin"), [0_u8; 7]).unwrap();
         let written = Arc::new(Mutex::new(Vec::<Value>::new()));
         let record = Arc::clone(&written);
-        let mut writer = StatusWriter::start(move |_, value| {
-            record
-                .lock()
-                .unwrap()
-                .push(serde_json::from_slice(value).unwrap());
-            Ok(())
-        })
+        let mut writer = StatusWriter::start(
+            collector_workers::WorkerStart::for_test(),
+            move |_, value| {
+                record
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(value).unwrap());
+                Ok(())
+            },
+        )
         .unwrap();
         writer
             .handle()

@@ -4,15 +4,27 @@ use collector_map_capture::map_capture::MapCapacities;
 use engine_native::Memory;
 
 pub fn presize(
+    access: &collector_workers::CaptureAccess,
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
     extended: &mut extended::Capacities,
 ) -> Result<(), &'static str> {
-    presize_periodic(memory, base, map, extended, true)
+    presize_periodic(access, memory, base, map, extended, true)
 }
 
 pub fn presize_periodic(
+    _access: &collector_workers::CaptureAccess,
+    memory: &impl Memory,
+    base: usize,
+    map: &mut MapCapacities,
+    extended: &mut extended::Capacities,
+    capacity_census: bool,
+) -> Result<(), &'static str> {
+    measure_and_prepare(memory, base, map, extended, capacity_census)
+}
+
+fn measure_and_prepare(
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
@@ -249,7 +261,9 @@ mod tests {
         assert_eq!(super::super::observe(&memory, 0), Some(5001));
         let mut sizing = super::super::Sizing::for_slots(5001);
         assert!(sizing.extended.economy.rows[2] < 20000);
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+        );
         assert!(sizing.extended.economy.rows[2] >= 20000);
         let mut order =
             collector_divisions::extended::province_unit_order::Captured::with_capacities(
@@ -258,11 +272,15 @@ mod tests {
         order.capture(&memory, 0, 0x1000);
         assert_eq!(order.outcomes(), [Outcome::Rows { len: 20000 }]);
         memory.provinces = 70001;
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+        );
         assert!(sizing.extended.economy.rows[2] >= 70000);
         let retained = sizing.extended.economy.rows[2];
         memory.provinces = 2;
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        assert!(
+            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+        );
         assert_eq!(sizing.extended.economy.rows[2], retained);
     }
 }

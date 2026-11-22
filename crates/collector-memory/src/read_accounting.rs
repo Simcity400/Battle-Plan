@@ -1,4 +1,3 @@
-
 use engine_native::memory::ReadCounts;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
@@ -21,6 +20,7 @@ struct State {
     #[cfg(any(test, feature = "test-support"))]
     tables: TableCounts,
     current: usize,
+    publish_taint: bool,
 }
 
 impl State {
@@ -29,6 +29,7 @@ impl State {
             #[cfg(any(test, feature = "test-support"))]
             tables: ZERO,
             current: TableId::Clock.index(),
+            publish_taint: true,
         }
     }
 
@@ -41,7 +42,9 @@ impl State {
         {
             self.tables[self.current] += reads;
         }
-        if let Some(key) = engine_sites::take_taint() {
+        if let Some(key) = engine_sites::take_taint()
+            && self.publish_taint
+        {
             withhold(self.current, key);
         }
     }
@@ -69,17 +72,28 @@ thread_local! {
 #[must_use]
 pub struct Table {
     previous: usize,
+    publish_taint: bool,
     _thread: PhantomData<Rc<()>>,
 }
 
 pub fn table(table: TableId) -> Table {
-    let previous = STATE.with(|state| {
+    table_with_recording(table, true)
+}
+
+pub fn table_with_recording(table: TableId, recording: bool) -> Table {
+    let (previous, publish_taint) = STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.flush();
-        std::mem::replace(&mut state.current, table.index())
+        let publish_taint = state.publish_taint;
+        state.publish_taint &= recording;
+        (
+            std::mem::replace(&mut state.current, table.index()),
+            publish_taint,
+        )
     });
     Table {
         previous,
+        publish_taint,
         _thread: PhantomData,
     }
 }
@@ -102,6 +116,7 @@ impl Drop for Table {
             let mut state = state.borrow_mut();
             state.flush();
             state.current = self.previous;
+            state.publish_taint = self.publish_taint;
         });
     }
 }
@@ -140,6 +155,7 @@ impl Capture {
                 #[cfg(any(test, feature = "test-support"))]
                 std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
                 std::ptr::addr_of_mut!((*previous).current).write(state.current);
+                std::ptr::addr_of_mut!((*previous).publish_taint).write(state.publish_taint);
             }
             #[cfg(any(test, feature = "test-support"))]
             {

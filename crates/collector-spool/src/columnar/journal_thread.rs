@@ -389,7 +389,7 @@ fn sync(ended: Option<fs::File>, timing: &Mutex<State>) -> Result<(), (&'static 
 }
 
 impl JournalThread {
-    pub(crate) fn start() -> io::Result<Arc<Self>> {
+    pub(crate) fn start(start: collector_workers::WorkerStart) -> io::Result<Arc<Self>> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 work: VecDeque::new(),
@@ -404,7 +404,7 @@ impl JournalThread {
             .stack_size(STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                serve(&worker)
+                serve(&worker, &start.bind())
             })?;
         Ok(Arc::new(Self {
             shared,
@@ -478,9 +478,9 @@ impl Drop for JournalThread {
     }
 }
 
-fn serve(shared: &Shared) {
+fn serve(shared: &Shared, worker: &collector_workers::Worker) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Journal);
-    collector_workers::priority::OwnPriority::new().follow(false);
+    collector_workers::priority::OwnPriority::new(worker).follow(false);
     let mut state = shared.lock();
     loop {
         let Some((lane, op)) = state.work.pop_front() else {

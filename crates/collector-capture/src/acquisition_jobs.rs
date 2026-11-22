@@ -2147,24 +2147,56 @@ impl Pool {
         }
     }
 
-    pub fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
+    pub fn start(
+        owner: &collector_workers::Owner,
+        worker_count: usize,
+        capacity: usize,
+    ) -> Result<Self, &'static str> {
+        Self::start_inner(Some(owner), worker_count, capacity)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn start_for_test(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
+        Self::start_inner(None, worker_count, capacity)
+    }
+
+    fn start_inner(
+        owner: Option<&collector_workers::Owner>,
+        worker_count: usize,
+        capacity: usize,
+    ) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor = collector_workers::acquisition::Pool::start_with_class(
-            worker_count.max(1),
-            capacity,
-            Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
-            move |job: &mut Job| {
-                #[cfg(feature = "worker_sampler")]
-                let _sampler_job = collector_workers::worker_sampler::job(job.role());
-                // SAFETY: submit's callback lease remains admitted until every
-                // accepted request is collected, including on callback unwind.
-                let memory = unsafe { LiveMemory::new() };
-                #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
-                let memory = CountedMemory::new(memory);
-                run_with_memory(job, &memory, &runner_calibration)
-            },
-        )?;
+        let classes: Option<(usize, fn(&Job) -> usize)> =
+            Some((ROLE_COUNT, |job: &Job| job.role() as usize));
+        let run = move |job: &mut Job| {
+            #[cfg(feature = "worker_sampler")]
+            let _sampler_job = collector_workers::worker_sampler::job(job.role());
+            // SAFETY: submit's callback lease remains admitted until every
+            // accepted request is collected, including on callback unwind.
+            let memory = unsafe { LiveMemory::new() };
+            #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+            let memory = CountedMemory::new(memory);
+            run_with_memory(job, &memory, &runner_calibration)
+        };
+        let executor = match owner {
+            Some(owner) => collector_workers::acquisition::Pool::start_with_class(
+                owner,
+                worker_count.max(1),
+                capacity,
+                classes,
+                run,
+            )?,
+            #[cfg(any(test, feature = "test-support"))]
+            None => collector_workers::acquisition::Pool::start_classified_for_test(
+                worker_count.max(1),
+                capacity,
+                classes,
+                run,
+            )?,
+            #[cfg(not(any(test, feature = "test-support")))]
+            None => unreachable!("this is a live capture"),
+        };
         executor.set_callback_help(Job::callback_help);
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
@@ -3720,7 +3752,7 @@ mod tests {
             ] {
                 let capture = Capture::new();
                 accounted_read(TableId::Clock, 3);
-                let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+                let pool = Pool::start_for_test(workers, WORKER_ONLY_JOBS + 1).unwrap();
                 let make = || {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
@@ -3787,7 +3819,7 @@ mod tests {
         use collector_certificates::slicing::{SliceFingerprints, SliceSelection};
         for workers in [0, 1] {
             let capture = Capture::new();
-            let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
+            let pool = Pool::start_for_test(workers, WORKER_ONLY_JOBS + 1).unwrap();
             let make = || {
                 let selection = SliceSelection::for_test(5, false, &[7]).with_census(&[7]);
                 Job::Relations(RawRequest {

@@ -247,6 +247,7 @@ impl State {
 }
 
 pub(crate) struct Shared {
+    preparing: std::sync::atomic::AtomicBool,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -561,11 +562,36 @@ impl Shared {
     }
 }
 
+pub(crate) struct Preparation(Arc<Shared>);
+
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        self.0
+            .preparing
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 pub(crate) struct Writer {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 impl Writer {
+    pub(crate) fn claim_preparation(&self) -> io::Result<Preparation> {
+        if self
+            .shared
+            .preparing
+            .swap(true, std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(io::Error::other("a frame preparation is still outstanding"));
+        }
+        Ok(Preparation(Arc::clone(&self.shared)))
+    }
+
+    pub(crate) fn owns_preparation(&self, preparation: Option<&Preparation>) -> bool {
+        preparation.is_some_and(|preparation| Arc::ptr_eq(&preparation.0, &self.shared))
+    }
+
     pub(crate) fn start(root: PathBuf) -> io::Result<Self> {
         let factory_bytes = root.capacity();
         let writer = Self::start_with(move |campaign| {
@@ -584,6 +610,7 @@ impl Writer {
         create: impl FnMut(&CampaignId) -> io::Result<B> + Send + 'static,
     ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
+            preparing: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::default(),
             changed: Condvar::new(),
         });
@@ -1386,6 +1413,7 @@ mod tests {
     #[test]
     fn history_close_defers_when_writer_is_busy_without_partially_submitting_context() {
         let shared = Arc::new(Shared {
+            preparing: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
         });

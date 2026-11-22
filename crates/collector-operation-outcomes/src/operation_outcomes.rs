@@ -428,15 +428,18 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn resize(entries: usize) {
+pub fn resize(_access: &collector_workers::CaptureAccess, entries: usize) {
     presize(entries, 0);
 }
-pub fn presize(entries: usize, bytes: usize) {
+pub(crate) fn presize(entries: usize, bytes: usize) {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sources = [log(), offered()];
     let generations = || sources.into_iter().flatten();
     let entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
@@ -493,9 +496,6 @@ pub fn presize(entries: usize, bytes: usize) {
         return;
     };
     let pointer = &*fresh as *const Log as usize;
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if engine_allocation::reserve(&mut retained, 1).is_err() {
         failed();
         return;
@@ -534,11 +534,12 @@ pub unsafe fn release() {
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return;
     }
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
-    LOGS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    retained.clear();
 }
 
 fn append_observation(
@@ -749,22 +750,37 @@ pub struct LaneCursor {
 #[derive(Clone, Copy)]
 pub struct Handoff {
     log: usize,
+    serial: u64,
+    live: bool,
     epoch: u64,
     sequence: u64,
     lanes: usize,
     shared_rejected: u64,
 }
-pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("operation completion hooks unavailable");
     }
+    let _retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let log = log().ok_or("operation completion staging unavailable")?;
-    handoff_buffer(
+    let mut handoff = make_handoff(
         seal_offered(log),
         engine_native::walk::Buffer::Growing(cursors),
-    )
+    )?;
+    handoff.live = true;
+    Ok(handoff)
 }
+#[cfg(any(test, feature = "test-support"))]
 pub fn handoff_buffer(
+    log: &Log,
+    cursors: engine_native::walk::Buffer<'_, LaneCursor>,
+) -> Result<Handoff, &'static str> {
+    make_handoff(log, cursors)
+}
+
+fn make_handoff(
     log: &Log,
     mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
@@ -783,6 +799,8 @@ pub fn handoff_buffer(
     let shared_rejected = log.shared.rejected();
     Ok(Handoff {
         log: log as *const Log as usize,
+        serial: log.serial,
+        live: false,
         epoch: EPOCH.load(Ordering::Acquire),
         sequence: log.sequence.load(Ordering::Acquire),
         lanes,
@@ -795,13 +813,45 @@ pub struct Drained {
     pub bytes: usize,
 }
 impl Handoff {
+    fn retain_log(
+        self,
+    ) -> Result<Option<std::sync::MutexGuard<'static, Vec<Box<Log>>>>, &'static str> {
+        if !self.live {
+            return Ok(None);
+        }
+        let retained = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retained
+            .iter()
+            .any(|log| log.serial == self.serial && &**log as *const Log as usize == self.log)
+        {
+            Ok(Some(retained))
+        } else {
+            Err("operation completion stale handoff")
+        }
+    }
+
     pub fn pending(self) -> usize {
+        let Ok(_retained) = self.retain_log() else {
+            return 0;
+        };
         let log = unsafe { &*(self.log as *const Log) };
         self.sequence
             .saturating_sub(log.assembled.load(Ordering::Acquire)) as usize
     }
     pub fn description_capacity(self, cursors: &[LaneCursor]) -> Result<usize, &'static str> {
+        let _retained = self.retain_log()?;
+        // SAFETY: the generation is retained, or this is an isolated fixture log.
         let log = unsafe { &*(self.log as *const Log) };
+        self.description_capacity_in(log, cursors)
+    }
+
+    fn description_capacity_in(
+        self,
+        log: &Log,
+        cursors: &[LaneCursor],
+    ) -> Result<usize, &'static str> {
         if self.sequence < log.assembled.load(Ordering::Acquire) {
             return Ok(0);
         }
@@ -833,7 +883,15 @@ impl Handoff {
         Ok(shared)
     }
     pub fn admitted(self, cursors: &[LaneCursor]) {
+        let Ok(_retained) = self.retain_log() else {
+            return;
+        };
+        // SAFETY: the generation is retained, or this is an isolated fixture log.
         let log = unsafe { &*(self.log as *const Log) };
+        self.admit_in(log, cursors);
+    }
+
+    fn admit_in(self, log: &Log, cursors: &[LaneCursor]) {
         let assembled = log.assembled.load(Ordering::Acquire);
         if self.sequence < assembled
             || (self.sequence == assembled
@@ -851,6 +909,10 @@ impl Handoff {
         log.assembled_epoch.store(self.epoch, Ordering::Release);
     }
     pub fn commit(self, cursors: &[LaneCursor]) {
+        let Ok(_retained) = self.retain_log() else {
+            return;
+        };
+        // SAFETY: the generation is retained, or this is an isolated fixture log.
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.consumed.load(Ordering::Acquire)
             || cursors.len() < self.lanes
@@ -894,7 +956,7 @@ impl Handoff {
         log.shared.advance(self.shared_rejected);
         log.consumed.store(self.sequence, Ordering::Release);
         log.consumed_epoch.store(self.epoch, Ordering::Release);
-        self.admitted(cursors);
+        self.admit_in(log, cursors);
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn drain(
@@ -915,6 +977,8 @@ impl Handoff {
         output: &mut [Event],
         bytes: &mut [u8],
     ) -> Result<Drained, &'static str> {
+        let _retained = self.retain_log()?;
+        // SAFETY: the generation is retained, or this is an isolated fixture log.
         let log = unsafe { &*(self.log as *const Log) };
         let cursors = cursors
             .get(..self.lanes)
@@ -937,17 +1001,19 @@ impl Handoff {
             || self.epoch != EPOCH.load(Ordering::Acquire)
         {
             let refused = SPILL_REFUSED_EPOCH.load(Ordering::Acquire);
-            let since = log.assembled_epoch.load(Ordering::Acquire).max(log.born_epoch);
+            let since = log
+                .assembled_epoch
+                .load(Ordering::Acquire)
+                .max(log.born_epoch);
             return Err(
-                if refused > since && refused <= EPOCH.load(Ordering::Acquire)
-                {
+                if refused > since && refused <= EPOCH.load(Ordering::Acquire) {
                     SPILL_REFUSED
                 } else {
                     "operation completions were not followed in the game without a break"
                 },
             );
         }
-        if output.len() < pending || bytes.len() < self.description_capacity(cursors)? {
+        if output.len() < pending || bytes.len() < self.description_capacity_in(log, cursors)? {
             restart();
             return Err("operation completion drain staging short");
         }
@@ -959,7 +1025,7 @@ impl Handoff {
         )
         .map_err(|_| "operation completion description allocation failed")?;
         let shared = self.shared(log)?;
-        let (copied, used) = self.merge(cursors, tails, &shared, output, bytes)?;
+        let (copied, used) = self.merge(log, cursors, tails, &shared, output, bytes)?;
         if copied != pending || self.epoch != EPOCH.load(Ordering::Acquire) {
             restart();
             return Err("operation completion publication incomplete or lost");
@@ -971,13 +1037,13 @@ impl Handoff {
     }
     fn merge(
         self,
+        log: &Log,
         cursors: &[LaneCursor],
         mut tails: Vec<u64>,
         shared: &[(u64, u64)],
         output: &mut [Event],
         bytes: &mut [u8],
     ) -> Result<(usize, usize), &'static str> {
-        let log = unsafe { &*(self.log as *const Log) };
         let first = log.assembled.load(Ordering::Acquire);
         let pending = self.sequence.saturating_sub(first) as usize;
         let mut shared = shared.iter().peekable();
@@ -1337,7 +1403,8 @@ pub mod tests {
         let fixture = Fixture::new(b"retained");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         let captured = Captured::sealed(handoff, cursors);
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1458,7 +1525,11 @@ pub mod tests {
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 5_000);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 5_000);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, b"burst".repeat(5_000));
         assert_eq!(
             log.lanes[0].consumed_attempts.load(Ordering::Acquire),
@@ -1478,7 +1549,8 @@ pub mod tests {
         prime(&log);
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            let handoff =
+                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             Captured::sealed(handoff, cursors)
         };
         let rows = |tables: &[TableInput]| match &tables[TableId::OperationCompletions.index()] {
@@ -1654,7 +1726,7 @@ pub mod tests {
         assert!(hooks.entry.is_none());
         assert!(!RUNTIME_ENABLED.load(Ordering::Relaxed));
         let logs = LOGS.lock().unwrap().len();
-        resize(usize::MAX);
+        presize(usize::MAX, 0);
         assert_eq!(LOGS.lock().unwrap().len(), logs);
     }
 
@@ -1796,7 +1868,8 @@ pub mod tests {
         prime(&log);
         complete(&log, &Fixture::new(b"sealed"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        let sealed = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let sealed =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         complete(&log, &Fixture::new(&[0xfb; 10]), 1);
         sealed
             .drain(&cursors, &mut [Event::default()], &mut [0; 6])
@@ -1907,7 +1980,7 @@ pub mod tests {
         complete(old, &Fixture::new(description), 1);
         let pointer = LOG.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
-        resize(4_098);
+        presize(4_098, 0);
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         assert_eq!(drain(old).unwrap().1, description);
@@ -2052,7 +2125,11 @@ pub mod tests {
         });
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 7);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, [b"held".repeat(3), b"burst".repeat(4)].concat());
         assert_eq!(log.shared.rejected(), 0);
         assert!(log.shared.is_drained());
@@ -2104,7 +2181,8 @@ pub mod tests {
         let lane = &log.lanes[0];
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            let handoff =
+                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             Captured::sealed(handoff, cursors)
         };
         let shared = |description: &[u8]| {
@@ -2203,7 +2281,8 @@ pub mod tests {
             1,
         );
         let mut first = vec![LaneCursor::default()];
-        let queued = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
+        let queued =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
         let mut events = [Event::default(); 2];
         let mut bytes = [0; 32];
         assert_eq!(
@@ -2217,7 +2296,8 @@ pub mod tests {
         queued.admitted(&first);
         complete(&log, &Fixture::new(b"later"), 1);
         let mut second = vec![LaneCursor::default()];
-        let later = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
+        let later =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
         assert_eq!(later.pending(), 1);
         later.admitted(&second);
         queued.admitted(&first);
@@ -2236,10 +2316,14 @@ pub mod tests {
         assert_eq!(bytes, b"lostlost sharedlater");
         complete(&log, &Fixture::new(b"before"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+            .unwrap()
+            .admitted(&cursors);
         invalidate();
         complete(&log, &Fixture::new(b"after"), 1);
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+            .unwrap()
+            .admitted(&cursors);
         log.reset_admitted();
         assert_eq!(
             drain(&log),
@@ -2258,7 +2342,9 @@ pub mod tests {
         for _ in 0..2 {
             complete(&log, &fixture, 1);
             let mut cursors = vec![LaneCursor::default()];
-            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+                .unwrap()
+                .admitted(&cursors);
         }
         complete(&log, &fixture, 1);
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);

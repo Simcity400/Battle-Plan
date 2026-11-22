@@ -23,10 +23,11 @@ thread_local! {
 
 pub(crate) struct WorkerRegistration {
     id: u32,
+    live: bool,
     slot: Arc<AtomicU16>,
     _thread: PhantomData<Rc<()>>,
 }
-pub(crate) fn register_worker() -> WorkerRegistration {
+pub(crate) fn register_worker(worker: &crate::Worker) -> WorkerRegistration {
     let id = unsafe { GetCurrentThreadId() };
     let slot = Arc::new(AtomicU16::new(0));
     JOB_SLOT.replace(Some(Arc::clone(&slot)));
@@ -36,13 +37,16 @@ pub(crate) fn register_worker() -> WorkerRegistration {
         .push((id, created, Arc::downgrade(&slot)));
     WorkerRegistration {
         id,
+        live: worker.live,
         slot,
         _thread: PhantomData,
     }
 }
 impl Drop for WorkerRegistration {
     fn drop(&mut self) {
-        stop_before_thread_exit();
+        if self.live {
+            stop_before_thread_exit();
+        }
         JOB_SLOT.replace(None);
         self.slot.store(0, Ordering::Release);
         JOBS.lock()
@@ -170,7 +174,7 @@ impl Control {
         }
     }
 }
-pub fn stop_before_thread_exit() {
+pub(crate) fn stop_before_thread_exit() {
     EARLY_EXIT.store(true, Ordering::Release);
     let control = {
         SAMPLER_CONTROL

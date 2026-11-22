@@ -252,6 +252,7 @@ fn equipment_destruction_successful_run_exit_quiesces_releases_and_unloads() {
     let hooks = HookLifetime {
         restored: true,
         shared: &shared,
+        owner: None,
     };
     hooks.wait_quiet(|| waits.set(waits.get() + 1));
     hooks.release((DropProbe(&drops), DropProbe(&drops)), || {
@@ -341,6 +342,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     let hooks = HookLifetime {
         restored: restore_result.is_ok(),
         shared: &retained_shared,
+        owner: None,
     };
     hooks.wait_quiet(|| panic!("pinned run must not wait for native observers"));
     let root = TempDir(std::env::temp_dir().join(format!(
@@ -382,8 +384,12 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
         })
         .unwrap();
     let shared = Shared::new(0, 0, session.qpc_frequency);
-    shared.stop_recording();
-    let mut writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
+    shared.stop_recording_for_test();
+    let mut writer = crate::status_writer::StatusWriter::start(
+        collector_workers::WorkerStart::for_test(),
+        |_, _| Ok(()),
+    )
+    .unwrap();
     let status = collector_status::status::serialize(
         &spool_status(
             &processor,
@@ -424,11 +430,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
             .open(&lock_path)
     };
     let output_lock = open_lock().unwrap();
-    let done = Event::create(&format!(
-        "Local\\hoi4-destroyed-pinned-done-{}",
-        std::process::id()
-    ))
-    .unwrap();
+    let done = Event::create_for_test().unwrap();
     assert!(!done.signaled());
     assert_eq!(open_lock().unwrap_err().raw_os_error(), Some(32));
     signal_done(output_lock, &done);

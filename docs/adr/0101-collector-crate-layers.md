@@ -2,7 +2,7 @@
 
 The collector DLL owns the Windows entry point, the exported callback symbols and the global allocator. The allocator forwards to the worker crate's private heap. [DLL entry point](../../crates/collector/src/lib.rs)
 
-Runtime owns attachment, detachment, the hook type and site registries, and the worker and status lifecycles. [Runtime](../../crates/collector-runtime/src/runtime.rs)
+Runtime owns attachment, detachment, the hook type and site registries, and the worker and status lifecycles. Cross-crate lifecycle operations require the attach owner’s capability or an owner-derived handle, with an explicit safety contract for operations that depend on quiescence or native pointer lifetimes. [Runtime](../../crates/collector-runtime/src/runtime.rs)
 
 Capture owns hourly admission and scheduling, the pack registry, frame assembly, and decode. Map capture and player command observation each have a separate crate. The player command observer uses replay's command record types through a dependency with default features disabled. Capture supplies the observer with its roster sampling callback. [Hourly capture](../../crates/collector-capture/src/sampling.rs)
 

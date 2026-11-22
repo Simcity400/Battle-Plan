@@ -30,20 +30,18 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
+    pub fn prepare_live(&mut self, _access: &collector_workers::CaptureAccess, c: &mut Capacities) {
         producer::presize(0);
         *c = (*c).max(producer::capacity());
+    }
+
+    pub fn grow(&mut self, c: &mut Capacities) {
         grow_vec(&mut self.rows.rows, *c);
     }
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
     }
-    pub fn capture(
-        &mut self,
-        _memory: &impl Memory,
-        _base: usize,
-        _state: usize,
-    ) -> [u64; N] {
+    pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
         self.reset();
         let started = qpc();
         self.rows.outcome = match producer::drain(&mut self.rows.rows) {

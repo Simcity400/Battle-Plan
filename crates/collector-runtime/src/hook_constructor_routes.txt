@@ -33,10 +33,10 @@ call:SizingThread::start
 call:Some
 call:Vec::new
 call:acquisition::Pool::start
-call:attach_capture_state
 call:add_terminal_error
 call:append_event_feed_detach_status
 call:append_history_release_status
+call:attach_capture_state
 call:collector_air::sizing::note_air_wing_name_bytes
 call:collector_air::sizing::note_carrier_demand
 call:collector_air::sizing::observe_ace_names
@@ -46,6 +46,7 @@ call:collector_air_histories::history_changes::presize
 call:collector_air_relations::relation_changes::presize
 call:collector_capture::capture_point::Thread::start
 call:collector_capture::capture_point::drain
+call:collector_capture::capture_point::refresh_request
 call:collector_capture::capture_point::set_beside
 call:collector_capture::capture_point::take_unread
 call:collector_capture::command_batch::enabled
@@ -205,11 +206,12 @@ call:refuse_worker_sampler
 call:reserve_output
 call:restore_hourly
 call:restore_round
+call:runtime_admission
+call:sampling::SpoolOwner::claim
 call:sampling::record_lost
 call:serde_json::from_slice
 call:signal_done
 call:spool_loop
-call:sampling::SpoolOwner::claim
 call:std::mem::zeroed
 call:std::thread::Builder::new
 call:std::thread::sleep
@@ -242,9 +244,11 @@ method:as_deref
 method:as_micros
 method:as_mut
 method:as_ref
+method:bind
 method:build_warning
 method:builder_id
 method:busy_sites
+method:capture
 method:clone
 method:close
 method:completion_sequence
@@ -271,9 +275,9 @@ method:get_or_insert
 method:get_or_insert_with
 method:handle
 method:id
+method:install_acquisition
 method:into
 method:into_iter
-method:install_acquisition
 method:is_empty
 method:is_err
 method:is_finished
@@ -304,6 +308,7 @@ method:open
 method:opened
 method:or
 method:politics_epoch
+method:pool_accounting
 method:prepare
 method:prepare_clock_capture
 method:prepare_roster
@@ -337,8 +342,8 @@ method:saturating_add
 method:saturating_mul
 method:sentinel
 method:set
-method:set_enabled
 method:set_command_drain
+method:set_enabled
 method:set_helper
 method:shared
 method:shutdown
@@ -363,3 +368,4 @@ method:validation_refusals
 method:with_file_name
 method:withheld
 method:without_history
+method:worker

@@ -227,8 +227,8 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
         failure::worker(|| panic!("original worker failure"));
     }));
     sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
-    let first = unsafe { detach_drain(|_| panic!("later detach progress failure")) }.unwrap_err();
-    let later = unsafe { detach_drain(|_| unreachable!()) };
+    let first = drain(None, |_| panic!("later detach progress failure")).unwrap_err();
+    let later = drain(None, |_| unreachable!());
     sampling::SHARED.store(std::ptr::null_mut(), Ordering::Release);
     assert!(first.contains("original worker failure"), "{first}");
     assert!(!first.contains("later detach progress failure"), "{first}");

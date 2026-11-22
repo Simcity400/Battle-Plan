@@ -146,8 +146,8 @@ mod tests {
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
         let mut pool = [
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+            collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
+            collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
         ];
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();

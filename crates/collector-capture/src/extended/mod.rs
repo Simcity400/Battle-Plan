@@ -250,17 +250,59 @@ macro_rules! merge_pack_capacity {
     };
 }
 
+macro_rules! grow_pack {
+    (land_events, $pack:expr, $capacity:expr, $access:expr) => {{
+        if let Some(access) = $access {
+            $pack.prepare_live(&access, $capacity);
+        }
+        $pack.grow($capacity);
+    }};
+    (air_losses, $pack:expr, $capacity:expr, $access:expr) => {{
+        if let Some(access) = $access {
+            $pack.prepare_live(&access, $capacity);
+        }
+        $pack.grow($capacity);
+    }};
+    (building_bombing, $pack:expr, $capacity:expr, $access:expr) => {{
+        if let Some(access) = $access {
+            $pack.prepare_live(&access, $capacity);
+        }
+        $pack.grow($capacity);
+    }};
+    (politics, $pack:expr, $capacity:expr, $access:expr) => {{
+        $pack.grow($capacity);
+        if let Some(access) = $access {
+            $pack.prepare_live(&access, $capacity);
+        }
+    }};
+    (operation_outcomes, $pack:expr, $capacity:expr, $access:expr) => {{
+        $pack.grow($capacity);
+        if let Some(access) = $access {
+            $capacity.prepare(&access);
+        }
+    }};
+    ($name:ident, $pack:expr, $capacity:expr, $access:expr) => {
+        $pack.grow($capacity);
+    };
+}
+
 macro_rules! pack_frame {
-    (intel, $capacity:expr) => {
+    (naval_counters, $capacity:expr, $access:expr) => {{
+        if let Some(access) = $access {
+            $capacity.prepare_live(&access);
+        }
+        naval_counters::Captured::with_capacities($capacity)
+    }};
+    (intel, $capacity:expr, $access:expr) => {
         intel::Captured::without_home($capacity)
     };
-    (division_templates, $capacity:expr) => {
+    (division_templates, $capacity:expr, $access:expr) => {
         division_templates::Captured::without_home($capacity)
     };
-    (naval_combat_sources, $capacity:expr) => {
+    (naval_combat_sources, $capacity:expr, $access:expr) => {
         naval_combat_sources::Captured::without_home($capacity)
     };
-    ($pack:ident, $capacity:expr) => {
+    ($pack:ident, $capacity:expr, $access:expr) => {
         $pack::Captured::with_capacities($capacity)
     };
 }
@@ -318,6 +360,7 @@ macro_rules! packs {
             }
         }
         pub struct Captured {
+            capture_access: Option<collector_workers::CaptureAccess>,
             $($pack: $pack::Captured,)+
             fuel_awards: fuel_awards::Captured,
             divisions: Divisions,
@@ -380,14 +423,18 @@ impl Captured {
 
             #[cfg(test)]
             pub fn with_capacities(capacity: &Capacities) -> Self {
-                let mut captured = Self::frame(capacity);
+                let mut captured = Self::frame_with_capture(capacity, None);
                 captured.share_homes(&Homes::new(capacity).expect("test homes"));
                 captured
             }
 
-            pub fn frame(capacity: &Capacities) -> Self {
+            pub(crate) fn frame_with_capture(
+                capacity: &Capacities,
+                access: Option<collector_workers::CaptureAccess>,
+            ) -> Self {
                 let mut captured = Self {
-                    $($pack: pack_frame!($pack, &capacity.$pack),)+
+                    capture_access: access,
+                    $($pack: pack_frame!($pack, &capacity.$pack, access),)+
                     fuel_awards: fuel_awards::Captured::with_capacities(&capacity.fuel_awards),
                     divisions: Divisions::new(capacity.division_sources),
                     final_inputs_ticks: None,
@@ -435,6 +482,9 @@ impl Captured {
                 };
                 captured.division_presentation.reserve_sources(capacity.division_sources);
                 captured.plans.reserve_units(capacity.division_sources);
+                if let Some(access) = access {
+                    captured.combat_progress.bind_capture(access);
+                }
                 captured
             }
             pub fn reset(&mut self) {
@@ -480,7 +530,7 @@ impl Captured {
             }
             fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
-                $(self.$pack.grow(&mut capacity.$pack);)+
+                $(grow_pack!($pack, self.$pack, &mut capacity.$pack, self.capture_access);)+
                 self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
@@ -782,23 +832,46 @@ impl Capacities {
 
     pub fn presize_live_inputs(
         &mut self,
+        access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
-        self.presize_live_inputs_periodic(memory, base, true)
+        self.presize_live_inputs_periodic(access, memory, base, true)
     }
 
     pub fn presize_live_inputs_periodic(
         &mut self,
+        _access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
         capacity_census: bool,
+    ) -> Result<(), &'static str> {
+        self.presize_inputs(memory, base, capacity_census, true)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presize_inputs_for_test(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        capacity_census: bool,
+    ) -> Result<(), &'static str> {
+        self.presize_inputs(memory, base, capacity_census, false)
+    }
+
+    fn presize_inputs(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        capacity_census: bool,
+        live: bool,
     ) -> Result<(), &'static str> {
         let mut failure = None;
         for result in [
             capacity_census.then(|| {
                 crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
                     if let Some(demand) = demand
+                        && live
                         && characters::advisors::note_modifier_demand(demand)
                     {
                         crate::decode::presize_advisor_pools();
@@ -814,7 +887,7 @@ impl Capacities {
             }),
             Some(
                 crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
-                    if let Some(words) = demand {
+                    if let Some(words) = demand.filter(|_| live) {
                         collector_land_events::land_events::presize(words);
                         self.land_events.words = self
                             .land_events
@@ -1289,7 +1362,7 @@ impl Captured {
         ticks
     }
 
-    pub fn politics(&self) -> &politics::Captured {
+    pub fn politics(&self, _owner: &mut crate::sampling::SpoolOwner) -> &politics::Captured {
         &self.politics
     }
 
@@ -2630,7 +2703,11 @@ impl Captured {
         self.division_counts.fail(reason);
     }
 
-    pub fn sources<'a, M: Memory>(&'a mut self, memory: &'a M, base: usize) -> Sources<'a, M> {
+    pub(crate) fn sources<'a, M: Memory>(
+        &'a mut self,
+        memory: &'a M,
+        base: usize,
+    ) -> Sources<'a, M> {
         Sources {
             captured: self,
             memory,

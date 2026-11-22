@@ -72,10 +72,18 @@ pub fn joined(payload: Box<dyn Any + Send>, fallback: &'static str) -> &'static 
 
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 
-pub struct HookGuard(Option<Arc<Hook>>);
+static INSTALLED: Mutex<()> = Mutex::new(());
+
+pub struct HookGuard {
+    previous: Option<Arc<Hook>>,
+    _installation: std::sync::MutexGuard<'static, ()>,
+}
 
 impl HookGuard {
-    pub fn install() -> Self {
+    pub fn install(_owner: &crate::Owner) -> Result<Self, &'static str> {
+        let installation = INSTALLED
+            .try_lock()
+            .map_err(|_| "collector panic hook already installed")?;
         let previous = Arc::new(std::panic::take_hook());
         let chained = previous.clone();
         std::panic::set_hook(Box::new(move |info| {
@@ -108,14 +116,17 @@ impl HookGuard {
             }
             chained(info);
         }));
-        Self(Some(previous))
+        Ok(Self {
+            previous: Some(previous),
+            _installation: installation,
+        })
     }
 }
 
 impl Drop for HookGuard {
     fn drop(&mut self) {
         drop(std::panic::take_hook());
-        let previous = Arc::try_unwrap(self.0.take().unwrap())
+        let previous = Arc::try_unwrap(self.previous.take().unwrap())
             .unwrap_or_else(|_| unreachable!("decode panic hook still borrowed"));
         std::panic::set_hook(previous);
     }

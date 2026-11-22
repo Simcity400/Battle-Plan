@@ -48,7 +48,9 @@ static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
-    let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     *DAILY_OBSERVERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -102,6 +104,8 @@ pub struct Captured {
     observer_failure: Option<&'static str>,
     observer_scratch: std::sync::Mutex<collector_combat_log::observer_projection::Scratch>,
     daily_refresh: bool,
+    access: Option<collector_workers::CaptureAccess>,
+    daily_loan: bool,
     daily_previous: Option<DailyObservers>,
     observer_cursor: usize,
 }
@@ -124,10 +128,16 @@ impl Captured {
             observer_failure: None,
             observer_scratch: Default::default(),
             daily_refresh: true,
+            access: None,
+            daily_loan: false,
             daily_previous: None,
             observer_cursor: 0,
         }
     }
+    pub fn bind_capture(&mut self, access: collector_workers::CaptureAccess) {
+        self.access = Some(access);
+    }
+
     pub fn reset(&mut self) {
         self.rows.reset();
         self.equipment.reset();
@@ -163,6 +173,7 @@ impl Captured {
             || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT)
                 .is_refresh(hour);
         if self.daily_refresh
+            && self.access.is_some()
             && let Some(previous) = DAILY_OBSERVERS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -173,11 +184,13 @@ impl Captured {
     }
 
     pub fn begin(&mut self) {
-        let previous = DAILY_OBSERVERS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        self.daily_previous = previous;
+        if self.access.is_some() {
+            self.daily_previous = DAILY_OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            self.daily_loan = true;
+        }
         self.observer_cursor = 0;
         if self.daily_refresh
             && let Some(previous) = &mut self.daily_previous
@@ -321,10 +334,12 @@ impl Captured {
         }
     }
     pub fn finish(&mut self, parent: Outcome) {
-        crate::land_events::observe_observer_rows(self.observers.len());
-        collector_combat_log::history_events::prepare_active(
-            self.observers.len().saturating_add(self.equipment.len),
-        );
+        if self.access.is_some() {
+            crate::land_events::observe_observer_rows(self.observers.len());
+            collector_combat_log::history_events::prepare_active(
+                self.observers.len().saturating_add(self.equipment.len),
+            );
+        }
         let missing = match parent {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
@@ -342,7 +357,9 @@ impl Captured {
             },
             _ => Outcome::Rows { len: self.len },
         };
-        self.remember_daily();
+        if self.access.is_none() || std::mem::take(&mut self.daily_loan) {
+            self.remember_daily();
+        }
     }
     fn remember_daily(&mut self) {
         let mut next = self.daily_previous.take().unwrap_or_default();
@@ -373,7 +390,11 @@ impl Captured {
         } else {
             None
         };
-        *DAILY_OBSERVERS.lock().unwrap_or_else(|e| e.into_inner()) = next;
+        if self.access.is_some() {
+            *DAILY_OBSERVERS.lock().unwrap_or_else(|e| e.into_inner()) = next;
+        } else {
+            self.daily_previous = next;
+        }
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {

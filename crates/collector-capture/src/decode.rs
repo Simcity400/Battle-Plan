@@ -19,7 +19,7 @@ use collector_production::production::ProductionRestJob;
 use collector_projects::projects::ProjectsJob;
 use collector_session::session::SessionJob;
 use collector_weather::weather::WeatherJob;
-use collector_workers::thread_cpu::{decode_worker, set_decode_worker};
+use collector_workers::thread_cpu::{clear_decode_worker, decode_worker};
 use replay_data::rows::TableId;
 
 use std::sync::{
@@ -410,7 +410,21 @@ impl Drop for PayloadPools {
 /// # Safety
 /// The caller owns the decode pools for the session. Prepare and release them without another
 /// owner, and drop the returned guard only after hooks, decode and retirement users quiesce.
-pub unsafe fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
+pub unsafe fn prepare_payload_pools(
+    _owner: &collector_workers::Owner,
+    game_score: bool,
+) -> std::io::Result<PayloadPools> {
+    prepare_pools(game_score)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// # Safety
+/// The fixture is isolated from live capture and every other decode fixture.
+pub unsafe fn prepare_payload_pools_for_test(game_score: bool) -> std::io::Result<PayloadPools> {
+    prepare_pools(game_score)
+}
+
+fn prepare_pools(game_score: bool) -> std::io::Result<PayloadPools> {
     let pools = PayloadPools { _private: () };
     prepare_retirement()?;
     for _ in 0..JOB_POOL_STEADY {
@@ -604,10 +618,10 @@ fn recycle_payloads(job: &mut DecodeJob) {
     }
 }
 
-fn decode_loop() {
+fn decode_loop(worker: &collector_workers::Worker) {
     let _worker = collector_memory::terminal::enter(collector_memory::terminal::Phase::Decode);
     let mut air_bases_memo = AirBasesMemo::default();
-    let mut priority = collector_workers::priority::OwnPriority::frame_pipeline();
+    let mut priority = collector_workers::priority::OwnPriority::frame_pipeline(worker);
     let mut registered = false;
     loop {
         if STOP.load(Ordering::Acquire) {
@@ -622,6 +636,7 @@ fn decode_loop() {
         if !registered {
             let _ = shared.decode_waker.set(std::thread::current());
             priority.follow_pipeline(
+                worker,
                 &shared.frame_priority,
                 collector_workers::frame_priority::Role::Decode,
             );
@@ -630,6 +645,7 @@ fn decode_loop() {
         match pop(shared) {
             Some(job) => {
                 priority.follow_pipeline(
+                    worker,
                     &shared.frame_priority,
                     collector_workers::frame_priority::Role::Decode,
                 );
@@ -896,32 +912,25 @@ pub unsafe fn refusal_exercise(
 /// # Safety
 /// The runtime owner starts decode once, before publishing capture, and joins it during detach.
 /// Do not start a new worker while another owner is draining or retiring the decode pools.
-pub unsafe fn start_worker() -> Result<(), &'static str> {
+pub unsafe fn start_worker(owner: &collector_workers::Owner) -> Result<(), &'static str> {
     let mut slot = WORKER.lock().map_err(|_| "decode worker lock poisoned")?;
     if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
         return Err("decode worker already running");
     }
     STOP.store(false, Ordering::Release);
-    // SAFETY: the decode owner clears publication before start or after joining.
-    unsafe { set_decode_worker(0) };
+    clear_decode_worker(owner);
+    let start = owner.worker();
     *slot = Some(
         std::thread::Builder::new()
             .name("hoi4-decode".into())
             .stack_size(collector_workers::priority::BACKGROUND_STACK_BYTES)
-            .spawn(|| {
+            .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
+                let worker = start.bind();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = collector_workers::thread_cpu::StopOnThreadExit::default();
-                #[cfg(feature = "worker_sampler")]
-                // SAFETY: this is the owned decode worker with an exit guard.
-                unsafe {
-                    collector_workers::thread_cpu::register_decode()
-                };
-                // SAFETY: the owned decode worker publishes its own live ID.
-                unsafe {
-                    set_decode_worker(windows_sys::Win32::System::Threading::GetCurrentThreadId())
-                };
-                failure::worker(decode_loop);
+                let _sampler_exit = worker.sampled();
+                collector_workers::thread_cpu::register_decode(&worker);
+                failure::worker(|| decode_loop(&worker));
             })
             .map_err(|_| "cannot start decode worker")?,
     );
@@ -1528,7 +1537,17 @@ fn decode_presentation(shared: &Shared, index: usize) {
 /// # Safety
 /// The runtime owner must have stopped all producers and must keep the published capture and
 /// decode pools alive until the worker has joined and this drain finishes. There is one drainer.
-pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
+pub unsafe fn detach_drain(
+    owner: &collector_workers::Owner,
+    drained: impl FnMut(u64),
+) -> Result<(), &'static str> {
+    drain(Some(owner), drained)
+}
+
+fn drain(
+    owner: Option<&collector_workers::Owner>,
+    mut drained: impl FnMut(u64),
+) -> Result<(), &'static str> {
     let _failure = failure::Scope::worker("decode detach drain");
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
@@ -1542,8 +1561,8 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
         handle.thread().unpark();
     }
     #[cfg(feature = "worker_sampler")]
-    if worker.is_some() {
-        collector_workers::worker_sampler_state::stop_before_thread_exit();
+    if let Some(owner) = owner.filter(|_| worker.is_some()) {
+        collector_workers::worker_sampler::before_joining_worker(owner);
     }
     if let Some(handle) = worker
         && let Err(payload) = handle.join()
@@ -1559,8 +1578,9 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
             "decode worker panicked; its in-flight frame may be incomplete",
         ));
     }
-    // SAFETY: the decode owner clears publication before start or after joining.
-    unsafe { set_decode_worker(0) };
+    if let Some(owner) = owner {
+        clear_decode_worker(owner);
+    }
     let shared_ptr = sampling::SHARED.load(Ordering::Acquire);
     if shared_ptr.is_null() {
         STOP.store(false, Ordering::Release);
@@ -1657,7 +1677,7 @@ impl Drop for Reserved<'_> {
 pub(crate) fn reset_for_test() {
     prepare_retirement().unwrap();
     reclaim_payloads();
-    std::mem::forget(unsafe { prepare_payload_pools(false) }.unwrap());
+    std::mem::forget(unsafe { prepare_payload_pools_for_test(false) }.unwrap());
     SEQ.store(0, Ordering::Relaxed);
 }
 

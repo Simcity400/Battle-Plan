@@ -164,6 +164,7 @@ impl Log {
 }
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
+static SESSION: AtomicU64 = AtomicU64::new(1);
 static CURRENT: AtomicPtr<Log> = AtomicPtr::new(std::ptr::null_mut());
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
@@ -428,6 +429,7 @@ pub struct Frame {
 
 #[derive(Default)]
 pub struct Assembled {
+    session: u64,
     pub frames: Vec<Frame>,
     pub bytes: Vec<u8>,
     lanes: Vec<(usize, usize, u64)>,
@@ -450,6 +452,10 @@ fn generations() -> impl Iterator<Item = &'static Log> {
 }
 
 pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
+    let _retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    output.session = SESSION.load(Ordering::Acquire);
     output.frames.clear();
     output.bytes.clear();
     output.lanes.clear();
@@ -571,7 +577,10 @@ fn spilled_in<'a>(
         .iter()
         .filter(move |&&(address, _)| address == generation)
         .filter_map(move |&(_, sequence)| {
-            while spill.next_if(|spilled| spilled.sequence < sequence).is_some() {}
+            while spill
+                .next_if(|spilled| spilled.sequence < sequence)
+                .is_some()
+            {}
             spill.next_if(|spilled| spilled.sequence == sequence)
         })
 }
@@ -593,13 +602,17 @@ impl Assembled {
         self.spilled
             .iter()
             .enumerate()
-            .filter(|&(index, &(address, _))| {
-                index == 0 || self.spilled[index - 1].0 != address
-            })
+            .filter(|&(index, &(address, _))| index == 0 || self.spilled[index - 1].0 != address)
             .map(|(_, &(address, _))| address)
     }
 
     pub fn admitted(&self) {
+        let _retained = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.session != SESSION.load(Ordering::Acquire) {
+            return;
+        }
         if self.admitted.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -623,6 +636,12 @@ impl Assembled {
     }
 
     pub fn commit(&self) {
+        let _retained = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.session != SESSION.load(Ordering::Acquire) {
+            return;
+        }
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
@@ -649,7 +668,10 @@ impl Assembled {
                 .map(|&(_, sequence)| sequence)
                 .peekable();
             spill.retain(|spilled| {
-                while written.next_if(|&sequence| sequence < spilled.sequence).is_some() {}
+                while written
+                    .next_if(|&sequence| sequence < spilled.sequence)
+                    .is_some()
+                {}
                 written.next_if_eq(&spilled.sequence).is_none()
             });
         }
@@ -675,6 +697,9 @@ impl Assembled {
 }
 
 pub fn reset_admitted() {
+    let _retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for log in generations() {
         for lane in log.lanes.iter() {
             lane.assembled
@@ -693,6 +718,9 @@ pub fn reset_admitted() {
 }
 
 pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let current = CURRENT.load(Ordering::SeqCst);
     let lanes = lanes.max(REQUIRED_LANES.load(Ordering::Relaxed));
     let (lane_bytes, shared) = match unsafe { current.as_ref() } {
@@ -727,9 +755,6 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let fresh = engine_allocation::boxed(Log::new(lanes, lane_bytes, shared)?)
         .map_err(|_| "map event lane allocation failed")?;
     let pointer = &*fresh as *const Log as *mut Log;
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     engine_allocation::reserve(&mut retained, 1).map_err(|_| "map event lane allocation failed")?;
     retained.push(fresh);
     unsafe { (*pointer).previous.store(current, Ordering::SeqCst) };
@@ -762,6 +787,9 @@ pub struct Capacity {
 }
 
 pub fn capacity() -> Capacity {
+    let _retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut capacity = Capacity {
         generations: generations().count(),
         required_lanes: REQUIRED_LANES.load(Ordering::Relaxed),
@@ -788,11 +816,13 @@ pub fn capacity() -> Capacity {
 /// No callback can publish: the hooks are restored, no native call holds
 /// one, and every reader of an assembled interval has finished.
 pub unsafe fn release() {
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     CURRENT.store(std::ptr::null_mut(), Ordering::SeqCst);
     ADMITTED.store(0, Ordering::SeqCst);
-    LOGS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    SESSION.fetch_add(1, Ordering::Release);
+    retained.clear();
 }
 
 #[cfg(test)]

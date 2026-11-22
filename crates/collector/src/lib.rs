@@ -58,7 +58,8 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut
         }
     }
     if reason == DLL_THREAD_DETACH {
-        collector_workers::private_heap::PRIVATE_HEAP.thread_exit();
+        // SAFETY: Windows is detaching the exiting thread from this DLL.
+        unsafe { collector_workers::private_heap::PRIVATE_HEAP.thread_exit() };
     }
     unsafe { collector_workers::private_heap::PRIVATE_HEAP.detach(reason, reserved) };
     1

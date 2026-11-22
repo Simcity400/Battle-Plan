@@ -61,7 +61,7 @@ fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_stor
 #[test]
 fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inputs() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
     let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
@@ -115,7 +115,7 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
 fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     assert!(size_of::<PendingAcquisition>() <= 2 * size_of::<acquisition::Ticket>());
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
@@ -157,7 +157,7 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
 #[test]
 fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_refusals() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut captured = extended::Captured::with_capacities(&extended::Capacities::default());
@@ -210,7 +210,7 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
 #[test]
 fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut request = acquisition::PresentationRequest {
@@ -260,7 +260,7 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (orders_failure, reason) in [
@@ -300,7 +300,7 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
 #[test]
 fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let part = Box::new(collector_divisions::orders_parts::Part::new());
@@ -337,7 +337,7 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (earlier, reason) in [
@@ -399,7 +399,7 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job =
         || acquisition::Job::OrdersStitch(stitch_request(acquisition::STITCH_PANIC_BASE, None));
@@ -441,7 +441,7 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
 #[test]
 fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job = acquisition::Job::OrdersStitch(stitch_request(0, Some("original census refusal")));
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job) };
@@ -482,7 +482,7 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
 
 #[test]
 fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let ticket = batch
         .park(&mut Some(acquisition::Job::OrdersStitch(stitch_request(
@@ -524,7 +524,8 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
 fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
     let shared = Shared::new(0, 0, 1);
     for stopped_first in [false, true] {
-        let pool = acquisition::Pool::start(2, collector_workers::roles::MAX_JOBS).unwrap();
+        let pool =
+            acquisition::Pool::start_for_test(2, collector_workers::roles::MAX_JOBS).unwrap();
         {
             let mut batch = acquisition::Batch::new(&pool);
             let job = acquisition::Job::OrdersStitch(stitch_request(
@@ -565,7 +566,7 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
     use engine_native::walk::Outcome;
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let batch = acquisition::Batch::new(&pool);
     let stopped = Some("acquisition worker stopped");
@@ -876,7 +877,7 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
 #[test]
 fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start_for_test(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut selection = collector_certificates::slicing::SliceSelection::new();
     selection.reset(5, false);
@@ -1404,7 +1405,13 @@ impl TestBuilder {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let builder = {
             let (shared, stop) = (Arc::clone(shared), Arc::clone(&stop));
-            collector_test_support::spawn_ending(move || shared.build_ahead_until(&stop, follow))
+            collector_test_support::spawn_ending(move || {
+                shared.build_ahead_until(
+                    &collector_workers::WorkerStart::for_test().bind(),
+                    &stop,
+                    follow,
+                )
+            })
         };
         Self {
             stop,

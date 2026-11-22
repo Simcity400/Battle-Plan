@@ -1644,6 +1644,7 @@ impl Default for Statistics {
 
 #[must_use = "prepared observations must be written before processing another hour"]
 pub struct PreparedFrame {
+    preparation: Option<crate::spool_writer::Preparation>,
     writer_epoch: u64,
     source: FrameInput,
     id: String,
@@ -1808,6 +1809,11 @@ impl QueuedFrame {
     }
 }
 
+pub enum HistoryAttempt {
+    Fenced,
+    Ready(io::Result<Option<(HistoryReply, Option<File>)>>),
+}
+
 pub enum HistoryReply {
     Ready(String),
     Closing {
@@ -1964,16 +1970,28 @@ impl Processor {
         }
     }
     pub fn new(
+        lifecycle: &collector_workers::Owner,
+        root: &Path,
+        history: PreparedCampaigns,
+        session: SessionStart,
+    ) -> io::Result<Self> {
+        let owner = collector_capture::sampling::SpoolOwner::claim(lifecycle)
+            .ok_or_else(|| io::Error::other("collector spool already owned"))?;
+        Self::new_inner(root, history, session, owner, lifecycle.worker())
+    }
+
+    fn new_inner(
         root: &Path,
         history: PreparedCampaigns,
         session: SessionStart,
         owner: collector_capture::sampling::SpoolOwner,
+        start: collector_workers::WorkerStart,
     ) -> io::Result<Self> {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
         let writer = crate::spool_writer::Writer::start(root.into())?;
-        let journal_thread = crate::columnar::JournalThread::start()?;
+        let journal_thread = crate::columnar::JournalThread::start(start)?;
         Ok(Self {
             owner,
             root: root.into(),
@@ -2020,9 +2038,14 @@ impl Processor {
         session: SessionStart,
     ) -> io::Result<Self> {
         // SAFETY: the caller excludes live data and owns the fixture inputs.
-        Self::new(root, history, session, unsafe {
-            collector_capture::sampling::SpoolOwner::fixture()
-        })
+        let owner = unsafe { collector_capture::sampling::SpoolOwner::fixture() };
+        Self::new_inner(
+            root,
+            history,
+            session,
+            owner,
+            collector_workers::WorkerStart::for_test(),
+        )
     }
 
     pub fn set_command_drain(&mut self, drain: collector_player_commands::player_commands::Drain) {
@@ -2105,7 +2128,20 @@ impl Processor {
         }
     }
 
+    pub fn prepare_ready_campaign(
+        &mut self,
+        ready: &collector_capture::sampling::ReadyFrame<'_>,
+    ) -> io::Result<()> {
+        self.prepare_campaign(ready.captured())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
+        assert!(self.owner.is_fixture());
+        self.prepare_campaign(captured)
+    }
+
+    fn prepare_campaign(&mut self, captured: &Captured) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
@@ -2211,7 +2247,30 @@ impl Processor {
         }
     }
 
+    pub fn prepare_ready_frame(
+        &mut self,
+        ready: &mut collector_capture::sampling::ReadyFrame<'_>,
+    ) -> io::Result<PreparedFrame> {
+        let captured = ready.claim_preparation(&self.owner).ok_or_else(|| {
+            invalid("decoded capture already prepared or belongs to another spool")
+        })?;
+        self.prepare_owned_frame(captured)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        assert!(self.owner.is_fixture());
+        self.prepare_owned_frame(captured)
+    }
+
+    fn prepare_owned_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        let preparation = self.writer.claim_preparation()?;
+        let mut prepared = self.prepare_frame_owned(captured)?;
+        prepared.preparation = Some(preparation);
+        Ok(prepared)
+    }
+
+    fn prepare_frame_owned(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
         self.poll_writer()?;
         if let Some(clock) = captured.clock.as_ref()
             && let Ok(id) = campaign_name(clock.campaign_id.as_bytes())
@@ -2471,7 +2530,7 @@ impl Processor {
         campaign.politics.assemble_owned(
             source.branch,
             source.hour,
-            captured.extended.politics(),
+            captured.extended.politics(&mut self.owner),
             &captured.countries,
             captured.countries_result,
             &mut source.tables,
@@ -2508,6 +2567,7 @@ impl Processor {
         let clock = clock.copy_owned()?;
         span.finish();
         Ok(PreparedFrame {
+            preparation: None,
             writer_epoch: 0,
             source,
             id,
@@ -2525,6 +2585,9 @@ impl Processor {
     }
 
     pub fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+        if !self.writer.owns_preparation(prepared.preparation.as_ref()) {
+            return Err(invalid("prepared frame belongs to a different spool"));
+        }
         let _details = replay_data::codec::error_details_scope();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
@@ -2534,6 +2597,7 @@ impl Processor {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let PreparedFrame {
+            preparation: _preparation,
             writer_epoch: epoch,
             mut source,
             id,
@@ -2929,6 +2993,30 @@ impl Processor {
 
     pub fn try_history_request(
         &mut self,
+        shared: &collector_capture::sampling::Shared,
+        fence: &mut Option<u64>,
+        request: &str,
+    ) -> HistoryAttempt {
+        if matches!(request.split_whitespace().nth(1), Some("close" | "release"))
+            && shared.history_pending(fence)
+        {
+            return HistoryAttempt::Fenced;
+        }
+        *fence = None;
+        HistoryAttempt::Ready(self.history_request(request))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_request_for_test(
+        &mut self,
+        request: &str,
+    ) -> io::Result<Option<(HistoryReply, Option<File>)>> {
+        assert!(self.owner.is_fixture());
+        self.history_request(request)
+    }
+
+    fn history_request(
+        &mut self,
         request: &str,
     ) -> io::Result<Option<(HistoryReply, Option<File>)>> {
         let mut words = request.split_whitespace();
@@ -3210,7 +3298,10 @@ impl Processor {
                 .ok_or_else(|| invalid("command campaign context disappeared"))?;
             let ordinal = self.command_ordinals.entry(drained.world).or_default();
             if *ordinal == 0 {
-                drained.batch.kinds = collector_player_commands::player_commands::Drain::catalog()?;
+                drained.batch.kinds = self.command_drain.as_ref().map_or_else(
+                    || Ok(Vec::new()),
+                    collector_player_commands::player_commands::Drain::catalog,
+                )?;
             }
             let mut packet = replay::commands::Packet::pack(
                 *branch,
@@ -5755,7 +5846,10 @@ mod tests {
             backlogged: false,
             comparison: Box::default(),
             writer: crate::spool_writer::Writer::start(PathBuf::new()).unwrap(),
-            journal_thread: crate::columnar::JournalThread::start().unwrap(),
+            journal_thread: crate::columnar::JournalThread::start(
+                collector_workers::WorkerStart::for_test(),
+            )
+            .unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -5830,6 +5924,7 @@ mod tests {
         let source: FrameInput = decoded(captured, clock.clone(), branch).into();
         let retry_full = needs_retry(&source.tables);
         PreparedFrame {
+            preparation: None,
             writer_epoch: 0,
             source,
             id: std::str::from_utf8(ID).unwrap().into(),
@@ -5896,7 +5991,7 @@ mod tests {
         assert!(!prepared.allows_early_recycle());
         let shared = collector_capture::sampling::Shared::new(0, 0, 1);
         if prepared.needs_retry() {
-            shared.request_retry_full();
+            shared.request_retry_full_for_test();
         }
         let (recovery, refresh) = shared.retry_pending_for_test();
         assert!(refresh);
@@ -6886,7 +6981,10 @@ mod tests {
             backlogged: false,
             comparison: Box::default(),
             writer: crate::spool_writer::Writer::start(PathBuf::new()).unwrap(),
-            journal_thread: crate::columnar::JournalThread::start().unwrap(),
+            journal_thread: crate::columnar::JournalThread::start(
+                collector_workers::WorkerStart::for_test(),
+            )
+            .unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,

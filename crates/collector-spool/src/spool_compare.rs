@@ -623,8 +623,8 @@ mod tests {
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
         let mut pool = [
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-            collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+            collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
+            collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
         ];
         for helpers in [0, 1, 2] {
             let counters = Counters::default();

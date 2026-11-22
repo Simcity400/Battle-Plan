@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-lifetime/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 [dependencies]
+collector-workers.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true
 engine-events.workspace = true
@@ -47,6 +48,7 @@ workspace = true
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-ledger-tables = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
+collector-workers = { workspace = true, features = ["default", "test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }

@@ -28,7 +28,13 @@ impl CaptureAdmission {
         self.closed.store(false, Ordering::SeqCst);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn enter(&self) -> Option<CaptureLease<'_>> {
+        assert!(!std::ptr::eq(self, &HOURLY_ADMISSION));
+        self.enter_capture()
+    }
+
+    fn enter_capture(&self) -> Option<CaptureLease<'_>> {
         self.active.fetch_add(1, Ordering::SeqCst);
         if self.closed.load(Ordering::SeqCst) {
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -54,8 +60,12 @@ impl Drop for CaptureLease<'_> {
     }
 }
 
-pub static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
+static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
+
+pub fn runtime_admission(_owner: &collector_workers::Owner) -> &'static CaptureAdmission {
+    &HOURLY_ADMISSION
+}
 
 pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {
-    HOURLY_ADMISSION.enter()
+    HOURLY_ADMISSION.enter_capture()
 }

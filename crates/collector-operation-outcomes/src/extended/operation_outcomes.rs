@@ -28,7 +28,7 @@ impl Capacities {
     pub fn raise_for_descriptions(&mut self, bytes: usize) {
         grow_capacity(&mut self.bytes, bytes);
     }
-    pub fn prepare(&self) {
+    pub fn prepare(&self, _access: &collector_workers::CaptureAccess) {
         hooks::presize(self.entries, self.bytes);
     }
 }
@@ -57,7 +57,6 @@ impl Captured {
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        capacity.prepare();
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [Outcome::Unavailable { reason: ASSEMBLED }]

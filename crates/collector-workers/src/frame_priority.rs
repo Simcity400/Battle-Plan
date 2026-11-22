@@ -28,13 +28,16 @@ pub enum Role {
 const FIXED_ROLES: usize = 4;
 const SLOTS: usize = FIXED_ROLES + crate::spool_helper::MAX_HELPERS;
 impl Role {
-    const fn slot(self) -> usize {
+    const fn slot(self) -> Option<usize> {
         match self {
-            Role::Decode => 0,
-            Role::Spool => 1,
-            Role::Sizing => 2,
-            Role::Builder => 3,
-            Role::Helper(helper) => FIXED_ROLES + helper,
+            Role::Decode => Some(0),
+            Role::Spool => Some(1),
+            Role::Sizing => Some(2),
+            Role::Builder => Some(3),
+            Role::Helper(helper) if helper < crate::spool_helper::MAX_HELPERS => {
+                Some(FIXED_ROLES + helper)
+            }
+            Role::Helper(_) => None,
         }
     }
 }
@@ -68,7 +71,7 @@ fn priority(level: u32) -> i32 {
 }
 fn for_role(pressure: u32, role: usize) -> u32 {
     if pressure & TICKING != 0 {
-        return if role == Role::Sizing.slot() {
+        return if Some(role) == Role::Sizing.slot() {
             0
         } else if pressure & PRESSED != 0 {
             TICK_PRESSED
@@ -76,7 +79,7 @@ fn for_role(pressure: u32, role: usize) -> u32 {
             TICK
         };
     }
-    if role == Role::Decode.slot() {
+    if Some(role) == Role::Decode.slot() {
         pressure >> 2
     } else {
         pressure & 3
@@ -166,7 +169,16 @@ pub struct Pipeline {
     hook: OnceLock<Box<dyn Fn(Boundary) + Send + Sync>>,
 }
 impl Pipeline {
-    pub fn new() -> Self {
+    pub fn new(_owner: &crate::Owner) -> Self {
+        Self::empty()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_for_test() -> Self {
+        Self::empty()
+    }
+
+    fn empty() -> Self {
         Self {
             available: AtomicUsize::new(0),
             callbacks: AtomicUsize::new(0),
@@ -244,10 +256,11 @@ impl Pipeline {
         self.refresh();
         Callback(self)
     }
-    pub fn register(&self, role: Role) {
-        let Some(slot) = self.targets.get(role.slot()) else {
+    pub(crate) fn register(&self, _worker: &crate::Worker, role: Role) {
+        let Some(index) = role.slot() else {
             return;
         };
+        let slot = &self.targets[index];
         if slot.get().is_some() {
             return;
         }
@@ -270,9 +283,8 @@ impl Pipeline {
         }
     }
     pub fn registered(&self, role: Role) -> bool {
-        self.targets
-            .get(role.slot())
-            .is_some_and(|slot| slot.get().is_some())
+        role.slot()
+            .is_some_and(|index| self.targets[index].get().is_some())
     }
     pub fn refresh(&self) {
         let pressure = self.pressure();
@@ -453,12 +465,36 @@ fn wait(event: &OwnedHandle, timer: &OwnedHandle, delay: Option<Duration>) -> bo
     result < count || (count == 1 && result == WAIT_TIMEOUT)
 }
 
+static RECONCILER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct Reconciler {
+    _registration: Option<std::sync::MutexGuard<'static, ()>>,
     pipeline: engine_allocation::SharedBox<Pipeline>,
     thread: Option<JoinHandle<()>>,
 }
 impl Reconciler {
-    pub fn start(pipeline: engine_allocation::SharedBox<Pipeline>) -> Result<Self, &'static str> {
+    pub fn start(
+        owner: &crate::Owner,
+        pipeline: engine_allocation::SharedBox<Pipeline>,
+    ) -> Result<Self, &'static str> {
+        let registration = RECONCILER
+            .try_lock()
+            .map_err(|_| "frame priority reconciler already started")?;
+        Self::start_worker(Some(registration), owner.worker(), pipeline)
+    }
+
+    #[cfg(test)]
+    fn start_for_test(
+        pipeline: engine_allocation::SharedBox<Pipeline>,
+    ) -> Result<Self, &'static str> {
+        Self::start_worker(None, crate::WorkerStart::for_test(), pipeline)
+    }
+
+    fn start_worker(
+        registration: Option<std::sync::MutexGuard<'static, ()>>,
+        start: crate::WorkerStart,
+        pipeline: engine_allocation::SharedBox<Pipeline>,
+    ) -> Result<Self, &'static str> {
         let (event, timer) = unsafe {
             (
                 CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()),
@@ -485,11 +521,11 @@ impl Reconciler {
             .name("hoi4-frame-priority".into())
             .spawn(move || {
                 crate::private_heap::off_hold_path();
+                let registration = start.bind();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit::default();
-                // SAFETY: this is the owned reconciler with an exit guard.
-                unsafe { crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority) };
-                let mut own = crate::priority::OwnPriority::frame_pipeline();
+                let _sampler_exit = registration.sampled();
+                crate::thread_cpu::register(&registration, crate::thread_cpu::Role::FramePriority);
+                let mut own = crate::priority::OwnPriority::frame_pipeline(&registration);
                 if !own.reconciler() {
                     let _ = send.send(false);
                     return;
@@ -523,12 +559,18 @@ impl Reconciler {
             })
             .map_err(|_| "frame priority reconciler could not start")?;
         if ready.recv() != Ok(true) {
+            // SAFETY: the JoinHandle keeps the thread handle open.
+            let id = unsafe {
+                windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _)
+            };
             let _ = thread.join();
-            // SAFETY: the reconciler owner clears its own registration.
-            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
+            if registration.is_some() {
+                crate::thread_cpu::clear_matching(crate::thread_cpu::Role::FramePriority, id);
+            }
             return Err("frame priority reconciler policy failed");
         }
         Ok(Self {
+            _registration: registration,
             pipeline,
             thread: Some(thread),
         })
@@ -545,12 +587,15 @@ impl Reconciler {
     }
     pub fn finish(&mut self) {
         self.pipeline.stopping.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
+        if self.thread.is_some() {
+            let id = self.thread_id();
+            let thread = self.thread.take().unwrap();
             // SAFETY: the pipeline owns this event until after the joined worker exits.
             unsafe { SetEvent(self.pipeline.event.get().unwrap().as_raw_handle()) };
             let _ = thread.join();
-            // SAFETY: the reconciler owner clears its own registration.
-            unsafe { crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0) };
+            if self._registration.is_some() {
+                crate::thread_cpu::clear_matching(crate::thread_cpu::Role::FramePriority, id);
+            }
         }
     }
 }

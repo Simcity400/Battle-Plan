@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-#[derive(Default)]
 pub struct Frames {
     active: AtomicBool,
     started: AtomicU64,
@@ -13,6 +12,23 @@ pub struct Capture<'a> {
 }
 
 impl Frames {
+    pub fn new(_owner: &crate::Owner) -> Self {
+        Self::empty()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_for_test() -> Self {
+        Self::empty()
+    }
+
+    fn empty() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            started: AtomicU64::new(0),
+            published: AtomicU64::new(0),
+        }
+    }
+
     pub fn capture(&self) -> Capture<'_> {
         assert!(
             !self.active.swap(true, Ordering::Acquire),
@@ -70,7 +86,7 @@ mod tests {
 
     #[test]
     fn fence_includes_acquisition_and_decode_but_not_later_captures() {
-        let frames = Frames::default();
+        let frames = Frames::new_for_test();
         let owned = [AtomicU64::new(0), AtomicU64::new(0)];
         let acquiring = frames.capture();
         let fence = frames.snapshot();
@@ -92,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_capture_without_a_frame_does_not_leave_a_pending_fence() {
-        let frames = Frames::default();
+        let frames = Frames::new_for_test();
         let capture = frames.capture();
         let fence = frames.snapshot();
         drop(capture);

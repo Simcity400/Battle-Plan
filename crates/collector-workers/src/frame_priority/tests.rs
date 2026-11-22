@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 fn fixture(high: bool) -> Arc<Pipeline> {
-    let pipeline = Arc::new(Pipeline::new());
+    let pipeline = Arc::new(Pipeline::new_for_test());
     if !high {
         for _ in 0..collector_extended_support::hourly::BUFFERS {
             pipeline.publish();
         }
     }
-    pipeline.register(Role::Decode);
+    pipeline.register(&crate::WorkerStart::for_test().bind(), Role::Decode);
     pipeline
 }
 fn change(pipeline: &Pipeline, high: bool) {
@@ -41,12 +41,24 @@ fn pressure_is_early_targeted_and_only_during_capture() {
     let pipeline = fixture(false);
     assert_eq!(pipeline.pressure(), 0);
     let callback = pipeline.callback();
-    assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 0);
-    assert_eq!(for_role(pipeline.pressure(), Role::Sizing.slot()), 0);
+    assert_eq!(
+        for_role(pipeline.pressure(), Role::Decode.slot().unwrap()),
+        0
+    );
+    assert_eq!(
+        for_role(pipeline.pressure(), Role::Sizing.slot().unwrap()),
+        0
+    );
     pipeline.claim();
     pipeline.claim();
-    assert_eq!(for_role(pipeline.pressure(), Role::Spool.slot()), 1);
-    assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 1);
+    assert_eq!(
+        for_role(pipeline.pressure(), Role::Spool.slot().unwrap()),
+        1
+    );
+    assert_eq!(
+        for_role(pipeline.pressure(), Role::Decode.slot().unwrap()),
+        1
+    );
     drop(callback);
     assert_eq!(pipeline.pressure(), 0);
 }
@@ -138,7 +150,9 @@ fn a_target_registered_after_the_final_read_is_not_lost() {
             .hook
             .set(Box::new(move |at| {
                 if at == Boundary::FinalDesiredRead && !fired.swap(true, Ordering::SeqCst) {
-                    weak.upgrade().unwrap().register(Role::Sizing);
+                    weak.upgrade()
+                        .unwrap()
+                        .register(&crate::WorkerStart::for_test().bind(), Role::Sizing);
                 }
             }))
             .is_ok()
@@ -148,7 +162,7 @@ fn a_target_registered_after_the_final_read_is_not_lost() {
     assert!(pipeline.pending.load(Ordering::SeqCst));
     apply(&pipeline, &mut budget, 0, &AtomicU32::new(0));
     assert_eq!(
-        pipeline.targets[Role::Sizing.slot()]
+        pipeline.targets[Role::Sizing.slot().unwrap()]
             .get()
             .unwrap()
             .applied
@@ -175,7 +189,7 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(pipeline.pending.load(Ordering::SeqCst));
     assert_eq!(
-        pipeline.targets[Role::Decode.slot()]
+        pipeline.targets[Role::Decode.slot().unwrap()]
             .get()
             .unwrap()
             .applied
@@ -193,7 +207,7 @@ fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wa
     let pipeline = fixture(true);
     let callback = pipeline.callback();
     for role in [Role::Spool, Role::Helper(0), Role::Helper(1), Role::Sizing] {
-        pipeline.register(role);
+        pipeline.register(&crate::WorkerStart::for_test().bind(), role);
     }
     let calls = AtomicUsize::new(0);
     let mut budget = Budget::default();
@@ -227,7 +241,7 @@ fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wa
 fn a_long_sizing_item_is_demoted_at_expiry_and_cooldown_starts_after_success() {
     let pipeline = fixture(true);
     let _callback = pipeline.callback();
-    pipeline.register(Role::Sizing);
+    pipeline.register(&crate::WorkerStart::for_test().bind(), Role::Sizing);
     let mut budget = Budget::default();
     let native = AtomicU32::new(0);
     apply(&pipeline, &mut budget, 0, &native);
@@ -311,8 +325,8 @@ fn shutdown_racing_the_last_write_still_gets_a_normal_pass() {
 
 #[test]
 fn the_owned_reconciler_starts_boost_disabled_and_joins_without_targets() {
-    let pipeline = engine_allocation::shared(Pipeline::new()).unwrap();
-    let mut worker = Reconciler::start(pipeline.clone()).unwrap();
+    let pipeline = engine_allocation::shared(Pipeline::new_for_test()).unwrap();
+    let mut worker = Reconciler::start_for_test(pipeline.clone()).unwrap();
     assert_ne!(worker.thread_id(), 0);
     let mut disabled = 0;
     let valid = unsafe {
@@ -350,7 +364,7 @@ fn a_delayed_announcer_cannot_hide_a_later_real_change() {
 
 #[test]
 fn availability_counts_every_published_frame_and_each_claim() {
-    let pipeline = Pipeline::new();
+    let pipeline = Pipeline::new_for_test();
     let _callback = pipeline.callback();
     pipeline.publish();
     assert_eq!(pipeline.free_count(), 1);

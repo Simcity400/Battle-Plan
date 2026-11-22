@@ -13,10 +13,14 @@ fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() 
     let mut capacities = Capacities::default();
     assert!(
         capacities
-            .presize_live_inputs_periodic(&Unreadable, 0, false)
+            .presize_inputs_for_test(&Unreadable, 0, false)
             .is_err()
     );
-    assert!(capacities.presize_live_inputs(&Unreadable, 0).is_err());
+    assert!(
+        capacities
+            .presize_inputs_for_test(&Unreadable, 0, true)
+            .is_err()
+    );
 }
 
 #[test]

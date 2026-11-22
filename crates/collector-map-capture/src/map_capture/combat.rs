@@ -11,6 +11,8 @@ pub struct CombatReport {
 }
 
 pub struct CombatRequest {
+    ticket: u64,
+    recording: bool,
     base: usize,
     state: usize,
     land: CaptureRows<cland_combat::Row>,
@@ -31,7 +33,10 @@ pub struct CombatRequest {
 impl CombatRequest {
     pub fn capture(&mut self, memory: &impl Memory) -> CombatReport {
         let mut report = CombatReport::default();
-        let mut reads = collector_memory::read_accounting::table(TableId::LandCombats);
+        let mut reads = collector_memory::read_accounting::table_with_recording(
+            TableId::LandCombats,
+            self.recording,
+        );
         let begin = qpc();
         let progress_begin = qpc();
         let recorded = self.progress_recorded;
@@ -115,7 +120,12 @@ impl MapCaptured {
         progress: combat_progress::Captured,
         progress_recorded: bool,
     ) -> CombatRequest {
+        assert!(self.combat_request.is_none());
+        let ticket = super::request_id();
+        self.combat_request = Some(ticket);
         CombatRequest {
+            ticket,
+            recording: self.access.is_some(),
             base,
             state,
             progress_recorded,
@@ -143,6 +153,9 @@ impl MapCaptured {
         report: CombatReport,
         failure: Option<&'static str>,
     ) -> combat_progress::Captured {
+        assert_eq!(self.combat_request, Some(request.ticket));
+        self.combat_request = None;
+        let attempted = failure.is_some() || (request.land_finished && request.naval_finished);
         if let Some(reason) = failure {
             request.fail_pending(reason);
         }
@@ -155,7 +168,7 @@ impl MapCaptured {
         self.naval_combat_participants = request.naval_participants;
         self.naval_groups = request.naval_groups;
         self.naval_groups_required = request.naval_groups_required;
-        self.combat_ticks = Some(report.map_ticks);
+        self.combat_ticks = attempted.then_some(report.map_ticks);
         request.progress
     }
 }

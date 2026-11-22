@@ -968,6 +968,7 @@ pub struct Drained {
 
 pub struct Drain {
     id: Option<u64>,
+    catalog: Vec<Kind>,
     state: DrainState,
 }
 
@@ -1237,15 +1238,9 @@ impl DrainState {
 }
 
 impl Drain {
-    pub fn catalog() -> io::Result<Vec<Kind>> {
-        let store = STORE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(live) = store.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let mut kinds = engine_allocation::vec(live.catalog.len())?;
-        for kind in &live.catalog {
+    pub fn catalog(&self) -> io::Result<Vec<Kind>> {
+        let mut kinds = engine_allocation::vec(self.catalog.len())?;
+        for kind in &self.catalog {
             kinds.push(Kind {
                 id: kind.id,
                 token: kind.token,
@@ -1258,6 +1253,8 @@ impl Drain {
 }
 
 pub struct Hooks {
+    installation: Option<u64>,
+    retired: bool,
     taps: Vec<Tap>,
     publication_attempted: bool,
     drain: Option<Drain>,
@@ -1272,11 +1269,13 @@ impl Hooks {
     /// all admitted taps have returned. The caller must uphold any other callback preconditions
     /// for that same interval.
     pub unsafe fn new(
+        _owner: &collector_workers::Owner,
         memory: &impl Memory,
         base: usize,
         sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> Self {
         let mut drain_id = None;
+        let mut catalog = Vec::new();
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
             for (site, slot) in native::SITES.iter().zip(&mut located) {
@@ -1296,6 +1295,7 @@ impl Hooks {
                 .map_err(|_| "command drain identity exhausted")?;
             live.drain_id = id;
             drain_id = Some(id);
+            catalog = std::mem::take(&mut live.catalog);
             let pointer = std::ptr::from_ref(&*live).cast_mut();
             *STORE
                 .lock()
@@ -1312,6 +1312,8 @@ impl Hooks {
                 .collect::<Result<Vec<_>, _>>()
         })();
         Self {
+            installation: drain_id,
+            retired: false,
             taps: result.unwrap_or_else(|reason| {
                 collector_hooks::hook::installation::refused(
                     collector_hooks::hook::installation::Kind::Construction,
@@ -1323,6 +1325,7 @@ impl Hooks {
             publication_attempted: false,
             drain: Some(Drain {
                 id: drain_id,
+                catalog,
                 state: DrainState::default(),
             }),
         }
@@ -1332,7 +1335,17 @@ impl Hooks {
         self.drain.take()
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    /// # Safety
+    /// Keep this hook owner alive and in place until any shared publication round
+    /// which queues its taps has published or cancelled them.
+    pub unsafe fn set_enabled(
+        &mut self,
+        _owner: &collector_workers::Owner,
+        enabled: bool,
+    ) -> Result<bool, &'static str> {
+        if self.retired {
+            return Err("player command hooks already released");
+        }
         if !collector_hooks::hook::shared::defer_preparation(|| {
             ENABLED.store(false, Ordering::SeqCst)
         }) {
@@ -1358,21 +1371,29 @@ impl Hooks {
 
     /// # Safety
     /// All command taps must be restored and their in-flight callbacks must have quiesced.
-    pub unsafe fn release_after_quiet(&mut self) {
-        self.publication_attempted = false;
-        LIVE.store(std::ptr::null_mut(), Ordering::Release);
-        STORE
+    pub unsafe fn release_after_quiet(&mut self, _owner: &collector_workers::Owner) {
+        self.retired = true;
+        self.release_installation();
+    }
+
+    fn release_installation(&mut self) {
+        let Some(id) = self.installation.take() else {
+            return;
+        };
+        let mut store = STORE
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if store.as_ref().is_some_and(|live| live.drain_id == id) {
+            LIVE.store(std::ptr::null_mut(), Ordering::Release);
+            store.take();
+        }
     }
 }
 
 impl Drop for Hooks {
     fn drop(&mut self) {
         if !self.publication_attempted {
-            // SAFETY: publication was never attempted, so no command tap entered.
-            unsafe { self.release_after_quiet() };
+            self.release_installation();
         }
     }
 }

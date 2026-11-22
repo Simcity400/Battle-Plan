@@ -34,13 +34,14 @@ static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
 static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "worker_sampler")]
-#[derive(Default)]
-pub struct StopOnThreadExit(std::marker::PhantomData<*const ()>);
+pub struct StopOnThreadExit<'a>(pub(crate) &'a crate::Worker);
 
 #[cfg(feature = "worker_sampler")]
-impl Drop for StopOnThreadExit {
+impl Drop for StopOnThreadExit<'_> {
     fn drop(&mut self) {
-        crate::worker_sampler_state::stop_before_thread_exit();
+        if self.0.live {
+            crate::worker_sampler_state::stop_before_thread_exit();
+        }
     }
 }
 
@@ -52,7 +53,7 @@ use crate::spool_helper::MAX_HELPERS;
 /// # Safety
 /// The ID must identify this runtime's live spool helper at the given slot. That helper
 /// must participate in the sampler exit handshake.
-pub unsafe fn register_helper(index: usize, id: u32) {
+pub unsafe fn register_helper(_owner: &crate::Owner, index: usize, id: u32) {
     let Some(slot) = HELPERS.get(index) else {
         return;
     };
@@ -76,18 +77,24 @@ pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-/// # Safety
-/// This thread must be the collector worker for the given role. If sampled, its
-/// owner must join the sampler before the thread exits.
-pub unsafe fn register(role: Role) {
-    // SAFETY: the caller owns this worker's registration and exit protocol.
-    unsafe { register_id(role, GetCurrentThreadId()) };
+pub fn register(worker: &crate::Worker, role: Role) {
+    if worker.live {
+        record_id(role, unsafe { GetCurrentThreadId() });
+    }
+}
+
+pub(crate) fn clear_matching(role: Role, id: u32) {
+    let _ = REGISTERED[role as usize].compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire);
 }
 
 /// # Safety
 /// A nonzero ID must identify the live collector worker owned by this runtime for
 /// the given role. If sampled, its owner must join the sampler before it exits.
-pub unsafe fn register_id(role: Role, id: u32) {
+pub unsafe fn register_id(_owner: &crate::Owner, role: Role, id: u32) {
+    record_id(role, id);
+}
+
+fn record_id(role: Role, id: u32) {
     #[cfg(feature = "worker_sampler")]
     REGISTERED_CREATION[role as usize]
         .store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
@@ -111,15 +118,13 @@ fn registered_creation_time(id: u32) -> Option<u64> {
         .filter(|created| *created != 0)
 }
 
-#[cfg(feature = "worker_sampler")]
-/// # Safety
-/// This must be the runtime's decode worker registering itself. Its owner must join
-/// the sampler before the decode thread exits.
-pub unsafe fn register_decode() {
-    DECODE_CREATION.store(
-        registered_creation_time(unsafe { GetCurrentThreadId() }).unwrap_or(0),
-        Ordering::Release,
-    );
+pub fn register_decode(worker: &crate::Worker) {
+    if worker.live {
+        let id = unsafe { GetCurrentThreadId() };
+        #[cfg(feature = "worker_sampler")]
+        DECODE_CREATION.store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
+        WORKER_ID.store(id, Ordering::Release);
+    }
 }
 
 #[cfg(feature = "worker_sampler")]
@@ -483,10 +488,10 @@ mod tests {
     #[test]
     fn registered_threads_appear_in_live_status() {
         // SAFETY: this test owns the thread registry and starts no sampler.
-        unsafe { register(Role::Runtime) };
+        record_id(Role::Runtime, unsafe { GetCurrentThreadId() });
         let me = unsafe { GetCurrentThreadId() };
         // SAFETY: this test registers its own unsampled capture thread.
-        unsafe { register_id(Role::Capture, me) };
+        record_id(Role::Capture, me);
         let status: Value = serde_json::to_value(status(&[me])).unwrap();
         let threads = status["threads"].as_array().unwrap();
         let worker = threads
@@ -512,8 +517,6 @@ pub fn decode_worker() -> u32 {
     WORKER_ID.load(Ordering::Acquire)
 }
 
-/// # Safety
-/// Only the owner of the decode worker may publish its live ID or clear it with zero.
-pub unsafe fn set_decode_worker(id: u32) {
-    WORKER_ID.store(id, Ordering::Release);
+pub fn clear_decode_worker(_owner: &crate::Owner) {
+    WORKER_ID.store(0, Ordering::Release);
 }

@@ -1,4 +1,3 @@
-use engine_sites::Rva;
 use crate::{
     hook::{Hook, Registers, Tap},
     shared_lane::SharedLane,
@@ -7,6 +6,7 @@ use collector_primitives::spill_stack::SpillStack;
 use engine_allocation as allocation;
 use engine_events::politics_sites as native;
 use engine_native::Memory;
+use engine_sites::Rva;
 use replay_data::{
     rows::GovernmentCause, rows::PowerAction, rows::PowerCause, rows::PowerCurrency,
     rows::PowerDailyCostKind, rows::PowerObjectKind, rows::PowerOperation, rows::PowerOriginKind,
@@ -583,7 +583,8 @@ fn base() -> usize {
 }
 
 fn daily_cost_caller(caller: Option<u64>) -> bool {
-    caller.is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
+    caller
+        .is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
 }
 fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     engine_native::read::<T>(&memory(), address)
@@ -597,13 +598,17 @@ fn operand<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     engine_native::read::<T>(&operand_memory(), address)
 }
 fn operand_hour() -> Option<i32> {
-    let state =
-        operand::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    let state = operand::<u64>(engine_sites::at(
+        base(),
+        engine_native::cgame_state::SINGLETON_RVA,
+    )?)? as usize;
     operand::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn event_hour() -> Option<i32> {
-    let state =
-        read::<u64>(engine_sites::at(base(), engine_native::cgame_state::SINGLETON_RVA)?)? as usize;
+    let state = read::<u64>(engine_sites::at(
+        base(),
+        engine_native::cgame_state::SINGLETON_RVA,
+    )?)? as usize;
     read::<i32>(state.checked_add(engine_native::cgame_state::CURRENT_HOUR)?)
 }
 fn log() -> Option<&'static Log> {
@@ -725,11 +730,14 @@ pub unsafe fn release() {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
         return;
     }
-    LOG.store(0, Ordering::Release);
-    OFFERED.store(0, Ordering::Release);
-    LOGS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    {
+        let mut logs = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        LOG.store(0, Ordering::Release);
+        OFFERED.store(0, Ordering::Release);
+        logs.clear();
+    }
     CONSERVATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -944,8 +952,8 @@ fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &imp
     COUNTERS[1].fetch_add(1, Ordering::Relaxed);
     let needed = key_bytes(&keys);
     let mut bytes = Vec::new();
-    let reserved = allocation::advisory(|| allocation::reserve_exact(&mut bytes, needed))
-        .and_then(|()| {
+    let reserved =
+        allocation::advisory(|| allocation::reserve_exact(&mut bytes, needed)).and_then(|()| {
             bytes.resize(needed, 0);
             log.pushed.reserve((record, bytes))
         });
@@ -1254,8 +1262,7 @@ fn drain_until(
     {
         for (lane, end) in log.lanes.iter().zip(cursors) {
             lane.consumed.store(end.cursor, Ordering::Release);
-            lane.consumed_spilled
-                .store(end.spilled, Ordering::Release);
+            lane.consumed_spilled.store(end.spilled, Ordering::Release);
         }
         log.consumed.store(
             cursor - log.base_cursor.load(Ordering::Acquire),
@@ -1295,7 +1302,11 @@ fn drain_until(
                 (n, unsafe { (*lane.slots[slot].get()).sequence })
             })
             .map(|(n, sequence)| (Source::Lane(n), sequence))
-            .chain(shared.peek().map(|&(sequence, _)| (Source::Shared, sequence)))
+            .chain(
+                shared
+                    .peek()
+                    .map(|&(sequence, _)| (Source::Shared, sequence)),
+            )
             .chain(
                 spilled
                     .get(spill_at)
@@ -1357,8 +1368,7 @@ fn drain_until(
     for ((lane, tail), end) in log.lanes.iter().zip(tails).zip(cursors) {
         lane.consumed.store(tail, Ordering::Release);
         if tail == end.cursor {
-            lane.consumed_spilled
-                .store(end.spilled, Ordering::Release);
+            lane.consumed_spilled.store(end.spilled, Ordering::Release);
         }
     }
     log.consumed.store(
@@ -2320,12 +2330,14 @@ unsafe fn entry_forward(
             Scope::MioResearchDaily if caller == Some(MIO_RESEARCH_COST_RETURN) => {
                 mio_component(owner, a, operand::<i64>(b), PowerDailyCostKind::MioResearch)
             }
-            Scope::MioProductionDaily if caller == Some(MIO_PRODUCTION_COST_RETURN) => mio_component(
-                owner,
-                a,
-                operand::<i64>(b),
-                PowerDailyCostKind::MioProduction,
-            ),
+            Scope::MioProductionDaily if caller == Some(MIO_PRODUCTION_COST_RETURN) => {
+                mio_component(
+                    owner,
+                    a,
+                    operand::<i64>(b),
+                    PowerDailyCostKind::MioProduction,
+                )
+            }
             _ => {}
         }
     }
@@ -3013,9 +3025,7 @@ impl Hooks {
         for (index, &(address, original)) in tap_sites.iter().enumerate() {
             taps.push(unsafe { Tap::new(address, tap, index, original) }?);
         }
-        taps.push(
-            unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }?,
-        );
+        taps.push(unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }?);
         Ok(Self { entries, taps })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -4471,7 +4481,10 @@ mod tests {
         let key = |address| engine_sites::reference(0, address);
         assert_eq!(caller_cause(key(0x76fe2e)), PowerCause::Decision);
         assert_eq!(caller_cause(key(0x7631ef)), PowerCause::NotIdentified);
-        assert_eq!(caller_cause(Some(native::DAILY_CP_CALLER)), PowerCause::DailyGain);
+        assert_eq!(
+            caller_cause(Some(native::DAILY_CP_CALLER)),
+            PowerCause::DailyGain
+        );
         let console = government_context(Scope::ConsoleSubject, None, Context::default());
         assert_eq!(
             government_context(Scope::SubjectGovernment, None, console).government,
@@ -4531,7 +4544,8 @@ mod tests {
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
         let mut cursors = vec![LaneCursor::default(); 2];
-        let handoff = handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff =
+            handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];
@@ -4740,7 +4754,10 @@ mod tests {
             [1, 2, 3, 4, 5, 6]
         );
         assert_eq!(
-            output.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            output
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
             (1..=6).collect::<Vec<_>>()
         );
         let key = output[3].identity.keys[0];
@@ -4795,7 +4812,10 @@ mod tests {
             (1..=40).collect::<Vec<_>>()
         );
         assert_eq!(
-            output.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            output
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
             (1..=40).collect::<Vec<_>>()
         );
         for event in output.iter().filter(|event| event.country % 2 == 0) {

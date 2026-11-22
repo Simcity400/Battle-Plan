@@ -49,9 +49,16 @@ impl Captured {
             + self.roster.capacity()
                 * std::mem::size_of::<engine_air_history::air_loss_sites::RosterRow>()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities) {
+    pub fn prepare_live(
+        &mut self,
+        _access: &collector_workers::CaptureAccess,
+        capacity: &mut Capacities,
+    ) {
         producer::presize(0);
         capacity.events = capacity.events.max(producer::capacity());
+    }
+
+    pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_vec(&mut self.rows.rows, capacity.events);
         grow_vec(&mut self.roster, capacity.roster);
     }

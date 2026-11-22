@@ -1,4 +1,3 @@
-
 use std::{
     ptr,
     sync::atomic::{
@@ -130,7 +129,17 @@ unsafe fn free(table: *mut Table) {
     }
 }
 
+struct BoundaryOwner<'a>(&'a AtomicBool);
+
+impl Drop for BoundaryOwner<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, SeqCst);
+    }
+}
+
 pub struct WatchRegistry {
+    boundary_owner: AtomicBool,
+    offer_owner: std::sync::Mutex<()>,
     table: AtomicPtr<Table>,
     offered: AtomicPtr<Table>,
     draining: AtomicPtr<Table>,
@@ -191,6 +200,8 @@ impl WatchRegistry {
 
     const fn with(purge: bool, marking: bool) -> Self {
         Self {
+            boundary_owner: AtomicBool::new(false),
+            offer_owner: std::sync::Mutex::new(()),
             table: AtomicPtr::new(ptr::null_mut()),
             offered: AtomicPtr::new(ptr::null_mut()),
             draining: AtomicPtr::new(ptr::null_mut()),
@@ -490,6 +501,10 @@ impl WatchRegistry {
     }
 
     pub fn boundary(&self, invalidate: bool) -> Boundary {
+        if self.boundary_owner.swap(true, SeqCst) {
+            return Boundary::Deferred;
+        }
+        let _owner = BoundaryOwner(&self.boundary_owner);
         if invalidate {
             self.new_epoch();
         }
@@ -610,14 +625,11 @@ impl WatchRegistry {
     }
 
     fn retire_drained(&self) {
-        let drained = self.draining.load(SeqCst);
-        if !drained.is_null()
-            && self
-                .retired
-                .compare_exchange(ptr::null_mut(), drained, SeqCst, SeqCst)
-                .is_ok()
-        {
-            self.draining.store(ptr::null_mut(), SeqCst);
+        if self.retired.load(SeqCst).is_null() {
+            let drained = self.draining.swap(ptr::null_mut(), SeqCst);
+            if !drained.is_null() {
+                self.retired.store(drained, SeqCst);
+            }
         }
     }
 
@@ -675,6 +687,13 @@ impl WatchRegistry {
             self.failed_offers.fetch_add(1, Relaxed);
             return;
         };
+        let _owner = self
+            .offer_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if len <= self.requested.load(SeqCst) {
+            return;
+        }
         self.requested.store(len, SeqCst);
         let previous = self.offered.swap(Box::into_raw(table), SeqCst);
         // SAFETY: an offered table was never installed; the swap owns it.
@@ -729,7 +748,6 @@ impl WatchRegistry {
             running(state) as usize
         }
     }
-
 }
 
 impl Drop for WatchRegistry {
@@ -853,7 +871,10 @@ mod tests {
                         old(receiver, hint)
                     );
                 }
-                assert_eq!(watches.observed_sequence_at(receiver + COUNT * 8, slot), None);
+                assert_eq!(
+                    watches.observed_sequence_at(receiver + COUNT * 8, slot),
+                    None
+                );
             }
         });
         assert_eq!(counts(), before);

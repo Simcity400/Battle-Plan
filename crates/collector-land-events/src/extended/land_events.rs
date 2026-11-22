@@ -43,9 +43,12 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
+    pub fn prepare_live(&mut self, _access: &collector_workers::CaptureAccess, c: &mut Capacities) {
         crate::land_events::prepare();
         c.words = c.words.max(crate::land_events::capacity());
+    }
+
+    pub fn grow(&mut self, c: &mut Capacities) {
         if let Some(d) = self.drained {
             grow_capacity(&mut c.words, d.required);
         }

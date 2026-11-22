@@ -134,9 +134,9 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
     use collector_capture::pack_conversion::{MAX_THREADS, Plan};
     use collector_projection::projection::{Projection, ProjectionScratch};
     let mut pool = [
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
-        collector_workers::spool_helper::SpoolHelper::start(None).unwrap(),
+        collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
+        collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
+        collector_workers::spool_helper::SpoolHelper::start_for_test().unwrap(),
     ];
     let helper_calls = collector_workers::spool_phases::HELPER
         .phase(collector_workers::spool_phases::Phase::ConvertPacks)

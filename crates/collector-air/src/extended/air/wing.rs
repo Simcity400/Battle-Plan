@@ -28,6 +28,7 @@ pub struct AirWingJob {
     pub(super) game_score_enabled: bool,
     pub(super) source_len: usize,
     pub map_outcome: Outcome,
+    pub(super) map_consumed: bool,
     pub source_outcome: Outcome,
     pub(super) naval_outcome: Outcome,
     pub(super) equipment_outcome: Outcome,
@@ -110,6 +111,7 @@ impl Default for AirWingJob {
             game_score_enabled: false,
             source_len: 0,
             map_outcome: NO_WING_SOURCE,
+            map_consumed: false,
             source_outcome: NO_WING_SOURCE,
             naval_outcome: NO_WING_SOURCE,
             equipment_outcome: NO_WING_SOURCE,
@@ -197,7 +199,12 @@ impl AirWingJob {
     pub fn has_storage(&self) -> bool {
         !self.sources.is_empty()
     }
+    pub fn claim_map(&mut self) -> bool {
+        !std::mem::replace(&mut self.map_consumed, true)
+    }
+
     pub fn clear(&mut self) {
+        self.map_consumed = false;
         self.names_len = 0;
         self.transport.reset_metadata();
         self.transport_ticks = 0;
@@ -460,7 +467,11 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     job.required = job.limits;
     job.game_score_enabled = ctx.game_score;
     job.game_score.begin(ctx.game_score);
-    job.required_memberships = if job.theatres_active { ctx.limits[0] } else { 0 };
+    job.required_memberships = if job.theatres_active {
+        ctx.limits[0]
+    } else {
+        0
+    };
     let source = WingMemory {
         inner: memory,
         bytes: std::cell::Cell::new([0; 2]),
@@ -603,8 +614,8 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
             }
             if job.theatres_active && (admitted.map || admitted.naval) {
                 if engine_native::walk::Buffer::Growing(&mut job.memberships)
-                        .ensure(membership_len + 1)
-                        .is_err()
+                    .ensure(membership_len + 1)
+                    .is_err()
                 {
                     return;
                 }

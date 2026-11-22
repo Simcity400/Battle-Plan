@@ -3,8 +3,8 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine_allocation::{collect_vec, copy_vec, owned_vec};
 use collector_observers::fleet_region_changes::Certificate as FleetCertificate;
+use engine_allocation::{collect_vec, copy_vec, owned_vec};
 use engine_native::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome};
 use replay_data::{
     rows::FleetCounterInputRow, rows::FreshTaskForceCounterEta, rows::NavalEngagementTarget,
@@ -154,6 +154,13 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
+    pub fn prepare_live(&self, _access: &collector_workers::CaptureAccess) {
+        if self.fleets != 0 {
+            collector_observers::fleet_region_changes::demand(self.fleets);
+            collector_observers::fleet_region_changes::presize();
+        }
+    }
+
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -408,10 +415,6 @@ impl Captured {
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
-        if capacity.fleets != 0 {
-            collector_observers::fleet_region_changes::demand(capacity.fleets);
-            collector_observers::fleet_region_changes::presize();
-        }
         Self {
             owned_pending: false,
             task_forces: CaptureRows::new(capacity.task_forces),
@@ -1085,7 +1088,9 @@ mod tests {
     #[test]
     fn sibling_failure_reset_settles_completed_counter_diagnostics_once() {
         use std::sync::atomic::Ordering::Relaxed;
-        let before = ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed));
+        let before = ARROW_REFUSALS
+            .each_ref()
+            .map(|counter| counter.load(Relaxed));
         let mut captured = Captured::vacant();
         captured.task_forces.rows.push(Default::default());
         captured.task_forces.outcome = Outcome::Rows { len: 1 };
@@ -1093,11 +1098,18 @@ mod tests {
         captured.motion.outcome = Outcome::Rows { len: 1 };
         captured.owned_pending = true;
         captured.reset();
-        let after = ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed));
+        let after = ARROW_REFUSALS
+            .each_ref()
+            .map(|counter| counter.load(Relaxed));
         assert_eq!(after, before.map(|count| count + 1));
         captured.reset();
         captured.decode_owned();
-        assert_eq!(ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed)), after);
+        assert_eq!(
+            ARROW_REFUSALS
+                .each_ref()
+                .map(|counter| counter.load(Relaxed)),
+            after
+        );
     }
 
     struct Singles<'a> {

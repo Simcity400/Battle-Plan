@@ -167,14 +167,18 @@ pub(crate) fn batch_left() {
     unsafe { WakeByAddressAll(WORK.as_ptr().cast()) };
 }
 
-pub fn settle_next() {
+pub fn refresh_request(_owner: &collector_workers::Owner) -> fn() {
+    settle_next
+}
+
+fn settle_next() {
     SETTLE.store(true, Ordering::Release);
 }
 
 /// # Safety
 /// Only the runtime that owns the hooks may mark the current capture as draining,
 /// after attempting to restore the hourly hook and before closing hourly admission.
-pub unsafe fn drain(deadline: Instant) -> bool {
+pub unsafe fn drain(_owner: &collector_workers::Owner, deadline: Instant) -> bool {
     DRAINING.store(true, Ordering::SeqCst);
     loop {
         let unread = PENDING.load(Ordering::SeqCst) && PENDING_WORLD.load(Ordering::SeqCst) != 0;
@@ -191,7 +195,7 @@ pub unsafe fn drain(deadline: Instant) -> bool {
 /// # Safety
 /// Only the runtime owner may close and take the unread count, after hourly admission is closed
 /// and all capture work has stopped.
-pub unsafe fn take_unread() -> u32 {
+pub unsafe fn take_unread(_owner: &collector_workers::Owner) -> u32 {
     take_unread_inner()
 }
 
@@ -305,7 +309,7 @@ pub(crate) fn hurried() -> bool {
 /// # Safety
 /// The attach owner must keep the thread alive until hourly admission is closed and
 /// all beside captures have drained.
-pub unsafe fn set_beside(thread: Option<&Thread>) {
+pub unsafe fn set_beside(_owner: &collector_workers::Owner, thread: Option<&Thread>) {
     set_beside_enabled(
         thread.is_some_and(|thread| thread.handle.is_some()) && crate::command_batch::enabled(),
     );
@@ -324,7 +328,7 @@ pub struct Thread {
 }
 
 impl Thread {
-    pub fn start(stack_bytes: usize) -> io::Result<Self> {
+    pub fn start(attach: &collector_workers::Owner, stack_bytes: usize) -> io::Result<Self> {
         let owner = THREAD_OWNER.try_lock().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -333,16 +337,18 @@ impl Thread {
         })?;
         capture_gate::on_wait(hurry);
         WORK.store(IDLE, Ordering::Release);
+        let worker = attach.worker();
         let handle = std::thread::Builder::new()
             .name("hoi4-capture".into())
             .stack_size(stack_bytes)
-            .spawn(run)?;
+            .spawn(move || run(&worker.bind()))?;
         let raw = handle.as_raw_handle();
         THREAD.store(raw as isize, Ordering::Release);
         let id = unsafe { GetThreadId(raw as _) };
         // SAFETY: this is the owned capture worker and the sampler does not sample this role.
         unsafe {
             collector_workers::thread_cpu::register_id(
+                attach,
                 collector_workers::thread_cpu::Role::Capture,
                 id,
             );
@@ -404,9 +410,9 @@ fn beside(away: &mut collector_workers::cpu_sets::AwayFromGame, game: Option<u32
     away.confined()
 }
 
-fn run() {
+fn run(worker: &collector_workers::Worker) {
     capture_gate::reader();
-    let mut away = collector_workers::cpu_sets::AwayFromGame::default();
+    let mut away = collector_workers::cpu_sets::AwayFromGame::new(worker);
     let idle = IDLE;
     loop {
         match WORK.load(Ordering::Acquire) {

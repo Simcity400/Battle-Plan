@@ -10,7 +10,7 @@ use replay::native_frame::{OneThread, RowFrame};
 use std::fs;
 
 fn journal_thread() -> Arc<JournalThread> {
-    JournalThread::start().unwrap()
+    JournalThread::start(collector_workers::WorkerStart::for_test()).unwrap()
 }
 
 fn row() -> RowFrame<'static> {

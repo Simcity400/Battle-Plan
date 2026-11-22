@@ -3,9 +3,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicU64, Ordering},
 };
-use windows_sys::Win32::{
-    System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets},
-};
+use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets};
 
 const GROUP_PROCESSORS: usize = 64;
 
@@ -130,12 +128,20 @@ pub fn away_failures() -> u64 {
     AWAY_FAILURES.load(Ordering::Relaxed)
 }
 
-#[derive(Default)]
 pub struct AwayFromGame {
+    _thread: std::marker::PhantomData<*const ()>,
     wanted: Option<u32>,
     applied: Option<&'static [u32]>,
 }
 impl AwayFromGame {
+    pub fn new(_worker: &crate::Worker) -> Self {
+        Self {
+            _thread: std::marker::PhantomData,
+            wanted: None,
+            applied: None,
+        }
+    }
+
     pub fn follow(&mut self, processor: Option<u32>) {
         if processor == self.wanted {
             return;
@@ -145,7 +151,10 @@ impl AwayFromGame {
         if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
             return;
         }
-        if select_away(unsafe { BorrowedHandle::borrow_raw(GetCurrentThread()) }, sets) {
+        if select_away(
+            unsafe { BorrowedHandle::borrow_raw(GetCurrentThread()) },
+            sets,
+        ) {
             self.applied = sets;
         }
     }

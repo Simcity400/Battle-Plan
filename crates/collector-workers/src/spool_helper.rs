@@ -95,15 +95,39 @@ pub struct SpoolHelper {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     thread_id: u32,
+    #[cfg(feature = "worker_sampler")]
+    sampled: bool,
 }
 
 impl SpoolHelper {
     pub fn start(
+        owner: &crate::Owner,
+        pipeline: engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
+        index: usize,
+    ) -> io::Result<Self> {
+        if index >= MAX_HELPERS {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Self::start_worker(
+            owner.worker(),
+            Some((pipeline, crate::frame_priority::Role::Helper(index))),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn start_for_test() -> io::Result<Self> {
+        Self::start_worker(crate::WorkerStart::for_test(), None)
+    }
+
+    fn start_worker(
+        start: crate::WorkerStart,
         priority: Option<(
             engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
             crate::frame_priority::Role,
         )>,
     ) -> io::Result<Self> {
+        #[cfg(feature = "worker_sampler")]
+        let sampled = start.is_live();
         let shared = Arc::new(Shared::default());
         let worker = Arc::clone(&shared);
         let (id_sender, id_receiver) = std::sync::mpsc::sync_channel(1);
@@ -112,11 +136,12 @@ impl SpoolHelper {
             .stack_size(crate::priority::BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 crate::private_heap::off_hold_path();
+                let registration = start.bind();
                 #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = crate::thread_cpu::StopOnThreadExit::default();
+                let _sampler_exit = registration.sampled();
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
-                serve(&worker, priority);
+                serve(&worker, priority, &registration);
             })?;
         let thread_id = id_receiver
             .recv()
@@ -125,6 +150,8 @@ impl SpoolHelper {
             shared,
             thread: Some(thread),
             thread_id,
+            #[cfg(feature = "worker_sampler")]
+            sampled,
         })
     }
 
@@ -185,7 +212,7 @@ impl SpoolHelper {
 impl Drop for SpoolHelper {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
-        if self.thread.is_some() {
+        if self.sampled && self.thread.is_some() {
             crate::worker_sampler_state::stop_before_thread_exit();
         }
         self.shared.lock().stop = true;
@@ -202,12 +229,13 @@ fn serve(
         engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
         crate::frame_priority::Role,
     )>,
+    worker: &crate::Worker,
 ) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::SpoolHelper);
-    let mut priority = crate::priority::OwnPriority::frame_pipeline();
+    let mut priority = crate::priority::OwnPriority::frame_pipeline(worker);
     let mut refresh = || {
         if let Some((pipeline, role)) = &pipeline {
-            priority.follow_pipeline(pipeline, *role);
+            priority.follow_pipeline(worker, pipeline, *role);
         } else {
             priority.follow(false);
         }
@@ -250,7 +278,7 @@ mod tests {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
         };
-        let mut helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start_for_test().unwrap();
         for backlogged in [false, true, false] {
             let observed = AtomicI32::new(i32::MIN);
             helper.join(
@@ -269,7 +297,7 @@ mod tests {
 
     #[test]
     fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let mut helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start_for_test().unwrap();
         let ran_on = AtomicU32::new(0);
         let total = AtomicUsize::new(0);
         for round in 1..=5 {
@@ -292,7 +320,7 @@ mod tests {
 
     #[test]
     fn a_helper_panic_is_resumed_and_an_own_panic_still_waits_for_the_job() {
-        let mut helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start_for_test().unwrap();
         let failing = || panic!("synthetic helper failure");
         let resumed = catch_unwind(AssertUnwindSafe(|| helper.join(false, &failing, || 1)));
         assert!(resumed.is_err());
@@ -312,9 +340,9 @@ mod tests {
     #[test]
     fn join_some_runs_each_index_once_on_its_own_helper_beside_the_own_share() {
         let mut pool = [
-            SpoolHelper::start(None).unwrap(),
-            SpoolHelper::start(None).unwrap(),
-            SpoolHelper::start(None).unwrap(),
+            SpoolHelper::start_for_test().unwrap(),
+            SpoolHelper::start_for_test().unwrap(),
+            SpoolHelper::start_for_test().unwrap(),
         ];
         for count in [1, 2, 3, 7] {
             let ran: [AtomicU32; 3] = std::array::from_fn(|_| AtomicU32::new(0));
@@ -349,7 +377,7 @@ mod tests {
 
     #[test]
     fn joining_allocates_nothing_on_the_spool_thread() {
-        let mut helper = SpoolHelper::start(None).unwrap();
+        let mut helper = SpoolHelper::start_for_test().unwrap();
         let count = AtomicUsize::new(0);
         let job = || {
             count.fetch_add(1, Ordering::Relaxed);
