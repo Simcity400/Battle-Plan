@@ -191,8 +191,8 @@ fn reach(side: &mut MapSide, hour: i32) {
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped before hour {hour}: {:?}", side.entry().playhead().error());
         crate::layers::recorded::reads_landed(side);
-        let before_newest = side.entry().playhead().newest();
-        let head = before_newest.unwrap_or(0).min(cap);
+        let before = side.entry().playhead().step_state();
+        let head = before.0.unwrap_or(0).min(cap);
         let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if !side.composing() && side.applied().is_some_and(|applied| applied >= hour) {
             return;
@@ -200,16 +200,17 @@ fn reach(side: &mut MapSide, hour: i32) {
         if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
             continue;
         }
+        let more = side
+            .entry()
+            .playhead()
+            .wait_step_after(before, cap)
+            .unwrap_or_else(|error| panic!("the playhead stopped before hour {hour}: {error}"));
         assert!(
-            before_newest.is_none_or(|newest| newest < cap),
+            more,
             "the map side reached hour {:?} (head cap {cap}) without reaching hour {hour}: {}",
             side.applied(),
             crate::layers::recorded::seen(side),
         );
-        side.entry()
-            .playhead()
-            .wait_newest_after(before_newest)
-            .unwrap_or_else(|error| panic!("the playhead stopped before hour {hour}: {error}"));
     }
 }
 

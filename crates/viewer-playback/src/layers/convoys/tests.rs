@@ -215,8 +215,8 @@ fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &c
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped before cap {cap}: {:?}", side.entry().playhead().error());
         recorded::reads_landed(side);
-        let before_newest = side.entry().playhead().newest();
-        let head = before_newest.unwrap_or(0).min(cap);
+        let before = side.entry().playhead().step_state();
+        let head = before.0.unwrap_or(0).min(cap);
         let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if done(side, &frame) {
             return;
@@ -224,16 +224,17 @@ fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &c
         if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
             continue;
         }
+        let more = side
+            .entry()
+            .playhead()
+            .wait_step_after(before, cap)
+            .unwrap_or_else(|error| panic!("the playhead stopped before cap {cap}: {error}"));
         assert!(
-            before_newest.is_none_or(|newest| newest < cap),
+            more,
             "the map side reached hour {:?} (cap {cap}) without reaching what the test waits for: {}",
             side.applied(),
             recorded::seen(side),
         );
-        side.entry()
-            .playhead()
-            .wait_newest_after(before_newest)
-            .unwrap_or_else(|error| panic!("the playhead stopped before cap {cap}: {error}"));
     }
 }
 
@@ -410,7 +411,9 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     assert_eq!(layer(&side).blocking_waits, waited, "a still publication waits on no convoy job");
     assert!(layer(&side).in_flight > 0, "the job out joins a later publication");
     routes.set(true);
-    side.settle_all().unwrap();
+    layer(&side).wait_replies_ready();
+    side.frame(side.applied().expect("a step applied")).unwrap();
+    assert_eq!(layer(&side).blocking_waits, waited, "an ordinary playing frame takes the ready reply via try_recv without blocking");
     assert_eq!((layer(&side).in_flight, layer(&side).carried().entities), (0, 0));
     assert_eq!(layer(&side).published(), Published::Current);
     assert_eq!(drawn(&side), (2, 5), "the newest convoys");

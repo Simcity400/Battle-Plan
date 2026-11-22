@@ -271,7 +271,10 @@ struct Maker {
 }
 
 impl Maker {
-    fn spawn(routes: Arc<dyn Routes>) -> io::Result<(Sender<Job>, Receiver<Made>)> {
+    fn spawn(
+        routes: Arc<dyn Routes>,
+        #[cfg(test)] sent: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    ) -> io::Result<(Sender<Job>, Receiver<Made>)> {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, made) = mpsc::channel::<Made>();
         let mut maker = Self { routes, stops: HashMap::new(), ribbons: HashMap::new(), provinces_version: 0 };
@@ -284,6 +287,12 @@ impl Maker {
                 }
                 if send.send(maker.make(job, answered)).is_err() {
                     return;
+                }
+                #[cfg(test)]
+                {
+                    let (count, changed) = &*sent;
+                    *count.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += answered;
+                    changed.notify_all();
                 }
             }
         })?;
@@ -520,6 +529,10 @@ pub struct Convoys {
     in_flight: usize,
     #[cfg(test)]
     blocking_waits: usize,
+    #[cfg(test)]
+    sent: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    #[cfg(test)]
+    jobs_sent: usize,
     worker_bytes: usize,
     moved: bool,
     window: bool,
@@ -566,6 +579,10 @@ impl Convoys {
             in_flight: 0,
             #[cfg(test)]
             blocking_waits: 0,
+            #[cfg(test)]
+            sent: Arc::default(),
+            #[cfg(test)]
+            jobs_sent: 0,
             worker_bytes: 0,
             moved: false,
             window: false,
@@ -909,7 +926,17 @@ impl Convoys {
             provinces_version: self.provinces_version,
         };
         if self.worker.is_none() {
-            match Maker::spawn(Arc::clone(&self.routes)) {
+            #[cfg(test)]
+            let sent = {
+                self.sent = Arc::new((Mutex::new(0), std::sync::Condvar::new()));
+                self.jobs_sent = 0;
+                Arc::clone(&self.sent)
+            };
+            match Maker::spawn(
+                Arc::clone(&self.routes),
+                #[cfg(test)]
+                sent,
+            ) {
                 Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     self.refused = Some(format!("The convoys layer is refused: its worker cannot start: {error}"));
@@ -921,6 +948,10 @@ impl Convoys {
             && jobs.send(job).is_ok()
         {
             self.in_flight += 1;
+            #[cfg(test)]
+            {
+                self.jobs_sent += 1;
+            }
             self.moved = false;
         }
     }
@@ -1193,6 +1224,15 @@ impl Layer for Convoys {
 }
 
 impl Convoys {
+    #[cfg(test)]
+    fn wait_replies_ready(&self) {
+        let (count, changed) = &*self.sent;
+        let mut held = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *held < self.jobs_sent {
+            held = changed.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     fn take_vision(&mut self, upstream: &Upstream<'_>) {
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()

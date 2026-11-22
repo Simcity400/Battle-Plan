@@ -509,6 +509,8 @@ struct Control {
     lands: Vec<usize>,
     done: Vec<Done>,
     newest: Option<Hour>,
+    published_steps: u64,
+    caught_up_at: Option<Hour>,
     stood: u64,
     stop: bool,
     error: Option<String>,
@@ -602,6 +604,7 @@ impl Shared {
             control.head = hour;
             control.asks.clear();
             control.newest = None;
+            control.caught_up_at = None;
         });
     }
 
@@ -915,6 +918,8 @@ impl Playhead {
                 lands: Vec::new(),
                 done: Vec::new(),
                 newest: None,
+                published_steps: 0,
+                caught_up_at: None,
                 stood: 0,
                 stop: false,
                 error: None,
@@ -1182,16 +1187,25 @@ impl Playhead {
     }
 
     #[cfg(feature = "test-support")]
-    pub fn wait_newest_after(&self, before: Option<Hour>) -> Result<Hour, String> {
+    pub fn step_state(&self) -> (Option<Hour>, u64) {
+        let control = lock(&self.shared.control);
+        (control.newest, control.published_steps)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
         let mut control = lock(&self.shared.control);
         loop {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
-            if let Some(newest) = control.newest
-                && before.is_none_or(|before| newest > before)
+            if control.published_steps > before.1 {
+                return Ok(true);
+            }
+            if control.newest.is_some_and(|newest| newest >= cap)
+                && control.caught_up_at.is_some_and(|at| at >= cap)
             {
-                return Ok(newest);
+                return Ok(false);
             }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
@@ -2073,8 +2087,21 @@ impl Stepper {
             self.joins_published = now;
             self.counters.joins_open = now.0;
             lock(&self.shared.report).2 = self.counters;
-            self.shared.nudge(|_| {});
+            let caught_up = self.caught_up_at();
+            self.shared.nudge(|control| control.caught_up_at = caught_up);
         }
+    }
+
+    fn caught_up_at(&self) -> Option<Hour> {
+        let newest = self.newest?;
+        if !self.joining.is_empty() || !self.catching.is_empty() {
+            return None;
+        }
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.lane.head())
+            .min()
+            .map_or(Some(newest), |head| Some(head.min(newest)))
     }
 
     fn ends_kept(&self) -> usize {
@@ -2500,7 +2527,11 @@ impl Stepper {
         }
         self.lands.extend(landing);
         lock(&self.shared.report).2 = self.counters;
-        self.shared.nudge(|control| control.newest = Some(hour));
+        let caught_up = self.caught_up_at();
+        self.shared.nudge(|control| {
+            control.newest = Some(hour);
+            control.caught_up_at = caught_up;
+        });
         Ok(true)
     }
 
@@ -2941,7 +2972,8 @@ impl Stepper {
                     let held = catch.lanes();
                     self.shared.free(held);
                     lock(&self.shared.report).2 = self.counters;
-                    self.shared.nudge(|_| {});
+                    let caught_up = self.caught_up_at();
+                    self.shared.nudge(|control| control.caught_up_at = caught_up);
                     moved = true;
                 }
                 Err(steps) => {
@@ -2972,7 +3004,12 @@ impl Stepper {
                 self.newest = Some(last);
                 self.counters.steps += 1;
                 lock(&self.shared.report).2 = self.counters;
-                self.shared.nudge(|control| control.newest = Some(last));
+                let caught_up = self.caught_up_at();
+                self.shared.nudge(|control| {
+                    control.newest = Some(last);
+                    control.published_steps += 1;
+                    control.caught_up_at = caught_up;
+                });
             }
             Err(step) => self.shared.free(step),
         }

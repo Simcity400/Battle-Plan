@@ -289,7 +289,8 @@ fn a_rebuilt_layer_after_vision_settles_while_its_worker_holds_its_build() {
     assert_eq!(probe_of(&side).published(), Published::Nothing, "before its first product it has published nothing");
     gate.open();
     let hour = side.applied().expect("the head has reached an hour");
-    let built = probe_of(&side).rebuilt().wait_ready(hour).unwrap();
+    let built = probe_of(&side).rebuilt().wait_settled(hour, 0).unwrap().expect("a built product");
+    assert!(built.of(hour), "built for hour {hour}: {:?}", built.hour);
     assert_eq!(built.product.as_ref().ok(), Some(&hour));
     side.settle_all().unwrap();
     assert_eq!(probe_of(&side).published(), Published::Cadence(hour), "once built it shows the hour of its rows");
@@ -302,7 +303,7 @@ fn a_table_the_recording_holds_nothing_of_is_refused_by_name_and_never_declared(
     let mut side = side_of(without(record(), TableId::Factions), vec![TableId::Factions], &gate);
     side.settle_all().unwrap();
     let hour = side.applied().expect("the head has reached an hour");
-    let built = probe_of(&side).rebuilt().wait_ready(hour).unwrap();
+    let built = probe_of(&side).rebuilt().wait_settled(hour, 0).unwrap().expect("a refused product");
     let why = built.product.as_ref().expect_err("the product is refused");
     assert!(why.contains("holds no Factions"), "the refusal names the table: {why}");
     assert!(!probe_of(&side).rebuilt().tables().contains(&TableId::Factions), "the table is never declared");
@@ -315,17 +316,19 @@ fn a_build_runs_under_the_recordings_executable_tables_and_one_that_panics_is_re
     let mut side = side_with(record(), vec![("scoped", NeedsTables { given: Some(recording_tables()) }), ("unscoped", NeedsTables { given: None })]);
     side.settle_all().unwrap();
     let hour = side.applied().expect("the head has reached an hour");
-    let scoped = layer_of::<NeedsTables>(&side, 1).rebuilt().wait_ready(hour).unwrap();
+    let scoped = layer_of::<NeedsTables>(&side, 1).rebuilt().wait_settled(hour, 0).unwrap().expect("a scoped product");
+    assert!(scoped.of(hour), "scoped built for hour {hour}: {:?}", scoped.hour);
     assert_eq!(scoped.product.as_ref().ok(), Some(&hour), "the build ran under the recording's tables: {:?}", scoped.product.as_ref().err());
     let unscoped = layer_of::<NeedsTables>(&side, 2).rebuilt();
-    let refused = unscoped.wait_ready(hour).unwrap();
+    let refused = unscoped.wait_settled(hour, 0).unwrap().expect("a panicked product");
     let why = refused.product.as_ref().expect_err("a build that panics is refused");
     assert!(why.contains("panicked") && why.contains("no recording's tables are in scope"), "the refusal names the panic: {why}");
     let builds = unscoped.builds().count;
     let next = next_hour(&mut side);
-    let _ = layer_of::<NeedsTables>(&side, 2).rebuilt().wait_builds(builds).unwrap();
+    let _ = layer_of::<NeedsTables>(&side, 2).rebuilt().wait_settled(next, 0).unwrap();
     side.frame(next).unwrap();
     let unscoped = layer_of::<NeedsTables>(&side, 2).rebuilt();
+    assert!(unscoped.builds().count > builds, "the worker kept building after a panic");
     assert!(unscoped.stopped().is_none(), "the worker has not stopped");
     assert!(unscoped.newer(None).expect("a product").product.is_err());
     assert!(side.entry().playhead().error().is_none(), "the playhead goes on");
@@ -337,11 +340,14 @@ fn a_build_that_misses_three_tables_learns_the_three_in_one_round() {
     let mut side = side_with(record(), vec![("in order", InOrder { reads: reads.clone() })]);
     let at = side.applied().unwrap_or(0);
     side.frame(at).unwrap();
-    layer_of::<InOrder>(&side, 1).rebuilt().wait_discovered(0).unwrap();
+    let _ = layer_of::<InOrder>(&side, 1).rebuilt().wait_settled(at, 0).unwrap();
+    assert_eq!(layer_of::<InOrder>(&side, 1).rebuilt().builds().discovered, 1, "one round learned the three");
     side.frame(at).unwrap();
     recorded::reads_landed(&side);
-    reach(&mut side, (at + 4).min(39));
-    layer_of::<InOrder>(&side, 1).rebuilt().wait_builds(0).unwrap();
+    let target = (at + 4).min(39);
+    reach(&mut side, target);
+    let reached = side.applied().expect("an hour applied");
+    let _ = layer_of::<InOrder>(&side, 1).rebuilt().wait_settled(reached, 1).unwrap();
     let rebuilt = layer_of::<InOrder>(&side, 1).rebuilt();
     let tables = rebuilt.tables();
     assert!(reads.iter().all(|table| tables.contains(table)), "every table the build reaches is declared: {tables:?}");
@@ -379,8 +385,8 @@ fn reach(side: &mut MapSide, target: Hour) {
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped before hour {target}: {:?}", side.entry().playhead().error());
         recorded::reads_landed(side);
-        let before_newest = side.entry().playhead().newest();
-        let head = before_newest.unwrap_or(0).min(cap);
+        let before = side.entry().playhead().step_state();
+        let head = before.0.unwrap_or(0).min(cap);
         let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if !side.composing() && side.applied().is_some_and(|applied| applied >= target) {
             return;
@@ -388,16 +394,12 @@ fn reach(side: &mut MapSide, target: Hour) {
         if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
             continue;
         }
-        assert!(
-            before_newest.is_none_or(|newest| newest < cap),
-            "the map side reached hour {:?} (target {target}) without advancing: {}",
-            side.applied(),
-            recorded::seen(side),
-        );
-        side.entry()
+        let more = side
+            .entry()
             .playhead()
-            .wait_newest_after(before_newest)
+            .wait_step_after(before, cap)
             .unwrap_or_else(|error| panic!("the playhead stopped before hour {target}: {error}"));
+        assert!(more, "the map side reached hour {:?} (target {target}) without advancing: {}", side.applied(), recorded::seen(side));
     }
 }
 
@@ -408,7 +410,8 @@ fn wait_probe_product(side: &mut MapSide) {
         side.frame_waiting(at).unwrap();
     }
     let hour = side.applied().expect("the head has reached an hour");
-    probe_of(side).rebuilt().wait_ready(hour).unwrap();
+    let built = probe_of(side).rebuilt().wait_settled(hour, 0).unwrap().expect("a built product");
+    assert!(built.of(hour), "probe built for hour {hour}: {:?}", built.hour);
     side.frame(hour).unwrap();
 }
 
@@ -423,7 +426,8 @@ fn a_window_layer_shows_todays_plan_until_its_first_product_and_nothing_where_th
     assert!(probe_of(&side).uploaded(), "and the layer hands the scene nothing");
     gate.open();
     let hour = side.applied().expect("the head has reached an hour");
-    let built = probe_of(&side).rebuilt().wait_ready(hour).unwrap();
+    let built = probe_of(&side).rebuilt().wait_settled(hour, 0).unwrap().expect("a built product");
+    assert!(built.of(hour), "built for hour {hour}: {:?}", built.hour);
     assert_eq!(built.product.as_ref().ok(), Some(&hour), "built for the view's perspective, its vision left to the builder");
     side.settle_all().unwrap();
     assert!(probe_of(&side).shows(), "with a product the window draws the layer's: today's makes none");
@@ -557,15 +561,27 @@ fn steady_of(side: &MapSide) -> &Whole<Steady> {
 
 fn next_hour(side: &mut MapSide) -> i32 {
     let before = side.applied().expect("the head has reached an hour");
-    for _ in 0..50_000_000u64 {
-        let head = side.entry().playhead().newest().unwrap_or(before).min(before + 4);
-        let frame = side.frame(head).unwrap();
+    let cap = (before + 4).min(side.entry().playhead().timeline().last());
+    assert!(cap > before, "the recording has no hour past {before}");
+    loop {
+        assert!(side.entry().playhead().error().is_none(), "the playhead stopped past hour {before}: {:?}", side.entry().playhead().error());
+        recorded::reads_landed(side);
+        let step_before = side.entry().playhead().step_state();
+        let head = step_before.0.unwrap_or(before).min(cap);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if let Some(hour) = frame.applied.filter(|&applied| applied != before) {
             return hour;
         }
-        std::thread::yield_now();
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
+            continue;
+        }
+        let more = side
+            .entry()
+            .playhead()
+            .wait_step_after(step_before, cap)
+            .unwrap_or_else(|error| panic!("the playhead stopped past hour {before}: {error}"));
+        assert!(more, "no step past hour {before} was applied up to {cap}: {}", recorded::seen(side));
     }
-    panic!("no step past hour {before} was applied");
 }
 
 #[test]

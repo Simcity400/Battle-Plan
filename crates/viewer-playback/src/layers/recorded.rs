@@ -94,9 +94,9 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped while waiting for {}: {:?}", what(side), side.entry().playhead().error());
         reads_landed(side);
-        let before_newest = side.entry().playhead().newest();
+        let before = side.entry().playhead().step_state();
         let carried_before = carried(side);
-        let head = before_newest.unwrap_or(0);
+        let head = before.0.unwrap_or(0);
         let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if done(side, &frame) {
             return;
@@ -104,16 +104,12 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
         if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || carried(side) < carried_before {
             continue;
         }
-        assert!(
-            before_newest.is_none_or(|newest| newest < last),
-            "the map side reached the last recorded hour ({last}) without reaching {}: {}",
-            what(side),
-            seen(side),
-        );
-        side.entry()
+        let more = side
+            .entry()
             .playhead()
-            .wait_newest_after(before_newest)
+            .wait_step_after(before, last)
             .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
+        assert!(more, "the map side reached the last recorded hour ({last}) without reaching {}: {}", what(side), seen(side));
     }
 }
 

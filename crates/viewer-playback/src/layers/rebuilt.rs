@@ -156,6 +156,7 @@ struct State<P> {
     tables: Vec<TableId>,
     builds: Builds,
     seen_hour: Option<Hour>,
+    settled: Option<(Hour, u64)>,
     awaiting: Vec<TableId>,
     refused: Option<String>,
     stopped: Option<String>,
@@ -205,6 +206,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
                 },
                 builds: Builds::default(),
                 seen_hour: None,
+                settled: None,
                 awaiting: Vec::new(),
                 refused: None,
                 stopped: None,
@@ -346,51 +348,20 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn wait_ready(&self, hour: Hour) -> io::Result<Arc<Built<P>>> {
+    pub fn wait_settled(&self, hour: Hour, before_discovered: u64) -> io::Result<Option<Arc<Built<P>>>> {
         let mut state = self.shared.lock();
         loop {
-            if let Some(built) = &state.built
-                && built.of(hour)
-                && built.generation == state.generation
-            {
-                return Ok(Arc::clone(built));
-            }
             if let Some(why) = &state.stopped {
                 return Err(io::Error::other(why.clone()));
             }
             if let Some(why) = &state.refused {
-                return Ok(Arc::new(Built::new(hour, state.generation, Err(why.clone()), 0, None, None)));
+                return Ok(Some(Arc::new(Built::new(hour, state.generation, Err(why.clone()), 0, None, None))));
             }
-            state = self.shared.built.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn wait_builds(&self, after: u64) -> io::Result<u64> {
-        let mut state = self.shared.lock();
-        loop {
-            if state.builds.count > after {
-                return Ok(state.builds.count);
+            if state.builds.discovered > before_discovered {
+                return Ok(state.built.clone());
             }
-            if let Some(why) = &state.stopped {
-                return Err(io::Error::other(why.clone()));
-            }
-            state = self.shared.built.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn wait_discovered(&self, after: u64) -> io::Result<u64> {
-        let mut state = self.shared.lock();
-        loop {
-            if state.builds.discovered > after {
-                return Ok(state.builds.discovered);
-            }
-            if let Some(why) = &state.stopped {
-                return Err(io::Error::other(why.clone()));
-            }
-            if let Some(why) = &state.refused {
-                return Err(io::Error::other(why.clone()));
+            if state.settled.is_some_and(|(settled_hour, settled_gen)| settled_hour >= hour && settled_gen == state.generation) {
+                return Ok(state.built.clone());
             }
             state = self.shared.built.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
@@ -591,6 +562,8 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             if state.generation != generation {
                 continue;
             }
+            state.settled = Some((frame.hour, generation));
+            shared.built.notify_all();
             drop(state);
             if let Some(reader) = &reader {
                 reader.wait_newer(published, TICK);
@@ -631,6 +604,8 @@ fn work<B: Build>(shared: &Shared<B::Product>, build: &B, rules: &Rules) {
             let absent = state.source.as_ref().map_or_else(Vec::new, |(entry, _)| absent(entry, &missed));
             if !absent.is_empty() {
                 state.refused = Some(refusal(&format!("the {} layer", rules.name), &absent));
+                drop(state);
+                shared.built.notify_all();
                 continue;
             }
             state.tables.extend(missed.iter().copied());
