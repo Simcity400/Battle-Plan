@@ -50,7 +50,8 @@ export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, sour
   }, [readLines]);
   const tileDecimals = tiles.lines?.values().next().value?.decimals;
   const hours = [...new Set([headHour, hoverHour].filter(hour => hour !== null))];
-  const reads = tags.flatMap(tag => hours.map(hour => ({ tag, hour })));
+  const member = (tag: string, hour: number) => !within || (within.get(tag) ?? []).some(span => span.firstHour <= hour && hour <= span.lastHour);
+  const reads = tags.flatMap(tag => hours.filter(hour => member(tag, hour)).map(hour => ({ country: countryFromKey(tag), hour })));
   const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
       signal, validateMeasureStates, source, restart, publish), client);

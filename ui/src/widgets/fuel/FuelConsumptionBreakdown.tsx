@@ -1,4 +1,4 @@
-import type { Gate } from '../../dashboard/regionGate';
+import type { CountryAt, Gate } from '../../dashboard/regionGate';
 import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -48,9 +48,9 @@ function familyRows(reply: CountryFuelReply | undefined, digits: number): DrillP
 const familyStructure = (reply: CountryFuelReply) => JSON.stringify([reply.consumptionMissing, reply.consumption?.reasons ?? null, reply.consumerNames]);
 
 export default function FuelConsumptionBreakdown({ runtime, gate, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
-  aliases, detailHours, ...chart }: {
+  aliases, detailHours, history, ...chart }: {
   runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
-  aliases?: ReadonlyMap<string, readonly Span[]>;
+  aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelConsumptionSelection | null; onSelection: (selection: FuelConsumptionSelection | null) => void;
   level: FuelConsumptionLevel | null; onLevel: (level: FuelConsumptionLevel | null) => void;
 } & DrillChart) {
@@ -80,7 +80,7 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
   const chosen = fuelRecipientFor(selection, campaign, track.branch.id, tag, aliases);
   const part = chosen && data && data.country === chosen.basis.country && data.countryInstance === chosen.basis.countryInstance
     ? data.parts.find(row => row.key === chosen.key) : null;
-  const byBranch = usePartSeries(runtime, gate, track, FUEL_DEMAND_TOTALS, FAMILY_MEASURES, tag, undefined, chart.active);
+  const byBranch = usePartSeries(runtime, gate, track, FUEL_DEMAND_TOTALS, FAMILY_MEASURES, history, chart.active);
   const branchSeries = useMemo(() => FAMILY_MEASURES.map((_, kind) => {
     const summary = scaledSummary(byBranch.summaries[kind], 1);
     const series: BreakdownSeries = { id: String(kind), label: reply?.consumerNames[kind] ?? 'Consumer name unavailable', color: tokens.categories[kind % tokens.categories.length],

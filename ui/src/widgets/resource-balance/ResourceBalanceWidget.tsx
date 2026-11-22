@@ -121,13 +121,13 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const shown = !!saved || drill.breakdown !== null;
   const drillFollows = regionFollows(drillControl.region);
   const drillAt = drillControl.hour;
-  const drillTag = saved ? drillControl.gate.country?.tag ?? null : tag;
+  const drillTag = drillControl.gate.country?.tag ?? null;
   const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillControl.gate, RESOURCE_BALANCE, shown && drillTag ? { country: countryFromKey(drillTag) } : null,
     { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
   const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
-    : drillData?.resources.find(resource => resource.id === resourceId) ?? drillData?.resources[0];
+    : drillData?.resources.find(resource => resource.id === resourceId);
   const dayAt = drillFollows ? breakdown.at : drillAt;
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && dayAt !== null && drillTag ? [{ tag: drillTag, hour: dayAt }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={breakdown.error} hour={dayAt} reason={null}
@@ -140,7 +140,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const open = (resource: ResourceInfo, hour: number | null) => {
     setResourceId(resource.id);
     const at = hour ?? Math.floor(runtime.clock.getHour() + axisOffset);
-    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour: at, follow: drillControl.followsAt(at) });
+    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour: at, follow: drillControl.followsAt(at), country: { tag, origin: at } });
   };
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
 
@@ -153,11 +153,11 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
       : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
-            : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} tag={drillTag ?? tag} resource={picked} data={drillData} live={breakdown.live}
+            : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} history={drillControl.gate.country?.history ?? null} resource={picked} data={drillData} live={breakdown.live}
               hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
               hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-              onPick={hour => dispatch(drill.breakdown !== null ? { type: 'pick', hour } : { type: 'open', breakdown: BREAKDOWN.id, hour, follow: false })}
+              onPick={hour => dispatch({ type: 'pick', hour })}
               onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />;
 
   if (saved) return <div ref={anchor} className="resource-balance">
@@ -171,7 +171,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
 
   const pinTime = drillControl.time();
   const pinExtent = drillControl.gate.span(extent[0], extent[1]);
-  const country = drillControl.hold(drillData && dayAt !== null ? { tag: drillData.tag, origin: dayAt } : null, pinExtent);
+  const country = drillControl.hold(drillControl.gate.country?.holder, pinExtent);
   const main = options.view === 'time'
     ? <ResourcesOverTime {...props} extent={extent} playhead={playhead} liveHead={liveHead} onPick={open} />
     : <ResourceBars {...props} onPick={open} />;

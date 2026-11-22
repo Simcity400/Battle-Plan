@@ -132,6 +132,7 @@ impl Product for CountryFuelAwards {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = FuelAwardsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = FuelAwardsReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -240,6 +241,7 @@ impl Product for CountryFuelAwardHistory {
     const KEY: &'static str = "country-fuel-award-history";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FuelAwardHistoryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, window, recipientKey];
     type Reply = FuelAwardHistoryReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

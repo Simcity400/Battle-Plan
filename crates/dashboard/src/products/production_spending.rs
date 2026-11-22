@@ -856,6 +856,7 @@ impl Product for ProductionSpending {
     const KEY: &'static str = "production-spending";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionSpendingParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, repairs, window];
     type Reply = ProductionSpendingReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

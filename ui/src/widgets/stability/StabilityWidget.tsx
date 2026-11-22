@@ -78,7 +78,7 @@ import './stability.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { busyWait } from '../../shell/busy.ts';
 import { axisAt, SPEC, FOLLOW, at as pickAt, type GatedHour } from '../../dashboard/regionTime.ts';
-import { useGate, useRegionGate } from '../../dashboard/regionGate';
+import { useGate, useHeldEdges, useRegionGate } from '../../dashboard/regionGate';
 import { coverageOf, useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -111,7 +111,10 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
   const pinnedMeasure = options.show === 'stability' || options.show === 'warSupport' ? options.show as Measure : null;
   const [localPick, setLocalPick] = useState<{ owner: unknown; hour: number | null } | null>(null);
-  const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, HOLDERS);
+  const [heldEdges, holdEdges] = useHeldEdges();
+  const drillNeeds = useMemo(() => ({ ...HOLDERS, changes: heldEdges }), [heldEdges]);
+  const pinnedNeeds = useMemo(() => ({ changes: heldEdges }), [heldEdges]);
+  const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, drillNeeds);
   const drill = drillControl.state;
   const dispatchDrill = drillControl.dispatch;
   const [drillMeasure, setDrillMeasure] = useState<Measure>(pinnedMeasure ?? 'stability');
@@ -285,7 +288,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const choosingActor = chosen !== null && chosen.tag === null;
   useEffect(() => { dispatchDrill({ type: 'close' }); setActorPick(null); }, [pickOwner]);
   const pinnedRegion = useRegion(widget, localHour === undefined ? SPEC : localHour === null ? FOLLOW : pickAt(localHour));
-  const pinnedGate = useRegionGate(runtime, pinnedRegion, active && !!pinnedMeasure);
+  const pinnedGate = useRegionGate(runtime, pinnedRegion, active && !!pinnedMeasure, pinnedNeeds);
   const pinnedRegionAt = pinnedGate.hour;
   const pinnedCoverage = useRegionCoverage(runtime, pinnedRegion);
   const origin = useRef<{ owner: typeof bindingOwner; hour: number } | null>(null);
@@ -299,6 +302,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   [savedCountry, hasSavedCountry, groupData, track, drillTag, choiceHour]);
   const actorSpans = useMemo(() => selectedCountry && groupData && track ? drillCountrySpans(groupData.countryIdentities, selectedCountry, track, resolved.membership) : null,
     [selectedCountry, groupData, track, resolved.membership]);
+  useEffect(() => holdEdges(actorSpans), [actorSpans, holdEdges]);
   const liveHour = track ? Math.floor(clockHour) + track.axisOffset : null;
   const pinnedFollowing = localHour === null || localHour === undefined && following;
   const pinnedAt = pinnedRegionAt;

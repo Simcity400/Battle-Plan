@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
-import { at, axisAt, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
+import { REQUEST_HOURS } from '../generated/dashboard.ts';
+import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
   SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
@@ -126,33 +127,67 @@ test('a declared gap is not a recorded hour: every region time and pick inside i
   const overlapping = track('late', 0, 100, 0, [{ firstHour: 10, lastHour: 60, reason: 'a' }, { firstHour: 20, lastHour: 30, reason: 'b' }, { firstHour: 70, lastHour: 71, reason: 'c' }]);
   assert.equal(coverageAt(overlapping, 50).hour, null, 'a gap is found behind a later, shorter one');
   assert.equal(recordedHour(overlapping, 65), 65);
+  const reasonOf = (hour: number) => { const covered = coverageAt(overlapping, hour); return covered.hour === null ? covered.outside.detail : 'recorded'; };
+  for (const [hour, span] of [[15, [10, 19]], [25, [20, 30]], [45, [31, 60]], [65, [61, 69]]] as const) {
+    assert.deepEqual(coverageSpan(overlapping, hour), span, `hour ${hour}: the reason changes at 20 and 31 inside the 10–60 gap`);
+    for (let at = span[0]; at <= span[1]; at++) assert.equal(reasonOf(at), reasonOf(hour), `${at} shares ${hour}’s reason`);
+  }
 });
 
 const GAPPED = { firstHour: 100, lastHour: 109, gaps: [{ firstHour: 105, lastHour: 106, reason: 'unreadable' }] };
 
-test('only checked hours leave for the native side: nested exact reads, hours in follow queries and requests widened past their declared type are refused by name', () => {
-  assert.equal(refusedHours({ branchId: '1', reads: [{ country: 'GER', hour: 104 }] }, GAPPED), null);
-  assert.match(refusedHours({ branchId: '1', reads: [{ country: 'GER', hour: 95 }] }, GAPPED) ?? '', /params\.reads\[0\]\.hour names hour 95/);
-  assert.match(refusedHours({ hours: [104, 105] }, GAPPED) ?? '', /hour 105, which was not recorded/);
-  assert.equal(refusedHours({ from: 105, to: 106 }, GAPPED), null, 'range bounds may lie in a gap');
-  assert.match(refusedHours({ from: 99, to: 104 }, GAPPED) ?? '', /outside branch/);
-  assert.equal(refusedHours({ head: 'player-apm', params: { firstHour: 100, lastHour: 109, windowHours: 720 } }, GAPPED, true), null);
-  assert.match(refusedHours({ head: 'player-apm', params: { firstHour: 90, lastHour: 109 } }, GAPPED, true) ?? '', /firstHour names hour 90/);
-  assert.match(refusedHours({ product: 'series-state', params: { reads: [{ country: 'GER', hour: 104 }] } }, GAPPED, true) ?? '', /names no hour/);
-  assert.equal(refusedHours({ product: 'series-state', params: { reads: 'every' } }, GAPPED, true), null);
+test('only checked hours leave for the native side: each field’s role comes from the contract, nested reads included, and requests widened past their declared type are refused by name', () => {
+  assert.equal(refusedHours('series-state', { branchId: '1', reads: [{ country: 'GER', hour: 104 }] }, GAPPED), null);
+  assert.match(refusedHours('series-state', { branchId: '1', reads: [{ country: 'GER', hour: 95 }] }, GAPPED) ?? '', /params\.reads\[0\]\.hour names hour 95/);
+  assert.match(refusedHours('equipment-losses', { reads: [104, 105] }, GAPPED) ?? '', /hour 105, which was not recorded/);
+  assert.equal(refusedHours('raid-log', { from: 105, to: 106 }, GAPPED), null, 'range bounds may lie in a gap');
+  assert.match(refusedHours('raid-log', { from: 99, to: 104 }, GAPPED) ?? '', /outside branch/);
+  assert.match(refusedHours('equipment-produced', { rankHour: 105 }, GAPPED) ?? '', /rankHour names hour 105, which was not recorded/, 'a ranking hour is an exact read');
+  assert.equal(refusedHours('equipment-produced', { windowHour: 95 }, GAPPED), null, 'a name ending in Hour is not an hour unless the contract says so');
+  assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a bucket’s representative hour is recorded');
+  assert.match(refusedHours('faction-lines', { from: 100, to: 109, members: [{ tag: 'GER', spans: [[90, 104]] }] }, GAPPED) ?? '', /members\[0\]\.spans\[0\]\[0\] names hour 90/);
+  assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);
+  assert.match(refusedHours('no-such-product', {}, GAPPED) ?? '', /not a declared product/);
   const opened = new OpenedSources();
   opened.add({ id: 's', path: 's', revision: '1', metadata: { branches: [{ id: '1', ...GAPPED }] } } as never);
+  assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'player-apm', params: { branchId: '1', firstHour: 100, lastHour: 109, windowHours: 720 } } } }), null);
+  assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'player-apm', params: { branchId: '1', firstHour: 90, lastHour: 109 } } } }) ?? '', /firstHour names hour 90/);
   const wide = { branchId: '1', hour: 95 };
   const narrow: { branchId: string } = wide;
   assert.match(opened.refusal({ sourceId: 's', product: 'country-fuel', params: narrow }) ?? '', /country-fuel: params\.hour names hour 95/);
   assert.equal(opened.refusal({ sourceId: 's', product: 'country-groups', params: { branchId: '1' } }), null);
   const follow = (hour?: number) => ({ id: 1, branchId: '1', clock: 0, query: { product: 'series-state', params: { branchId: '1', reads: [{ country: 'GER', ...hour === undefined ? {} : { hour } }] } } });
   assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: follow() }), null);
-  assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: follow(95) }) ?? '', /names no hour/);
+  assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: follow(104) }) ?? '', /names no hour/, 'a followed read names no hour, even a recorded one');
+  assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { product: 'series-state', params: { branchId: '1', reads: 'every' } } } }), null);
+  assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { panel: 'country-fuel', branchId: '1', hour: 104 } } }) ?? '', /names no hour/);
   assert.equal(opened.refusal({ sourceId: 's', product: 'follow-clock', params: { branchId: '1', hour: 95.5 } as never }), null, 'the clock envelope carries the playback position');
   assert.match(opened.refusal({ sourceId: 'closed', product: 'country-fuel', params: { branchId: '1', hour: 104 } as never }) ?? '', /not opened/);
 });
 
+const place = (segments: readonly string[], hour: number): unknown => {
+  if (!segments.length) return hour;
+  const [head, ...rest] = segments;
+  const many = head.endsWith('[]'), key = many ? head.slice(0, -2) : head, inner = many ? [place(rest, hour)] : place(rest, hour);
+  if (!/^\d+$/.test(key)) return { [key]: inner };
+  const tuple: unknown[] = Array.from({ length: Number(key) }, () => null);
+  tuple.push(inner);
+  return tuple;
+};
+
+test('the validators follow every role the contract declares, for every product and field', () => {
+  let checked = 0;
+  for (const [product, fields] of Object.entries(REQUEST_HOURS)) for (const [path, role] of Object.entries(fields)) {
+    const at = (hour: number) => place(path.split('.'), hour);
+    const exact = role === 'read' || role === 'bucket';
+    assert.equal(refusedHours(product, at(104), GAPPED), null, `${product} ${path}: a recorded hour`);
+    assert.equal(refusedHours(product, at(105), GAPPED) === null, !exact, `${product} ${path} (${role}): an unrecorded hour`);
+    assert.match(refusedHours(product, at(95), GAPPED) ?? '', /outside branch/, `${product} ${path}: an hour outside the branch`);
+    assert.equal(refusedHours(product, at(104), GAPPED, true) === null, !exact, `${product} ${path} (${role}): followed`);
+    checked++;
+  }
+  assert.ok(checked > 50, `the contract declares the dated fields (${checked})`);
+});
 test('a saved time is made only from checked windows, and persists nothing but its value', () => {
   const tracks = [{ id: 'main', branch: GAPPED }];
   assert.equal(validTime({ mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, tracks), null, 'a pin inside the gap');
@@ -163,6 +198,22 @@ test('a saved time is made only from checked windows, and persists nothing but i
   assert.ok(made instanceof GatedTime);
   assert.deepEqual(JSON.parse(JSON.stringify({ time: made })), { time: { mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 } } } });
   assert.ok(!({ ...made } instanceof GatedTime), 'a spread is not a saved time');
+  assert.deepEqual(validTime({ mode: 'pin', windows: { main: { firstOffset: -164, lastOffset: 3 } } }, tracks)?.value, { mode: 'pin', windows: { main: { firstOffset: 0, lastOffset: 3 } } },
+    'a week-long window pinned 3 hours into its branch is clipped to the branch, not refused');
+  assert.deepEqual(validTime({ mode: 'range', firstOffset: -20, lastOffset: 3 }, tracks, 'main')?.value, { mode: 'range', firstOffset: 0, lastOffset: 3 });
+  const short = { id: 'short', branch: { firstHour: 100, lastHour: 101, gaps: [] } };
+  assert.deepEqual(validTime({ mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 }, short: { firstOffset: 3, lastOffset: 3 } } }, [...tracks, short])?.value,
+    { mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 } } }, 'a short track does not invalidate the pin of the others');
+  assert.match(checkedTime({ mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, tracks).refused ?? '', /nothing to pin/, 'a refused pin says why');
+});
+
+test('a product’s buckets are boundaries, and each bucket is read at one recorded hour', () => {
+  const branch = { branch: { firstHour: 100, lastHour: 2000, gaps: [{ firstHour: 720, lastHour: 730, reason: 'unreadable' }] } };
+  assert.deepEqual(bucketEdges(branch, 720), [720, 1440]);
+  assert.equal(bucketRead(branch, 105, 720), 100);
+  assert.equal(bucketRead(branch, 719, 720), 100, 'every hour of a bucket asks the same representative');
+  assert.equal(bucketRead(branch, 1000, 720), 731, 'a bucket opening in a gap is read at its first recorded hour');
+  assert.equal(bucketRead(branch, null, 720), null);
 });
 
 test('coverage spans name the run of hours that share one coverage answer', () => {

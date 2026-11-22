@@ -542,6 +542,7 @@ impl Product for FocusHourProduct {
     const KEY: &'static str = "focus-hour";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FocusHourParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = FocusHourReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -566,6 +567,7 @@ impl Product for FocusOrderPageProduct {
     const KEY: &'static str = "focus-order-page";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FocusOrderPageParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, pages, page];
     type Reply = FocusOrderPage;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -590,6 +592,7 @@ impl Product for FocusCompletionsProduct {
     const KEY: &'static str = "focus-completions";
     const CONTENT_DEPENDENT: bool = false;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FocusCompletions;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -658,6 +661,7 @@ impl AtHour for FocusUnavailableAt {
     const TITLE: &'static str = "Focus";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FocusUnavailableParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = FocusUnavailable;
     type Context = ();
 

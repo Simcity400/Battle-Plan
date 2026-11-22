@@ -39,8 +39,10 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: strin
 
 export const MOST_PARTS = 8;
 
-export function usePartSeries(runtime: WidgetRuntime, gate: SeriesGate, track: BoundTrack, kind: string, measures: readonly (string | null)[], tag: string | null,
-  within: ReadonlyMap<string, readonly HourSpan[]> | undefined, active: boolean) {
+export function usePartSeries(runtime: WidgetRuntime, gate: SeriesGate, track: BoundTrack, kind: string, measures: readonly (string | null)[],
+  history: { key: string; spans: readonly HourSpan[] } | null, active: boolean) {
+  const tag = history?.key ?? null;
+  const within = useMemo(() => history ? new Map([[history.key, history.spans]]) : undefined, [history]);
   const args = (at: number) => {
     const measure = measures[at] ?? null;
     return [runtime.client, gate, measure && tag ? track.source : undefined, track.branch, kind, measure ?? '', tag ? [tag] : [],

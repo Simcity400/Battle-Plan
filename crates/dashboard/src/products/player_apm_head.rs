@@ -19,6 +19,12 @@ use std::{
 
 pub const SERIES: &str = "player-apm";
 
+pub const HEADS: &[(&str, dashboard_base::products::Fields, fn() -> Option<&'static [&'static str]>)] = &[
+    (SERIES, dashboard_base::fields![branchId, group, tags, players, firstHour: Start, lastHour: End, windowHours, "membership[].firstHour": Start, "membership[].lastHour": End],
+        dashboard_query::fields::struct_fields::<ApmHeadParams>),
+    ("campaign-clock", dashboard_base::fields![branchId, firstHour: Start, lastHour: End], dashboard_query::fields::struct_fields::<ClockHeadParams>),
+];
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApmHeadParams {

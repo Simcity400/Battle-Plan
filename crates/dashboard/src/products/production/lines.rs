@@ -255,6 +255,7 @@ impl Product for ProductionLines {
     const KEY: &'static str = "production-lines";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionLinesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ProductionLinesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -492,6 +493,7 @@ impl Product for ProductionLineDetail {
     const KEY: &'static str = "production-line-detail";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ProductionDetailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
     type Reply = ProductionLineDetailReply;
 
     #[cfg(any(test, feature = "export-types"))]

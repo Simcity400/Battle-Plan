@@ -112,6 +112,7 @@ impl AtHour for OccupationReserve {
     const TITLE: &'static str = "Occupation reserve";
     const CONTENT_DEPENDENT: bool = false;
     type Params = OccupationReserveParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = OccupationReserveReply;
     type Context = ();
 
@@ -291,6 +292,7 @@ impl Product for ReserveHistory {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ReserveHistoryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder];
     type Reply = ReserveHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]

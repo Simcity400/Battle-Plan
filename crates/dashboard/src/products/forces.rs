@@ -223,6 +223,7 @@ impl Product for AirForceSize {
     const KEY: &'static str = "air-force-size";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirForceParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, ownership, window];
     type Reply = ForceSizeReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -261,6 +262,7 @@ impl Product for NavySize {
     const KEY: &'static str = "navy-size";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavyParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, ownership, grouping, measure, window];
     type Reply = ForceSizeReply;
 
     #[cfg(any(test, feature = "export-types"))]

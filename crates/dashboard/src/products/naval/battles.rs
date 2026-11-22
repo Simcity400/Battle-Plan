@@ -451,6 +451,7 @@ impl Product for NavalBattlesManifest {
     const KEY: &'static str = "naval-battles-manifest";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalBattlesManifestParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = NavalBattlesManifestReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -488,6 +489,7 @@ impl Product for NavalBattles {
     const KEY: &'static str = "naval-battles";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalBattlesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
     type Reply = NavalBattlesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -538,6 +540,7 @@ impl Product for NavalBattlesRanking {
     const KEY: &'static str = "naval-battles-ranking";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalBattlesRankingParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End];
     type Reply = NavalBattlesRankingReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -731,6 +734,7 @@ impl Product for NavalBattleDetails {
     const KEY: &'static str = "naval-battle-details";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalBattleDetailsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, "battles[].hour": Read];
     type Reply = NavalBattleDetailsReply;
 
     #[cfg(any(test, feature = "export-types"))]

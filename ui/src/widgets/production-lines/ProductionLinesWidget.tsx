@@ -21,7 +21,6 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
 import { movingRowClass, useRowMotion } from '../../charts/useRowMotion';
-import { useAtHead } from '../../dashboard/atHead';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { readDatedCountry } from '../../dashboard/datedCountry';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
@@ -43,10 +42,11 @@ import {
 } from './productionData.ts';
 import './productionLines.css';
 import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
-import {  SPEC } from '../../dashboard/regionTime.ts';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { bucketEdges, bucketRead } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
+const NO_CHANGES: readonly number[] = [];
 type Part = 'efficiency' | 'output';
 
 export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
@@ -59,7 +59,7 @@ export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, a
 export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, gate: Pick<Gate, 'recorded'>, tag: string | undefined, key: string | null, group: string, hour: number | null, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const read = gate.recorded(hour);
-  const request = track && tag && key && read !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
+  const request = track && tag && key && read !== null && hour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
     params: { branchId: track.branch.id, country: countryFromKey(tag), key, group, hour: read } } : null;
   return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
 }
@@ -82,17 +82,15 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Production line actions');
-  const drillControl = useDrill(runtime, useRegion(widget));
+  const detail = data?.detailHours ?? null;
+  const changes = useMemo(() => track && detail ? bucketEdges(track, detail) : NO_CHANGES, [track?.branch.firstHour, track?.branch.lastHour, detail]);
+  const drillNeeds = useMemo(() => ({ changes }), [changes]);
+  const drillControl = useDrill(runtime, useRegion(widget), pinned ? options.show as string : null, undefined, undefined, drillNeeds);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [opened, setOpened] = useState<{ key: string; part: Part } | null>(null);
   const [factor, setFactor] = useState<string | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setOpened(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
-  const clockHour = useAtHead(runtime.clock, active && (pinned || (drill.breakdown !== null && drill.follow)), hour => {
-    if (!track) return null;
-    const window = resolveWindow(widget, track, runtime.tracks, hour);
-    return window ? Math.floor(window.lastHour) : null;
-  });
   const extent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const headHour = () => Math.floor((track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour) ?? extent[1]);
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
@@ -103,10 +101,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
-  const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
-  const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
-  const breakdownHour = pinned ? clockHour : regionAt;
-  const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, active && (pinned || drill.breakdown !== null));
+  const breakdownHour = drillControl.hour;
+  const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group,
+    detail === null ? null : bucketRead(track, breakdownHour, detail), active && (pinned || drill.breakdown !== null));
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
   useDiagnostics(onDiagnostics, warnings);

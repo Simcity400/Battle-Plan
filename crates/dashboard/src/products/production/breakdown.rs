@@ -828,6 +828,7 @@ impl Product for ProductionLineBreakdown {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProductionBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, key, group, hour: Bucket];
     type Reply = ProductionLineBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]

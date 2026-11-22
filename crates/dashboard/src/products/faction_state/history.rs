@@ -171,6 +171,7 @@ impl Product for FactionState {
     const KEY: &'static str = "faction-state";
     const CONTENT_DEPENDENT: bool = true;
     type Params = FactionStateParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![view, branchId, faction, viewpoint];
     type Reply = FactionStateReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

@@ -332,6 +332,7 @@ impl Product for Subjects {
     const KEY: &'static str = "subjects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = SubjectReply;
 
     #[cfg(any(test, feature = "export-types"))]

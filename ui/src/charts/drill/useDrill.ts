@@ -3,7 +3,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { recordedHour, regionTrack, type GatedHour, type Outside, type Region } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 import { useRegionGate, type Gate, type GateNeeds } from '../../dashboard/regionGate.ts';
-import { drillAction, drillFollows, opensFollowing, reduceDrill, savedDrill, type DrillAction, type DrillState } from './drillState.ts';
+import { drillAction, drillFollows, opensFollowing, reduceDrill, savedDrill, type DrillAction, type DrillHolder, type DrillState } from './drillState.ts';
 
 export interface DrillControl<S extends DrillState = DrillState, A = DrillAction> {
   state: S;
@@ -18,8 +18,8 @@ export interface DrillControl<S extends DrillState = DrillState, A = DrillAction
   hold: Gate['hold'];
   dispatch(action: A | DrillAction): void;
   followsAt(hour: number): boolean;
-  show(breakdown: string, hour: number): void;
-  showAt(breakdown: string, hour: number): void;
+  show(breakdown: string, hour: number, country?: DrillHolder | null): void;
+  showAt(breakdown: string, hour: number, country?: DrillHolder | null): void;
   attach(breakdown: string): void;
   pick(hour: number): void;
   follow(): void;
@@ -40,7 +40,10 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
   const track = regionTrack(parent, runtime.tracks);
   const region = useRegion(parent.widget, drillAction(state));
   const open = state.breakdown !== null || !state.spec;
-  const gate = useRegionGate(runtime, region, open, needs);
+  const country = state.country ?? null;
+  const drillNeeds = useMemo<GateNeeds | undefined>(() => country ? { ...needs, country: { ...needs?.country, stored: undefined, held: country } } : needs,
+    [needs, country?.tag, country?.origin]);
+  const gate = useRegionGate(runtime, region, open, drillNeeds);
   const { clock } = runtime;
   return useMemo(() => {
     const playhead = () => track ? recordedHour(track, Math.floor(clock.getHour()) + track.axisOffset) : null;
@@ -48,8 +51,8 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
     return {
       state, open, following: drillFollows(parent, state), parent, region, gate, hour: open ? gate.hour : null, outside: open ? gate.outside : null,
       time: gate.time, hold: gate.hold, dispatch, followsAt,
-      show: (breakdown, hour) => dispatch({ type: 'open', breakdown, hour, follow: followsAt(hour) }),
-      showAt: (breakdown, hour) => dispatch({ type: 'open', breakdown, hour, follow: false }),
+      show: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: followsAt(hour), country: held ?? null }),
+      showAt: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: false, country: held ?? null }),
       attach: breakdown => dispatch({ type: 'attach', breakdown }),
       pick: hour => dispatch({ type: 'pick', hour }),
       follow: () => dispatch({ type: 'follow' }),

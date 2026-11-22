@@ -5,25 +5,25 @@ import type { Failure } from './queryError';
 import type { Span } from '../charts/series';
 import type { CountryIdentityHistory } from '../generated/dashboard';
 import { defaultCountryKey, selectedCountryKeys } from './countrySelection.ts';
-import { countryFromKey } from './countryKey.ts';
+import { countryFromKey, countryKey } from './countryKey.ts';
 import { countryDrillTagAt, countryIdentityIndex } from './countryIdentity.ts';
-import { runAt } from '../charts/series.ts';
 import { useSlotTagsState } from './countrySlots.ts';
 import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
 import { boundCountryToken, datedCountrySpans, readDatedCountry, type BoundCountry, type DatedCountrySelection } from './datedCountry.ts';
-import { worldFilterQuery, worldRequestTags } from './groups.ts';
+import { selectionChangeHours, worldFilterQuery, worldRequestTags } from './groups.ts';
 import { useCountryGroups } from './useCountryGroups.ts';
-import { axisAt, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, validTime, type AxisHour, type BoundHour,
-  type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
-  type TrackHour } from './regionTime.ts';
+import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, validTime, type AxisHour,
+  type BoundHour, type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
+  type TimeRefusal, type TrackHour } from './regionTime.ts';
 import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
 
-export interface CountryNeed { stored: unknown; key?: string; setOption?: (key: string, value: string) => void }
-export interface GateNeeds { country?: CountryNeed; members?: boolean; holders?: boolean }
+export interface CountryNeed { stored?: unknown; held?: Holder | null; key?: string; setOption?: (key: string, value: string) => void }
+export interface GateNeeds { country?: CountryNeed; members?: boolean; holders?: boolean; changes?: readonly number[] }
 
 export interface CountryAt extends ReachedCountry {
   holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean;
-  aliasAt: (hour: number) => string | null; edges: readonly number[];
+  aliasAt: (hour: number) => string | null; edges: readonly number[]; holder: Holder | null;
+  history: { key: string; spans: readonly Span[] } | null; aliases: ReadonlyMap<string, readonly Span[]> | null;
 }
 export interface MembersAt {
   countries: ReadonlySet<string> | null | undefined; requestTags: string[] | null | undefined; selectionReason: string | null; known: boolean;
@@ -48,7 +48,7 @@ export type GateStage =
 export interface Gate {
   region: Region; track: BoundTrack | undefined; active: boolean;
   hour: GatedHour | null; window: GatedWindow | null; outside: Outside | null; stage: GateStage; open: boolean;
-  country: CountryAt | null; members: MembersAt | null; groups: ReturnType<typeof useCountryGroups>;
+  country: CountryAt | null; members: MembersAt | null; groups: ReturnType<typeof useCountryGroups>; held: HeldCountry | null;
   hourAt: (axis: AxisHour) => GatedHour | null;
   recorded: (hour: number | null | undefined, within?: readonly Span[] | null) => GatedHour | null;
   within: (hour: number | null | undefined) => BoundHour | null;
@@ -68,10 +68,42 @@ export function spanEdges(byTag: ReadonlyMap<string, readonly Span[]> | null | u
   return [...edges].sort((a, b) => a - b);
 }
 
-function slotEdges(histories: readonly CountryIdentityHistory[] | undefined, slot: number): readonly number[] {
+export function useHeldEdges(): [readonly number[], (spans: ReadonlyMap<string, readonly Span[]> | null | undefined) => void] {
+  const [edges, setEdges] = useState<readonly number[]>(NO_EDGES);
+  const hold = useCallback((spans: ReadonlyMap<string, readonly Span[]> | null | undefined) => {
+    const next = spanEdges(spans);
+    setEdges(before => before.length === next.length && before.every((edge, at) => edge === next[at]) ? before : next);
+  }, []);
+  return [edges, hold];
+}
+
+function runEdges(runs: readonly Span[]): readonly number[] {
   const edges = new Set<number>();
-  for (const history of histories ?? []) for (const run of history.identities) if (run.slot === slot) { edges.add(run.firstHour); edges.add(run.lastHour + 1); }
+  for (const run of runs) { edges.add(run.firstHour); edges.add(run.lastHour + 1); }
   return [...edges].sort((a, b) => a - b);
+}
+
+export function holderSelection(histories: readonly CountryIdentityHistory[], track: Pick<BoundTrack, 'source' | 'branch'>, holder: Holder): DatedCountrySelection | null {
+  const origin = Math.floor(holder.origin), first = track.branch.firstHour;
+  if (!Number.isSafeInteger(origin) || origin < first || origin > track.branch.lastHour) return null;
+  const index = countryIdentityIndex(histories), key = index.keyAt(holder.tag, origin);
+  if (key === null) return null;
+  const aliases = index.aliasesAt(new Set([key]), origin);
+  const tag = aliases.includes(holder.tag) ? holder.tag : aliases.length === 1 ? aliases[0] : null;
+  return tag === null ? null : { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, originOffset: origin - first };
+}
+
+function identityHistory(histories: readonly CountryIdentityHistory[], selection: DatedCountrySelection, first: number, last: number) {
+  const index = countryIdentityIndex(histories), key = index.keyAt(selection.tag, first + selection.originOffset);
+  if (key === null) return null;
+  const identity = index.identityOf(key);
+  const spans: Span[] = [];
+  for (const run of index.aliasRuns(new Set([key]), first, last)) {
+    const previous = spans.at(-1);
+    if (previous && run.firstHour <= previous.lastHour + 1) previous.lastHour = Math.max(previous.lastHour, run.lastHour);
+    else spans.push({ firstHour: run.firstHour, lastHour: run.lastHour });
+  }
+  return { ...identity, history: { key: countryKey(identity.slot), spans } };
 }
 
 const ranksCountries = (countries: CountrySelection) => countries.kind === 'all' || countries.kind === 'group' && countries.group.type === 'top';
@@ -91,8 +123,10 @@ type Runtime = WidgetRuntime;
 function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | undefined, groups: Gate['groups'], hour: TrackHour | null, on: boolean,
   need: CountryNeed | undefined): CountryAt | null {
   const widget = region.widget;
-  const chosen = need ? selectedCountryKeys(widget.countries, track)[0] ?? null : null;
-  const slot = chosen === null ? null : countryFromKey(chosen);
+  const picked = need?.held !== undefined;
+  const pick = need?.held ?? null;
+  const chosen = !need ? null : picked ? pick?.tag ?? null : selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const slot = chosen === null || picked ? null : countryFromKey(chosen);
   const bySlot = typeof slot === 'number';
   const slotState = useSlotTagsState(runtime.client, track, on && bySlot && hour !== null);
   const slots = slotState.slots;
@@ -101,18 +135,20 @@ function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | unde
   const owner = JSON.stringify([campaign, branch, chosen]);
   const stored = need?.stored;
   const saved = useMemo(() => {
-    const selection = campaign !== undefined && branch !== undefined ? readDatedCountry(stored, campaign, branch) : null;
+    const selection = !picked && campaign !== undefined && branch !== undefined ? readDatedCountry(stored, campaign, branch) : null;
     return selection?.tag === chosen ? selection : null;
-  }, [stored, campaign, branch, chosen]);
+  }, [picked, stored, campaign, branch, chosen]);
+  const pickedSelection = useMemo(() => pick && histories && track ? holderSelection(histories, track, pick) : null,
+    [pick?.tag, pick?.origin, histories, track]);
   const [local, setLocal] = useState<{ owner: string; selection: DatedCountrySelection } | null>(null);
   const held = saved ?? (local?.owner === owner ? local.selection : null);
   const keep = (selection: DatedCountrySelection) => {
     setLocal({ owner, selection });
     need?.setOption?.(need.key ?? 'country', boundCountryToken(bound(selection)));
   };
-  const fresh = need && !bySlot && !held && chosen && track && hour !== null && campaign !== undefined
+  const fresh = need && !picked && !bySlot && !held && chosen && track && hour !== null && campaign !== undefined
     ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
-  const selection = bySlot ? null : held ?? fresh;
+  const selection = picked ? pickedSelection : bySlot ? null : held ?? fresh;
   const resolve = useCallback((choice: DatedCountrySelection) => histories && track && hour !== null
     ? resolveChoice(histories, groups.complete, choice, track.branch.firstHour, track.branch.lastHour, hour) : null, [histories, groups.complete, track, hour]);
   const resolved = useMemo(() => selection ? resolve(selection) : null, [selection, resolve]);
@@ -120,23 +156,39 @@ function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | unde
     const settled = choice ? resolve(choice) : null;
     return !!settled && settled.country.tag !== null && !settled.holders && !settled.rebind;
   }, [resolve]);
-  const next = fresh && verified(fresh) ? fresh : resolved?.rebind && verified(resolved.rebind) ? resolved.rebind : null;
+  const next = picked ? null : fresh && verified(fresh) ? fresh : resolved?.rebind && verified(resolved.rebind) ? resolved.rebind : null;
   const kept = next ? boundCountryToken(bound(next)) : null;
   useEffect(() => { if (next) keep(next); }, [kept]);
   const spans = useMemo(() => selection && histories && track ? datedCountrySpans(histories, selection, track.branch.firstHour, track.branch.lastHour) : null,
     [selection, histories, track]);
-  const edges = useMemo(() => typeof slot === 'number' ? slotEdges(histories, slot) : spanEdges(spans), [histories, slot, spans]);
+  const slotRuns = useMemo(() => bySlot && slots ? slots.tagRuns(slot) : null, [bySlot, slots, slot]);
+  const identity = useMemo(() => selection && histories && track && !resolved?.holders && !resolved?.rebind
+    ? identityHistory(histories, selection, track.branch.firstHour, track.branch.lastHour) : null, [selection, histories, track, resolved?.holders, resolved?.rebind]);
+  const edges = useMemo(() => slotRuns ? runEdges(slotRuns) : spanEdges(spans), [slotRuns, spans]);
+  const slotAliases = useMemo(() => {
+    if (!slotRuns) return null;
+    const byTag = new Map<string, Span[]>();
+    for (const run of slotRuns) { const spansOf = byTag.get(run.tag); const span = { firstHour: run.firstHour, lastHour: run.lastHour }; if (spansOf) spansOf.push(span); else byTag.set(run.tag, [span]); }
+    return byTag;
+  }, [slotRuns]);
   if (!need) return null;
   const slotTag = bySlot && slots && hour !== null ? slots.tagAt(slot, hour) : null;
+  const unresolved = picked && !!pick && !!histories && !pickedSelection;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
+    : unresolved ? { chosen, tag: null, absent: false, reason: 'The chosen country’s recorded identity is unavailable.' }
     : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
     : resolved?.country ?? { chosen, tag: null, absent: false, reason: null };
   const error = bySlot ? slotState.error : groups.error;
   const aliasAt = (at: number) => bySlot ? slots?.tagAt(slot, at) ?? null : spans && !resolved?.holders && !resolved?.rebind ? countryDrillTagAt(spans, at) : null;
+  const holder: Holder | null = bySlot ? chosen && hour !== null && slotTag ? { tag: chosen, origin: hour } : null
+    : selection && track && country.tag ? { tag: selection.tag, origin: track.branch.firstHour + selection.originOffset } : null;
+  const history = bySlot ? slotRuns && chosen ? { key: chosen, spans: slotRuns.map(({ firstHour, lastHour }) => ({ firstHour, lastHour })) } : null
+    : identity?.history ?? null;
   return { ...country, holders: resolved?.holders ?? null,
-    pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)
+    pick: holder => { if (!picked && campaign !== undefined && branch !== undefined && chosen && track)
       keep({ campaign, branch, tag: chosen, originOffset: holder.origin - track.branch.firstHour }); },
-    error, retry: bySlot ? slotState.retry : groups.retry, historyHeld: bySlot ? !!slots : !!histories, aliasAt, edges };
+    error, retry: bySlot ? slotState.retry : groups.retry, historyHeld: bySlot ? !!slots : !!histories, aliasAt, edges, holder, history,
+    aliases: bySlot ? slotAliases : resolved?.holders || resolved?.rebind ? null : spans };
 }
 
 export function useRegionGate(runtime: Runtime, region: Region, active: boolean, needs: GateNeeds = {}): Gate {
@@ -157,11 +209,11 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   [needs.members, widget.countries, fallback, groups.data, lastHour]);
   const histories = groups.data?.countryIdentities;
   const index = useMemo(() => wantsMembers && histories ? countryIdentityIndex(histories) : null, [wantsMembers, histories]);
-  const chosenTags = wantsMembers && widget.countries.kind === 'tags' ? widget.countries.tags : null;
-  const memberEdges = useMemo(() => chosenTags && histories ? spanEdges(new Map(histories.filter(history => chosenTags.includes(history.tag))
-    .map(history => [history.tag, history.identities] as const))) : NO_EDGES, [chosenTags, histories]);
+  const memberEdges = useMemo(() => wantsMembers ? selectionChangeHours(widget.countries, fallback ? [fallback] : [], groups.data, index) : NO_EDGES,
+    [wantsMembers, widget.countries, fallback, groups.data, index]);
   const [countryEdges, setCountryEdges] = useState<readonly number[]>(NO_EDGES);
-  const epochs = useMemo(() => mergedEdges(countryEdges, memberEdges, query?.edges ?? NO_EDGES), [countryEdges, memberEdges, query]);
+  const changes = needs.changes ?? NO_EDGES;
+  const epochs = useMemo(() => mergedEdges(countryEdges, memberEdges, changes), [countryEdges, memberEdges, changes]);
   const hour = useRegionHour(runtime, region, active, epochs);
   const country = useCountryAt(region, runtime, track, groups, covered ? hour : null, active, needs.country);
   const edges = country?.edges ?? NO_EDGES;
@@ -189,7 +241,7 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   const window = useMemo<GatedWindow | null>(() => {
     if (gated === null || !track) return null;
     const shown = regionWindow(region, track, tracks, axisAt(gated - track.axisOffset));
-    return shown ? { firstHour: bounded(shown.firstHour), lastHour: gated } : null;
+    return shown ? { firstHour: bounded(Math.min(gated, Math.max(track.branch.firstHour, Math.floor(shown.firstHour)))), lastHour: gated } : null;
   }, [gated, region, track, tracks]);
   const follows = regionFollows(region);
   const hourAt = useCallback((axis: AxisHour) => {
@@ -211,8 +263,10 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
     const first = Math.max(Math.floor(firstHour), track.branch.firstHour), last = Math.min(Math.floor(lastHour), track.branch.lastHour);
     return first <= last ? { firstHour: bounded(first), lastHour: bounded(last) } : null;
   }, [gated, track]);
-  const follow = useCallback((query: Readonly<Record<string, unknown>> | null) =>
-    gated !== null && follows && query && track && refusedHours(query, track.branch, true) === null ? query as FollowQuery : null, [gated, follows, track]);
+  const follow = useCallback((query: Readonly<Record<string, unknown>> | null) => {
+    const asked = gated !== null && follows && query && track ? followedProduct(query) : null;
+    return asked && track && refusedHours(asked.product, asked.params, track.branch, true) === null ? query as FollowQuery : null;
+  }, [gated, follows, track]);
   const time = useCallback((chosen?: BoundWindow, mode: 'pin' | 'range' = 'pin') => {
     if (!track || gated === null) return null;
     if (!chosen && follows) return validTime({ mode: 'follow' }, tracks);
@@ -221,17 +275,19 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
     return validTime(mode === 'range' ? { mode, ...offsets } : { mode, windows: { [track.id]: offsets } }, tracks, track.id);
   }, [track, tracks, follows, gated]);
   const hold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null) => {
-    if (!track || gated === null || !holder || !histories) return null;
-    const first = track.branch.firstHour, last = track.branch.lastHour, origin = recordedHour(track, holder.origin);
-    if (origin === null) return null;
-    const selection: DatedCountrySelection = { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: holder.tag, originOffset: origin - first,
-      ...extent ? { extent: [extent.firstHour - first, extent.lastHour - first] as [number, number] } : {} };
+    if (!track || gated === null || !holder || !histories || recordedHour(track, holder.origin) === null) return null;
+    const first = track.branch.firstHour, last = track.branch.lastHour, picked = holderSelection(histories, track, holder);
+    if (!picked) return null;
+    const selection: DatedCountrySelection = { ...picked, ...extent ? { extent: [extent.firstHour - first, extent.lastHour - first] as [number, number] } : {} };
     const spans = datedCountrySpans(histories, selection, first, last);
-    const identity = runAt(histories.find(history => history.tag === holder.tag)?.identities ?? [], origin);
+    const identity = identityHistory(histories, selection, first, last);
     if (!spans || !identity || countryDrillTagAt(spans, gated) === null) return null;
-    return { tag: holder.tag, origin: mint(origin), slot: identity.slot, countryId: identity.countryId, token: boundCountryToken(bound(selection)) } as HeldCountry;
+    return { tag: selection.tag, origin: mint(first + selection.originOffset as TrackHour), slot: identity.slot, countryId: identity.countryId,
+      token: boundCountryToken(bound(selection)) } as HeldCountry;
   }, [track, gated, histories]);
-  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, hourAt, recorded, within, span, follow, time, hold };
+  const holder = country?.holder ?? null;
+  const held = useMemo(() => hold(holder), [hold, holder?.tag, holder?.origin]);
+  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, time, hold };
 }
 
 function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,
@@ -254,15 +310,15 @@ function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour:
   return { stage: 'open' };
 }
 
-export function pinNow(widget: WidgetSpec, tracks: readonly BoundTrack[], axis: AxisHour): GatedTime | null {
+export function pinNow(widget: WidgetSpec, tracks: readonly BoundTrack[], axis: AxisHour): TimeRefusal {
   const windows: Record<string, { firstOffset: number; lastOffset: number }> = {};
   for (const id of widget.trackIds) {
     const track = tracks.find(item => item.id === id);
     const window = track ? regionWindow({ widget, action: FOLLOW }, track, tracks, axis) : null;
-    if (!track || !window || recordedHour(track, window.lastHour) === null) continue;
-    windows[id] = { firstOffset: window.firstHour - track.branch.firstHour, lastOffset: window.lastHour - track.branch.firstHour };
+    if (!track || !window) continue;
+    windows[id] = { firstOffset: Math.floor(window.firstHour) - track.branch.firstHour, lastOffset: Math.floor(window.lastHour) - track.branch.firstHour };
   }
-  return validTime({ mode: 'pin', windows } satisfies PinTime, tracks);
+  return checkedTime({ mode: 'pin', windows } satisfies PinTime, tracks);
 }
 
 export function useCampaignGate(runtime: Runtime, widget: WidgetSpec, active = true): Gate {

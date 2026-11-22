@@ -340,6 +340,7 @@ impl AtHour for CountryStabilityBreakdown {
     const TITLE: &'static str = "Stability breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StabilityBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = StabilityBreakdownReply;
     type Context = Naming;
 
@@ -481,6 +482,7 @@ impl AtHour for StabilityPartNames {
     const TITLE: &'static str = "Stability parts";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StabilityPartNamesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, parts];
     type Reply = StabilityPartNamesReply;
     type Context = Naming;
 

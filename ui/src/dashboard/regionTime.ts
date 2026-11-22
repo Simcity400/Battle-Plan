@@ -1,6 +1,7 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
 
-import type { RecordingGap } from '../generated/dashboard';
+import type { HourRole, RecordingGap } from '../generated/dashboard';
+import { REQUEST_HOURS } from '../generated/dashboard.ts';
 
 declare const TRACK: unique symbol;
 declare const AXIS: unique symbol;
@@ -25,23 +26,27 @@ export class GatedTime {
 
 type Timed = Pick<BoundTrack, 'id'> & { branch: CoveredBranch };
 const heldOffsets = (track: Timed | undefined, { firstOffset, lastOffset }: Offsets): Offsets | null =>
-  track && Number.isSafeInteger(firstOffset) && Number.isSafeInteger(lastOffset) && 0 <= firstOffset && firstOffset <= lastOffset
-    && coverageAt(track, track.branch.firstHour + lastOffset).hour !== null ? { firstOffset, lastOffset } : null;
+  track && Number.isSafeInteger(firstOffset) && Number.isSafeInteger(lastOffset) && firstOffset <= lastOffset
+    && coverageAt(track, track.branch.firstHour + lastOffset).hour !== null ? { firstOffset: Math.max(0, firstOffset), lastOffset } : null;
 
-export function validTime(time: PinTime, tracks: readonly Timed[], rangeTrack?: string): GatedTime | null {
-  if (time.mode === 'follow') return mintTime({ mode: 'follow' });
+export type TimeRefusal = { time: GatedTime; refused?: undefined } | { time: null; refused: string };
+
+export function checkedTime(time: PinTime, tracks: readonly Timed[], rangeTrack?: string): TimeRefusal {
+  if (time.mode === 'follow') return { time: mintTime({ mode: 'follow' }) };
   if (time.mode === 'range') {
     const held = heldOffsets(tracks.find(track => track.id === rangeTrack), time);
-    return held && mintTime({ mode: 'range', ...held });
+    return held ? { time: mintTime({ mode: 'range', ...held }) } : { time: null, refused: 'The range’s last hour was not recorded.' };
   }
   const windows: Record<string, Offsets> = {};
   for (const [id, offsets] of Object.entries(time.windows)) {
     const held = heldOffsets(tracks.find(track => track.id === id), offsets);
-    if (!held) return null;
-    windows[id] = held;
+    if (held) windows[id] = held;
   }
-  return Object.keys(windows).length ? mintTime({ mode: 'pin', windows }) : null;
+  return Object.keys(windows).length ? { time: mintTime({ mode: 'pin', windows }) }
+    : { time: null, refused: 'No track recorded this moment, so there is nothing to pin.' };
 }
+
+export const validTime = (time: PinTime, tracks: readonly Timed[], rangeTrack?: string): GatedTime | null => checkedTime(time, tracks, rangeTrack).time;
 
 export type PinnedSpec = Omit<WidgetSpec, 'time'> & { readonly time: GatedTime };
 export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, time: pinned.time.value });
@@ -58,31 +63,51 @@ export type GatedParams = {
   readonly hours?: readonly GatedHour[];
 };
 
-export type HourRole = 'exact' | 'bound';
-const roleOf = (key: string): HourRole | null =>
-  key === 'hour' || key === 'hours' || key === 'reads' ? 'exact' : key === 'from' || key === 'to' || key.endsWith('Hour') ? 'bound' : null;
+export type { HourRole };
+export const exactRole = (role: HourRole): boolean => role === 'read' || role === 'bucket';
 
-export function hourFields(value: unknown, visit: (role: HourRole, hour: unknown, path: string) => void, path = 'params'): void {
-  if (Array.isArray(value)) { value.forEach((item, index) => { if (item !== null && typeof item === 'object') hourFields(item, visit, `${path}[${index}]`); }); return; }
-  if (value === null || typeof value !== 'object') return;
-  for (const [key, item] of Object.entries(value)) {
-    const role = roleOf(key), at = `${path}.${key}`;
-    if (role && Array.isArray(item)) item.forEach((each, index) => { if (each === null || typeof each !== 'object') visit(role, each, `${at}[${index}]`); });
-    else if (role && item !== null && item !== undefined && typeof item !== 'object' && !(key === 'reads' && typeof item === 'string')) visit(role, item, at);
-    hourFields(item, visit, at);
-  }
+export function requestFields(product: string): Readonly<Record<string, HourRole>> | null {
+  return Object.hasOwn(REQUEST_HOURS, product) ? REQUEST_HOURS[product] : null;
 }
 
-export function refusedHours(params: unknown, branch: CoveredBranch, followed = false): string | null {
+export function followedProduct(query: unknown): { product: string; params: unknown } | null {
+  if (query === null || typeof query !== 'object') return null;
+  const asked = query as Readonly<Record<string, unknown>>;
+  if (typeof asked.product === 'string') return { product: asked.product, params: asked.params };
+  if (typeof asked.panel === 'string') return { product: asked.panel, params: asked };
+  if (typeof asked.head === 'string') return { product: `head:${asked.head}`, params: asked.params };
+  return null;
+}
+
+function visitPath(value: unknown, segments: readonly string[], path: string, visit: (hour: unknown, path: string) => void): void {
+  if (!segments.length) { if (value !== null && value !== undefined) visit(value, path); return; }
+  if (value === null || typeof value !== 'object') return;
+  const [head, ...rest] = segments;
+  const many = head.endsWith('[]'), key = many ? head.slice(0, -2) : head, index = /^\d+$/.test(key);
+  if (index !== Array.isArray(value)) return;
+  const item = index ? (value as readonly unknown[])[Number(key)] : (value as Readonly<Record<string, unknown>>)[key], at = index ? `${path}[${key}]` : `${path}.${key}`;
+  if (!many) visitPath(item, rest, at, visit);
+  else if (Array.isArray(item)) item.forEach((each, index) => visitPath(each, rest, `${at}[${index}]`, visit));
+}
+
+export function hourFields(product: string, params: unknown, visit: (role: HourRole, hour: unknown, path: string) => void): boolean {
+  const fields = requestFields(product);
+  if (!fields) return false;
+  for (const [path, role] of Object.entries(fields)) visitPath(params, path.split('.'), 'params', (hour, at) => visit(role, hour, at));
+  return true;
+}
+
+export function refusedHours(product: string, params: unknown, branch: CoveredBranch, followed = false): string | null {
   let refused: string | null = null;
-  hourFields(params, (role, hour, path) => {
+  const declared = hourFields(product, params, (role, hour, path) => {
     if (refused !== null) return;
-    if (role === 'exact' && followed) refused = `${path}: a followed query reads at playback and names no hour`;
+    const exact = exactRole(role);
+    if (exact && followed) refused = `${path}: a followed query reads at playback and names no hour`;
     else if (typeof hour !== 'number' || !Number.isSafeInteger(hour)) refused = `${path} is not a whole hour`;
     else if (hour < branch.firstHour || hour > branch.lastHour) refused = `${path} names hour ${hour}, outside branch ${branch.firstHour}–${branch.lastHour}`;
-    else if (role === 'exact' && gapAt({ branch }, hour)) refused = `${path} names hour ${hour}, which was not recorded`;
+    else if (exact && gapAt({ branch }, hour)) refused = `${path} names hour ${hour}, which was not recorded`;
   });
-  return refused;
+  return declared ? refused : `${product} is not a declared product`;
 }
 
 export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
@@ -102,7 +127,7 @@ export const axisAt = (position: number): AxisHour => position as AxisHour;
 export type CoveredBranch = Pick<BoundTrack['branch'], 'firstHour' | 'lastHour' | 'gaps'>;
 type Branch = { branch: CoveredBranch };
 
-interface GapIndex { gaps: readonly RecordingGap[]; reach: readonly number[] }
+interface GapIndex { gaps: readonly RecordingGap[]; reach: readonly number[]; edges: readonly number[] }
 const gapIndexes = new WeakMap<readonly RecordingGap[], GapIndex>();
 
 function gapIndex(gaps: readonly RecordingGap[]): GapIndex {
@@ -111,7 +136,8 @@ function gapIndex(gaps: readonly RecordingGap[]): GapIndex {
   const sorted = [...gaps].sort((a, b) => a.firstHour - b.firstHour);
   const reach: number[] = [];
   for (const gap of sorted) reach.push(Math.max(reach.at(-1) ?? -Infinity, gap.lastHour));
-  gapIndexes.set(gaps, index = { gaps: sorted, reach });
+  const edges = [...new Set(sorted.flatMap(gap => [gap.firstHour, gap.lastHour + 1]))].sort((a, b) => a - b);
+  gapIndexes.set(gaps, index = { gaps: sorted, reach, edges });
   return index;
 }
 
@@ -139,16 +165,31 @@ export function coverageSpan(track: Branch, hour: number): readonly [number, num
   if (at > lastHour) return [lastHour + 1, Infinity];
   const gaps = track.branch.gaps;
   if (!gaps?.length) return [firstHour, lastHour];
-  const gap = gapAt(track, at);
-  if (gap) return [Math.max(firstHour, gap.firstHour), Math.min(lastHour, gap.lastHour)];
-  const { gaps: sorted, reach } = gapIndex(gaps);
-  let low = 0, high = sorted.length;
-  while (low < high) { const middle = (low + high) >> 1; if (sorted[middle].firstHour <= at) low = middle + 1; else high = middle; }
-  return [Math.max(firstHour, low ? reach[low - 1] + 1 : firstHour), Math.min(lastHour, low < sorted.length ? sorted[low].firstHour - 1 : lastHour)];
+  const { edges } = gapIndex(gaps);
+  let low = 0, high = edges.length;
+  while (low < high) { const middle = (low + high) >> 1; if (edges[middle] <= at) low = middle + 1; else high = middle; }
+  return [Math.max(firstHour, low ? edges[low - 1] : firstHour), Math.min(lastHour, low < edges.length ? edges[low] - 1 : lastHour)];
 }
 
 export function recordedHour(track: Branch | undefined, hour: number | null | undefined): TrackHour | null {
   return coverageAt(track, hour).hour;
+}
+
+export function bucketEdges(track: Branch, size: number): readonly number[] {
+  const edges: number[] = [];
+  for (let edge = (Math.floor(track.branch.firstHour / size) + 1) * size; edge <= track.branch.lastHour; edge += size) edges.push(edge);
+  return edges;
+}
+
+export function bucketRead(track: Branch | undefined, hour: number | null, size: number): TrackHour | null {
+  if (!track || hour === null) return null;
+  const start = Math.floor(hour / size) * size;
+  const last = Math.min(track.branch.lastHour, start + size - 1);
+  for (let at = Math.max(track.branch.firstHour, start); at <= last; at = coverageSpan(track, at)[1] + 1) {
+    const recorded = recordedHour(track, at);
+    if (recorded !== null) return recorded;
+  }
+  return null;
 }
 
 export const at = (hour: number): RegionAction => ({ kind: 'at', hour: Math.floor(hour) });

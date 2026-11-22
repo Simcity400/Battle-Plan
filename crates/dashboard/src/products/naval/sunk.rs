@@ -384,6 +384,7 @@ impl Product for ShipsSunk {
     const KEY: &'static str = "ships-sunk";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ShipsSunkParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
     type Reply = ShipsSunkReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -478,6 +479,7 @@ impl Product for ShipsSunkManifest {
     const KEY: &'static str = "ships-sunk-manifest";
     const CONTENT_DEPENDENT: bool = true;
     type Params = dashboard_base::products::BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = ShipsSunkManifestReply;
 
     #[cfg(any(test, feature = "export-types"))]

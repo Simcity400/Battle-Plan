@@ -245,6 +245,7 @@ impl Product for DivisionLog {
     const KEY: &'static str = "division-log";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionLogParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -457,6 +458,7 @@ impl Product for DivisionLogManifest {
     const KEY: &'static str = "division-log-manifest";
     const CONTENT_DEPENDENT: bool = true;
     type Params = super::BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = DivisionLogManifestReply;
 
     #[cfg(any(test, feature = "export-types"))]

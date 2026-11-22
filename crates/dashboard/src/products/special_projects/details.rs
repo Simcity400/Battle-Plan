@@ -457,6 +457,7 @@ impl AtHour for SpecialProjectDetailsAt {
     const TITLE: &'static str = "Special project details";
     const CONTENT_DEPENDENT: bool = true;
     type Params = SpecialProjectDetailsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = SpecialProjectDetails;
     type Context = Context;
 
@@ -936,6 +937,7 @@ impl AtHour for SpecialProjectEffectsAt {
     const TITLE: &'static str = "Special project effects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = SpecialProjectEffectsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project];
     type Reply = SpecialProjectEffects;
     type Context = Context;
 

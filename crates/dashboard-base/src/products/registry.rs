@@ -74,8 +74,12 @@ pub struct Registered {
         &LoadContext,
         &AtomicBool,
     ) -> Result<String, dashboard_core::QueryError>,
+    pub fields: super::Fields,
+    pub read_hour: bool,
     #[cfg(any(test, feature = "export-types"))]
     pub types: Option<fn() -> Vec<String>>,
+    #[cfg(any(test, feature = "export-types"))]
+    pub params: fn() -> Option<&'static [&'static str]>,
 }
 
 pub const fn register<P: Product>() -> Registered {
@@ -85,8 +89,12 @@ pub const fn register<P: Product>() -> Registered {
         interactive: P::INTERACTIVE,
         replays: P::REPLAYS,
         load: load_json::<P>,
+        fields: P::FIELDS,
+        read_hour: false,
         #[cfg(any(test, feature = "export-types"))]
         types: None,
+        #[cfg(any(test, feature = "export-types"))]
+        params: dashboard_query::fields::struct_fields::<P::Params>,
     }
 }
 

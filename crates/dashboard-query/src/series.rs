@@ -204,6 +204,20 @@ struct Family {
     measure: String,
 }
 
+pub const FIELDS: crate::fields::Fields = {
+    use crate::fields::HourRole::{End, Read, Start, Undated};
+    &[
+        ("branchId", Undated), ("family", Undated), ("countries", Undated), ("lines", Undated), ("reads[].hour", Read), ("from", Start), ("to", End),
+        ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("cursor", Undated), ("pageSize", Undated), ("top", Undated),
+        ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
+        ("withMarks", Undated), ("least", Undated),
+    ]
+};
+
+pub fn params_fields() -> Option<&'static [&'static str]> {
+    crate::fields::struct_fields::<Params>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Params {

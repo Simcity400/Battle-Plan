@@ -192,6 +192,7 @@ impl Product for ArmySize {
     const KEY: &'static str = "army-size";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmySizeParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, countFor, byType, window];
     type Reply = ArmySizeReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -1,4 +1,4 @@
-import { useGate, type Gate } from '../../dashboard/regionGate';
+import { useGate, useHeldEdges, type Gate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
@@ -95,7 +95,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const anchor = useRef<HTMLDivElement | null>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
   const pickOwner = useMemo(() => ({ scope, client: runtime.client }), [scope, runtime.client]);
-  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null, undefined, undefined, HOLDERS);
+  const [heldEdges, holdEdges] = useHeldEdges();
+  const drillNeeds = useMemo(() => ({ ...HOLDERS, changes: heldEdges }), [heldEdges]);
+  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null, undefined, undefined, drillNeeds);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
@@ -119,6 +121,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
   const missingSavedDate = saved && shownDrill.breakdown === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
   const actor = useStockpileCountry(selectedCountry, runtime, track, widget, active && (saved || shownDrill.breakdown !== null), detailTime, included);
+  useEffect(() => holdEdges(actor.spans), [actor.spans, holdEdges]);
   const detailData = selectedCountry ? actor.data : undefined;
   useEffect(() => {
     const warnings = (saved || shownDrill.breakdown !== null ? detailData : data)?.warnings;

@@ -616,6 +616,7 @@ impl AtHour for UnitLeaders {
     const TITLE: &'static str = "Generals leaderboard";
     const CONTENT_DEPENDENT: bool = true;
     type Params = UnitLeadersParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders];
     type Reply = UnitLeadersReply;
     type Context = LeadersContext;
 
@@ -821,6 +822,7 @@ impl Product for LeaderPortraits {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = LeaderPortraitsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, references, edge];
     type Reply = LeaderPortraitsReply;
 
     #[cfg(any(test, feature = "export-types"))]

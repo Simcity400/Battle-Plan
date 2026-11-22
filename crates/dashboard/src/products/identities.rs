@@ -54,6 +54,7 @@ impl Product for CountryIdentities {
     const KEY: &'static str = "country-identities";
     const CONTENT_DEPENDENT: bool = false;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = CountryIdentitiesReply;
 
     #[cfg(any(test, feature = "export-types"))]

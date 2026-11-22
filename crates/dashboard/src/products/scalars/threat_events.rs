@@ -197,6 +197,7 @@ impl Product for ThreatEvents {
     const KEY: &'static str = "threat-events";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ThreatEventsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = ThreatEventsReply;
 
     #[cfg(any(test, feature = "export-types"))]

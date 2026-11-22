@@ -383,6 +383,7 @@ impl Product for PlaceNames {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = PlaceNamesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, land, "places[].hour": Read, "states[].hour": Read];
     type Reply = PlaceNamesReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

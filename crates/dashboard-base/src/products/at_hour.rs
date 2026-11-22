@@ -92,6 +92,7 @@ pub trait AtHour: 'static {
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
+    const FIELDS: super::Fields;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
     type Context: Send + 'static;
@@ -488,8 +489,12 @@ pub const fn entry<P: AtHour>() -> Entry {
             interactive: P::INTERACTIVE,
             replays: false,
             load: load::<P>,
+            fields: P::FIELDS,
+            read_hour: true,
             #[cfg(any(test, feature = "export-types"))]
             types: None,
+            #[cfg(any(test, feature = "export-types"))]
+            params: dashboard_query::fields::struct_fields::<P::Params>,
         },
         panel: panel::<P>,
     }

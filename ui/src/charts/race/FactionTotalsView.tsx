@@ -97,7 +97,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const liveRef = useRef<ReturnType<typeof liveRace> | null>(null);
   const named = useStickyMembers(JSON.stringify([track?.branch.id, kind, measure, following]), members, stickyLimit(members.length));
   const query = useMemo(() => following && track && named.length
-    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: moment })) } }) : null,
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, track?.branch.id, family, named, gate.follow]);
   const memberWakes = useMemo(() => new Set<() => void>(), []);
   const followed = useFollow(store, query, target, () => { liveRef.current?.wake(); for (const wake of [...memberWakes]) wake(); }, answerShape);

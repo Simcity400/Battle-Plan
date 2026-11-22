@@ -8,26 +8,33 @@ import { at, FOLLOW, regionFollows, SPEC, type GatedTime, type PinnedSpec, type 
 export type { PinnedSpec };
 
 export interface Breakdown { id: string; label: string }
-export interface DrillState { breakdown: string | null; spec: boolean; follow: boolean; hour: number | null }
+export interface DrillHolder { tag: string; origin: number }
+export interface DrillState { breakdown: string | null; spec: boolean; follow: boolean; hour: number | null; country?: DrillHolder | null }
 export const CLOSED: DrillState = { breakdown: null, spec: true, follow: false, hour: null };
 export const savedDrill = (breakdown: string | null): DrillState => breakdown === null ? CLOSED : { breakdown, spec: true, follow: false, hour: null };
 
 export const FOLLOW_NEAR_HOURS = 45 * 24;
 
 export type DrillAction =
-  | { type: 'open'; breakdown: string; hour: number; follow: boolean }
+  | { type: 'open'; breakdown: string; hour: number; follow: boolean; country?: DrillHolder | null }
   | { type: 'attach'; breakdown: string }
   | { type: 'pick'; hour: number }
   | { type: 'follow' }
   | { type: 'close' };
 
+function uncountried<S extends DrillState>(state: S): S {
+  const { country, ...rest } = state;
+  return country === undefined ? state : rest as S;
+}
+
 export function reduceDrill<S extends DrillState>(state: S, action: DrillAction): S {
   switch (action.type) {
-    case 'open': return { ...state, breakdown: action.breakdown, spec: false, follow: action.follow, hour: action.follow ? null : Math.floor(action.hour) };
+    case 'open': return { ...uncountried(state), breakdown: action.breakdown, spec: false, follow: action.follow, hour: action.follow ? null : Math.floor(action.hour),
+      ...action.country ? { country: { tag: action.country.tag, origin: Math.floor(action.country.origin) } } : {} };
     case 'attach': return { ...state, breakdown: action.breakdown, spec: true, follow: false, hour: null };
     case 'pick': return state.breakdown === null ? state : { ...state, spec: false, follow: false, hour: Math.floor(action.hour) };
     case 'follow': return state.breakdown === null ? state : { ...state, spec: false, follow: true, hour: null };
-    case 'close': return { ...state, ...CLOSED };
+    case 'close': return { ...uncountried(state), ...CLOSED };
   }
 }
 

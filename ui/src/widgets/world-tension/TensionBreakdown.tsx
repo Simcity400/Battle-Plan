@@ -30,11 +30,12 @@ export interface TensionBreakdownProps {
   events: readonly ThreatEvent[];
   tooltip: (hour: number) => TooltipContent | null;
   report: () => void;
+  onHover?: (hour: number | null) => void;
   onPick?: (hour: number) => void;
 }
 
 export default function TensionBreakdown({ runtime, gate, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
-  otherColour, layers, events, tooltip, report, onPick }: TensionBreakdownProps) {
+  otherColour, layers, events, tooltip, report, onHover, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
   const keys = useMemo(() => eventKeys(events), [events]);
   const name = (item: TensionContribution) => contributorName(item.tag, item.remembered, tag => looks.name(tag));
@@ -85,7 +86,7 @@ export default function TensionBreakdown({ runtime, gate, track, active, options
     <div className="world-tension-drill-chart">
       <TensionChart runtime={runtime} gate={gate} track={track} active={active} options={options} label="Country contributions over time" extent={extent} playhead={playhead}
         following={following} layers={layers} colours={layers.map(layer => colour(layer.tag))} otherColour={otherColour} share={false}
-        live={following ? live : null} tooltip={at => tooltip(at)} marker={hour} onPick={onPick} />
+        live={following ? live : null} tooltip={at => tooltip(at)} marker={hour} onHover={onHover} onPick={onPick} />
     </div>
   </div>;
 }

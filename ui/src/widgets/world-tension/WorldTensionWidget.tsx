@@ -65,6 +65,14 @@ export default function WorldTensionWidget(props: WidgetProps) {
   return <TensionView {...props} />;
 }
 
+function colourFunction(tags: readonly string[], looks: { color(tag: string): readonly [number, number, number] | null | undefined }, tokens: { countryColours: string; surface: string; muted: string }) {
+  const known = tags.filter(tag => looks.color(tag) != null);
+  const raw = known.map(tag => { const [r, g, b] = looks.color(tag)!; return { r, g, b }; });
+  const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
+  const colours = new Map(known.map((tag, index) => [tag, toHex(adjusted[index])]));
+  return (tag: string | null) => (tag != null ? colours.get(tag) : undefined) ?? tokens.muted;
+}
+
 export function pinTensionDrill(source: WidgetSpec, trackId: string, time: GatedTime): PinnedSpec {
   return pinnedBreakdown(source, TENSION_BREAKDOWN, trackId, time);
 }
@@ -113,12 +121,12 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const resolved = useMemo(() => narrowed ? resolveCountries(widget.countries, [], groups.data, lastHour, Number.MAX_SAFE_INTEGER) : null,
     [narrowed, widget.countries, groups.data, lastHour]);
-  const keep = useMemo(() => {
-    if (!resolved) return () => true;
-    if (resolved.top != null) return () => true;
+  const keepAt = useCallback((hour: number | null) => {
+    if (!resolved || resolved.top != null) return () => true;
     const tags = new Set(resolved.tags);
-    return (tag: string) => tags.has(tag) && (!resolved.membership || isMember(resolved.membership.get(tag), listHour));
-  }, [resolved, listHour]);
+    return (tag: string) => tags.has(tag) && (!resolved.membership || hour !== null && isMember(resolved.membership.get(tag), hour));
+  }, [resolved]);
+  const keep = useMemo(() => keepAt(listHour), [keepAt, listHour]);
   const top = resolved?.top ?? count;
   const breakdownShown = drillControl.open;
   drawn.current = { count: Math.min(top, count), keep };
@@ -129,20 +137,19 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
 
   const events = useProduct<ThreatEventsReply>(runtime.client, track && options.markers !== false ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'threat-events', params: { branchId: track.branch.id } } : null, active, validateThreatEvents, track?.source);
-  const lookTagsNow = useMemo(() => [...new Set([...stableLayers.flatMap(layer => layer.tag ? [layer.tag] : []),
-    ...(breakdownShown ? (drillContribution?.contributions ?? []).flatMap(item => item.tag ? [item.tag] : []) : [])])].sort(), [stableLayers, breakdownShown, drillContribution]);
+  const lookTagsNow = useMemo(() => [...new Set(stableLayers.flatMap(layer => layer.tag ? [layer.tag] : []))].sort(), [stableLayers]);
+  const drillLayers = useMemo(() => drillContribution ? layerContributions(drillContribution.contributions, Math.min(top, count), keepAt(drillAt)) : [],
+    [drillContribution, top, count, keepAt, drillAt]);
+  const drillTagsNow = useMemo(() => [...new Set((drillContribution?.contributions ?? []).flatMap(item => item.tag ? [item.tag] : []))].sort(), [drillContribution]);
+  const drillTags = useMemo(() => drillTagsNow, [drillTagsNow.join(',')]);
+  const drillLooks = useCountryLooks(runtime.client, track, drillTags, drillAt ?? 0, active && breakdownShown && drillAt !== null);
   const lookTags = useMemo(() => lookTagsNow, [lookTagsNow.join(',')]);
   const named = usePushedLooksHour(runtime, widget, track, lookTags, active && head.read === 'followed', listHour);
   const looks = useCountryLooks(runtime.client, track, lookTags, named.hour, active, undefined, undefined, named.exact);
   useWhyCommit('TensionView', { reply: head.data, at: head.at, read: head.read, picked: picked.data, hovered: hovered.data, hoverHour, drill, layers: stableLayers,
     events: events.data, named: named.hour, looks });
-  const colourOf = useMemo(() => {
-    const known = lookTags.filter(tag => looks.color(tag) != null);
-    const raw = known.map(tag => { const [r, g, b] = looks.color(tag)!; return { r, g, b }; });
-    const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
-    const colours = new Map(known.map((tag, index) => [tag, toHex(adjusted[index])]));
-    return (tag: string | null) => (tag != null ? colours.get(tag) : undefined) ?? tokens.muted;
-  }, [lookTags, looks, tokens]);
+  const colourOf = useMemo(() => colourFunction(lookTags, looks, tokens), [lookTags, looks, tokens]);
+  const drillColourOf = useMemo(() => colourFunction(drillTags, drillLooks, tokens), [drillTags, drillLooks, tokens]);
   const otherColour = mix(tokens.surface, tokens.text, 0.3);
   const badges = useMemo(() => eventBadges(events.data?.events ?? [], extent[0], extent[1], colourOf), [events.data, extent[0], extent[1], colourOf]);
   const badgeList = useMemo(() => [...badges.keys()], [badges]);
@@ -229,13 +236,13 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (resolved?.reason) return <WidgetState kind="empty" icon="alert" message={resolved.reason} />;
   const breakdownHour = drillAt;
-  const breakdown = <TensionBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} options={options} extent={extent} playhead={playhead}
+  const breakdown = <TensionBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} options={options} extent={extent} playhead={breakdownHour}
     following={drillFollows} hour={breakdownHour} read={drillCoverage} reply={drillContribution} live={picked.live}
     error={picked.error}
-    onRetry={picked.retry} looks={looks} colour={colourOf} otherColour={otherColour} layers={stableLayers} events={events.data?.events ?? []}
-    tooltip={hour => tooltip(hour, [])} report={report}
+    onRetry={picked.retry} looks={drillLooks} colour={drillColourOf} otherColour={otherColour} layers={drillLayers} events={events.data?.events ?? []}
+    tooltip={hour => tooltip(hour, [])} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))} report={report}
     onPick={drillControl.pick} />;
-  if (pinnedDrill) return <div className="world-tension-pinned" ref={head.root}>
+  if (pinnedDrill) return <div className="world-tension-pinned" ref={picked.root}>
     <p className="drill-empty">{breakdownHour === null ? '' : formatDateTime(breakdownHour)} {!drillControl.following
       && <button type="button" className="button small" onClick={drillControl.follow}>Follow playback</button>}</p>{drillControl.outside ? <WidgetState kind="outside" read={drillCoverage} /> : breakdown}</div>;
   const main = head.error && !head.data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
@@ -266,7 +273,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     {menu.menu}
   </div>;
   return <div ref={rootRef} style={{ height: '100%' }}>
-    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={TENSION_BREAKDOWN.label}
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={TENSION_BREAKDOWN.label} root={picked.root}
       day={breakdownHour === null ? '' : formatDateTime(breakdownHour)} canFollow
       onPin={!drillControl.time() ? undefined : () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, time)); }}
       main={main}>{breakdown}</DrillHost>

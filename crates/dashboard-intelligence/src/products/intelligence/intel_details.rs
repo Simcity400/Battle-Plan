@@ -693,6 +693,7 @@ impl Product for IntelDetails {
     const INTERACTIVE: bool = true;
 
     type Params = IntelDetailsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![viewer, branchId, hour: Read, country];
     type Reply = IntelDetailsReply;
 
     fn validate(p: &Self::Params) -> Result<(), &'static str> {

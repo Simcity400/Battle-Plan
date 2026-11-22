@@ -1,4 +1,4 @@
-import type { Gate } from '../../dashboard/regionGate';
+import type { CountryAt, Gate } from '../../dashboard/regionGate';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useMemo, useState } from 'react';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
@@ -39,9 +39,9 @@ function partsAt(values: LiveValues<number>, id: number, decimals: number, colou
   return { balance, groups, other };
 }
 
-export default function ResourceBreakdown({ runtime, gate, track, active, tag, resource, data, live, hour, following, tokens, extent, playhead,
+export default function ResourceBreakdown({ runtime, gate, track, active, history, resource, data, live, hour, following, tokens, extent, playhead,
   liveHead, playback, afterPlayhead, windowHours, hoursPerSecond, onPick, onContextMenu }: {
-  runtime: WidgetRuntime; gate: SeriesGate & Pick<Gate, 'recorded'>; track: BoundTrack; active: boolean; tag: string; resource: ResourceInfo; data: ResourceBalanceReply;
+  runtime: WidgetRuntime; gate: SeriesGate & Pick<Gate, 'recorded'>; track: BoundTrack; active: boolean; history: CountryAt['history']; resource: ResourceInfo; data: ResourceBalanceReply;
   live: Live<LiveValues<number>>; hour: number | null; following: boolean; tokens: ChartTokens; extent: [number, number]; playhead: number | null;
   liveHead?: { read(): number; subscribe(changed: () => void): () => void }; playback: PlaybackMode; afterPlayhead: boolean; windowHours: number;
   hoursPerSecond: number | undefined; onPick: (hour: number) => void; onContextMenu: (hour: number, x: number, y: number) => void;
@@ -70,8 +70,9 @@ export default function ResourceBreakdown({ runtime, gate, track, active, tag, r
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const element = useMemo(() => ({ current: root }), [root]);
-  const keys = useMemo(() => [{ tag, part: String(resource.id) }], [tag, resource.id]);
-  const spec = (index: number) => ({ source: track.source, branch: track.branch, family: PART_FAMILIES[index], keys, partBits: 32, lastHour: track.branch.lastHour });
+  const keys = useMemo(() => history ? [{ tag: history.key, part: String(resource.id) }] : [], [history?.key, resource.id]);
+  const within = useMemo(() => history && keys[0] ? new Map([[keyId(keys[0]), history.spans]]) : undefined, [history, keys]);
+  const spec = (index: number) => ({ source: track.source, branch: track.branch, family: PART_FAMILIES[index], keys, within, partBits: 32, lastHour: track.branch.lastHour });
   const head = following ? null : gate.recorded(hour);
   const hovered = gate.recorded(hoverHour);
   const series = [
@@ -84,7 +85,7 @@ export default function ResourceBreakdown({ runtime, gate, track, active, tag, r
     useKeyedSeries(runtime.client, runtime.clock, gate, spec(6), head, hovered, following, active, element),
     useKeyedSeries(runtime.client, runtime.clock, gate, spec(7), head, hovered, following, active, element),
   ];
-  const id = keyId(keys[0]);
+  const id = keys[0] ? keyId(keys[0]) : '';
   const summaries = series.map(item => item.summaryByKey.get(id)?.summary);
   const lines = series.map(item => item.lines[0] as ReachedKeyLine | undefined);
   const chartSeries = useMemo<BreakdownSeries[]>(() => RESOURCE_PARTS.map((part, index) => ({

@@ -315,6 +315,7 @@ impl AtHour for ArmyLosses {
     const TITLE: &'static str = "Army losses";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmyLossesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, view];
     type Reply = ArmyLossesReply;
     type Context = Content;
 

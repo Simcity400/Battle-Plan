@@ -854,6 +854,7 @@ impl Product for SpecialProjects {
     const KEY: &'static str = "special-projects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = SpecialProjectsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![hour: Read, branchId, country];
     type Reply = SpecialProjectsReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

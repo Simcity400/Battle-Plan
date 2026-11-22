@@ -27,7 +27,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { useComparisonCountries } from '../../dashboard/comparisonCountries';
-import { countryDrillTagAt } from '../../dashboard/countryIdentity';
+import GateState from '../../dashboard/GateState';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryLineColours } from '../../dashboard/countryLineColours';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
@@ -45,7 +45,6 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProducts } from '../../dashboard/products';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
-import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
@@ -56,8 +55,7 @@ import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
 import { fuelConsumptionLevelToken, fuelConsumptionToken, readFuelConsumption, readFuelConsumptionLevel } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
-import { fuelCountrySpans, readFuelCountry } from './fuelCountry';
-import type { FuelCountrySelection } from './fuelCountry';
+import { readFuelCountry } from './fuelCountry';
 import { COUNTRY_FUEL, FUEL_DAYS, QUANTITY_SCALE, formatFuel, fuelDecimals, fuelTooltips, stripBars, stripNote, validateCountryFuel } from './fuelData';
 import { fuelExtentToken, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
@@ -78,7 +76,9 @@ function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
 
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const savedShow = BREAKDOWNS.find(item => item.id === widget.options?.show)?.id ?? null;
-  const drillControl = useDrill(runtime, useRegion(widget), savedShow, undefined, undefined, HOLDERS);
+  const storedCountry = widget.options?.fuelCountry;
+  const drillNeeds = useMemo(() => savedShow ? { country: { stored: storedCountry }, holders: true } : HOLDERS, [savedShow, storedCountry]);
+  const drillControl = useDrill(runtime, useRegion(widget), savedShow, undefined, undefined, drillNeeds);
   const storedDrill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object>();
@@ -215,18 +215,14 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const drillCoverage = coverageOf(drillControl.outside);
   const at = drill.breakdown !== null ? drillControl.hour : null;
   const drillFollows = drillControl.following;
-  const [chosenTag, setChosenTag] = useState<string>();
   const [pickTags, setPickTags] = useState<readonly string[]>();
   const campaign = track?.source.metadata.campaignKey ?? '';
   const savedCountry = useMemo(() => track && saved ? readFuelCountry(options.fuelCountry, campaign, track.branch.id, widget.countries) : null,
     [track, saved, options.fuelCountry, widget.countries, campaign]);
-  const [countryPick, setCountryPick] = useState<{ owner: object; selection: FuelCountrySelection } | null>(null);
-  const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
-  const catalogue = useCountryGroups(runtime, track, active && !!selectedCountry);
-  const identitySpans = useMemo(() => selectedCountry && catalogue.data && track ? fuelCountrySpans(catalogue.data.countryIdentities, selectedCountry,
-    track.branch.firstHour, track.branch.lastHour) : null, [selectedCountry, catalogue.data, track]);
-  const shownTag = identitySpans && at !== null ? countryDrillTagAt(identitySpans, at) : null;
-  const drillTag = selectedCountry ? shownTag : chosenTag ?? (pickTags ? null : tags[0] ?? null);
+  const drillCountry = drillControl.gate.country;
+  const pickKey = saved ? tags[0] ?? null : drill.country?.tag ?? null;
+  const identitySpans = drillCountry?.aliases ?? null;
+  const drillTag = drillCountry?.tag ?? null;
   const [recipient, setRecipient] = useState<FuelRecipientSelection | null | undefined>(undefined);
   const savedRecipient = track && saved?.id === 'burn' ? readFuelRecipient(options.fuelRecipient, campaign, track.branch.id) : null;
   const [consumption, setConsumption] = useState<FuelConsumptionSelection | null | undefined>(undefined);
@@ -236,7 +232,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const heldRecipient = recipient === undefined ? savedRecipient : recipient;
   const heldConsumption = consumption === undefined ? savedConsumption : consumption;
   const heldLevel = level === undefined ? savedLevel : level;
-  useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(undefined); setCountryPick(null); setChosenTag(undefined); setPickTags(undefined);
+  useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(undefined); setPickTags(undefined);
     setRecipient(undefined); setConsumption(undefined); setLevel(undefined); }, [pickOwner]);
   const invalidSaved = !!saved && (!!options.fuelExtent && !heldExtent || !!options.fuelCountry && !savedCountry
     || saved.id === 'burn' && !!options.fuelRecipient && !savedRecipient || saved.id === 'consumption' && !!options.fuelConsumption && !savedConsumption
@@ -264,14 +260,11 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     const choosing = !tag && choices && choices.length > 1;
     setRecipient(null); setConsumption(null); setLevel(null);
     setDrillOwner(pickOwner);
-    if (choosing) { setChosenTag(undefined); setPickTags(choices); setCountryPick(null); }
-    else {
-      const picked = tag ?? choices?.[0] ?? drillTag;
-      if (!picked || !tags.includes(picked) || !isMember(membership?.get(picked), hour)) return;
-      setPickTags(undefined); setChosenTag(picked);
-      setCountryPick({ owner: pickOwner, selection: { campaign, branch: track.branch.id, tag: picked, originOffset: hour - track.branch.firstHour } });
-    }
-    if (choosing) drillControl.showAt(drillMeasure, hour); else drillControl.show(drillMeasure, hour);
+    if (choosing) { setPickTags(choices); drillControl.showAt(drillMeasure, hour); return; }
+    const picked = tag ?? choices?.[0] ?? pickKey;
+    if (!picked || !tags.includes(picked) || !isMember(membership?.get(picked), hour)) return;
+    setPickTags(undefined);
+    drillControl.show(drillMeasure, hour, { tag: picked, origin: hour });
   };
   const tooltip = (hour: number) => {
     const at = Math.floor(hour);
@@ -304,7 +297,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     <button type="button" className="button small quiet" onClick={() => {
       const hour = Math.floor(playhead ?? extent[1]);
       const present = tags.filter(tag => isMember(membership?.get(tag), hour));
-      if (present.length) open(hour, present.length === 1 ? present[0] : chosenTag, present);
+      if (present.length) open(hour, present.length === 1 ? present[0] : pickKey ?? undefined, present);
     }}>View fuel breakdown</button>
     <div className="country-measure-chart">
       <TimeChart label={`Fuel of ${tags.map(nameOf).join(', ')}`} extent={extent} playhead={playhead}
@@ -334,34 +327,33 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     </div>
   </div></div>;
 
-  const actorState = selectedCountry ? catalogue.error && !catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
-    : !catalogue.data ? <WidgetState kind="loading" label="Loading country…" />
-      : !identitySpans ? <WidgetState kind="unavailable" message="Choose a country again." /> : undefined : undefined;
+  const drillStage = drillControl.gate.stage.stage;
+  const actorState = drillCountry && drillStage !== 'open' && drillStage !== 'outside' && drillStage !== 'unbound' ? <GateState gate={drillControl.gate} loading="Loading country…" /> : undefined;
   const chart = track ? { active: active && (!!saved || drill.breakdown !== null), pickOwner, extent, branchStart: track.branch.firstHour,
     playhead: drillFollows ? actualHour : playhead, playback,
     liveHead: drillFollows ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
-    hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: drillTag ? membership?.get(drillTag) ?? null : null, detailHours: DETAIL_HOURS,
+    hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: pickKey ? membership?.get(pickKey) ?? null : null, detailHours: DETAIL_HOURS,
     onPick: (hour: number) => { setDrillOwner(pickOwner); drillControl.pick(hour); },
     onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) } : null;
   const breakdown = at === null && track ? <WidgetState kind="outside" read={drillCoverage} />
     : invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? (track && chart && drillTag
     ? drillMeasure === 'consumption'
       ? <FuelConsumptionBreakdown runtime={runtime} gate={drillControl.gate} widget={widget} track={track} tag={drillTag} hour={drillFollows ? null : at} follows={drillFollows} digits={digits}
-        campaign={campaign} aliases={identitySpans ?? undefined} selection={heldConsumption} onSelection={setConsumption} level={heldLevel} onLevel={setLevel} {...chart} />
+        campaign={campaign} aliases={identitySpans ?? undefined} history={drillCountry?.history ?? null} selection={heldConsumption} onSelection={setConsumption} level={heldLevel} onLevel={setLevel} {...chart} />
       : <FuelBreakdown runtime={runtime} gate={drillControl.gate} widget={widget} track={track} tag={drillTag} measure={drillMeasure} hour={drillFollows ? null : at} follows={drillFollows}
-        digits={digits} campaign={campaign} aliases={identitySpans ?? undefined} selection={heldRecipient} onSelection={setRecipient} {...chart} />
-    : <p className="drill-empty">{selectedCountry ? 'Country unavailable at this time.' : 'Choose a country from the drawn lines for this moment.'}</p>);
-  const headerReason = at === null ? 'This time is outside the recording.' : invalidSaved ? 'Choose a country again.' : !selectedCountry ? 'Country unavailable at this time.' : !catalogue.data ? 'Loading country…'
-    : !identitySpans ? 'Choose a country again.' : !shownTag ? 'Country unavailable at this time.' : null;
-  const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!shownTag;
-  const headerWanted = useMemo(() => headerReady && shownTag && at !== null ? [{ tag: shownTag, hour: at }] : [], [headerReady, shownTag, at]);
+        digits={digits} campaign={campaign} aliases={identitySpans ?? undefined} history={drillCountry?.history ?? null} selection={heldRecipient} onSelection={setRecipient} {...chart} />
+    : <p className="drill-empty">{drillCountry ? 'Country unavailable at this time.' : 'Choose a country from the drawn lines for this moment.'}</p>);
+  const headerReason = at === null ? 'This time is outside the recording.' : invalidSaved ? 'Choose a country again.' : !drillCountry?.historyHeld ? 'Loading country…'
+    : !drillTag ? 'Country unavailable at this time.' : null;
+  const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!drillTag;
+  const headerWanted = useMemo(() => headerReady && drillTag && at !== null ? [{ tag: drillTag, hour: at }] : [], [headerReady, drillTag, at]);
   const { labelAt: headerLabelAt } = useCountryLabelsAt(runtime.client, track, headerWanted, headerReady);
-  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip failure={catalogue.data ? undefined : catalogue.error}
-    label={headerReady && shownTag && at !== null ? headerLabelAt(at)(shownTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
+  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip failure={drillCountry?.historyHeld ? undefined : drillCountry?.error}
+    label={headerReady && drillTag && at !== null ? headerLabelAt(at)(drillTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
   const notices = groupRefreshError ? <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} /> : null;
 
   const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinCountry = drillControl.hold(drillCountry?.holder ?? null);
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}{notices}
     {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
@@ -384,13 +376,13 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       allowedTags={pickTags ?? tags} flagAt={at !== null ? { branchId: track.branch.id, hour: at } : null}
       onChange={tag => {
         if (!tag || at === null || !(pickTags ?? tags).includes(tag) || !isMember(membership?.get(tag), at)) return;
-        setDrillOwner(pickOwner); setChosenTag(tag); setPickTags(undefined);
-        setCountryPick({ owner: pickOwner, selection: { campaign, branch: track.branch.id, tag, originOffset: at - track.branch.firstHour } });
+        setDrillOwner(pickOwner); setPickTags(undefined);
+        dispatch({ type: 'open', breakdown: drillMeasure, hour: at, follow: drillFollows, country: { tag, origin: at } });
         setRecipient(null); setConsumption(null); setLevel(null);
       }} />}
     <Segmented label="Breakdown of" value={drillMeasure} onChange={next => {
       setMeasure(next); setRecipient(null); setConsumption(null); setLevel(null);
-      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.followsAt(at) });
+      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.followsAt(at), country: drill.country });
     }} options={BREAKDOWNS.map(item => ({ value: item.id, label: item.label }))} />
     {breakdown}
   </DrillHost>{menu.menu}</div>;

@@ -23,6 +23,10 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+pub fn params_fields() -> Option<&'static [&'static str]> {
+    crate::fields::struct_fields::<Params>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Params {

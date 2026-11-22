@@ -107,6 +107,7 @@ impl Product for SpriteArtwork {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = SpriteArtworkParams;
+    const FIELDS: crate::products::Fields = crate::fields![sprites];
     type Reply = SpriteArtworkReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

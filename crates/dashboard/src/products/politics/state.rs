@@ -166,6 +166,7 @@ impl AtHour for PoliticsState {
     const TITLE: &'static str = "Politics";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PoliticsStateParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view];
     type Reply = PoliticsStateReply;
     type Context = PoliticsContext;
 

@@ -150,6 +150,16 @@ function worldFilterHours(groups: CountryGroupReply): ReadonlyArray<number> {
   return hours;
 }
 
+export function selectionChangeHours(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+  index: CountryIdentityIndex | null): readonly number[] {
+  if (selection.kind === 'all' || !index) return [];
+  if (selection.kind !== 'group') return index.changeHoursOf(selection.kind === 'tags' ? selection.tags : fallback);
+  const runs = groups ? groupRuns(groups, selection.group) : null;
+  if (!groups || !runs) return [];
+  return [...new Set([...spanChanges([...runs, ...groupUnobserved(groups, selection.group)]), ...index.changeHoursOf([...new Set(runs.map(run => run.tag))])])]
+    .sort((a, b) => a - b);
+}
+
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
   return worldFilterQuery(selection, fallback, groups, lastHour, index).at(hour);

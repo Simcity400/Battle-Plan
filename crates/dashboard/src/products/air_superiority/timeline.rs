@@ -871,6 +871,7 @@ impl Product for AirSuperiorityTimeline {
     const KEY: &'static str = "air-superiority-timeline";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirTimelineParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, theatres, top, tile];
     type Reply = AirTimelineReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -903,6 +904,7 @@ impl Product for AirSuperiorityRanking {
     const KEY: &'static str = "air-superiority-ranking";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirTimelineParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, theatres, top, tile];
     type Reply = AirRankingReply;
 
     #[cfg(any(test, feature = "export-types"))]

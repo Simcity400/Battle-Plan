@@ -348,6 +348,7 @@ impl Product for CountryFacts {
     const KEY: &'static str = "country-facts";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = CountryFactsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -373,6 +374,7 @@ impl Product for CountryStyles {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = CountryStyleParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, tags];
     type Reply = CountryStyleReply;
 
     #[cfg(any(test, feature = "export-types"))]

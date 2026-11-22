@@ -185,6 +185,7 @@ impl AtHour for ProductionLicences {
     const TITLE: &'static str = "Production licences";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionLicencesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = ProductionLicencesReply;
     type Context = names::Context;
 
@@ -261,6 +262,7 @@ impl AtHour for IndustrialOrganisations {
     const TITLE: &'static str = "Industrial organisations";
     const CONTENT_DEPENDENT: bool = true;
     type Params = IndustrialOrganisationsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = IndustrialOrganisationsReply;
     type Context = names::Context;
 
@@ -381,6 +383,7 @@ impl Product for EquipmentDesigns {
     const KEY: &'static str = "equipment-designs";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EquipmentDesignsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EquipmentDesignsReply;
 
     #[cfg(any(test, feature = "export-types"))]

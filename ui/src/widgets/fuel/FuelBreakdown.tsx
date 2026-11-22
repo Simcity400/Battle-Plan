@@ -1,4 +1,4 @@
-import type { Gate } from '../../dashboard/regionGate';
+import type { CountryAt, Gate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -46,9 +46,9 @@ function partRows(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn',
   return { values, parts, total: Number(values.total) / Number(values.scale), totalText: formatFuelPart(values.total, values.scale, digits) };
 }
 
-export default function FuelBreakdown({ runtime, gate, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, ...chart }: {
+export default function FuelBreakdown({ runtime, gate, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, history, ...chart }: {
   runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
-  campaign: string; aliases?: ReadonlyMap<string, readonly Span[]>;
+  campaign: string; aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelRecipientSelection | null; onSelection: (selection: FuelRecipientSelection | null) => void;
 } & DrillChart) {
   const tokens = useChartTokens();
@@ -72,7 +72,7 @@ export default function FuelBreakdown({ runtime, gate, widget, track, tag, measu
   useEffect(() => { setConsumer(null); }, [chart.pickOwner]);
   const consumer = selected?.consumer ?? pickedConsumer;
   const basis = selected?.basis ?? (reply?.read?.day?.awards ? readBasis(track.branch.id, tag, reply.read) : null);
-  const series = usePartSeries(runtime, gate, track, FUEL_DAYS, ids.map(([name]) => name), tag, undefined, chart.active);
+  const series = usePartSeries(runtime, gate, track, FUEL_DAYS, ids.map(([name]) => name), history, chart.active);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hoverAt = gate.recorded(hoverHour);
   const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null ? { sourceId: track.source.id, revision: track.source.revision,

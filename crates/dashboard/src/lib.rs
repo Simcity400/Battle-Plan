@@ -184,6 +184,7 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */\nexport const REPLAY_PRODUCTS = [{replay_products}] as const;\n"
     ));
+    text.push_str(&request_hours());
     {
         use map_display::option_defaults as defaults;
         text.push_str(&format!(
@@ -197,6 +198,37 @@ pub fn typescript_contract() -> String {
         ));
     }
     text
+}
+
+pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str, &'static str)>> {
+    let dated = |fields: products::Fields| fields.iter().filter_map(|(path, role)| role.name().map(|role| (*path, role))).collect::<Vec<_>>();
+    let mut table = std::collections::BTreeMap::new();
+    for product in products::PRODUCTS {
+        let mut fields = dated(product.fields);
+        if product.read_hour {
+            fields.push(("hour", "read"));
+        }
+        table.insert(product.key.to_owned(), fields);
+    }
+    for key in answer::SERIES_PRODUCTS {
+        table.insert((*key).to_owned(), dated(dashboard_query::series::FIELDS));
+    }
+    for (head, fields, _) in products::player_apm::head::HEADS {
+        table.insert(format!("head:{head}"), dated(fields));
+    }
+    table
+}
+
+fn request_hours() -> String {
+    let rows = request_fields()
+        .iter()
+        .map(|(key, fields)| {
+            let roles = fields.iter().map(|(path, role)| format!("{path:?}: {role:?}")).collect::<Vec<_>>();
+            if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {} }},", roles.join(", ")) }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";\nexport const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};\n")
 }
 
 #[cfg(test)]

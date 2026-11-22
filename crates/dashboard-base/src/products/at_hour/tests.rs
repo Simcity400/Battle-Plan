@@ -52,6 +52,7 @@ impl AtHour for Power {
     const TITLE: &'static str = "Power";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PowerParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId, country];
     type Reply = PowerReply;
     type Context = ();
 
@@ -271,6 +272,7 @@ impl AtHour for Scoped {
     const TITLE: &'static str = "Scoped";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ScopedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ScopedReply;
     type Context = ();
 
@@ -352,6 +354,7 @@ impl AtHour for Planned {
     const TITLE: &'static str = "Planned";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PlannedReply;
     type Context = ();
 
@@ -434,6 +437,7 @@ impl AtHour for Clocked {
     const TITLE: &'static str = "Clocked";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ClockedReply;
     type Context = ();
 
@@ -498,6 +502,7 @@ impl AtHour for Dropping {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = DroppingReply;
     type Context = AtomicBool;
 
@@ -567,6 +572,7 @@ impl AtHour for Steady {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = SteadyReply;
     type Context = ();
 
@@ -760,6 +766,7 @@ impl AtHour for Partial {
     const TITLE: &'static str = "Partial";
     const CONTENT_DEPENDENT: bool = false;
     type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PartialReply;
     type Context = ();
 

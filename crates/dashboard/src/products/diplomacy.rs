@@ -140,6 +140,7 @@ impl AtHour for DiplomaticRelations {
     const TITLE: &'static str = "Diplomatic relations";
     const CONTENT_DEPENDENT: bool = false;
     type Params = DiplomaticRelationsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries];
     type Reply = DiplomaticRelationsReply;
     type Context = ();
 
@@ -425,6 +426,7 @@ impl Product for DiplomaticPacts {
     const KEY: &'static str = "diplomatic-pacts";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DiplomaticPactsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = DiplomacyPactsReply;
 
     #[cfg(any(test, feature = "export-types"))]

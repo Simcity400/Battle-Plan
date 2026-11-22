@@ -7,8 +7,13 @@ import type { WidgetRuntime } from './definitions';
 import { createWidget } from './model';
 import type { BoundTrack, WidgetSpec } from './model';
 import { PlaybackController } from './playback';
+import type { EngineFrame, FrameEngine } from '../engine/frame';
+import { PHASES } from '../engine/frame';
+import { TimeSection } from './settings/TimeSection';
+import type { WidgetTime } from './model';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
+import { widgetDefinition } from './definitions';
 import { datedToken } from '../test-support/gated.ts';
 import { subjectToken } from './chosen';
 import { dayLabel } from '../charts/draw';
@@ -78,15 +83,26 @@ const client = {
   },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
-const clock = new PlaybackController();
+let now = 1000;
+performance.now = () => now;
+const tasks = new Map<string, (frame: EngineFrame) => boolean | void>();
+const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
+  tasks.set(phase, run);
+  return { wake() {}, stop() { tasks.delete(phase); } };
+} } as unknown as FrameEngine;
+const tick = (ms: number) => {
+  now += ms;
+  for (const phase of PHASES) tasks.get(phase)?.({ now, dt: ms, index: 0, phase } as EngineFrame);
+};
+const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: 0, lastHour: 200 });
-const sourceOf = (gaps: { firstHour: number; lastHour: number; reason: string }[]) => ({ id: 'findings', path: 'findings.battleplan', revision: '1',
+const sourceOf = (gaps: { firstHour: number; lastHour: number; reason: string }[], last = LAST) => ({ id: 'findings', path: 'findings.battleplan', revision: '1',
   metadata: { path: 'findings.battleplan', name: 'Findings', format: 1, captureMode: 'full', campaignKey: 'campaign',
-    branches: [{ id: '1', sessionId: 's', firstHour: FIRST, lastHour: LAST, main: true, fork: null, joins: [], sampleBoundary: '', gaps }],
+    branches: [{ id: '1', sessionId: 's', firstHour: FIRST, lastHour: last, main: true, fork: null, joins: [], sampleBoundary: '', gaps }],
     countries: [{ id: '1', tag: 'GER', name: 'Germany', observedBranchId: '1', observedHour: FIRST }, { id: '2', tag: 'ENG', name: 'England', observedBranchId: '1', observedHour: FIRST }],
     playerCountryId: '1', contentVerified: true, partial: null, warnings: [], buildWarnings: [], revision: '1' } });
-const runtimeOf = (gaps: { firstHour: number; lastHour: number; reason: string }[]) => {
-  const source = sourceOf(gaps);
+const runtimeOf = (gaps: { firstHour: number; lastHour: number; reason: string }[], last = LAST) => {
+  const source = sourceOf(gaps, last);
   const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch: source.metadata.branches[0], axisOffset: 0,
     selectedTag: 'GER', selectedSlot: null } as unknown as BoundTrack;
   return { campaignTracks: [track], defaultRoleId: 'primary', tracks: [track], clock, maps: new MapViewsStore(client as never, clock), onMapBranch() {}, client,
@@ -112,7 +128,17 @@ const read = () => {
 
 export interface Scene { kind: string; time: WidgetSpec['time']; options?: Record<string, unknown>; countries?: WidgetSpec['countries']; hour: number;
   replies?: Record<string, string>; failures?: string[]; groups?: unknown; trade?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
-  accept?: boolean }
+  accept?: boolean; last?: number; plays?: boolean }
+
+const dated = new Map<string, boolean | undefined>();
+const playsBack = (kind: string, plays: boolean | undefined) => {
+  for (const [held, was] of dated) Object.assign(widgetDefinition(held)!, { playsBackDated: was });
+  dated.clear();
+  const definition = widgetDefinition(kind);
+  if (!plays || !definition) return;
+  dated.set(kind, definition.playsBackDated);
+  Object.assign(definition, { playsBackDated: true });
+};
 
 const replyOf = (body: string): Reply => new Function('hour', 'params', `return (${body});`) as Reply;
 
@@ -132,18 +158,44 @@ Object.assign(window, { findings: {
     Object.assign(state, { asks: [], options: [], pins: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
       failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? false });
     clock.setPlaying(false);
+    clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });
     clock.seek(scene.hour);
+    playsBack(scene.kind, scene.plays);
     const made = createWidget(scene.kind, 'main', 'finding');
     const widget = { ...made, time: scene.time, countries: scene.countries ?? made.countries, options: { ...made.options, ...scene.options } } as WidgetSpec;
     const element = document.body.appendChild(document.createElement('div'));
     element.id = 'finding';
     element.style.cssText = 'width: 900px; height: 600px; position: relative';
     root = createRoot(element);
-    root.render(<WidgetBody widget={widget} runtime={runtimeOf(scene.gaps ?? [])} setOption={(key, value) => { state.options.push([key, value]); }} />);
+    root.render(<WidgetBody widget={widget} runtime={runtimeOf(scene.gaps ?? [], scene.last)} setOption={(key, value) => { state.options.push([key, value]); }} />);
     await settle();
     return read();
   },
   async seek(hour: number) { clock.seek(hour); await settle(); return read(); },
+  async play(speed: number, frames: number, ms: number) {
+    clock.setSpeed(speed);
+    clock.setPlaying(true);
+    for (let frame = 0; frame < frames; frame++) { tick(ms); await settle(); }
+    return { hour: clock.getHour(), playing: clock.getSnapshot().playing, ...read() };
+  },
+  async pause() { clock.setPlaying(false); await settle(); return read(); },
+  async settings(scene: { kind: string; time: WidgetTime; hour: number; gaps?: { firstHour: number; lastHour: number; reason: string }[] }) {
+    root?.unmount();
+    await settle();
+    document.body.replaceChildren();
+    Object.assign(state, { asks: [], options: [], pins: [] });
+    clock.setPlaying(false);
+    clock.seek(scene.hour);
+    const runtime = runtimeOf(scene.gaps ?? []);
+    const widget = { ...createWidget(scene.kind, 'main', 'finding'), time: scene.time } as WidgetSpec;
+    const element = document.body.appendChild(document.createElement('div'));
+    element.id = 'finding';
+    root = createRoot(element);
+    root.render(<TimeSection widget={widget} effective={widget} reference={runtime.tracks[0]} runtime={runtime} modes={['follow', 'campaign', 'pin', 'range']}
+      onChange={time => { state.options.push(['time', time]); }} />);
+    await settle();
+    return read();
+  },
   async press(label: string) {
     const button = [...host()?.querySelectorAll('button') ?? []].find(item => (item.getAttribute('aria-label') ?? item.textContent ?? '').includes(label));
     button?.click(); await settle(); return { pressed: !!button, ...read() };

@@ -321,6 +321,7 @@ impl Product for TradeFlows {
     const KEY: &'static str = KEY;
     const CONTENT_DEPENDENT: bool = true;
     type Params = TradeFlowParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, window, from: Start, to: End];
     type Reply = TradeFlowsReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -864,6 +864,7 @@ impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = IdeaHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -10,11 +10,12 @@ import type { DrillControl } from './useDrill';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
-export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, anchor, returnFocus, main, children }: {
+export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, anchor, returnFocus, root, main, children }: {
   mode: 'inline' | 'popout'; drill: Pick<DrillControl, 'open' | 'following' | 'region' | 'gate' | 'outside' | 'follow' | 'pause' | 'close'>; runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; subject?: boolean;
   title: string; day: ReactNode; canFollow: boolean; onClose?: () => void; onPin?: () => void;
   anchor: RefObject<HTMLElement | null>;
   returnFocus?: string;
+  root?: (element: HTMLDivElement | null) => void;
   main: ReactNode; children: ReactNode;
 }) {
   const open = drill.open && subject;
@@ -91,13 +92,13 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
   if (popout) return <>
     {main}
     <Popover menu={panel} manual className="drill-popout" aria-label={title} onToggle={event => { if (event.newState === 'closed' && open) requestClose(); }}>
-      {open && <>{header}<div className="drill-body">{mounted && body}</div></>}
+      {open && <>{header}<div className="drill-body" ref={root}>{mounted && body}</div></>}
     </Popover>
   </>;
   return <div className="drill-host" data-open={open || undefined}>
     <div className="drill-face drill-main" inert={open}>{main}</div>
     <div className="drill-face drill-view" inert={!open} role="region" aria-label={title}>
-      {open && <>{header}<div className="drill-body">{mounted && body}</div></>}
+      {open && <>{header}<div className="drill-body" ref={root}>{mounted && body}</div></>}
     </div>
   </div>;
 }
