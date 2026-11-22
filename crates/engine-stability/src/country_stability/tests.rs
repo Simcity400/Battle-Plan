@@ -310,6 +310,8 @@ fn world() -> World {
         w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.u32(diplomacy + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 0);
+        w.put(country + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[0]);
         w.i64(
             country + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION,
             250_000,
@@ -659,6 +661,190 @@ fn children_pair_with_their_sources_and_the_rest_keep_their_text() {
             .sum();
         assert_eq!(sum, total, "key {key}");
     }
+
+    let mut w = world();
+    const INACTIVE_PEACE: usize = 0x3b000;
+    const INACTIVE_ATTACHE: usize = 0x3b400;
+    const UNWITNESSED_CG: usize = 0x3b800;
+    const UNWITNESSED_SCALED: usize = 0x3bc00;
+    for (slot_offset, address, name, entries, display) in [
+        (
+            0x390,
+            INACTIVE_PEACE,
+            b"country_is_at_peace".as_slice(),
+            [(STABILITY_KEY, 15_000), (COMMAND_KEY, 500)].as_slice(),
+            b"Decision: X".as_slice(),
+        ),
+        (
+            0x90,
+            INACTIVE_ATTACHE,
+            b"attache_sent".as_slice(),
+            [(STABILITY_KEY, 4_000)].as_slice(),
+            b"Mod line A".as_slice(),
+        ),
+        (
+            0x60,
+            UNWITNESSED_CG,
+            b"lacking_consumer_goods".as_slice(),
+            [(STABILITY_KEY, 3_000)].as_slice(),
+            b"Mod line B".as_slice(),
+        ),
+        (
+            0x78,
+            UNWITNESSED_SCALED,
+            b"war_support_good".as_slice(),
+            [(STABILITY_KEY, 1)].as_slice(),
+            b"Mod line C".as_slice(),
+        ),
+    ] {
+        w.u64(DATABASE + slot_offset, address as u64);
+        w.vtable(address, cstatic_modifier::VTABLE_RVA.0);
+        w.modifier(address, entries, display);
+        w.string(address + STATIC_NAME, name);
+    }
+    w.children(&[
+        (&[(STABILITY_KEY, 10_000)], b"Politics: Idea A"),
+        (&[(WAR_SUPPORT_KEY, 2_000)], b"Leader Name"),
+        (&[(WAR_SUPPORT_KEY, 10_000)], b"Advisor"),
+        (&[(STABILITY_KEY, 4_000)], b"Mod line A"),
+        (&[(STABILITY_KEY, 3_000)], b"Mod line B"),
+        (
+            &[(STABILITY_KEY, 15_000), (COMMAND_KEY, 500)],
+            b"Decision: X",
+        ),
+        (&[(STABILITY_KEY, 5_000)], b"At war"),
+        (&[(COMMAND_KEY, 100)], b"Dyn"),
+        (&[(STABILITY_KEY, 9_000)], b"Mod line C"),
+    ]);
+    let walked = walk(&w, 16);
+    let CountryWalk { lines, .. } = walked.result.unwrap();
+    assert_eq!(lines, Outcome::Rows { len: 10 });
+    let observed: Vec<_> = walked.lines[..10]
+        .iter()
+        .map(|row| {
+            (
+                row.line,
+                row.key,
+                row.kind,
+                text(&walked, row.identity).to_vec(),
+                row.value,
+                text(&walked, row.text).to_vec(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            (0, STABILITY_KEY, Kind::Idea, v(b"idea_a"), 10_000, v(b"")),
+            (1, WAR_SUPPORT_KEY, Kind::CountryLeader, v(b""), 2_000, v(b"")),
+            (2, WAR_SUPPORT_KEY, Kind::Advisor, v(b"adv_idea"), 10_000, v(b"")),
+            (3, STABILITY_KEY, Kind::Unpaired, v(b""), 4_000, v(b"Mod line A")),
+            (4, STABILITY_KEY, Kind::Unpaired, v(b""), 3_000, v(b"Mod line B")),
+            (5, STABILITY_KEY, Kind::Unpaired, v(b""), 15_000, v(b"Decision: X")),
+            (5, COMMAND_KEY, Kind::Unpaired, v(b""), 500, v(b"Decision: X")),
+            (6, STABILITY_KEY, Kind::Static, v(b"country_is_at_war"), 5_000, v(b"")),
+            (7, COMMAND_KEY, Kind::DynamicModifier, v(b"dyn_mod"), 100, v(b"")),
+            (8, STABILITY_KEY, Kind::Unpaired, v(b""), 9_000, v(b"Mod line C")),
+        ]
+    );
+}
+
+#[test]
+fn witnessed_conditional_statics_attribute_only_when_their_native_predicate_holds() {
+    let mut w = world();
+    const PEACE: usize = 0x3b000;
+    const ATTACHE: usize = 0x3b400;
+    const SUNK: usize = 0x3b800;
+    const WAR_SCALED: usize = 0x3bc00;
+    const ATTACHE_REL: usize = 0x31400;
+    for (slot_offset, address, name, entries, display) in [
+        (
+            0x390,
+            PEACE,
+            b"country_is_at_peace".as_slice(),
+            [(STABILITY_KEY, 2_000)].as_slice(),
+            b"At peace".as_slice(),
+        ),
+        (
+            0x90,
+            ATTACHE,
+            b"attache_sent".as_slice(),
+            [(WAR_SUPPORT_KEY, 4_000)].as_slice(),
+            b"Attache".as_slice(),
+        ),
+        (
+            0xc0,
+            SUNK,
+            b"pride_of_the_fleet_sunk_temporary".as_slice(),
+            [(WAR_SUPPORT_KEY, -3_000)].as_slice(),
+            b"Pride sunk".as_slice(),
+        ),
+        (
+            0x88,
+            WAR_SCALED,
+            b"war_support_during_war".as_slice(),
+            [(STABILITY_KEY, -1)].as_slice(),
+            b"War support".as_slice(),
+        ),
+    ] {
+        w.u64(DATABASE + slot_offset, address as u64);
+        w.vtable(address, cstatic_modifier::VTABLE_RVA.0);
+        w.modifier(address, entries, display);
+        w.string(address + STATIC_NAME, name);
+    }
+    w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+    w.children(&[
+        (&[(WAR_SUPPORT_KEY, 4_000)], b"Attache"),
+        (&[(STABILITY_KEY, 2_000)], b"At peace"),
+        (&[(STABILITY_KEY, 5_000)], b"At war"),
+        (&[(WAR_SUPPORT_KEY, -3_000)], b"Pride sunk"),
+        (&[(STABILITY_KEY, -700)], b"War support"),
+    ]);
+    let walked = walk(&w, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 5 });
+    assert_eq!(walked.lines[0].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[0].text), b"Attache");
+    assert_eq!(walked.lines[1].kind, Kind::Static);
+    assert_eq!(text(&walked, walked.lines[1].identity), b"country_is_at_peace");
+    assert_eq!(walked.lines[2].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[2].text), b"At war");
+    assert_eq!(walked.lines[3].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[3].text), b"Pride sunk");
+    assert_eq!(walked.lines[4].kind, Kind::Unpaired);
+    assert_eq!(text(&walked, walked.lines[4].text), b"War support");
+
+    w.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
+    w.put(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
+    w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    w.u64(RELATIONS, ATTACHE_REL as u64);
+    w.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
+    w.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
+    w.u32(ATTACHE_REL + 0xc, 0);
+    w.u32(ATTACHE_REL + crelation::FIRST_COUNTRY, 2);
+    w.u32(ATTACHE_REL + crelation::SECOND_COUNTRY, 1);
+    let walked = walk(&w, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 5 });
+    assert_eq!(walked.lines[0].kind, Kind::Unpaired);
+    assert_eq!(walked.lines[1].kind, Kind::Unpaired);
+    assert_eq!(walked.lines[2].kind, Kind::Static);
+    assert_eq!(text(&walked, walked.lines[2].identity), b"country_is_at_war");
+    assert_eq!(walked.lines[3].kind, Kind::Static);
+    assert_eq!(
+        text(&walked, walked.lines[3].identity),
+        b"pride_of_the_fleet_sunk_temporary"
+    );
+    assert_eq!(walked.lines[4].kind, Kind::StaticScaled);
+    assert_eq!(
+        text(&walked, walked.lines[4].identity),
+        b"war_support_during_war"
+    );
+
+    w.u32(ATTACHE_REL + crelation::FIRST_COUNTRY, 1);
+    w.u32(ATTACHE_REL + crelation::SECOND_COUNTRY, 2);
+    let walked = walk(&w, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 5 });
+    assert_eq!(walked.lines[0].kind, Kind::Static);
+    assert_eq!(text(&walked, walked.lines[0].identity), b"attache_sent");
 }
 
 #[test]
@@ -923,7 +1109,7 @@ fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
     let source: Vec<_> = (1..=128).map(|key| (key, 1_i64)).collect();
     let child: Vec<_> = (1..=128).map(|key| (key, 7_i64)).collect();
     w.entries = 0x6200_0000 - ENTRIES;
-    w.u64(DATABASE + 0x78, SCALED as u64);
+    w.u64(DATABASE + 0x88, SCALED as u64);
     w.vtable(SCALED, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(SCALED, &source, b"Scaled static");
     w.string(SCALED + STATIC_NAME, b"scaled_static");
@@ -1013,7 +1199,7 @@ fn assert_same_walk(old: &Walked, new: &Walked) {
 fn scaled_world() -> World {
     let mut w = world();
     const SCALED: usize = 0x6100_0000;
-    w.u64(DATABASE + 0x78, SCALED as u64);
+    w.u64(DATABASE + 0x88, SCALED as u64);
     w.vtable(SCALED, cstatic_modifier::VTABLE_RVA.0);
     w.modifier(SCALED, &[(STABILITY_KEY, 1)], b"Scaled static");
     w.string(SCALED + STATIC_NAME, b"scaled_static");
@@ -1232,9 +1418,19 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
                     let mut local = Memo::default();
                     let mut shared = Memo::default();
                     let memory = Observed::new(&w, &mut local, &mut shared);
-                    let visited =
-                        candidates(&memory, BASE, country, &context, &mut scratch).unwrap();
-                    assert_eq!(visited, 130 * 4 + 2 + STATIC_SLOTS.len());
+                    let visited = candidates(
+                        &memory,
+                        BASE,
+                        country,
+                        &context,
+                        StaticWitnesses {
+                            at_war_mode0: true,
+                            ..Default::default()
+                        },
+                        &mut scratch,
+                    )
+                    .unwrap();
+                    assert_eq!(visited, 130 * 4 + 2 + 2);
                     if duplicate {
                         let first = if advisors { 132 } else { 0 };
                         assert_eq!(
@@ -1562,6 +1758,7 @@ fn scaled_countries(count: u32) -> World {
         w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.u32(diplomacy + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
         w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
         w.u64(country + ccountry::CHARACTERS, characters as u64);
         w.vtable(characters, ccountry_characters::VTABLE_RVA.0);
@@ -1997,7 +2194,7 @@ fn manpower_without_certificate_preserves_stability_and_reads_no_new_words() {
         ratio,
     };
     let countries = ccountry::Reader::new(&guarded, BASE, GS).unwrap();
-    let input = inputs(&guarded, BASE, &countries, country, &context).unwrap();
+    let (input, _) = inputs(&guarded, BASE, &countries, country, &context).unwrap();
     assert_eq!(input.manpower, Default::default());
     assert_eq!(input.stability_raw, 50_000);
     context.manpower_enabled = true;
@@ -2005,6 +2202,7 @@ fn manpower_without_certificate_preserves_stability_and_reads_no_new_words() {
     assert_eq!(
         inputs(&world, BASE, &countries, country, &context)
             .unwrap()
+            .0
             .manpower
             .ratio,
         Some(250_000)
