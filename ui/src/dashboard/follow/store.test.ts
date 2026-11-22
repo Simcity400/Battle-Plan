@@ -777,3 +777,24 @@ test('a paused reading short of the paused hour is published once when its cover
   assert.deepEqual(published(24).sort(), [[3, 23, 24], [4, 23, 24]], 'the panel and the unchanged answer each publish when their coverage reaches the paused hour');
   assert.deepEqual(published(24), [], 'and only once');
 });
+
+test('a paused reading short of the paused hour is published once after playback resumes, though its shape is unchanged', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch');
+  followed.add(4, 'branch');
+  followed.bind('branch', 9, 1);
+  const step = (completed: number | undefined, panels: { id: number; hour: number; stepped: boolean; panel: { data: unknown; refused: null } }[]) =>
+    followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed, panels } }]);
+  const published = (paused: number | null) => [...followed.structures(paused)].map(r => [r.id, r.coverage?.start, r.coverage?.through]);
+  step(undefined, [{ id: 3, hour: 23, stepped: true, panel: { data: { rows: [1] }, refused: null } }]);
+  followed.land([decoder.item(datedStep(23, [{ id: 4, answer: one(1n, 7n) }], 1).slice().buffer)]);
+  followed.drain(24);
+  assert.deepEqual(published(24).sort(), [[3, 23, 23], [4, 23, 23]], 'each reading is sent while paused at 24, though the page rejects it');
+  assert.deepEqual(published(null).sort(), [[3, 23, 23], [4, 23, 23]], 'resuming publishes each rejected reading once, whatever its shape');
+  step(25, []);
+  followed.land([decoder.item(datedStep(25, [], 1).slice().buffer)]);
+  followed.drain(25);
+  assert.deepEqual(published(null), [], 'a lane completion after the resume sends nothing more');
+  assert.equal(followed.covers(3, 25) && followed.covers(4, 25), true, 'coverage reaches the new hour');
+});

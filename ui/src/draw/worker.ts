@@ -68,7 +68,7 @@ let unreported = false;
 let anchor: ClockAnchor = { position: 0, at: 0, speed: 1, playing: false, lastHour: 0, seek: 0 };
 let rate = 1, cap = 60, frameNumber = 0;
 const PAINT_SHARE = 0.6;
-const deferred = new Set<Surface>();
+const deferred = new Set<Surface>(), uncovered = new Set<Panel | Race>();
 let responding = false;
 let audit: DrawSample[] | undefined;
 let auditOffset = 0;
@@ -109,7 +109,7 @@ function unbind(s: Surface) {
   }
   const due = scheduledChanges.findIndex(q => q.surface === s);
   if (due >= 0) scheduledChanges.splice(due, 1);
-  dirty.delete(s); deferred.delete(s);
+  dirty.delete(s); deferred.delete(s); if (s.kind !== 'table') uncovered.delete(s);
 }
 function bind(s: Surface) {
   for (const id of followIds(s)) {
@@ -381,12 +381,12 @@ function holdsThrough(s: Panel | Race) {
   const entry = s.model.follow === undefined ? undefined : followed.read(s.model.follow);
   return entry?.hasFollowedCells || !s.date.drawn ? s.through : Math.min(s.date.drawn.through, next);
 }
-function waiting(s: Panel | Race, head: number) {
-  return s.through === undefined && (s.kind === 'panel' && !!s.remeasure || !anchor.playing && s.model.follow !== undefined &&
-    !followed.covers(s.model.follow, Math.floor(s.model.fixed ?? head) + s.model.offset));
-}
+const covered = (s: Panel | Race, head: number) => followed.covers(s.model.follow!, Math.floor(s.model.fixed ?? head) + s.model.offset);
 function report(s: Surface, head: number, notices: Present[]) {
-  const shown = s.through !== undefined, held = s.kind !== 'table' && waiting(s, head);
+  const shown = s.through !== undefined;
+  const short = s.kind !== 'table' && !shown && !anchor.playing && s.model.follow !== undefined && !covered(s, head);
+  if (s.kind !== 'table') { if (short) uncovered.add(s); else uncovered.delete(s); }
+  const held = s.kind !== 'table' && !shown && (short || s.kind === 'panel' && !!s.remeasure);
   if (s.shown === shown && (s.kind === 'table' || s.waiting === held)) return;
   s.shown = shown;
   if (s.kind === 'race') {
@@ -443,6 +443,7 @@ function frame(at: number) {
     if (!cadence.due(shown, cap, boundary)) { wake(); return; }
   }
   followed.drain(head);
+  if (!anchor.playing) for (const s of uncovered) if (covered(s, head)) dirty.add(s);
   if (lane === 0) {
     const updates = [...followed.structures(anchor.playing ? null : Math.floor(head))];
     if (updates.length) post({ type: 'structure', updates });
