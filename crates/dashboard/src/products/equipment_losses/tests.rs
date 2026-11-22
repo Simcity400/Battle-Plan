@@ -942,3 +942,70 @@ fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_par
         .expect("land combat cause");
     assert_eq!(land_125.leaves[0].exact, vec![ExactLossPoint { hour: 125, total_raw: Some("100000".to_owned()) }]);
 }
+
+#[test]
+fn exact_read_at_unavailable_totals_hour_records_explicit_absence() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as base_frame};
+    use replay::campaign::Replay;
+    use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let partial = vec![EquipmentDestructionRow {
+        coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+        unavailable_reason: Recorded::Value("startup partial".to_owned()),
+        ..Default::default()
+    }];
+    let loss = vec![EquipmentDestructionRow {
+        country: 9001,
+        cause: EquipmentDestructionCause::LandCombat,
+        variant,
+        amount_raw: 500_000,
+        coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+        unavailable_reason: Recorded::Value(String::new()),
+    }];
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+            if hour == 102 {
+                *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries failed".into() };
+            }
+            *frame.tables[TableId::EquipmentDestruction.index()] = match hour {
+                100 => TableView::Complete(TableRows::EquipmentDestruction(partial.clone())),
+                101 => TableView::Complete(TableRows::EquipmentDestruction(loss.clone())),
+                _ => TableView::Complete(TableRows::EquipmentDestruction(Vec::new())),
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(
+        crate::SourceKey { source_id: "losses-unavail-exact".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let params = LossesParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 100,
+        to: 105,
+        width: 1,
+        reads: vec![102],
+    };
+    let reply = EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.exact_hours, vec![102]);
+    let land = reply
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(land.leaves.len(), 1);
+    assert_eq!(land.leaves[0].exact, vec![ExactLossPoint { hour: 102, total_raw: None }]);
+    assert!(!land.leaves[0].points.is_empty());
+}

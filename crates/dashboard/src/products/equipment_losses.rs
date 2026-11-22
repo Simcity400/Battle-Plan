@@ -498,7 +498,12 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
         }
         for &hour in reads.iter().filter(|hour| (stretch.first..=stretch.last).contains(*hour)) {
             crate::metadata::check_cancel(cancelled)?;
-            let Some(found) = totals_at(query, hour, (low, high))? else { continue };
+            let Some(found) = totals_at(query, hour, (low, high))? else {
+                for leaf in leaves.values_mut() {
+                    leaf.exact.insert(hour, None);
+                }
+                continue;
+            };
             let destruction_complete = stretch_complete_through(hour);
             for (key, leaf) in leaves.iter_mut() {
                 let is_destruction = matches!(leaf_of(*key), Some((LossSource::Destruction(_), _)));

@@ -8,7 +8,7 @@ import type { DrillPart } from '../../charts/drill/parts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { entryAt } from '../../dashboard/reads.ts';
 import type { LossesReply } from '../../generated/dashboard';
-import { binPointAt, causeName, exactPointAt, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
+import { causeName, exactPointAt, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import type { DrillCountry } from '../country-measure/drillCountry';
 import { DETAIL } from './definition.ts';
@@ -98,7 +98,7 @@ export function lossSegments(model: StackModel, first: number, last: number, hou
 }
 
 function addLeafSegment(
-  at: (hour: number) => { deltas: Map<string, bigint>; unread: number; runBreak: boolean },
+  at: (hour: number) => { deltas: Map<string, bigint>; unread: number; runBreak: boolean; measured: number; absent: number },
   key: string,
   leaf: LossesReply['causes'][number]['leaves'][number],
   segFirst: number,
@@ -109,16 +109,31 @@ function addLeafSegment(
 ) {
   const hasExact = leaf.exact.some(point => point.hour >= segFirst && point.hour <= segLast);
   let previous = 0n;
+  let wasMeasured = false;
+  let wasAbsent = false;
+  const setState = (hour: number, next: bigint, isMeasured: boolean, isAbsent: boolean) => {
+    if (next !== previous || isMeasured !== wasMeasured || isAbsent !== wasAbsent) {
+      const event = at(hour);
+      if (next !== previous) {
+        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
+        previous = next;
+      }
+      if (isMeasured !== wasMeasured) {
+        event.measured += isMeasured ? 1 : -1;
+        wasMeasured = isMeasured;
+      }
+      if (isAbsent !== wasAbsent) {
+        event.absent += isAbsent ? 1 : -1;
+        wasAbsent = isAbsent;
+      }
+    }
+  };
   if (!hasExact) {
     const initial = pointIn(leaf, segFirst, minHour);
-    previous = initial ? BigInt(initial.totalRaw) - baseline : 0n;
-    if (previous !== 0n) at(segFirst).deltas.set(key, (at(segFirst).deltas.get(key) ?? 0n) + previous);
+    if (initial) setState(segFirst, BigInt(initial.totalRaw) - baseline, true, false);
     for (const point of leaf.points) {
       if (point.hour <= segFirst || point.hour > segLast) continue;
-      const next = BigInt(point.totalRaw) - baseline;
-      const event = at(point.hour);
-      event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
-      previous = next;
+      setState(point.hour, BigInt(point.totalRaw) - baseline, true, false);
     }
   } else {
     const hours = new Set<number>([segFirst]);
@@ -128,36 +143,33 @@ function addLeafSegment(
     for (const point of leaf.exact) {
       if (point.hour < segFirst || point.hour > segLast) continue;
       hours.add(point.hour);
-      if (point.hour < segLast) hours.add(point.hour + 1);
+      if (point.totalRaw === null && point.hour < segLast) hours.add(point.hour + 1);
     }
     for (const hour of [...hours].sort((a, b) => a - b)) {
       const exact = exactPointAt(leaf, hour);
-      let next = 0n;
-      if (exact) {
-        next = exact.totalRaw === null ? 0n : BigInt(exact.totalRaw) - baseline;
+      if (exact && exact.totalRaw === null) {
+        setState(hour, 0n, false, true);
       } else {
-        const bin = binPointAt(leaf, hour);
-        next = bin && (minHour === null || bin.hour >= minHour) ? BigInt(bin.totalRaw) - baseline : 0n;
-      }
-      if (next !== previous) {
-        const event = at(hour);
-        event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
-        previous = next;
+        const point = pointIn(leaf, hour, minHour);
+        if (point) setState(hour, BigInt(point.totalRaw) - baseline, true, false);
+        else setState(hour, 0n, false, false);
       }
     }
   }
-  if (resetAtEnd && previous !== 0n) {
+  if (resetAtEnd || wasAbsent) {
     const endEvent = at(segLast + 1);
-    endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
+    if (resetAtEnd && previous !== 0n) endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
+    if (resetAtEnd && wasMeasured) endEvent.measured -= 1;
+    if (wasAbsent) endEvent.absent -= 1;
   }
 }
 
 export function lossHistory(reply: LossesReply, first: number, last: number, from?: number | null,
   selected: ReadonlySet<string> | null = null, countries?: readonly Span[]): { model: StackModel; keys: string[]; labels: string[] } {
-  const events = new Map<number, { deltas: Map<string, bigint>; unread: number; runBreak: boolean }>();
+  const events = new Map<number, { deltas: Map<string, bigint>; unread: number; runBreak: boolean; measured: number; absent: number }>();
   const at = (hour: number) => {
     let event = events.get(hour);
-    if (!event) { event = { deltas: new Map(), unread: 0, runBreak: false }; events.set(hour, event); }
+    if (!event) { event = { deltas: new Map(), unread: 0, runBreak: false, measured: 0, absent: 0 }; events.set(hour, event); }
     return event;
   };
   const keys: string[] = [], labels: string[] = [];
@@ -204,13 +216,15 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
   }
   const model: StackModel = { hours: [...events.keys()].sort((a, b) => a - b), edges: [], breakBefore: [] };
   const amounts = new Map<string, bigint>();
-  let unread = 0, broken = true;
+  let unread = 0, measured = 0, absent = 0, broken = true;
   for (const hour of model.hours) {
     const event = events.get(hour)!;
     unread += event.unread;
+    measured += event.measured;
+    absent += event.absent;
     for (const [key, delta] of event.deltas) amounts.set(key, (amounts.get(key) ?? 0n) + delta);
     const drain = entryAt(reply.destructionCoverage, hour);
-    const known = hour <= last && unread === 0 && (!countries || runAt(countries, hour) !== null) && (!destruction || drain !== null && drain.lastHour >= hour && drain.reason === null);
+    const known = hour <= last && unread === 0 && !(absent > 0 && measured === 0) && (!countries || runAt(countries, hour) !== null) && (!destruction || drain !== null && drain.lastHour >= hour && drain.reason === null);
     model.edges.push(known ? stackEdges(keys.map(key => Math.max(0, Number(amounts.get(key) ?? 0n) / reply.amountScale))) : null);
     model.breakBefore.push(known && (broken || event.runBreak)); broken = !known;
   }

@@ -112,7 +112,7 @@ export function withShips(reply: LossesReply, _hour?: number): LossesReply {
   return made;
 }
 
-export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | string | null): LossesReply {
+export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLeaf) => number | bigint | string | null): LossesReply {
   return { ...reply, causes: reply.causes.map(cause => {
     if (cause.source.kind === 'sunkShips' || cause.unknown !== null) return cause;
     const missing: UnknownSpan[] = [];
@@ -121,9 +121,22 @@ export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLea
       if (value === null) return { ...leaf, points: [], exact: [] };
       if (typeof value === 'string') {
         missing.push({ firstHour: hour, lastHour: hour, reason: 'unread', detail: value });
-        return leaf;
+        return {
+          ...leaf,
+          exact: [...leaf.exact.filter(point => point.hour < hour), { hour, totalRaw: null }],
+        };
       }
-      const raw = BigInt(Math.round(value)).toString();
+      let raw: string;
+      if (typeof value === 'bigint') {
+        raw = value.toString();
+      } else {
+        const existingExact = exactPointAt(leaf, hour)?.totalRaw ?? null;
+        const existingBin = binPointAt(leaf, hour);
+        const recorded = existingExact ?? (existingBin && existingBin.hour === hour ? existingBin.totalRaw : null);
+        raw = recorded !== null && !Number.isSafeInteger(value) && Number(BigInt(recorded)) === value
+          ? recorded
+          : BigInt(Math.round(value)).toString();
+      }
       return {
         ...leaf,
         points: [...leaf.points.filter(point => point.hour < hour), { hour, totalRaw: raw }],
@@ -146,6 +159,22 @@ export function exactPointAt(leaf: LossLeaf, hour: number): ExactLossPoint | nul
   return null;
 }
 
+function latestExactAt(leaf: LossLeaf, hour: number): LossPoint | null {
+  let low = 0;
+  let high = leaf.exact.length - 1;
+  let at = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (leaf.exact[middle].hour <= hour) { at = middle; low = middle + 1; } else high = middle - 1;
+  }
+  while (at >= 0) {
+    const found = leaf.exact[at];
+    if (found.totalRaw !== null) return { hour: found.hour, totalRaw: found.totalRaw };
+    at--;
+  }
+  return null;
+}
+
 export function binPointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   let low = 0;
   let high = leaf.points.length - 1;
@@ -158,9 +187,7 @@ export function binPointAt(leaf: LossLeaf, hour: number): LossPoint | null {
 }
 
 export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
-  const exact = exactPointAt(leaf, hour);
-  if (exact) return exact.totalRaw === null ? null : { hour: exact.hour, totalRaw: exact.totalRaw };
-  return binPointAt(leaf, hour);
+  return pointIn(leaf, hour, null);
 }
 
 export function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
@@ -169,8 +196,12 @@ export function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): L
     if (exact.totalRaw === null) return null;
     return minHour === null || exact.hour >= minHour ? { hour: exact.hour, totalRaw: exact.totalRaw } : null;
   }
-  const point = binPointAt(leaf, hour);
-  return point && (minHour === null || point.hour >= minHour) ? point : null;
+  const rawBin = binPointAt(leaf, hour);
+  const bin = rawBin && (minHour === null || rawBin.hour >= minHour) ? rawBin : null;
+  const rawPrev = latestExactAt(leaf, hour);
+  const prev = rawPrev && (minHour === null || rawPrev.hour >= minHour) ? rawPrev : null;
+  if (prev && (!bin || prev.hour >= bin.hour)) return prev;
+  return bin;
 }
 
 const peaks = new WeakMap<LossLeaf, { firstHour: number; value: number }[]>();

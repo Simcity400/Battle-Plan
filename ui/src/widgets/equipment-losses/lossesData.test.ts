@@ -5,7 +5,7 @@ import { amountText, arcTargets, foldTree, groupTree, listed, sliceColours, slic
 import { resolveOptions } from '../../dashboard/options.ts';
 import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { nearest, shipLeaves, stepHours, withEdges } from './lossesData.ts';
+import { nearest, shipLeaves, stepHours, withEdges, withHead } from './lossesData.ts';
 import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
 
 const ROOT = { id: 'all', label: 'All losses' };
@@ -533,6 +533,32 @@ test('exact read absence overrides a multi-hour chart bin without erasing the la
   assert.equal(pointAt(at121.causes[0].leaves[0], 121), null);
   assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 121, end: 130, campaign: false })).exact, null);
   assert.equal(lossesTotal(lossItems(at121, { first: 120, hour: 125, end: 130, campaign: false })).exact, 100000n);
+});
+
+test('withHead records explicit exact absence for missing live cells and preserves 64-bit integer precision', () => {
+  const missingBase = destruction();
+  missingBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 101, totalRaw: '200000' }] })],
+    }),
+  ];
+  const missingHead = withHead(missingBase, 105, () => 'Not recorded at this hour');
+  assert.equal(pointAt(missingHead.causes[0].leaves[0], 105), null);
+  assert.deepEqual(missingHead.causes[0].leaves[0].exact, [{ hour: 105, totalRaw: null }]);
+  assert.equal(lossesTotal(lossItems(missingHead, live(105))).exact, null);
+  assert.deepEqual(missingHead.causes[0].leaves[0].points, [{ hour: 101, totalRaw: '200000' }]);
+
+  const preciseBase = destruction();
+  preciseBase.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [leaf({ points: [{ hour: 105, totalRaw: '9007199254740993' }], exact: [{ hour: 105, totalRaw: '9007199254740993' }] })],
+    }),
+  ];
+  const preciseHead = withHead(preciseBase, 105, () => Number(9007199254740993n));
+  assert.equal(pointAt(preciseHead.causes[0].leaves[0], 105)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(preciseHead, live(105))).exact, 9007199254740993n);
 });
 
 test('before counting starts destruction coverage has no rows in either land mode', () => {

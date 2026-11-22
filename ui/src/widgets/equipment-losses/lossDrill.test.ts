@@ -180,10 +180,15 @@ test('exact read absence inside a multi-hour bin hides future loss at the read h
 
   const at124 = make(124);
   assert.equal(lossRows(at124, { first: 120, hour: 124, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
-  assert.deepEqual(edgeAt(lossHistory(at124, 124, 124), 124), [{ low: 0, high: 0 }]);
+  assert.equal(edgeAt(lossHistory(at124, 124, 124), 124), null);
   const chart124 = lossHistory(at124, 120, 130);
-  assert.deepEqual(edgeAt(chart124, 124), [{ low: 0, high: 0 }]);
+  assert.equal(edgeAt(chart124, 124), null);
   assert.deepEqual(edgeAt(chart124, 125), [{ low: 0, high: 1 }]);
+  assert.equal(chart124.model.breakBefore[chart124.model.hours.indexOf(125)], true);
+
+  const zero124 = make(124);
+  zero124.causes[0].leaves[0].exact = [{ hour: 124, totalRaw: '0' }];
+  assert.deepEqual(edgeAt(lossHistory(zero124, 124, 124), 124), [{ low: 0, high: 0 }]);
 
   const at121 = make(121);
   assert.equal(lossRows(at121, { first: 120, hour: 121, end: 130, campaign: false, from: null }).every(row => row.exact === null), true);
@@ -192,6 +197,27 @@ test('exact read absence inside a multi-hour bin hides future loss at the read h
   assert.deepEqual(edgeAt(chart121, 124), [{ low: 0, high: 1 }]);
   assert.deepEqual(edgeAt(lossHistory(at121, 125, 125), 125), [{ low: 0, high: 1 }]);
   assert.deepEqual(edgeAt(lossHistory(at121, 130, 130), 130), [{ low: 0, high: 1 }]);
+});
+
+test('exact hover inside a rising multi-hour bin keeps the newer total without dropping back to the bin start', () => {
+  const data = reply(1);
+  data.from = 120;
+  data.to = 125;
+  data.width = 1;
+  data.exactHours = [122];
+  data.landSource = 'destruction';
+  data.destructionRuns = [{ firstHour: 120, lastHour: 125, countedFrom: 120, withheldFrom: null }];
+  data.destructionCoverage = [{ firstHour: 120, lastHour: 125, reason: null }];
+  data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  data.causes[0].leaves[0].points = [{ hour: 120, totalRaw: '100000' }, { hour: 125, totalRaw: '500000' }];
+  data.causes[0].leaves[0].exact = [{ hour: 122, totalRaw: '500000' }];
+
+  const chart = lossHistory(data, 120, 125);
+  assert.deepEqual(edgeAt(chart, 120), [{ low: 0, high: 1 }]);
+  assert.deepEqual(edgeAt(chart, 122), [{ low: 0, high: 5 }]);
+  assert.equal(chart.model.hours.includes(123), false);
+  assert.deepEqual(edgeAt(lossHistory(data, 123, 123), 123), [{ low: 0, high: 5 }]);
+  assert.deepEqual(edgeAt(lossHistory(data, 125, 125), 125), [{ low: 0, high: 5 }]);
 });
 
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {
