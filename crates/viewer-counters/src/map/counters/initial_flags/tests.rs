@@ -265,8 +265,8 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
                         let frame = frame(step);
                         let a = reference(&frame).unwrap();
                         let b = countries(&frame).unwrap();
-                        assert_eq!(a.tags, b.tags);
-                        assert_eq!(a.flag_tags, b.flag_tags);
+                        assert_eq!(a.tags_map(), b.tags_map());
+                        assert_eq!(a.flag_tags_map(), b.flag_tags_map());
                         assert_eq!(a.groups, b.groups);
                         for slot in [3, 1, 2, 99] {
                             assert_eq!(a.flag_keys(slot), b.flag_keys(slot));
@@ -389,7 +389,7 @@ fn truncated_initial_appearance_keeps_present_country_candidates() {
     };
     let a = reference(&source).unwrap();
     let b = countries(&source).unwrap();
-    assert_eq!(a.flag_tags, b.flag_tags);
+    assert_eq!(a.flag_tags_map(), b.flag_tags_map());
     for slot in [1, 2, 3] {
         assert_eq!(a.flag_keys(slot), b.flag_keys(slot));
         assert_eq!(a.flag_refusal(slot), b.flag_refusal(slot));
@@ -442,10 +442,17 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
             let first = build(&first_frame).unwrap();
             let expected = CountryIndex::read(&first_frame).unwrap();
             assert_eq!(&**first.country_index(), &expected);
-            assert_eq!(&first.links, expected.links());
-            assert_eq!(&first.country_ids, expected.ids());
-            assert_eq!(&first.countries.tags, expected.tags());
-            assert_eq!(&first.countries.flag_tags, expected.flag_tags());
+            assert!(std::ptr::eq(first.country_index().links(), first.links()));
+            assert!(std::ptr::eq(first.country_index().ids(), first.country_ids()));
+            assert!(std::ptr::eq(first.country_index().tags(), first.countries.tags_map()));
+            assert!(std::ptr::eq(
+                first.country_index().flag_tags(),
+                first.countries.flag_tags_map()
+            ));
+            assert_eq!(first.links(), expected.links());
+            assert_eq!(first.country_ids(), expected.ids());
+            assert_eq!(first.countries.tags_map(), expected.tags());
+            assert_eq!(first.countries.flag_tags_map(), expected.flag_tags());
 
             let mut next_frame = first_frame.clone();
             next_frame.hour = first_frame.hour + 1;
@@ -462,6 +469,16 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
                 Arc::ptr_eq(first.country_index(), second.country_index()),
                 "hourly country values must reuse the settled CountryIndex through hour_tables_profiled"
             );
+            assert!(std::ptr::eq(first.links(), second.links()));
+            assert!(std::ptr::eq(first.country_ids(), second.country_ids()));
+            assert!(std::ptr::eq(
+                first.countries.tags_map(),
+                second.countries.tags_map()
+            ));
+            assert!(std::ptr::eq(
+                first.countries.flag_tags_map(),
+                second.countries.flag_tags_map()
+            ));
 
             let mut truncated_frame = first_frame.clone();
             truncated_frame.hour = first_frame.hour + 2;
@@ -477,8 +494,8 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
             assert_eq!(partial.country_index().tags(), expected.tags());
             assert_eq!(partial.country_index().ids(), expected.ids());
             assert_eq!(partial.country_index().flag_tags().len(), 1);
-            assert!(partial.countries.flag_tags.contains_key(&1));
-            assert!(!partial.countries.flag_tags.contains_key(&2));
+            assert!(partial.countries.flag_tags_map().contains_key(&1));
+            assert!(!partial.countries.flag_tags_map().contains_key(&2));
 
             let mut unavailable_frame = first_frame.clone();
             unavailable_frame.hour = first_frame.hour + 3;
@@ -491,7 +508,7 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
             assert_eq!(without.country_index().tags(), expected.tags());
             assert_eq!(without.country_index().ids(), expected.ids());
             assert!(without.country_index().flag_tags().is_empty());
-            assert!(without.countries.flag_tags.is_empty());
+            assert!(without.countries.flag_tags_map().is_empty());
         },
     );
 }

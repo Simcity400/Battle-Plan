@@ -1,8 +1,9 @@
 
 const INSERTION_MAX: usize = 32;
+const STACK_SCRATCH_MAX: usize = 512;
 
 pub fn sort<T: Copy>(values: &mut [T], less: impl FnMut(&T, &T) -> bool) {
-    sort_with_scratch_alloc(values, try_reserve_scratch, less);
+    sort_with_scratch_alloc(values, true, try_reserve_scratch, less);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -11,7 +12,58 @@ pub fn sort_with_scratch<T: Copy>(
     try_alloc: impl FnMut(usize) -> Option<Vec<T>>,
     less: impl FnMut(&T, &T) -> bool,
 ) {
-    sort_with_scratch_alloc(values, try_alloc, less);
+    sort_with_scratch_alloc(values, true, try_alloc, less);
+}
+
+enum Scratch<T> {
+    Stack {
+        storage: [T; STACK_SCRATCH_MAX],
+        len: usize,
+    },
+    Heap(Vec<T>),
+}
+
+impl<T: Copy> Scratch<T> {
+    fn stack(seed: T) -> Self {
+        Self::Stack {
+            storage: [seed; STACK_SCRATCH_MAX],
+            len: 0,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        match self {
+            Self::Stack { .. } => STACK_SCRATCH_MAX,
+            Self::Heap(buffer) => buffer.capacity(),
+        }
+    }
+
+    fn as_slice(&self) -> &[T] {
+        match self {
+            Self::Stack { storage, len } => &storage[..*len],
+            Self::Heap(buffer) => buffer.as_slice(),
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        match self {
+            Self::Stack { storage, len } => &mut storage[..*len],
+            Self::Heap(buffer) => buffer.as_mut_slice(),
+        }
+    }
+
+    fn copy_from_slice(&mut self, source: &[T]) {
+        match self {
+            Self::Stack { storage, len } => {
+                storage[..source.len()].copy_from_slice(source);
+                *len = source.len();
+            }
+            Self::Heap(buffer) => {
+                buffer.clear();
+                buffer.extend_from_slice(source);
+            }
+        }
+    }
 }
 
 fn try_reserve_scratch<T: Copy>(capacity: usize) -> Option<Vec<T>> {
@@ -22,21 +74,32 @@ fn try_reserve_scratch<T: Copy>(capacity: usize) -> Option<Vec<T>> {
 
 fn acquire_scratch<T: Copy>(
     requested: usize,
+    seed: T,
+    use_stack_floor: bool,
     mut try_alloc: impl FnMut(usize) -> Option<Vec<T>>,
-) -> Vec<T> {
+) -> Scratch<T> {
+    if use_stack_floor && requested <= STACK_SCRATCH_MAX {
+        return Scratch::stack(seed);
+    }
+    let min_heap = if use_stack_floor { STACK_SCRATCH_MAX } else { 0 };
     let mut capacity = requested;
-    while capacity > 0 {
+    while capacity > min_heap {
         if let Some(mut buffer) = try_alloc(capacity) {
             buffer.clear();
-            return buffer;
+            return Scratch::Heap(buffer);
         }
         capacity >>= 1;
     }
-    Vec::new()
+    if use_stack_floor {
+        Scratch::stack(seed)
+    } else {
+        Scratch::Heap(Vec::new())
+    }
 }
 
 fn sort_with_scratch_alloc<T: Copy>(
     values: &mut [T],
+    use_stack_floor: bool,
     try_alloc: impl FnMut(usize) -> Option<Vec<T>>,
     mut less: impl FnMut(&T, &T) -> bool,
 ) {
@@ -47,13 +110,13 @@ fn sort_with_scratch_alloc<T: Copy>(
     }
     let half = count >> 1;
     let first = count - half;
-    let mut buffer = acquire_scratch(first, try_alloc);
+    let mut buffer = acquire_scratch(first, values[0], use_stack_floor, try_alloc);
     stable_sort_with_buffer(values, &mut buffer, &mut less);
 }
 
 fn stable_sort_with_buffer<T: Copy>(
     values: &mut [T],
-    buffer: &mut Vec<T>,
+    buffer: &mut Scratch<T>,
     less: &mut impl FnMut(&T, &T) -> bool,
 ) {
     let count = values.len();
@@ -92,7 +155,7 @@ fn insertion_sort<T: Copy>(values: &mut [T], less: &mut impl FnMut(&T, &T) -> bo
 
 fn buffered_merge_sort<T: Copy>(
     values: &mut [T],
-    buffer: &mut Vec<T>,
+    buffer: &mut Scratch<T>,
     less: &mut impl FnMut(&T, &T) -> bool,
 ) {
     let count = values.len();
@@ -102,17 +165,16 @@ fn buffered_merge_sort<T: Copy>(
     if count <= INSERTION_MAX {
         return;
     }
-    buffer.clear();
-    buffer.extend_from_slice(values);
-    chunked_merge(values, buffer, INSERTION_MAX, less);
+    buffer.copy_from_slice(values);
+    chunked_merge(values, buffer.as_mut_slice(), INSERTION_MAX, less);
     let mut chunk = INSERTION_MAX * 2;
     loop {
-        chunked_merge(buffer, values, chunk, less);
+        chunked_merge(buffer.as_slice(), values, chunk, less);
         chunk *= 2;
         if count <= chunk {
             return;
         }
-        chunked_merge(values, buffer, chunk, less);
+        chunked_merge(values, buffer.as_mut_slice(), chunk, less);
         chunk *= 2;
     }
 }
@@ -167,7 +229,7 @@ fn merge_move<T: Copy>(
 fn inplace_merge<T: Copy>(
     values: &mut [T],
     mid: usize,
-    buffer: &mut Vec<T>,
+    buffer: &mut Scratch<T>,
     less: &mut impl FnMut(&T, &T) -> bool,
 ) {
     let mut last = values.len();
@@ -204,13 +266,11 @@ fn inplace_merge<T: Copy>(
     let values = &mut values[first..last];
     let capacity = buffer.capacity();
     if left <= right && left <= capacity {
-        buffer.clear();
         merge_buffer_left(values, left, buffer, less);
     } else if right < left && right <= capacity {
-        buffer.clear();
         merge_buffer_right(values, left, buffer, less);
     } else {
-        let (left_split, right_split) = if right < left {
+        let (left_split, right_split) = if left <= right {
             let left_split = left >> 1;
             let pivot = values[left_split];
             let right_split = lower_bound(&values[left..], &pivot, less);
@@ -263,32 +323,33 @@ fn upper_bound<T>(values: &[T], target: &T, less: &mut impl FnMut(&T, &T) -> boo
 fn merge_buffer_left<T: Copy>(
     values: &mut [T],
     mid: usize,
-    buffer: &mut Vec<T>,
+    buffer: &mut Scratch<T>,
     less: &mut impl FnMut(&T, &T) -> bool,
 ) {
-    buffer.extend_from_slice(&values[..mid]);
-    let left_last = buffer.len() - 1;
+    buffer.copy_from_slice(&values[..mid]);
+    let saved = buffer.as_slice();
+    let left_last = saved.len() - 1;
     let (mut out, mut next, mut left) = (0, mid, 0);
     values[out] = values[next];
     out += 1;
     next += 1;
     loop {
-        if less(&values[next], &buffer[left]) {
+        if less(&values[next], &saved[left]) {
             values[out] = values[next];
             out += 1;
             next += 1;
             if next == values.len() {
-                values[out..].copy_from_slice(&buffer[left..]);
+                values[out..].copy_from_slice(&saved[left..]);
                 return;
             }
         } else {
-            values[out] = buffer[left];
+            values[out] = saved[left];
             out += 1;
             left += 1;
             if left == left_last {
                 values.copy_within(next.., out);
                 let end = values.len() - 1;
-                values[end] = buffer[left_last];
+                values[end] = saved[left_last];
                 return;
             }
         }
@@ -298,34 +359,35 @@ fn merge_buffer_left<T: Copy>(
 fn merge_buffer_right<T: Copy>(
     values: &mut [T],
     mid: usize,
-    buffer: &mut Vec<T>,
+    buffer: &mut Scratch<T>,
     less: &mut impl FnMut(&T, &T) -> bool,
 ) {
-    buffer.extend_from_slice(&values[mid..]);
+    buffer.copy_from_slice(&values[mid..]);
+    let saved = buffer.as_slice();
     let mut last = values.len() - 1;
     values[last] = values[mid - 1];
     let mut left = mid - 2;
-    let mut right = buffer.len() - 1;
+    let mut right = saved.len() - 1;
     loop {
-        if less(&buffer[right], &values[left]) {
+        if less(&saved[right], &values[left]) {
             last -= 1;
             values[last] = values[left];
             if left == 0 {
                 last -= 1;
-                values[last] = buffer[right];
-                values[last - right..last].copy_from_slice(&buffer[..right]);
+                values[last] = saved[right];
+                values[last - right..last].copy_from_slice(&saved[..right]);
                 return;
             }
             left -= 1;
         } else {
             last -= 1;
-            values[last] = buffer[right];
+            values[last] = saved[right];
             right -= 1;
             if right == 0 {
                 last -= 1;
                 values[last] = values[left];
                 values.copy_within(0..left, last - left);
-                values[0] = buffer[0];
+                values[0] = saved[0];
                 return;
             }
         }
@@ -403,8 +465,9 @@ mod tests {
             for limit in [0, 1, 2, 7, 16, 32, 33, 64, 128] {
                 let mut requests = Vec::new();
                 let mut ours = input.clone();
-                sort_with_scratch(
+                sort_with_scratch_alloc(
                     &mut ours,
+                    false,
                     |requested| {
                         requests.push(requested);
                         if requested > limit {
@@ -425,6 +488,73 @@ mod tests {
                 }
             }
         }
+        let large = keys(2_200, 31, 42);
+        let mut expected = large.clone();
+        sort(&mut expected, |a, b| a.0 < b.0);
+        let mut requests = Vec::new();
+        let mut fallback = large.clone();
+        sort_with_scratch(
+            &mut fallback,
+            |requested| {
+                requests.push(requested);
+                None
+            },
+            |a, b| a.0 < b.0,
+        );
+        assert_eq!(fallback, expected);
+        assert_eq!(requests, vec![1_100, 550]);
+    }
+
+    #[test]
+    fn stack_floor_and_msvc_pivot_side_match_native_cyclic_fleet_permutations() {
+        const A: u64 = 1;
+        const B: u64 = 0x6000_0001;
+        const C: u64 = 0xc000_0001;
+        assert!(fleet_difference(A, B) < 0);
+        assert!(fleet_difference(B, C) < 0);
+        assert!(fleet_difference(C, A) < 0);
+
+        let mut fixture = Vec::with_capacity(34);
+        fixture.extend(std::iter::repeat_n(A, 17));
+        fixture.push(A);
+        fixture.extend(std::iter::repeat_n(B, 14));
+        fixture.push(C);
+        fixture.push(C);
+
+        let mut expected_buffered = Vec::with_capacity(34);
+        expected_buffered.push(C);
+        expected_buffered.extend(std::iter::repeat_n(A, 17));
+        expected_buffered.extend(std::iter::repeat_n(B, 14));
+        expected_buffered.push(C);
+        expected_buffered.push(A);
+
+        let mut expected_zero_scratch = Vec::with_capacity(34);
+        expected_zero_scratch.push(C);
+        expected_zero_scratch.extend(std::iter::repeat_n(A, 18));
+        expected_zero_scratch.extend(std::iter::repeat_n(B, 14));
+        expected_zero_scratch.push(C);
+
+        let mut heap_calls = 0usize;
+        let mut production_oom = fixture.clone();
+        sort_with_scratch(
+            &mut production_oom,
+            |_| {
+                heap_calls += 1;
+                None
+            },
+            |&a, &b| fleet_difference(a, b) < 0,
+        );
+        assert_eq!(heap_calls, 0, "34-entry list must use the 512-element stack buffer");
+        assert_eq!(production_oom, expected_buffered);
+
+        let mut zero_scratch = fixture.clone();
+        sort_with_scratch_alloc(
+            &mut zero_scratch,
+            false,
+            |_| None,
+            |&a, &b| fleet_difference(a, b) < 0,
+        );
+        assert_eq!(zero_scratch, expected_zero_scratch);
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

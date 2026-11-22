@@ -226,6 +226,12 @@ impl Icons {
         self.open.as_ref().and_then(|open| open.reader.frame())
     }
 
+    pub fn newest_rows_with_failures(
+        &self,
+    ) -> Option<(Arc<DecodedFrame>, Arc<[crate::playhead_host::views::view::HeadFailure]>)> {
+        self.open.as_ref().and_then(|open| open.reader.frame_with_failures())
+    }
+
     fn close(&mut self) {
         let icons = self.icons.take();
         if let Some(open) = self.open.take() {

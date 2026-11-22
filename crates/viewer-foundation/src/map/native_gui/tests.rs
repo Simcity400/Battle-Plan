@@ -7673,10 +7673,12 @@ fn adjacency_rule_pool_admits_64_icons_before_first_growth() {
     let window = gui.template("w").unwrap();
     assert_eq!(MapIconPool::AdjacencyRule.initial(), 64);
     for build in [
-        engine_executable::build::PINNED_BUILD.version,
-        "1.19.4.2",
-        "1.19.4.1",
+        "1.19.5.0.c184",
+        "1.19.4.2.0bdb",
+        "1.19.4.1.f584",
         "Countenance v1.19.5.0.c184",
+        "Countenance v1.19.4.2.0bdb",
+        "Countenance v1.19.4.1.f584",
     ] {
         assert_eq!(
             MapIconPool::AdjacencyRule.initial_for_build(Some(build)),
@@ -7688,7 +7690,7 @@ fn adjacency_rule_pool_admits_64_icons_before_first_growth() {
         window,
         [800, 600],
         MapIconPool::AdjacencyRule,
-        Some(engine_executable::build::PINNED_BUILD.version),
+        Some("Countenance v1.19.5.0.c184"),
         Box::new(|_, _| Ok(())),
         &resources,
     )
@@ -7715,7 +7717,16 @@ fn unknown_build_refuses_map_icon_pool_capacity_by_name() {
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
-    for build in [None, Some(""), Some("   "), Some("1.99.0.0"), Some("1.19.5.00"), Some("1.19.5.0.1.2")] {
+    for build in [
+        None,
+        Some(""),
+        Some("   "),
+        Some("1.19.5.0"),
+        Some("Countenance v1.19.5.0.dead"),
+        Some("1.19.4.2.c184"),
+        Some("1.99.0.0.c184"),
+        Some("1.19.5.0.c184.extra"),
+    ] {
         let error = MapIconPool::AdjacencyRule
             .initial_for_build(build)
             .expect_err("unverified build must not fall back to a guessed capacity");

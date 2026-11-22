@@ -660,3 +660,59 @@ fn a_display_frames_reader_gives_the_newest_frame_no_later_than_the_hour_shown()
     assert_eq!(through(7), Some(7));
     assert_eq!(through(5), None, "the frame of hour 5 is of the history before the seek");
 }
+
+#[test]
+fn recorded_unavailable_with_head_wording_emits_no_typed_head_failure() {
+    use super::view::{HeadFailure, HeadFailureKind};
+    let wording = HeadFailure {
+        table: COUNTRIES,
+        kind: HeadFailureKind::BuildError(format!("{COUNTRIES:?} is held without keys")),
+    }
+    .format();
+    let kinds = replay::columnar_frames::schema().unwrap();
+    let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
+    store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
+    let mut memory = Memory::default();
+    store.begin_run(0);
+    let strings: [&[u8]; 1] = [wording.as_bytes()];
+    store.begin_hour(0, &strings).unwrap();
+    store.status(COUNTRIES.index(), Status::Unavailable { reason: 0 }, true, Some(0), true).unwrap();
+    store.end_hour(&mut memory).unwrap();
+    store.end_run(&mut memory).unwrap();
+    let run = Run::new(0, memory.pages).unwrap();
+    let kinds = Arc::new(kinds);
+    let pages: Arc<dyn Pages> = Arc::new(Recorded { bytes: memory.bytes, runs: vec![run], kinds: (*kinds).clone() });
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let units = Units { name: "rows test head wording".into(), pages, timeline, kinds };
+
+    let entry = open(units, hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    entry.playhead().seek(0);
+    let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+    let reader = apart.store().handle().reader_at("wording", &[Need::every(COUNTRIES)], Pace::Step);
+    assert!(apart.drive(0), "the store never reached hour 0");
+    let frame = reader.wait(|frame| frame.hour == 0, LIMIT).expect("hour 0");
+    assert_eq!(&*frame.tables[COUNTRIES.index()], &TableView::Unavailable { reason: wording.clone() });
+    let (latest, failures) = reader.frame_with_failures().expect("latest frame");
+    assert_eq!(latest.hour, 0);
+    assert_eq!(&*latest.tables[COUNTRIES.index()], &TableView::Unavailable { reason: wording });
+    assert!(failures.is_empty(), "a recorded unavailability carries no typed head failure: {failures:?}");
+}
+
+#[test]
+fn head_row_build_error_emits_typed_build_error_failure() {
+    use super::view::{self, HeadFailure, HeadFailureKind};
+    let units = record("head build error", 1);
+    let mut lane = playhead::lane::Lane::new(Arc::clone(&units.pages), 0, COUNTRIES.index(), &[], false).unwrap();
+    lane.seek(0).unwrap();
+    let mirror = Mirror::rebuild(&lane, &[]);
+    let (view, made) = view::make(COUNTRIES, &mirror, (&[], view::EVERY), false, &mut Vec::new());
+    let expected = HeadFailureKind::BuildError(format!("{COUNTRIES:?} is held without keys"));
+    assert_eq!(made.failure, Some(expected.clone()));
+    assert_eq!(
+        view,
+        TableView::Unavailable {
+            reason: HeadFailure { table: COUNTRIES, kind: expected }.format(),
+        }
+    );
+}

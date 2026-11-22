@@ -11,19 +11,15 @@ use crate::{
         mirror::Mirrors,
         views::{
             Pace,
-            view::{HeadFailure, HeadFailureKind, head_failures},
+            view::{HeadFailure, HeadFailureKind},
         },
     },
 };
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::Arc,
-};
-use viewer_raids::map::intel_icons::{self, Entry, EntryKey, EntryKind, IntelIcons, StateIcon};
+use std::{collections::BTreeSet, io, sync::Arc};
+use viewer_raids::map::intel_icons::{self, IntelIcons};
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
     let layer = Icons::new(Arc::clone(&document.content) as Arc<dyn Evaluate>, Pace::Ready);
@@ -56,142 +52,6 @@ fn first_difference(today: &IntelIcons, ours: &IntelIcons) -> String {
     format!("report: today {:?}, the layer {:?}", today.report, ours.report)
 }
 
-fn is_core_world_table(table: TableId) -> bool {
-    matches!(
-        table,
-        TableId::Countries
-            | TableId::CountryLinks
-            | TableId::Provinces
-            | TableId::States
-            | TableId::Clock
-    )
-}
-
-fn explains_built_for(failure: &HeadFailure) -> bool {
-    matches!(
-        failure.table,
-        TableId::Countries | TableId::CountryLinks | TableId::LocalPlayer
-    )
-}
-
-fn explains_anchor(failure: &HeadFailure) -> bool {
-    is_core_world_table(failure.table)
-}
-
-fn kind_rank(kind: EntryKind) -> u8 {
-    match kind {
-        EntryKind::Shield => 0,
-        EntryKind::Operative => 1,
-        EntryKind::Operation => 2,
-        EntryKind::More => 3,
-    }
-}
-
-fn explains_entry(kind: EntryKind, failure: &HeadFailure) -> bool {
-    if is_core_world_table(failure.table) {
-        return true;
-    }
-    match kind {
-        EntryKind::Shield => matches!(
-            failure.table,
-            TableId::Politics
-                | TableId::FactionMembers
-                | TableId::Subjects
-                | TableId::CountryWars
-                | TableId::WarRelations
-                | TableId::RelationLinks
-                | TableId::Autonomy
-                | TableId::StrategicOperatives
-                | TableId::RaidIntelInputs
-                | TableId::CountryAppearance
-                | TableId::PoliticalParties
-                | TableId::ReservedCountryNaming
-                | TableId::ModifierDefinitions
-        ),
-        EntryKind::Operative => matches!(
-            failure.table,
-            TableId::OperativeMissions
-                | TableId::StrategicOperatives
-                | TableId::CharacterOperatives
-                | TableId::CharacterPortraits
-                | TableId::Politics
-                | TableId::IntelNetworks
-                | TableId::IntelNetworkAuxiliaries
-                | TableId::IntelligenceAgencies
-                | TableId::RaidIntelInputs
-                | TableId::CountryStabilityInputs
-                | TableId::PoliticalParties
-                | TableId::CountryAppearance
-                | TableId::Autonomy
-                | TableId::ReservedCountryNaming
-                | TableId::ModifierDefinitions
-        ),
-        EntryKind::Operation => matches!(
-            failure.table,
-            TableId::LocalPlayer
-                | TableId::AgencyOperationBuffers
-                | TableId::Operations
-                | TableId::CountryAppearance
-                | TableId::Politics
-                | TableId::PoliticalParties
-                | TableId::Autonomy
-                | TableId::ReservedCountryNaming
-                | TableId::ModifierDefinitions
-        ),
-        EntryKind::More => matches!(
-            failure.table,
-            TableId::LocalPlayer | TableId::AgencyOperationBuffers
-        ),
-    }
-}
-
-fn explains_reason(reason: &str, failure: &HeadFailure) -> bool {
-    let table_name = format!("{:?}", failure.table);
-    if reason.contains(&table_name) {
-        return true;
-    }
-    if reason.starts_with("the viewing country cannot be resolved") {
-        return explains_built_for(failure);
-    }
-    if reason.starts_with("the core tables are incomplete")
-        || reason.starts_with("a state's icon has no anchor")
-    {
-        return explains_anchor(failure);
-    }
-    if reason.starts_with("the related countries' shields")
-        || reason.starts_with("whether a related country is at war")
-        || reason.starts_with("a shield's capital is unknown")
-        || reason.starts_with("a friendly country controls no capital state")
-    {
-        return explains_entry(EntryKind::Shield, failure);
-    }
-    if reason.starts_with("operative icons are not drawn")
-        || reason.starts_with("an operative's state is unknown")
-    {
-        return explains_entry(EntryKind::Operative, failure);
-    }
-    if reason.starts_with("operation entries are withheld")
-        || reason.starts_with("operation and offer entries are withheld")
-        || reason.starts_with("an admitted operation entry is withheld")
-        || reason.starts_with("offer entries are withheld")
-    {
-        return explains_entry(EntryKind::Operation, failure);
-    }
-    if reason.starts_with("an entry's order is undecided") {
-        return matches!(
-            failure.table,
-            TableId::Countries
-                | TableId::CountryLinks
-                | TableId::CountryAppearance
-                | TableId::Politics
-                | TableId::PoliticalParties
-                | TableId::Autonomy
-                | TableId::ReservedCountryNaming
-        );
-    }
-    false
-}
-
 fn failure_json(failure: &HeadFailure) -> Value {
     match &failure.kind {
         HeadFailureKind::BuildError(error) => json!({
@@ -207,11 +67,149 @@ fn failure_json(failure: &HeadFailure) -> Value {
     }
 }
 
-fn compare_with_failures(
+fn diff_intel_icons(expected: &IntelIcons, actual: &IntelIcons) -> Vec<String> {
+    let mut diffs = Vec::new();
+    if expected.built_for != actual.built_for {
+        diffs.push(format!(
+            "built for: expected {:?}, the layer {:?}",
+            expected.built_for, actual.built_for
+        ));
+    }
+
+    let state_slots = expected.states.len().max(actual.states.len());
+    for slot in 0..state_slots {
+        match (expected.states.get(slot), actual.states.get(slot)) {
+            (Some(a), Some(b)) => {
+                if a.state != b.state {
+                    diffs.push(format!(
+                        "state[{slot}]: expected state {}, the layer has state {}",
+                        a.state, b.state
+                    ));
+                    continue;
+                }
+                if a.anchor != b.anchor {
+                    diffs.push(format!(
+                        "state {} anchor: expected {:?}, the layer {:?}",
+                        a.state, a.anchor, b.anchor
+                    ));
+                }
+                let entry_slots = a.entries.len().max(b.entries.len());
+                for idx in 0..entry_slots {
+                    match (a.entries.get(idx), b.entries.get(idx)) {
+                        (Some(left), Some(right)) if left != right => {
+                            diffs.push(format!(
+                                "state {} entry[{idx}] {:?} {:?}: expected {left:?}, the layer {right:?}",
+                                a.state, left.kind, left.key
+                            ));
+                        }
+                        (Some(left), None) => {
+                            diffs.push(format!(
+                                "state {} entry[{idx}] {:?} {:?}: missing in layer ({left:?})",
+                                a.state, left.kind, left.key
+                            ));
+                        }
+                        (None, Some(right)) => {
+                            diffs.push(format!(
+                                "state {} entry[{idx}] {:?} {:?}: extra in layer ({right:?})",
+                                a.state, right.kind, right.key
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (Some(a), None) => {
+                if a.entries.is_empty() {
+                    diffs.push(format!("state[{slot}] (state {}): missing in layer", a.state));
+                } else {
+                    for (idx, entry) in a.entries.iter().enumerate() {
+                        diffs.push(format!(
+                            "state {} entry[{idx}] {:?} {:?}: missing in layer ({entry:?})",
+                            a.state, entry.kind, entry.key
+                        ));
+                    }
+                }
+            }
+            (None, Some(b)) => {
+                if b.entries.is_empty() {
+                    diffs.push(format!("state[{slot}] (state {}): extra in layer", b.state));
+                } else {
+                    for (idx, entry) in b.entries.iter().enumerate() {
+                        diffs.push(format!(
+                            "state {} entry[{idx}] {:?} {:?}: extra in layer ({entry:?})",
+                            b.state, entry.kind, entry.key
+                        ));
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    let reason_keys: BTreeSet<&str> = expected
+        .report
+        .reasons
+        .keys()
+        .chain(actual.report.reasons.keys())
+        .map(String::as_str)
+        .collect();
+    for reason in reason_keys {
+        let a_count = expected.report.reasons.get(reason).copied().unwrap_or(0);
+        let b_count = actual.report.reasons.get(reason).copied().unwrap_or(0);
+        if a_count != b_count {
+            diffs.push(format!(
+                "report reason '{reason}': expected {a_count}, the layer {b_count}"
+            ));
+        }
+    }
+
+    let actual_state_count = actual.states.len();
+    let actual_entry_count: usize = actual.states.iter().map(|state| state.entries.len()).sum();
+    if actual.report.states != actual_state_count || actual.report.entries != actual_entry_count {
+        diffs.push(format!(
+            "layer report counts inconsistent: report holds ({}, {}), vectors hold ({}, {})",
+            actual.report.states, actual.report.entries, actual_state_count, actual_entry_count
+        ));
+    }
+
+    let expected_state_count = expected.states.len();
+    let expected_entry_count: usize = expected.states.iter().map(|state| state.entries.len()).sum();
+    if expected.report.states != expected_state_count
+        || expected.report.entries != expected_entry_count
+    {
+        diffs.push(format!(
+            "expected report counts inconsistent: report holds ({}, {}), vectors hold ({}, {})",
+            expected.report.states,
+            expected.report.entries,
+            expected_state_count,
+            expected_entry_count
+        ));
+    }
+
+    diffs
+}
+
+fn substitute_eligible_failures(
+    document_frame: &DecodedFrame,
+    head_rows: &DecodedFrame,
+    eligible: &[&HeadFailure],
+) -> DecodedFrame {
+    let mut substituted = document_frame.clone();
+    for failure in eligible {
+        let index = failure.table.index();
+        substituted.tables[index] = head_rows.tables[index].clone();
+    }
+    substituted
+}
+
+fn compare_with_substituted(
     wanted: &IntelIcons,
     icons: &IntelIcons,
+    document_frame: &DecodedFrame,
+    head_rows: Option<&DecodedFrame>,
     failures: &[HeadFailure],
-    table_count: usize,
+    declared: &[TableId],
+    evaluate: impl FnOnce(&DecodedFrame) -> IntelIcons,
 ) -> Compared {
     let mut compared = Compared {
         entries: entries(wanted),
@@ -221,206 +219,38 @@ fn compare_with_failures(
         "states": wanted.states.len(),
         "entries": wanted.report.entries,
         "reasons": wanted.report.reasons.len(),
-        "tables": table_count,
+        "tables": declared.len(),
     });
-    let qualifying: Vec<&HeadFailure> = failures
-        .iter()
-        .filter(|failure| matches!(failure.kind, HeadFailureKind::BuildError(_)))
-        .collect();
-    let mut exceptions: Vec<Value> = Vec::new();
-    let mut record = |description: String, excused_by: Option<&HeadFailure>| {
-        if let Some(failure) = excused_by {
-            exceptions.push(json!({
-                "difference": description,
-                "table": format!("{:?}", failure.table),
-                "failure": failure_json(failure),
-            }));
-        } else {
-            compared.differing += 1;
-            if compared.first.is_none() {
-                compared.first = Some(description);
-            }
-        }
+
+    let eligible: Vec<&HeadFailure> = match head_rows {
+        Some(rows) => failures
+            .iter()
+            .filter(|failure| {
+                matches!(failure.kind, HeadFailureKind::BuildError(_))
+                    && declared.contains(&failure.table)
+                    && *document_frame.tables[failure.table.index()]
+                        != *rows.tables[failure.table.index()]
+            })
+            .collect(),
+        None => Vec::new(),
     };
 
-    if wanted.built_for != icons.built_for {
-        record(
-            format!("built for: today {:?}, the layer {:?}", wanted.built_for, icons.built_for),
-            qualifying.iter().copied().find(|f| explains_built_for(f)),
-        );
-    }
+    let substituted_expected = if let Some(rows) = head_rows.filter(|_| !eligible.is_empty()) {
+        let substituted = substitute_eligible_failures(document_frame, rows, &eligible);
+        Some(evaluate(&substituted))
+    } else {
+        None
+    };
 
-    let wanted_states: BTreeMap<u32, &StateIcon> =
-        wanted.states.iter().map(|state| (state.state, state)).collect();
-    let actual_states: BTreeMap<u32, &StateIcon> =
-        icons.states.iter().map(|state| (state.state, state)).collect();
-    let state_ids: BTreeSet<u32> = wanted_states
-        .keys()
-        .chain(actual_states.keys())
-        .copied()
-        .collect();
+    let expected = substituted_expected.as_ref().unwrap_or(wanted);
+    let mismatches = diff_intel_icons(expected, icons);
+    let exceptions = match &substituted_expected {
+        Some(expected) => diff_intel_icons(wanted, expected),
+        None => Vec::new(),
+    };
 
-    for state_id in state_ids {
-        match (wanted_states.get(&state_id), actual_states.get(&state_id)) {
-            (Some(a), Some(b)) => {
-                if a.anchor != b.anchor {
-                    record(
-                        format!(
-                            "state {state_id} anchor: today {:?}, the layer {:?}",
-                            a.anchor, b.anchor
-                        ),
-                        qualifying.iter().copied().find(|f| explains_anchor(f)),
-                    );
-                }
-                let a_entries: BTreeMap<(u8, &EntryKey), &Entry> = a
-                    .entries
-                    .iter()
-                    .map(|entry| ((kind_rank(entry.kind), &entry.key), entry))
-                    .collect();
-                let b_entries: BTreeMap<(u8, &EntryKey), &Entry> = b
-                    .entries
-                    .iter()
-                    .map(|entry| ((kind_rank(entry.kind), &entry.key), entry))
-                    .collect();
-                let entry_keys: BTreeSet<(u8, &EntryKey)> = a_entries
-                    .keys()
-                    .chain(b_entries.keys())
-                    .copied()
-                    .collect();
-                for map_key in entry_keys {
-                    match (a_entries.get(&map_key), b_entries.get(&map_key)) {
-                        (Some(left), Some(right)) if left != right => {
-                            let kind = left.kind;
-                            record(
-                                format!(
-                                    "state {state_id} {kind:?} {:?}: today {left:?}, the layer {right:?}",
-                                    left.key
-                                ),
-                                qualifying.iter().copied().find(|f| explains_entry(kind, f)),
-                            );
-                        }
-                        (Some(left), None) => {
-                            let kind = left.kind;
-                            record(
-                                format!("state {state_id} {kind:?} {:?}: missing in layer ({left:?})", left.key),
-                                qualifying.iter().copied().find(|f| explains_entry(kind, f)),
-                            );
-                        }
-                        (None, Some(right)) => {
-                            let kind = right.kind;
-                            record(
-                                format!("state {state_id} {kind:?} {:?}: extra in layer ({right:?})", right.key),
-                                qualifying.iter().copied().find(|f| explains_entry(kind, f)),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                let a_common: Vec<(EntryKind, &EntryKey)> = a
-                    .entries
-                    .iter()
-                    .filter(|entry| b_entries.contains_key(&(kind_rank(entry.kind), &entry.key)))
-                    .map(|entry| (entry.kind, &entry.key))
-                    .collect();
-                let b_common: Vec<(EntryKind, &EntryKey)> = b
-                    .entries
-                    .iter()
-                    .filter(|entry| a_entries.contains_key(&(kind_rank(entry.kind), &entry.key)))
-                    .map(|entry| (entry.kind, &entry.key))
-                    .collect();
-                if a_common != b_common {
-                    let excused = a_common
-                        .iter()
-                        .zip(&b_common)
-                        .find(|(left, right)| left != right)
-                        .and_then(|((left_kind, _), (right_kind, _))| {
-                            qualifying.iter().copied().find(|f| {
-                                explains_entry(*left_kind, f) || explains_entry(*right_kind, f)
-                            })
-                        });
-                    record(
-                        format!(
-                            "state {state_id} entry order: today {a_common:?}, the layer {b_common:?}"
-                        ),
-                        excused,
-                    );
-                }
-            }
-            (Some(a), None) => {
-                if a.entries.is_empty() {
-                    record(
-                        format!("state {state_id}: missing in layer"),
-                        qualifying.iter().copied().find(|f| explains_anchor(f)),
-                    );
-                } else {
-                    for entry in &a.entries {
-                        record(
-                            format!(
-                                "state {state_id} {:?} {:?}: missing in layer ({entry:?})",
-                                entry.kind, entry.key
-                            ),
-                            qualifying
-                                .iter()
-                                .copied()
-                                .find(|f| explains_entry(entry.kind, f)),
-                        );
-                    }
-                }
-            }
-            (None, Some(b)) => {
-                if b.entries.is_empty() {
-                    record(
-                        format!("state {state_id}: extra in layer"),
-                        qualifying.iter().copied().find(|f| explains_anchor(f)),
-                    );
-                } else {
-                    for entry in &b.entries {
-                        record(
-                            format!(
-                                "state {state_id} {:?} {:?}: extra in layer ({entry:?})",
-                                entry.kind, entry.key
-                            ),
-                            qualifying
-                                .iter()
-                                .copied()
-                                .find(|f| explains_entry(entry.kind, f)),
-                        );
-                    }
-                }
-            }
-            (None, None) => {}
-        }
-    }
-
-    let reason_keys: BTreeSet<&str> = wanted
-        .report
-        .reasons
-        .keys()
-        .chain(icons.report.reasons.keys())
-        .map(String::as_str)
-        .collect();
-    for reason in reason_keys {
-        let a_count = wanted.report.reasons.get(reason).copied().unwrap_or(0);
-        let b_count = icons.report.reasons.get(reason).copied().unwrap_or(0);
-        if a_count != b_count {
-            record(
-                format!("report reason '{reason}': today {a_count}, the layer {b_count}"),
-                qualifying.iter().copied().find(|f| explains_reason(reason, f)),
-            );
-        }
-    }
-
-    if (wanted.report.states != icons.report.states || wanted.report.entries != icons.report.entries)
-        && compared.differing == 0
-        && exceptions.is_empty()
-    {
-        compared.differing += 1;
-        compared.first = Some(format!(
-            "report counts: today ({}, {}), the layer ({}, {})",
-            wanted.report.states, wanted.report.entries, icons.report.states, icons.report.entries
-        ));
-    }
-
+    compared.differing = mismatches.len() as u64;
+    compared.first = mismatches.into_iter().next();
     compared.notes = if exceptions.is_empty() && failures.is_empty() {
         notes
     } else {
@@ -431,16 +261,6 @@ fn compare_with_failures(
         })
     };
     compared
-}
-
-fn compare_today(
-    wanted: &IntelIcons,
-    icons: &IntelIcons,
-    rows: Option<&DecodedFrame>,
-    table_count: usize,
-) -> Compared {
-    let failures = rows.map(head_failures).unwrap_or_default();
-    compare_with_failures(wanted, icons, &failures, table_count)
 }
 
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
@@ -456,20 +276,20 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     let ours = document.vision(&choice)?.ours();
     let content = &document.content;
     let wanted = intel_icons::icons(&content.icons.intel, &content.icons.raids, frame, ours, &content.names.localisation, &content.raid_hover.recorded_language);
-    let newest = layer.newest_rows();
-    let declared = layer.tables();
-    let failures: Vec<HeadFailure> = newest
-        .as_deref()
-        .filter(|rows| rows.hour == *hour)
-        .map(head_failures)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|failure| {
-            declared.contains(&failure.table)
-                && *frame.tables[failure.table.index()] != *newest.as_ref().expect("rows present").tables[failure.table.index()]
-        })
-        .collect();
-    Ok(compare_with_failures(&wanted, icons, &failures, declared.len()))
+    let newest = layer.newest_rows_with_failures();
+    let (rows, failures) = match newest.as_ref().filter(|(rows, _)| rows.hour == *hour) {
+        Some((rows, failures)) => (Some(rows.as_ref()), failures.as_ref()),
+        None => (None, &[][..]),
+    };
+    Ok(compare_with_substituted(
+        &wanted,
+        icons,
+        frame,
+        rows,
+        failures,
+        layer.tables(),
+        |substituted| layer.evaluate(substituted),
+    ))
 }
 
 pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
@@ -492,10 +312,10 @@ pub(super) fn summary(side: &MapSide) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::rows::{TABLE_COUNT, TableRows};
+    use replay_data::rows::TableRows;
     use replay_frame::frame::{Metrics, SharedView, TableView};
     use viewer_foundation::tooltip_text::Tooltip;
-    use viewer_raids::map::intel_icons::{Anchor, IntelReport, Write};
+    use viewer_raids::map::intel_icons::{Anchor, Entry, EntryKey, EntryKind, IntelReport, StateIcon, Write};
 
     fn entry(kind: EntryKind, key: EntryKey, text: &str) -> Entry {
         Entry {
@@ -519,224 +339,246 @@ mod tests {
         }
     }
 
-    fn frame_with_unavailable(entries: &[(TableId, String)]) -> DecodedFrame {
-        let mut tables: [SharedView; TABLE_COUNT] = TableId::ALL
-            .map(|table| SharedView::from(TableView::Complete(TableRows::empty(table))));
-        for (table, reason) in entries {
-            tables[table.index()] = SharedView::from(TableView::Unavailable {
-                reason: reason.clone(),
-            });
-        }
+    fn complete_frame() -> DecodedFrame {
         DecodedFrame {
             branch: 1,
             hour: 10,
-            tables,
+            tables: TableId::ALL
+                .map(|table| SharedView::from(TableView::Complete(TableRows::empty(table)))),
             metrics: Metrics::default(),
         }
     }
 
-    #[test]
-    fn unrelated_table_head_failure_does_not_excuse_intel_icon_mismatch() {
-        let wanted = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "5")],
-            }],
-            &[],
-        );
-        let actual = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "9")],
-            }],
-            &[],
-        );
-        let rows = frame_with_unavailable(&[(
-            TableId::Divisions,
-            HeadFailure {
-                table: TableId::Divisions,
-                kind: HeadFailureKind::BuildError("Divisions is held without keys".into()),
+    fn frame_with_unavailable(entries: &[(TableId, String)]) -> DecodedFrame {
+        let mut frame = complete_frame();
+        for (table, reason) in entries {
+            frame.tables[table.index()] = SharedView::from(TableView::Unavailable {
+                reason: reason.clone(),
+            });
+        }
+        frame
+    }
+
+    fn synthetic_eval(frame: &DecodedFrame) -> IntelIcons {
+        let mut entries_10 = vec![entry(EntryKind::Shield, EntryKey::Shield(1), "5")];
+        let mut reasons: Vec<(&str, usize)> = Vec::new();
+        match &*frame.tables[TableId::AgencyOperationBuffers.index()] {
+            TableView::Complete(_) => {
+                let text = match &*frame.tables[TableId::LexicalTokens.index()] {
+                    TableView::Complete(_) => "op_token",
+                    _ => "op_missing_token",
+                };
+                entries_10.push(entry(EntryKind::Operation, EntryKey::Operation(42), text));
             }
-            .format(),
-        )]);
-        let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-        assert_eq!(compared.differing, 1, "unrelated table failure must not excuse shield mismatch: {compared:?}");
-        assert!(compared.first.is_some());
+            TableView::Unavailable { .. } => {
+                reasons.push(("operation entries are withheld: AgencyOperationBuffers unavailable", 1));
+            }
+            _ => {}
+        }
+        icons_of(
+            vec![StateIcon {
+                state: 10,
+                anchor: Anchor::Province(100),
+                entries: entries_10,
+            }],
+            &reasons,
+        )
     }
 
     #[test]
-    fn missing_operation_buffer_excuses_operation_mismatch_while_retaining_unrelated_shield_mismatch() {
-        let wanted = icons_of(
+    fn clock_or_unrelated_build_error_does_not_excuse_unrelated_shield_mismatch() {
+        let doc = complete_frame();
+        let wanted = synthetic_eval(&doc);
+        let actual = icons_of(
             vec![StateIcon {
                 state: 10,
                 anchor: Anchor::Province(100),
                 entries: vec![
-                    entry(EntryKind::Shield, EntryKey::Shield(1), "5"),
-                    entry(EntryKind::Operation, EntryKey::Operation(42), "op"),
+                    entry(EntryKind::Shield, EntryKey::Shield(1), "9"),
+                    entry(EntryKind::Operation, EntryKey::Operation(42), "op_token"),
                 ],
             }],
             &[],
         );
-        let actual = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "9")],
-            }],
-            &[(
-                "operation entries are withheld: AgencyOperationBuffers are unavailable: AgencyOperationBuffers is not complete: table AgencyOperationBuffers is unavailable: AgencyOperationBuffers's rows at the head could not be made: AgencyOperationBuffers is held without keys",
-                1,
-            )],
+        for table in [TableId::Clock, TableId::Divisions] {
+            let failure = HeadFailure {
+                table,
+                kind: HeadFailureKind::BuildError(format!("{table:?} is held without keys")),
+            };
+            let head = frame_with_unavailable(&[(table, failure.format())]);
+            let compared = compare_with_substituted(
+                &wanted,
+                &actual,
+                &doc,
+                Some(&head),
+                &[failure],
+                &[TableId::Clock, TableId::AgencyOperationBuffers, TableId::LexicalTokens],
+                synthetic_eval,
+            );
+            assert_eq!(compared.differing, 1, "table {table:?} must not excuse shield mismatch: {compared:?}");
+            assert!(compared.first.as_deref().unwrap_or_default().contains("Shield"));
+        }
+    }
+
+    #[test]
+    fn lexical_tokens_build_error_excuses_only_affected_entry_via_reevaluation() {
+        let doc = complete_frame();
+        let wanted = synthetic_eval(&doc);
+        let failure = HeadFailure {
+            table: TableId::LexicalTokens,
+            kind: HeadFailureKind::BuildError("LexicalTokens is held without keys".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::LexicalTokens, failure.format())]);
+        let actual = synthetic_eval(&head);
+        let compared = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            Some(&head),
+            &[failure],
+            &[TableId::AgencyOperationBuffers, TableId::LexicalTokens],
+            synthetic_eval,
         );
-        let rows = frame_with_unavailable(&[(
-            TableId::AgencyOperationBuffers,
-            HeadFailure {
-                table: TableId::AgencyOperationBuffers,
-                kind: HeadFailureKind::BuildError(
-                    "AgencyOperationBuffers is held without keys".into(),
-                ),
-            }
-            .format(),
-        )]);
-        let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-        assert_eq!(compared.differing, 1, "only the unrelated shield mismatch should remain unexcused: {compared:?}");
+        assert_eq!(compared.differing, 0, "exact LexicalTokens difference should be excused: {compared:?}");
+        assert_eq!(compared.notes["known_exceptions"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn missing_operation_buffer_excuses_operation_while_retaining_unrelated_shield_mismatch() {
+        let doc = complete_frame();
+        let wanted = synthetic_eval(&doc);
+        let failure = HeadFailure {
+            table: TableId::AgencyOperationBuffers,
+            kind: HeadFailureKind::BuildError("AgencyOperationBuffers is held without keys".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, failure.format())]);
+        let mut actual = synthetic_eval(&head);
+        actual.states[0].entries[0] = entry(EntryKind::Shield, EntryKey::Shield(1), "9");
+        let compared = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            Some(&head),
+            &[failure],
+            &[TableId::AgencyOperationBuffers, TableId::LexicalTokens],
+            synthetic_eval,
+        );
+        assert_eq!(compared.differing, 1, "unrelated shield mismatch must remain unexcused: {compared:?}");
         assert!(compared.first.as_deref().unwrap_or_default().contains("Shield"));
         assert_eq!(compared.notes["known_exceptions"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]
-    fn panicked_head_failure_does_not_excuse_mismatch() {
-        let wanted = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Operation, EntryKey::Operation(42), "op")],
-            }],
-            &[],
+    fn panicked_head_failure_and_recorded_unavailability_never_excuse_mismatch() {
+        let doc = complete_frame();
+        let wanted = synthetic_eval(&doc);
+        let panic_failure = HeadFailure {
+            table: TableId::AgencyOperationBuffers,
+            kind: HeadFailureKind::Panicked("index out of bounds".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, panic_failure.format())]);
+        let actual = synthetic_eval(&head);
+        let panicked_cmp = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            Some(&head),
+            &[panic_failure],
+            &[TableId::AgencyOperationBuffers],
+            synthetic_eval,
         );
-        let actual = icons_of(Vec::new(), &[]);
-        let rows = frame_with_unavailable(&[(
-            TableId::AgencyOperationBuffers,
-            HeadFailure {
-                table: TableId::AgencyOperationBuffers,
-                kind: HeadFailureKind::Panicked("index out of bounds".into()),
-            }
-            .format(),
-        )]);
-        let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-        assert_eq!(compared.differing, 1, "a panic while building head rows must not be excused as a missing input: {compared:?}");
+        assert_eq!(panicked_cmp.differing, 2, "panicked head failure must not excuse operation or reason: {panicked_cmp:?}");
+
+        let recorded_wording = HeadFailure {
+            table: TableId::AgencyOperationBuffers,
+            kind: HeadFailureKind::BuildError("AgencyOperationBuffers is held without keys".into()),
+        }
+        .format();
+        let recorded_head = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, recorded_wording)]);
+        let recorded_cmp = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            Some(&recorded_head),
+            &[],
+            &[TableId::AgencyOperationBuffers],
+            synthetic_eval,
+        );
+        assert_eq!(recorded_cmp.differing, 2, "recorded unavailability with no typed HeadFailure must not excuse mismatch: {recorded_cmp:?}");
     }
 
     #[test]
-    fn exact_missing_operation_buffer_excuses_only_affected_operation_and_reason() {
-        let wanted = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![
-                    entry(EntryKind::Shield, EntryKey::Shield(1), "5"),
-                    entry(EntryKind::Operation, EntryKey::Operation(42), "op"),
-                ],
-            }],
-            &[],
-        );
-        let actual = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "5")],
-            }],
-            &[(
-                "operation entries are withheld: AgencyOperationBuffers are unavailable: AgencyOperationBuffers's rows at the head could not be made: AgencyOperationBuffers is held without keys",
-                1,
-            )],
-        );
-        let rows = frame_with_unavailable(&[(
-            TableId::AgencyOperationBuffers,
-            HeadFailure {
-                table: TableId::AgencyOperationBuffers,
-                kind: HeadFailureKind::BuildError(
-                    "AgencyOperationBuffers is held without keys".into(),
-                ),
-            }
-            .format(),
-        )]);
-        let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-        assert_eq!(compared.differing, 0, "exact affected operation mismatch and its reason should be excused: {compared:?}");
-        assert!(compared.first.is_none());
-        assert_eq!(compared.notes["known_exceptions"].as_array().map(Vec::len), Some(2));
-    }
-
-    #[test]
-    fn multiple_unaffected_mismatches_retain_independent_counts_beside_excused_difference() {
+    fn reversed_state_order_and_duplicate_entry_keys_are_reported_independently() {
+        let doc = complete_frame();
         let wanted = icons_of(
             vec![
                 StateIcon {
                     state: 10,
                     anchor: Anchor::Province(100),
                     entries: vec![
-                        entry(EntryKind::Shield, EntryKey::Shield(1), "5"),
-                        entry(EntryKind::Operation, EntryKey::Operation(42), "op"),
+                        entry(EntryKind::Operation, EntryKey::Offer(1, 2), "first"),
+                        entry(EntryKind::Operation, EntryKey::Offer(1, 2), "second"),
                     ],
                 },
                 StateIcon {
                     state: 20,
                     anchor: Anchor::Province(200),
-                    entries: vec![entry(EntryKind::Operative, EntryKey::Operative(1, 7), "spy")],
+                    entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "5")],
                 },
             ],
             &[],
         );
-        let actual = icons_of(
-            vec![
-                StateIcon {
-                    state: 10,
-                    anchor: Anchor::Province(100),
-                    entries: vec![entry(EntryKind::Shield, EntryKey::Shield(1), "8")],
-                },
-                StateIcon {
-                    state: 20,
-                    anchor: Anchor::Province(200),
-                    entries: vec![entry(EntryKind::Operative, EntryKey::Operative(1, 7), "other")],
-                },
-            ],
+        let reversed = icons_of(
+            vec![wanted.states[1].clone(), wanted.states[0].clone()],
             &[],
         );
-        let rows = frame_with_unavailable(&[(
-            TableId::AgencyOperationBuffers,
-            HeadFailure {
-                table: TableId::AgencyOperationBuffers,
-                kind: HeadFailureKind::BuildError(
-                    "AgencyOperationBuffers is held without keys".into(),
-                ),
-            }
-            .format(),
-        )]);
-        let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-        assert_eq!(compared.differing, 2, "both unaffected shield and operative mismatches must be counted independently: {compared:?}");
-        assert_eq!(compared.notes["known_exceptions"].as_array().map(Vec::len), Some(1));
+        let reversed_cmp = compare_with_substituted(
+            &wanted,
+            &reversed,
+            &doc,
+            None,
+            &[],
+            &[],
+            |_| unreachable!(),
+        );
+        assert_eq!(reversed_cmp.differing, 2, "reversed states must not be hidden: {reversed_cmp:?}");
+
+        let mut modified_dup = wanted.clone();
+        modified_dup.states[0].entries[0] =
+            entry(EntryKind::Operation, EntryKey::Offer(1, 2), "changed_first");
+        let dup_cmp = compare_with_substituted(
+            &wanted,
+            &modified_dup,
+            &doc,
+            None,
+            &[],
+            &[],
+            |_| unreachable!(),
+        );
+        assert_eq!(dup_cmp.differing, 1, "modified first duplicate key must not be collapsed: {dup_cmp:?}");
     }
 
     #[test]
-    fn other_unavailable_reason_and_mismatched_table_prefix_do_not_excuse_mismatch() {
-        let wanted = icons_of(
-            vec![StateIcon {
-                state: 10,
-                anchor: Anchor::Province(100),
-                entries: vec![entry(EntryKind::Operation, EntryKey::Operation(42), "op")],
-            }],
-            &[],
+    fn bogus_report_counts_are_not_masked_by_an_excused_entry() {
+        let doc = complete_frame();
+        let wanted = synthetic_eval(&doc);
+        let failure = HeadFailure {
+            table: TableId::AgencyOperationBuffers,
+            kind: HeadFailureKind::BuildError("AgencyOperationBuffers is held without keys".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, failure.format())]);
+        let mut actual = synthetic_eval(&head);
+        actual.report.entries = 99;
+        let compared = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            Some(&head),
+            &[failure],
+            &[TableId::AgencyOperationBuffers],
+            synthetic_eval,
         );
-        let actual = icons_of(Vec::new(), &[]);
-        for reason in [
-            "collector capture refused".to_owned(),
-            "Operations's rows at the head could not be made: mismatched slot".to_owned(),
-        ] {
-            let rows = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, reason)]);
-            let compared = compare_today(&wanted, &actual, Some(&rows), 10);
-            assert_eq!(compared.differing, 1, "non-matching unavailability reason must not excuse mismatch: {compared:?}");
-        }
+        assert_eq!(compared.differing, 1, "bogus report count must not be suppressed by an excused entry: {compared:?}");
+        assert!(compared.first.as_deref().unwrap_or_default().contains("report counts inconsistent"));
     }
 }

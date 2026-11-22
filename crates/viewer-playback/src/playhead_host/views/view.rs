@@ -2,7 +2,7 @@
 use crate::playhead_host::mirror::{Cell, Mirror, Resolved};
 use replay_columnar::{manifest::Status, state::Kind};
 use replay_data::rows::{Field, List, Opaque, RowChanges, TableId};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::TableView;
 use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,47 +28,13 @@ impl HeadFailure {
             }
         }
     }
-
-    pub fn parse(table: TableId, reason: &str) -> Option<Self> {
-        let prefix = format!("{table:?}'s rows at the head could not be made");
-        let rest = reason.strip_prefix(&prefix)?;
-        if let Some(error) = rest.strip_prefix(": ") {
-            return Some(Self {
-                table,
-                kind: HeadFailureKind::BuildError(error.to_owned()),
-            });
-        }
-        if let Some(detail) = rest.strip_prefix(" (").and_then(|s| s.strip_suffix(')')) {
-            return Some(Self {
-                table,
-                kind: HeadFailureKind::Panicked(detail.to_owned()),
-            });
-        }
-        None
-    }
 }
 
-pub fn head_failures(frame: &DecodedFrame) -> Vec<HeadFailure> {
-    TableId::ALL
-        .iter()
-        .copied()
-        .filter_map(|table| {
-            let view = &frame.tables[table.index()];
-            if view.is_not_declared() {
-                return None;
-            }
-            match &**view {
-                TableView::Unavailable { reason } => HeadFailure::parse(table, reason),
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Made {
     pub rows: usize,
     pub untold: u64,
+    pub failure: Option<HeadFailureKind>,
 }
 
 pub fn make(table: TableId, mirror: &Mirror, held: (&[Kind], u64), gap: bool, order: &mut Vec<(u128, u32)>) -> (TableView, Made) {
@@ -89,13 +55,13 @@ pub fn make_of(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64
                 Status::Truncated { missing } => TableView::Truncated { rows, missing },
                 _ => TableView::Complete(rows),
             },
-            Err(error) => TableView::Unavailable {
-                reason: HeadFailure {
-                    table,
-                    kind: HeadFailureKind::BuildError(error.to_string()),
+            Err(error) => {
+                let kind = HeadFailureKind::BuildError(error.to_string());
+                made.failure = Some(kind.clone());
+                TableView::Unavailable {
+                    reason: HeadFailure { table, kind }.format(),
                 }
-                .format(),
-            },
+            }
         },
     };
     (view, made)

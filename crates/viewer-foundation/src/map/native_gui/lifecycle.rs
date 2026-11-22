@@ -3359,24 +3359,24 @@ pub enum MapIconPool {
     Occupation,
 }
 
-fn build_matches_version(build: &str, version: &str) -> bool {
+fn build_matches_verified(build: &str, version: &str, checksum: &str) -> bool {
     let candidate = build
         .rsplit_once(" v")
         .map(|(_, rest)| rest)
         .unwrap_or(build)
         .trim();
     let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
-    candidate == version
-        || candidate
-            .strip_prefix(version)
-            .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1 && !rest[1..].contains('.'))
+    candidate
+        .strip_prefix(version)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(checksum))
 }
 
 impl MapIconPool {
-    pub const VERIFIED_BUILDS: &'static [&'static str] = &[
-        engine_executable::build::PINNED_BUILD.version,
-        "1.19.4.2",
-        "1.19.4.1",
+    pub const VERIFIED_BUILDS: &'static [(&'static str, &'static str)] = &[
+        ("1.19.5.0", "c184"),
+        ("1.19.4.2", "0bdb"),
+        ("1.19.4.1", "f584"),
     ];
 
     pub fn name(self) -> &'static str {
@@ -3434,7 +3434,7 @@ impl MapIconPool {
         };
         if Self::VERIFIED_BUILDS
             .iter()
-            .any(|version| build_matches_version(build, version))
+            .any(|&(version, checksum)| build_matches_verified(build, version, checksum))
         {
             Ok(self.initial())
         } else {

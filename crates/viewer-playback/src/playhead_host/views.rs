@@ -193,6 +193,7 @@ pub struct Set {
 pub struct Columns {
     pub stamp: u64,
     pub built: Option<(u64, SharedView)>,
+    pub built_failure: Option<view::HeadFailure>,
     pub rows: usize,
     pub touched: Result<Touched, Whole>,
     pub bound: usize,
@@ -213,11 +214,11 @@ pub type Source<'a> = (&'a Mirror, &'a [Kind], bool);
 
 impl Columns {
     pub fn new() -> Self {
-        Self { stamp: 0, built: None, rows: 0, touched: Err(Whole::First), bound: 0, whole_read: false, spares: Vec::new(), costs: Costs::default(), untold: false, told: false, last_ns: 0 }
+        Self { stamp: 0, built: None, built_failure: None, rows: 0, touched: Err(Whole::First), bound: 0, whole_read: false, spares: Vec::new(), costs: Costs::default(), untold: false, told: false, last_ns: 0 }
     }
 
     pub fn arriving(&mut self) {
-        (self.built, self.touched) = (None, Err(Whole::First));
+        (self.built, self.built_failure, self.touched) = (None, None, Err(Whole::First));
         self.spares.clear();
         self.stamp += 1;
     }
@@ -254,6 +255,10 @@ impl Columns {
         };
         self.bound = if self.whole_read { self.costs.bound(self.rows) } else { usize::MAX };
         self.prune();
+        self.built_failure = built.failure.map(|kind| view::HeadFailure {
+            table: TableId::ALL[table],
+            kind,
+        });
         self.built = Some((self.stamp, view.clone()));
         view
     }
@@ -282,20 +287,21 @@ impl Columns {
     }
 
     pub fn failed_make(&mut self, table: usize, payload: &(dyn std::any::Any + Send)) -> SharedView {
+        let failure = view::HeadFailure {
+            table: TableId::ALL[table],
+            kind: view::HeadFailureKind::Panicked(panicked(payload)),
+        };
         let view = SharedView::from(TableView::Unavailable {
-            reason: view::HeadFailure {
-                table: TableId::ALL[table],
-                kind: view::HeadFailureKind::Panicked(panicked(payload)),
-            }
-            .format(),
+            reason: failure.format(),
         });
         (self.touched, self.untold) = (Err(Whole::First), false);
         self.spares.clear();
+        self.built_failure = Some(failure);
         self.built = Some((self.stamp, view.clone()));
         view
     }
 
-    pub fn keyed_made(&mut self, table: usize, columns: u64, from: Source<'_>, keys: &BTreeSet<u64>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
+    pub fn keyed_made(&mut self, table: usize, columns: u64, from: Source<'_>, keys: &BTreeSet<u64>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
         let (mirror, kinds, gap) = from;
         let at = made.at();
         made.made_on();
@@ -308,7 +314,11 @@ impl Columns {
         made.builds.push((table, started.elapsed().as_nanos() as u64, built.rows, Make::Keyed, at));
         made.untold += built.untold;
         let sampled = if matches!(view, TableView::Complete(_)) && !gap { mirror.sampled() } else { None };
-        held_fields(SharedView::from(view), columns, kinds.len()).with_sampled_at(sampled)
+        let failure = built.failure.map(|kind| view::HeadFailure {
+            table: TableId::ALL[table],
+            kind,
+        });
+        (held_fields(SharedView::from(view), columns, kinds.len()).with_sampled_at(sampled), failure)
     }
 
     pub fn since(&mut self, (mirror, _, gap): Source<'_>) -> Result<Vec<(u128, u64)>, Whole> {
@@ -567,17 +577,20 @@ impl Kept {
         self.set(columns).is_some_and(|at| lock(&self.views[at].made).told)
     }
 
-    fn keyed(&self, table: usize, mirror: Option<&Mirror>, keys: &BTreeSet<u64>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
+    fn keyed(&self, table: usize, mirror: Option<&Mirror>, keys: &BTreeSet<u64>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
         let columns = over(u64::MAX, self.kinds.len());
-        let Some(at) = self.set(columns) else { return not_declared(TableId::ALL[table]) };
+        let Some(at) = self.set(columns) else { return (not_declared(TableId::ALL[table]), None) };
         let Some(mirror) = mirror else {
             viewer_foundation::view_record::add("map views", "sets_withheld", 1);
-            return not_declared(TableId::ALL[table]);
+            return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&self.views[at].made);
         match catch_unwind(AssertUnwindSafe(|| held.keyed_made(table, columns, (mirror, &self.kinds, self.gap || mirror.in_gap()), keys, order, made))) {
-            Ok(view) => view,
-            Err(payload) => held.failed_make(table, &*payload),
+            Ok(result) => result,
+            Err(payload) => {
+                let view = held.failed_make(table, &*payload);
+                (view, held.built_failure.clone())
+            }
         }
     }
 
@@ -590,11 +603,15 @@ impl Kept {
     }
 
     fn view(&self, table: usize, columns: u64, mirror: Option<&Mirror>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
-        let Some(at) = self.set(columns) else { return not_declared(TableId::ALL[table]) };
+        self.view_with_failure(table, columns, mirror, order, made).0
+    }
+
+    fn view_with_failure(&self, table: usize, columns: u64, mirror: Option<&Mirror>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
+        let Some(at) = self.set(columns) else { return (not_declared(TableId::ALL[table]), None) };
         let set = &self.views[at];
         let Some(mirror) = mirror.filter(|mirror| holds_every(mirror, set.columns, self.kinds.len())) else {
             viewer_foundation::view_record::add("map views", "sets_withheld", 1);
-            return not_declared(TableId::ALL[table]);
+            return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&set.made);
         let view = match &held.built {
@@ -604,8 +621,9 @@ impl Kept {
                 Err(payload) => held.failed_make(table, &*payload),
             },
         };
+        let failure = held.built_failure.clone();
         let sampled = if matches!(view.held(), TableView::Complete(_)) && !self.gap && !mirror.in_gap() { mirror.sampled() } else { None };
-        view.with_sampled_at(sampled)
+        (view.with_sampled_at(sampled), failure)
     }
 
     fn bytes(&self) -> usize {
@@ -651,8 +669,9 @@ struct Reading {
     declared: Vec<Need>,
     keyed: Vec<Keyed>,
     frame_keys: Vec<(usize, Arc<BTreeSet<u64>>)>,
-    keyed_views: Vec<(usize, u64, u64, Arc<BTreeSet<u64>>, SharedView)>,
+    keyed_views: Vec<(usize, u64, u64, Arc<BTreeSet<u64>>, SharedView, Option<view::HeadFailure>)>,
     frame: Option<Arc<DecodedFrame>>,
+    failures: Arc<[view::HeadFailure]>,
     stands: Option<(Hour, u64)>,
     published: u64,
     told: Option<Telling>,
@@ -687,7 +706,7 @@ impl Reading {
             !self
                 .keyed_views
                 .iter()
-                .any(|(table, _, version, keys, _)| *table == keyed.table && *version == keyed.version && Arc::ptr_eq(keys, &keyed.keys))
+                .any(|(table, _, version, keys, ..)| *table == keyed.table && *version == keyed.version && Arc::ptr_eq(keys, &keyed.keys))
         })
     }
 }
@@ -1103,6 +1122,7 @@ fn register(shared: &Shared, id: u64, name: &'static str, told: bool, pace: Pace
         frame_keys: Vec::new(),
         keyed_views: Vec::new(),
         frame: None,
+        failures: Arc::from([]),
         stands: None,
         published: 0,
         told: told.then(Telling::default),
@@ -1373,6 +1393,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             continue;
         }
         let mut held: Vec<Option<SharedView>> = vec![None; TABLE_COUNT];
+        let mut failures: Vec<view::HeadFailure> = Vec::new();
         let unwritten = |table: usize| -> SharedView {
             shared.unwritten[table]
                 .get_or_init(|| {
@@ -1388,7 +1409,11 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             if !shared.written[table] {
                 held[table] = Some(unwritten(table));
             } else if let Some(kept) = kept[table].as_ref() {
-                held[table] = Some(kept.view(table, columns, mirrors.get(TableId::ALL[table]), &mut order, &mut made));
+                let (view, failure) = kept.view_with_failure(table, columns, mirrors.get(TableId::ALL[table]), &mut order, &mut made);
+                held[table] = Some(view);
+                if let Some(failure) = failure {
+                    failures.push(failure);
+                }
             }
         }
         let (id, keyed) = (reading.id, reading.keyed.clone());
@@ -1402,21 +1427,24 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             let Some(kept) = kept[keyed.table].as_ref() else { continue };
             let stamp = kept.stamp(u64::MAX);
             let was = before.iter().find(|(table, ..)| *table == keyed.table);
-            let view = match was {
-                Some((_, shown, version, _, view)) if *shown == stamp && *version == keyed.version => view.clone(),
+            let (view, failure) = match was {
+                Some((_, shown, version, _, view, failure)) if *shown == stamp && *version == keyed.version => (view.clone(), failure.clone()),
                 _ => {
                     let tells = kept.tells(u64::MAX);
-                    let view = kept.keyed(keyed.table, mirrors.get(TableId::ALL[keyed.table]), &keyed.keys, &mut order, &mut made);
-                    let asked: Vec<(u128, u64)> = order.iter().map(|&(key, _)| key).filter(|&key| was.is_none_or(|(.., keys, _)| !keys.contains(&prefix(key)))).map(|key| (key, view::EVERY)).collect();
+                    let (view, failure) = kept.keyed(keyed.table, mirrors.get(TableId::ALL[keyed.table]), &keyed.keys, &mut order, &mut made);
+                    let asked: Vec<(u128, u64)> = order.iter().map(|&(key, _)| key).filter(|&key| was.is_none_or(|(_, _, _, keys, ..)| !keys.contains(&prefix(key)))).map(|key| (key, view::EVERY)).collect();
                     if tells && !asked.is_empty() {
                         made.told_reader.push((id, keyed.table, asked));
                     }
-                    view
+                    (view, failure)
                 }
             };
+            if let Some(failure) = &failure {
+                failures.push(failure.clone());
+            }
             held[keyed.table] = Some(view.clone());
             keys.push((keyed.table, Arc::clone(&keyed.keys)));
-            views.push((keyed.table, stamp, keyed.version, Arc::clone(&keyed.keys), view));
+            views.push((keyed.table, stamp, keyed.version, Arc::clone(&keyed.keys), view, failure));
         }
         let frame = DecodedFrame { branch, hour, tables: std::array::from_fn(|table| held[table].take().unwrap_or_else(|| not_declared(TableId::ALL[table]))), metrics: Metrics::default() };
         told(&mut readers, kept, &mut made);
@@ -1426,6 +1454,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             older.truncate(FRAMES_KEPT);
         }
         reading.frame = Some(Arc::new(frame));
+        reading.failures = Arc::from(failures);
         reading.stands = Some((hour, epoch));
         reading.published += 1;
         reading.due_at = reading.pace.interval().map(|interval| Instant::now() + interval);
@@ -1535,6 +1564,12 @@ impl Reader {
     pub fn frame(&self) -> Option<Arc<DecodedFrame>> {
         let readers = lock(&self.shared.readers);
         readers.get(Self::place(&readers, self.id)?)?.frame.clone()
+    }
+
+    pub fn frame_with_failures(&self) -> Option<(Arc<DecodedFrame>, Arc<[view::HeadFailure]>)> {
+        let readers = lock(&self.shared.readers);
+        let reading = readers.get(Self::place(&readers, self.id)?)?;
+        Some((reading.frame.clone()?, Arc::clone(&reading.failures)))
     }
 
     pub fn frame_now_through(&self, hour: Hour) -> Option<Arc<DecodedFrame>> {
@@ -1758,6 +1793,7 @@ fn declare(shared: &Arc<Shared>, id: u64, needs: &[Need], republishes: bool) {
             }
             if readers[at].tables != tables {
                 (readers[at].frame, readers[at].stands) = (None, None);
+                readers[at].failures = Arc::from([]);
                 readers[at].frame_keys.clear();
                 readers[at].keyed_views.clear();
             }
@@ -1955,6 +1991,7 @@ fn close(shared: &Arc<Shared>, id: u64) {
     if let Some(at) = Reader::place(&readers, id) {
         readers[at].open = false;
         (readers[at].frame, readers[at].stands) = (None, None);
+        readers[at].failures = Arc::from([]);
     }
     drop(readers);
     declare(shared, id, &[], true);
