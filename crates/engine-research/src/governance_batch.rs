@@ -2,12 +2,9 @@ use crate::batch_fallback::{self, Batch};
 use crate::memory::{Memory, RecordLayout, RecordSources};
 use std::cell::{Cell, RefCell};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FieldState {
-    Pending,
-    Cached,
-    Failed { offset: usize, len: usize },
-}
+const PENDING: u8 = 0;
+const CACHED: u8 = 1;
+const FAILED: u8 = 2;
 
 fn destinations_disjoint(layout: &RecordLayout<'_>) -> bool {
     let fields = layout.fields();
@@ -33,9 +30,10 @@ pub struct Records<'a> {
     layout: &'a RecordLayout<'a>,
     index: Vec<(usize, usize)>,
     bytes: RefCell<Vec<u8>>,
-    states: RefCell<Vec<FieldState>>,
-    cached_fields: Cell<usize>,
-    failed_fields: Cell<usize>,
+    states: RefCell<Vec<u8>>,
+    cached_bytes: Cell<usize>,
+    pending_bytes: Cell<usize>,
+    failed_bytes: Cell<usize>,
 }
 
 impl<'a> Records<'a> {
@@ -50,26 +48,28 @@ impl<'a> Records<'a> {
             index: Vec::new(),
             bytes: RefCell::new(Vec::new()),
             states: RefCell::new(Vec::new()),
-            cached_fields: Cell::new(0),
-            failed_fields: Cell::new(0),
+            cached_bytes: Cell::new(0),
+            pending_bytes: Cell::new(0),
+            failed_bytes: Cell::new(0),
         };
         let field_count = layout.field_count();
         if sources.is_empty() || field_count == 0 || !destinations_disjoint(layout) {
             return records;
         }
+        let field_bytes: usize = layout.fields().iter().map(|field| field.len).sum();
         let mut bytes = Vec::new();
         let mut states = Vec::new();
         let prepared = crate::allocation::advisory(|| {
             let len = sources.len().checked_mul(layout.stride())?;
-            let total_fields = sources.len().checked_mul(field_count)?;
+            sources.len().checked_mul(field_count)?;
             crate::allocation::reserve_exact(&mut records.index, sources.len()).ok()?;
             crate::allocation::reserve_exact(&mut bytes, len).ok()?;
-            crate::allocation::reserve_exact(&mut states, total_fields).ok()?;
+            crate::allocation::reserve_exact(&mut states, len).ok()?;
             for row in 0..sources.len() {
                 records.index.push((sources.pointer(row)?, row));
             }
             bytes.resize(len, 0);
-            states.resize(total_fields, FieldState::Pending);
+            states.resize(len, PENDING);
             Some(())
         });
         if prepared.is_none() {
@@ -81,20 +81,17 @@ impl<'a> Records<'a> {
         if done != sources.len() {
             batch_fallback::record(batch);
         }
-        states[..done * field_count].fill(FieldState::Cached);
+        states[..done * layout.stride()].fill(CACHED);
         records.index.retain(|&(pointer, _)| pointer != 0);
         records.index.sort_unstable();
         records.index.dedup_by_key(|(pointer, _)| *pointer);
-        let cached = records.index.iter().filter(|&&(_, row)| row < done).count() * field_count;
+        let done_rows = records.index.iter().filter(|&&(_, row)| row < done).count();
+        let pending_rows = records.index.len() - done_rows;
         records.bytes = RefCell::new(bytes);
         records.states = RefCell::new(states);
-        records.cached_fields.set(cached);
+        records.cached_bytes.set(done_rows * field_bytes);
+        records.pending_bytes.set(pending_rows * field_bytes);
         records
-    }
-
-    fn has_pending(&self) -> bool {
-        self.cached_fields.get() + self.failed_fields.get()
-            < self.index.len() * self.layout.field_count()
     }
 
     fn get_cached<const N: usize>(&self, address: usize) -> Option<[u8; N]> {
@@ -112,7 +109,7 @@ impl<'a> Records<'a> {
     }
 
     pub fn targets(&self, offset: usize) -> Vec<usize> {
-        if self.cached_fields.get() == 0 {
+        if self.cached_bytes.get() == 0 {
             return Vec::new();
         }
         crate::allocation::advisory(|| {
@@ -136,12 +133,11 @@ impl<'a> Records<'a> {
     }
 
     fn cached_span_len(&self, address: usize) -> usize {
-        if self.cached_fields.get() == 0 {
+        if self.cached_bytes.get() == 0 {
             return 0;
         }
         let states = self.states.borrow();
-        let field_count = self.layout.field_count();
-        for (fi, field) in self.layout.fields().iter().enumerate() {
+        for field in self.layout.fields() {
             if field.len == 0 {
                 continue;
             }
@@ -159,8 +155,12 @@ impl<'a> Records<'a> {
                 if offset >= field.len {
                     break;
                 }
-                if states[row * field_count + fi] == FieldState::Cached {
-                    return field.len - offset;
+                let base = row * self.layout.stride() + field.destination_offset + offset;
+                if states[base] == CACHED {
+                    return states[base..base + (field.len - offset)]
+                        .iter()
+                        .take_while(|&&state| state == CACHED)
+                        .count();
                 }
             }
         }
@@ -168,13 +168,12 @@ impl<'a> Records<'a> {
     }
 
     fn copy_cached_prefix(&self, address: usize, destination: &mut [u8]) -> usize {
-        if self.cached_fields.get() == 0 || destination.is_empty() {
+        if self.cached_bytes.get() == 0 || destination.is_empty() {
             return 0;
         }
         let states = self.states.borrow();
         let bytes = self.bytes.borrow();
-        let field_count = self.layout.field_count();
-        for (fi, field) in self.layout.fields().iter().enumerate() {
+        for field in self.layout.fields() {
             if field.len == 0 {
                 continue;
             }
@@ -192,10 +191,14 @@ impl<'a> Records<'a> {
                 if offset >= field.len {
                     break;
                 }
-                if states[row * field_count + fi] == FieldState::Cached {
-                    let start = row * self.layout.stride() + field.destination_offset + offset;
-                    let count = (field.len - offset).min(destination.len());
-                    destination[..count].copy_from_slice(&bytes[start..start + count]);
+                let base = row * self.layout.stride() + field.destination_offset + offset;
+                if states[base] == CACHED {
+                    let max_len = (field.len - offset).min(destination.len());
+                    let count = states[base..base + max_len]
+                        .iter()
+                        .take_while(|&&state| state == CACHED)
+                        .count();
+                    destination[..count].copy_from_slice(&bytes[base..base + count]);
                     return count;
                 }
             }
@@ -204,57 +207,22 @@ impl<'a> Records<'a> {
     }
 
     fn next_cached(&self, address: usize, limit: usize) -> Option<usize> {
-        if self.cached_fields.get() == 0 || limit == 0 {
+        if self.cached_bytes.get() == 0 || limit <= 1 {
             return None;
         }
+        let next_address = address.checked_add(1)?;
         let states = self.states.borrow();
-        let field_count = self.layout.field_count();
         let end = address.saturating_add(limit);
         let mut best: Option<usize> = None;
-        for (fi, field) in self.layout.fields().iter().enumerate() {
+        for field in self.layout.fields() {
             if field.len == 0 {
                 continue;
             }
-            let next = match address.checked_sub(field.source_offset) {
-                Some(pointer) => self.index.partition_point(|&(at, _)| at <= pointer),
-                None => 0,
-            };
-            for &(at, row) in &self.index[next..] {
-                let Some(start) = at.checked_add(field.source_offset) else {
-                    break;
-                };
-                if start >= end {
-                    break;
-                }
-                if states[row * field_count + fi] == FieldState::Cached {
-                    let distance = start - address;
-                    best = Some(best.map_or(distance, |current| current.min(distance)));
-                    break;
-                }
-            }
-        }
-        best
-    }
-
-    fn next_pending_boundary(&self, address: usize, limit: usize) -> Option<usize> {
-        if !self.has_pending() || limit == 0 {
-            return None;
-        }
-        let states = self.states.borrow();
-        let field_count = self.layout.field_count();
-        let end = address.saturating_add(limit);
-        let mut best: Option<usize> = None;
-        for (fi, field) in self.layout.fields().iter().enumerate() {
-            if field.len == 0 {
-                continue;
-            }
-            let Some(span) = field.source_offset.checked_add(field.len) else {
-                continue;
-            };
-            let start_idx = match address.checked_sub(span) {
-                Some(pointer) => self.index.partition_point(|&(at, _)| at <= pointer),
-                None => 0,
-            };
+            let min_at = field
+                .source_offset
+                .checked_add(field.len - 1)
+                .map_or(0, |span| next_address.saturating_sub(span));
+            let start_idx = self.index.partition_point(|&(at, _)| at < min_at);
             for &(at, row) in &self.index[start_idx..] {
                 let Some(f_start) = at.checked_add(field.source_offset) else {
                     break;
@@ -266,11 +234,74 @@ impl<'a> Records<'a> {
                 let Some(f_end) = f_start.checked_add(field.len) else {
                     break;
                 };
-                if states[row * field_count + fi] == FieldState::Pending {
-                    if f_start > address {
-                        let distance = f_start - address;
+                let scan_start = next_address.max(f_start);
+                let scan_end = f_end.min(limit_end);
+                if scan_start >= scan_end {
+                    continue;
+                }
+                let base = row * self.layout.stride()
+                    + field.destination_offset
+                    + (scan_start - f_start);
+                if let Some(pos) = states[base..base + (scan_end - scan_start)]
+                    .iter()
+                    .position(|&state| state == CACHED)
+                {
+                    let distance = (scan_start + pos) - address;
+                    best = Some(best.map_or(distance, |current| current.min(distance)));
+                }
+            }
+        }
+        best
+    }
+
+    fn next_pending_boundary(&self, address: usize, limit: usize) -> Option<usize> {
+        if self.pending_bytes.get() == 0 || limit <= 1 {
+            return None;
+        }
+        let states = self.states.borrow();
+        let end = address.saturating_add(limit);
+        let mut best: Option<usize> = None;
+        for field in self.layout.fields() {
+            if field.len == 0 {
+                continue;
+            }
+            let min_at = field
+                .source_offset
+                .checked_add(field.len - 1)
+                .map_or(0, |span| address.saturating_sub(span));
+            let start_idx = self.index.partition_point(|&(at, _)| at < min_at);
+            for &(at, row) in &self.index[start_idx..] {
+                let Some(f_start) = at.checked_add(field.source_offset) else {
+                    break;
+                };
+                let limit_end = best.map_or(end, |distance| address.saturating_add(distance));
+                if f_start >= limit_end {
+                    break;
+                }
+                let Some(f_end) = f_start.checked_add(field.len) else {
+                    break;
+                };
+                let base = row * self.layout.stride() + field.destination_offset;
+                let clipped_end = f_end.min(limit_end);
+                if address < f_start {
+                    if let Some(pos) = states[base..base + (clipped_end - f_start)]
+                        .iter()
+                        .position(|&state| state == PENDING)
+                    {
+                        let distance = (f_start + pos) - address;
                         best = Some(best.map_or(distance, |current| current.min(distance)));
-                    } else if f_end > address && f_end < limit_end {
+                    }
+                } else {
+                    let rel = address - f_start;
+                    let in_pending = states[base + rel] == PENDING;
+                    let limit_rel = clipped_end - f_start;
+                    if let Some(pos) = states[base + rel + 1..base + limit_rel]
+                        .iter()
+                        .position(|&state| (state == PENDING) != in_pending)
+                    {
+                        let distance = rel + 1 + pos - rel;
+                        best = Some(best.map_or(distance, |current| current.min(distance)));
+                    } else if in_pending && f_end < limit_end {
                         let distance = f_end - address;
                         best = Some(best.map_or(distance, |current| current.min(distance)));
                     }
@@ -281,13 +312,12 @@ impl<'a> Records<'a> {
     }
 
     fn intersects_pending(&self, address: usize, len: usize) -> bool {
-        if !self.has_pending() || len == 0 {
+        if self.pending_bytes.get() == 0 || len == 0 {
             return false;
         }
         let end = address.saturating_add(len);
         let states = self.states.borrow();
-        let field_count = self.layout.field_count();
-        for (fi, field) in self.layout.fields().iter().enumerate() {
+        for field in self.layout.fields() {
             if field.len == 0 {
                 continue;
             }
@@ -303,7 +333,13 @@ impl<'a> Records<'a> {
                 if f_start >= end {
                     break;
                 }
-                if states[row * field_count + fi] == FieldState::Pending {
+                let f_end = f_start.saturating_add(field.len);
+                let overlap_start = address.max(f_start);
+                let overlap_end = end.min(f_end);
+                let base = row * self.layout.stride()
+                    + field.destination_offset
+                    + (overlap_start - f_start);
+                if states[base..base + (overlap_end - overlap_start)].contains(&PENDING) {
                     return true;
                 }
             }
@@ -312,53 +348,13 @@ impl<'a> Records<'a> {
     }
 
     fn mark_copied(&self, address: usize, data: &[u8]) {
-        if !self.has_pending() || data.is_empty() {
+        if self.pending_bytes.get() == 0 || data.is_empty() {
             return;
         }
-        let Some(end) = address.checked_add(data.len()) else {
-            return;
-        };
+        let end = address.saturating_add(data.len());
         let mut states = self.states.borrow_mut();
         let mut bytes = self.bytes.borrow_mut();
-        let field_count = self.layout.field_count();
-        for (fi, field) in self.layout.fields().iter().enumerate() {
-            if field.len == 0 || field.len > data.len() {
-                continue;
-            }
-            let Some(max_start) = end.checked_sub(field.len) else {
-                continue;
-            };
-            let Some(max_at) = max_start.checked_sub(field.source_offset) else {
-                continue;
-            };
-            let start_idx = match address.checked_sub(field.source_offset) {
-                Some(min_at) => self.index.partition_point(|&(at, _)| at < min_at),
-                None => 0,
-            };
-            for &(at, row) in &self.index[start_idx..] {
-                if at > max_at {
-                    break;
-                }
-                let slot = row * field_count + fi;
-                if states[slot] == FieldState::Pending {
-                    let src = at + field.source_offset - address;
-                    let dst = row * self.layout.stride() + field.destination_offset;
-                    bytes[dst..dst + field.len].copy_from_slice(&data[src..src + field.len]);
-                    states[slot] = FieldState::Cached;
-                    self.cached_fields.set(self.cached_fields.get() + 1);
-                }
-            }
-        }
-    }
-
-    fn mark_failed(&self, address: usize, len: usize) {
-        if !self.has_pending() || len == 0 {
-            return;
-        }
-        let end = address.saturating_add(len);
-        let mut states = self.states.borrow_mut();
-        let field_count = self.layout.field_count();
-        for (fi, field) in self.layout.fields().iter().enumerate() {
+        for field in self.layout.fields() {
             if field.len == 0 {
                 continue;
             }
@@ -374,16 +370,69 @@ impl<'a> Records<'a> {
                 if f_start >= end {
                     break;
                 }
-                let slot = row * field_count + fi;
-                if states[slot] == FieldState::Pending {
-                    let f_end = f_start.saturating_add(field.len);
-                    let overlap_start = address.max(f_start);
-                    let overlap_end = end.min(f_end);
-                    states[slot] = FieldState::Failed {
-                        offset: overlap_start - f_start,
-                        len: overlap_end - overlap_start,
-                    };
-                    self.failed_fields.set(self.failed_fields.get() + 1);
+                let f_end = f_start.saturating_add(field.len);
+                let overlap_start = address.max(f_start);
+                let overlap_end = end.min(f_end);
+                let dst_base = row * self.layout.stride()
+                    + field.destination_offset
+                    + (overlap_start - f_start);
+                let src_base = overlap_start - address;
+                let count = overlap_end - overlap_start;
+                let mut newly_cached = 0;
+                for offset in 0..count {
+                    if states[dst_base + offset] == PENDING {
+                        bytes[dst_base + offset] = data[src_base + offset];
+                        states[dst_base + offset] = CACHED;
+                        newly_cached += 1;
+                    }
+                }
+                if newly_cached != 0 {
+                    self.pending_bytes.set(self.pending_bytes.get() - newly_cached);
+                    self.cached_bytes.set(self.cached_bytes.get() + newly_cached);
+                }
+            }
+        }
+    }
+
+    fn mark_failed(&self, address: usize, len: usize) {
+        if self.pending_bytes.get() == 0 || len == 0 {
+            return;
+        }
+        let end = address.saturating_add(len);
+        let mut states = self.states.borrow_mut();
+        for field in self.layout.fields() {
+            if field.len == 0 {
+                continue;
+            }
+            let min_at = field
+                .source_offset
+                .checked_add(field.len - 1)
+                .map_or(0, |span| address.saturating_sub(span));
+            let start_idx = self.index.partition_point(|&(at, _)| at < min_at);
+            for &(at, row) in &self.index[start_idx..] {
+                let Some(f_start) = at.checked_add(field.source_offset) else {
+                    break;
+                };
+                if f_start >= end {
+                    break;
+                }
+                let f_end = f_start.saturating_add(field.len);
+                let overlap_start = address.max(f_start);
+                let overlap_end = end.min(f_end);
+                let dst_base = row * self.layout.stride()
+                    + field.destination_offset
+                    + (overlap_start - f_start);
+                let count = overlap_end - overlap_start;
+                let mut newly_failed = 0;
+                for offset in 0..count {
+                    if states[dst_base + offset] == PENDING {
+                        states[dst_base + offset] = FAILED;
+                        newly_failed += 1;
+                    }
+                }
+                if newly_failed != 0 {
+                    self.pending_bytes.set(self.pending_bytes.get() - newly_failed);
+                    self.failed_bytes.set(self.failed_bytes.get() + newly_failed);
                 }
             }
         }
@@ -413,34 +462,17 @@ impl<M> View<'_, '_, M> {
         0
     }
 
-    fn is_range_cached(&self, mut address: usize, mut remaining: usize) -> bool {
-        while remaining > 0 {
-            let hit = self.cached_span_len(address);
-            if hit == 0 {
-                return false;
-            }
-            let step = hit.min(remaining);
-            let Some(next) = address.checked_add(step) else {
-                return false;
-            };
-            address = next;
-            remaining -= step;
-        }
-        true
-    }
-
     fn has_uncached_failed(&self, address: usize, len: usize) -> bool {
-        if len == 0 || self.records.iter().all(|r| r.failed_fields.get() == 0) {
+        if len == 0 || self.records.iter().all(|r| r.failed_bytes.get() == 0) {
             return false;
         }
         let end = address.saturating_add(len);
         for records in self.records {
-            if records.failed_fields.get() == 0 {
+            if records.failed_bytes.get() == 0 {
                 continue;
             }
             let states = records.states.borrow();
-            let field_count = records.layout.field_count();
-            for (fi, field) in records.layout.fields().iter().enumerate() {
+            for field in records.layout.fields() {
                 if field.len == 0 {
                     continue;
                 }
@@ -456,13 +488,16 @@ impl<M> View<'_, '_, M> {
                     if f_start >= end {
                         break;
                     }
-                    if let FieldState::Failed { offset, len } = states[row * field_count + fi] {
-                        let fail_start = f_start.saturating_add(offset);
-                        let fail_end = fail_start.saturating_add(len);
-                        let overlap_start = address.max(fail_start);
-                        let overlap_end = end.min(fail_end);
-                        if overlap_start < overlap_end
-                            && !self.is_range_cached(overlap_start, overlap_end - overlap_start)
+                    let f_end = f_start.saturating_add(field.len);
+                    let overlap_start = address.max(f_start);
+                    let overlap_end = end.min(f_end);
+                    let dst_base = row * records.layout.stride()
+                        + field.destination_offset
+                        + (overlap_start - f_start);
+                    let count = overlap_end - overlap_start;
+                    for offset in 0..count {
+                        if states[dst_base + offset] == FAILED
+                            && self.cached_span_len(overlap_start + offset) == 0
                         {
                             return true;
                         }
@@ -552,7 +587,6 @@ impl<M: Memory> Memory for View<'_, '_, M> {
                 copied += count;
             }
         }
-        self.mark_copied(address, destination);
         true
     }
 
@@ -1181,5 +1215,133 @@ mod tests {
         assert!(view.copy(0x1204, &mut second));
         assert_eq!(memory.reads_at(0x1204), 2);
         assert_eq!(memory.reads_at(0x1208), 1);
+
+        let mut split_bytes = vec![0_u8; 0x1000];
+        put(&mut split_bytes, 0x1200, 0x0102_0304_0506_0708);
+        put(&mut split_bytes, 0x1208, 0x1112_1314_1516_1718);
+        struct SplitFault<'a> {
+            inner: SliceMemory<'a>,
+            once_at: usize,
+            always_at: usize,
+            spent: Cell<bool>,
+            reads: RefCell<HashMap<usize, usize>>,
+        }
+        impl Memory for SplitFault<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let end = address.saturating_add(destination.len());
+                {
+                    let mut reads = self.reads.borrow_mut();
+                    for offset in 0..destination.len() {
+                        *reads.entry(address + offset).or_insert(0) += 1;
+                    }
+                }
+                if address <= self.always_at && self.always_at < end {
+                    destination.fill(0xff);
+                    return false;
+                }
+                if address <= self.once_at && self.once_at < end && !self.spent.get() {
+                    self.spent.set(true);
+                    destination.fill(0xff);
+                    return false;
+                }
+                self.inner.copy(address, destination)
+            }
+        }
+        let split_memory = SplitFault {
+            inner: SliceMemory {
+                base: BASE,
+                bytes: &split_bytes,
+            },
+            once_at: 0x1200,
+            always_at: 0x1208,
+            spent: Cell::new(false),
+            reads: RefCell::new(HashMap::new()),
+        };
+        let records = Records::gather(
+            &split_memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Pointers(&[0x1200, 0x1204, 0x1208]),
+            &POINTER_LAYOUT,
+        );
+        let view = records.view(&split_memory);
+        let mut page = [0_u8; 16];
+        assert!(!view.copy(0x1200, &mut page));
+        let before_0 = split_memory.reads.borrow().get(&0x1200).copied().unwrap_or(0);
+        let before_4 = split_memory.reads.borrow().get(&0x1204).copied().unwrap_or(0);
+        let mut recovered = [0_u8; 8];
+        assert!(view.copy(0x1200, &mut recovered));
+        assert_eq!(&recovered, &split_bytes[0x200..0x208]);
+        assert_eq!(
+            split_memory.reads.borrow().get(&0x1200).copied().unwrap_or(0),
+            before_0
+        );
+        assert_eq!(
+            split_memory.reads.borrow().get(&0x1204).copied().unwrap_or(0),
+            before_4
+        );
+
+        const WIDE_FIELDS: [RecordField; 1] = crate::memory::packed_fields([(0, 12)]);
+        const WIDE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&WIDE_FIELDS, 12).unwrap();
+        let mut wide_bytes = vec![0_u8; 0x1000];
+        wide_bytes[0x300..0x30c].copy_from_slice(b"0123456789ab");
+        struct DisjointFault<'a> {
+            inner: SliceMemory<'a>,
+            faults: [usize; 2],
+            reads: RefCell<HashMap<usize, usize>>,
+        }
+        impl Memory for DisjointFault<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let end = address.saturating_add(destination.len());
+                {
+                    let mut reads = self.reads.borrow_mut();
+                    for offset in 0..destination.len() {
+                        *reads.entry(address + offset).or_insert(0) += 1;
+                    }
+                }
+                if self.faults.iter().any(|&at| address <= at && at < end) {
+                    destination.fill(0xff);
+                    return false;
+                }
+                self.inner.copy(address, destination)
+            }
+        }
+        let wide_memory = DisjointFault {
+            inner: SliceMemory {
+                base: BASE,
+                bytes: &wide_bytes,
+            },
+            faults: [0x1300, 0x1308],
+            reads: RefCell::new(HashMap::new()),
+        };
+        let records = Records::gather(
+            &wide_memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Pointers(&[0x1300]),
+            &WIDE_LAYOUT,
+        );
+        let view = records.view(&wide_memory);
+        let mut chunk = [0_u8; 4];
+        assert!(!view.copy(0x1300, &mut chunk));
+        assert!(!view.copy(0x1308, &mut chunk));
+        let reads_0 = wide_memory.reads.borrow().get(&0x1300).copied().unwrap_or(0);
+        let reads_8 = wide_memory.reads.borrow().get(&0x1308).copied().unwrap_or(0);
+        assert!(!view.copy(0x1300, &mut chunk));
+        assert!(!view.copy(0x1308, &mut chunk));
+        assert_eq!(
+            wide_memory.reads.borrow().get(&0x1300).copied().unwrap_or(0),
+            reads_0
+        );
+        assert_eq!(
+            wide_memory.reads.borrow().get(&0x1308).copied().unwrap_or(0),
+            reads_8
+        );
+        assert!(view.copy(0x1304, &mut chunk));
+        assert_eq!(&chunk, b"4567");
+        let reads_4 = wide_memory.reads.borrow().get(&0x1304).copied().unwrap_or(0);
+        assert!(view.copy(0x1304, &mut chunk));
+        assert_eq!(
+            wide_memory.reads.borrow().get(&0x1304).copied().unwrap_or(0),
+            reads_4
+        );
     }
 }
