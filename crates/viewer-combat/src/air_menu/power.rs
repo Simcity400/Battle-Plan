@@ -6,7 +6,7 @@ use replay_data::rows::{AirPowerMenu, tables};
 use std::{cmp::Ordering, collections::BTreeMap};
 
 fn fraction(friendly: i64, total: i64) -> i64 {
-    if viewer_foundation::map::air_range::finite(friendly) {
+    if viewer_unit_reads::air_range::finite(friendly) {
         (friendly.wrapping_mul(100_000) / total).clamp(0, 100_000)
     } else {
         100_000

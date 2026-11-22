@@ -2,11 +2,8 @@
 use super::*;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
-use {
-    viewer_foundation::map::counter_action,
-    viewer_foundation::map::counter_hovers::land::CounterControl,
-    viewer_foundation::map::railway_gun_counter,
-};
+use viewer_unit_reads::{counter_action, railway_gun_counter};
+use viewer_native_gui::counter_hovers::land::CounterControl;
 
 pub(super) fn specific(context: &Context<'_>, input: &CounterHover) -> Option<Tooltip> {
     if input.coarse {
@@ -604,7 +601,7 @@ mod tests {
     #[test]
     fn dig_in_keeps_singleton_rounding_and_all_member_mean() {
         use replay_data::{rows::Recorded, rows::TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             ("DIG_IN_UNIT".into(), "single $DIG|5$/$MAX|5$".into()),
             ("DIG_IN_AVG".into(), "mean $DIG|5$".into()),
@@ -686,7 +683,7 @@ mod tests {
     #[test]
     fn early_attrition_actions_and_railway_warning_skip_only_proven_dangling_members() {
         use replay_data::{rows::RailwayGunCounterInputRow, rows::TableId, rows::TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             (
                 "ATTRITION_SOME_UNITS".into(),
@@ -797,7 +794,7 @@ mod tests {
     #[test]
     fn no_orders_keeps_independent_border_and_missing_order_fragments() {
         use replay_data::{rows::OrdersGroupCounterInputRow, rows::Recorded, rows::TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let loc: Localisation = [
             ("SOME_UNITS_IN_BORDER_WAR".into(), "border".into()),
             ("UNITS_HAS_NO_ORDERS_WARNING".into(), "orders".into()),
@@ -905,7 +902,7 @@ mod tests {
             rows::ArmyIconInputRow, rows::OrdersGroupCounterInputRow, rows::OrdersGroupRow,
             rows::Recorded, rows::TableRows, rows::UnitLeaderRow,
         };
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut loc: Localisation = [
             (
                 "LEADER_WITHDRAWING_HEADER_SINGULAR".into(),

@@ -3,7 +3,7 @@ use super::Relations;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::{Value, json};
 use std::io;
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 
 pub fn make(_document: &Document) -> Box<dyn Layer> {
     Box::new(Relations::new())

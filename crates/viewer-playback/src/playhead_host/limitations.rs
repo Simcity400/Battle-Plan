@@ -12,7 +12,15 @@ use std::{
     sync::{Arc, Condvar, Mutex, Weak},
     time::{Duration, Instant},
 };
-use viewer_foundation::map::tables::{DISPLAY_NOT_RECORDED, DISPLAY_UNAVAILABLE, Limitations, RowFacts, Seen, Statuses, table_limitations};
+use viewer_foundation::tables::{
+    DISPLAY_NOT_RECORDED,
+    DISPLAY_UNAVAILABLE,
+    Limitations,
+    RowFacts,
+    Seen,
+    Statuses,
+    table_limitations,
+};
 
 pub const NOT_GIVEN: &str = "Map limitations: not given at the playback head: ";
 
@@ -87,7 +95,7 @@ fn reason(pages: &Arc<dyn Pages>, table: TableId, id: u32, (run, block): (usize,
     drop(held);
     let (pages, slot) = (Arc::clone(pages), Arc::clone(&reason));
     let spawned = std::thread::Builder::new().name("limitation reason".into()).spawn(move || {
-        viewer_foundation::worker_priority::background_priority();
+        viewer_runtime::worker_priority::background_priority();
         slot.set(read(&*pages, run, block, table.index(), id), id);
     });
     if let Err(error) = spawned {

@@ -14,7 +14,7 @@ use std::{
 };
 
 fn vision_content() -> Arc<vision::Content> {
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
@@ -33,7 +33,7 @@ fn recording(name: &str) -> crate::playhead_host::units::Units {
             insert(store, TableId::LocalPlayer, 0, 0);
             write(store, TableId::LocalPlayer, 0, "country", Cell::U32(101));
         }
-        for table in viewer_foundation::map::perspective::VISION_TABLES {
+        for table in viewer_foundation::perspective::VISION_TABLES {
             store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
         }
     })

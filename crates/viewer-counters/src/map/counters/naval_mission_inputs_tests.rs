@@ -1,6 +1,6 @@
 use super::*;
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::table_access::TokenKeys;
+use dashboard_text::table_access::TokenKeys;
 
 pub(super) fn frame() -> DecodedFrame {
     DecodedFrame {
@@ -70,7 +70,7 @@ pub(super) fn anchors() -> CounterContent {
         terrain: Default::default(),
         wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("unused in fixture".into()),
-        port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
+        port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
             &content_reader_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(BTreeMap::new()),
@@ -524,7 +524,7 @@ fn dominance_patrol_preserves_registration_repeats_and_zero_designs() {
     let mut hour = hour(&frame, &anchors, &native, (&links, &ids));
     assert_eq!(
         hour.dominance_region(2, 100, &[]).unwrap(),
-        viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources {
+        viewer_unit_reads::naval_dominance_sources::RegionalDominanceSources {
             patrol: 246,
             strike_multiplier: 100_000,
             enemy_raiding: 0

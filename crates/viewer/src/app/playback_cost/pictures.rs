@@ -3,7 +3,7 @@ use crate::screen_count::{COUNTS, Compare, PARTS, TILES};
 use eframe::wgpu;
 use serde_json::{Value, json};
 use std::{io, time::Instant};
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Counting {

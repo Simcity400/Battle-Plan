@@ -1,8 +1,6 @@
 
-use crate::{
-    map::perspective::{Country, Resolution},
-    table_access::Available,
-};
+use crate::perspective::{Country, Resolution};
+use dashboard_text::table_access::Available;
 use replay_data::rows::{TableSchema, tables};
 use replay_frame::frame::{OperandStatus, Rowset, Tables};
 use std::{collections::BTreeMap, io};

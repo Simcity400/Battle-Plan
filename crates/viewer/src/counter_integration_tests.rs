@@ -2,11 +2,11 @@ use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_counters::map::counters::test_support::{LandMarkers, kept_frames_at};
-use viewer_foundation::{
+use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{LAND_ICON, Provenance, kept_frames},
-    map::perspective::Country,
 };
+use viewer_foundation::perspective::Country;
 
 fn kept_frame_hour(
     hour: replay_data::Hour,
@@ -194,7 +194,7 @@ fn kept_frame_hour(
 
 #[test]
 fn an_unseen_combat_icon_keeps_its_last_seen_frame_through_the_index() {
-    use viewer_foundation::icon_frames::{CARRIED, Kept, LAND_NO_HISTORY};
+    use viewer_engagements::icon_frames::{CARRIED, Kept, LAND_NO_HISTORY};
     let hours = [
         kept_frame_hour(0, true, &[(62, vec![7], true, 1)], &[(70, 2)]),
         kept_frame_hour(1, false, &[(62, vec![7], true, 1)], &[(70, 2)]),

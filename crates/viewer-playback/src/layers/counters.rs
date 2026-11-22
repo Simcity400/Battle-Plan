@@ -18,19 +18,18 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{type_tint, CounterContent, DivisionFields, DivisionStatus, LandStacks, Member, MemberJoins, StatusFields, division_kind, division_member, member_orders, member_strength};
-use viewer_foundation::{
-    map::{
-        counter_inputs::{AssignedOrders, GroupFacts, OrderFacts},
-        counter_move::UnitRoute,
-        camera::{MapDefines, MapSize, Placement, Pose},
-        mode_visibility::UnitKinds,
-        province_admission::Admission,
-        perspective::{Choice, SharingUnknown, Sight, Vision},
-    },
-    map::counter_action::Action,
-    movement_timing::MovementContent,
-    unit_class::CounterClass,
+use viewer_unit_reads::{
+    counter_inputs::{AssignedOrders, GroupFacts, OrderFacts},
+    counter_move::UnitRoute,
+    counter_action::Action,
 };
+use viewer_gpu::{camera::{MapDefines, MapSize, Placement, Pose}, province_admission::Admission};
+use viewer_foundation::{
+    mode_visibility::UnitKinds,
+    perspective::{Choice, SharingUnknown, Sight, Vision},
+    movement_timing::MovementContent,
+};
+use viewer_runtime::unit_class::CounterClass;
 
 pub type Source = (u32, u32);
 
@@ -526,7 +525,7 @@ impl MemberJoins for Joins<'_> {
 
     fn stack_kind(&self, _division: u64) -> u32 {
         let Some((movement, slot)) = self.movement() else {
-            return viewer_foundation::map::unit_rules::STANDSTILL;
+            return viewer_foundation::unit_rules::STANDSTILL;
         };
         let columns = self.columns;
         let number = |column: Num<u32>| movement.number(column, slot).value().unwrap_or(0);
@@ -544,7 +543,7 @@ impl MemberJoins for Joins<'_> {
             alternate_path: provinces(bytes_of(movement.list(columns.alternate_path, slot)), &mut alternate),
         };
         let content = &self.layer.content;
-        let anchor = |id| content.counters.as_ref().and_then(|counters| counters.anchor(id, viewer_foundation::map::unit_rules::STANDSTILL));
+        let anchor = |id| content.counters.as_ref().and_then(|counters| counters.anchor(id, viewer_foundation::unit_rules::STANDSTILL));
         division_kind(&route, self.province, content.movement.as_deref().map(|movement| &movement.map), &anchor)
     }
 
@@ -802,7 +801,7 @@ impl Counters {
             (None, _) => Err("ModifierDefinitions is not read".to_owned()),
             _ => Err("LexicalTokens is not complete".to_owned()),
         };
-        viewer_foundation::map::counter_action::strategic_layout_of(
+        viewer_unit_reads::counter_action::strategic_layout_of(
             whole,
             |index| definitions.and_then(|mirror| mirror.number(columns.definition_token, mirror.slot(u128::from(index))?).value()),
             |token, name| {
@@ -1790,9 +1789,9 @@ impl Layer for Counters {
         content.scoped(|| self.compose_reading(mirrors, None))
     }
 
-    fn moved_at(&self, step: &Step, mirrors: &Mirrors, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+    fn moved_at(&self, step: &Step, mirrors: &Mirrors, into: &mut viewer_unit_reads::counter_move::MovedHours) {
         let Some(columns) = self.columns.filter(|_| !self.hidden) else { return };
-        super::moved_provinces(step, mirrors, TableId::Divisions, columns.province.column, viewer_foundation::unit_handle::Unit::Division, into);
+        super::moved_provinces(step, mirrors, TableId::Divisions, columns.province.column, viewer_runtime::unit_handle::Unit::Division, into);
     }
 
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {

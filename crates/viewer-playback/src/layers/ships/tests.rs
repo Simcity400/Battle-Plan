@@ -19,14 +19,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use viewer_foundation::{
-    map::{
-        camera::{MapDefines, MapSize, Placement},
-        counter_move::UnitRoute,
-        perspective::{Choice, Vision},
-    },
-    unit_class::CounterClass,
-};
+use viewer_gpu::camera::{MapDefines, MapSize, Placement};
+use viewer_unit_reads::counter_move::UnitRoute;
+use viewer_foundation::perspective::{Choice, Vision};
+use viewer_runtime::unit_class::CounterClass;
 use viewer_unit_models::{
     equipment_graphics::Decided,
     unit_models::{Force, ForcePart, ResolvedHull, ResolvedRoster},

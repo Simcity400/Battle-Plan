@@ -5,7 +5,7 @@ use replay_data::{
     rows::TableRows, rows::VariantDefinitionRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::aircraft_model::designer_entity;
+use viewer_unit_reads::aircraft_model::designer_entity;
 
 const ARCHETYPE: u32 = 7;
 const MODEL: u32 = 8;

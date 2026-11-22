@@ -4,7 +4,7 @@ use crate::{document::Document, layers::Layer, comparison::Compared, playhead_ho
 use serde_json::json;
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_counters::map::counters::NavalMember;
-use viewer_foundation::map::mode_visibility::UnitKinds;
+use viewer_foundation::mode_visibility::UnitKinds;
 
 const LEFT_OUT: [&str; 4] = ["ship-model cells (hull, capitals, carrier)", "native task-force operands (supply, status, port tooltip, pride)", "ideology frame", "the air map mode's carrier fleets (the layer is not drawn there)"];
 

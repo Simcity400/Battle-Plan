@@ -1,10 +1,8 @@
 
 use super::{Context, line};
 use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
-use viewer_foundation::{
-    resource_origins::{self, Hour, whole},
-    tooltip_text::Tooltip,
-};
+use viewer_runtime::resource_origins::{self, Hour, whole};
+use viewer_foundation::tooltip_text::Tooltip;
 
 type Line = (&'static str, Result<String, String>);
 

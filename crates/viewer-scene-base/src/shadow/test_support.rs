@@ -1,6 +1,6 @@
 use super::*;
-use viewer_foundation::map::camera::{MapDefines, MapSize};
-use viewer_foundation::map::frame::DayNight;
+use viewer_gpu::camera::{MapDefines, MapSize};
+use viewer_gpu::frame::DayNight;
 
 pub(super) const VIEWPORT: [u32; 2] = [2048, 1152];
 
@@ -10,7 +10,7 @@ pub(super) fn reference() -> (Camera, FrameConstants) {
         height: 163.934,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let frame =
         FrameConstants::try_new(camera, VIEWPORT, DayNight::at_hour(60828490), 0.0, false)

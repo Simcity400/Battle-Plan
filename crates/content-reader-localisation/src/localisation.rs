@@ -1379,6 +1379,20 @@ fn decode_memo(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn icon_names_split_at_the_first_bar() {
+        assert_eq!(
+            super::icon_lookup("flag_x|12|3"),
+            ([b"GFX_flag_x".to_vec(), b"flag_x".to_vec()], Some(0))
+        );
+        assert_eq!(super::icon_lookup("a|12").1, Some(11));
+        assert_eq!(super::icon_lookup("a|").1, Some(-1));
+        assert_eq!(super::icon_lookup("a|0").1, Some(-1));
+        assert_eq!(super::icon_lookup("a|4294967299").1, Some(2));
+        assert_eq!(super::icon_lookup("a|2147483648").1, Some(0));
+        assert_eq!(super::icon_lookup("a").1, None);
+    }
+
+    #[test]
     fn the_selected_language_follows_the_mod_stacks_language_list() {
         let root = std::env::temp_dir().join(format!("language-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2569,4 +2583,25 @@ mod tests {
         assert_eq!(localisation.get("REPLACED"), Some("replaced"));
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
+    let (stem, suffix) = match name.split_once('|') {
+        Some((stem, suffix)) => (stem, Some(suffix)),
+        None => (name, None),
+    };
+    let frame = suffix.map(|suffix| {
+        let mut value: i32 = 0;
+        for byte in suffix.bytes() {
+            if !byte.is_ascii_digit() {
+                return 0;
+            }
+            value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
+        }
+        if value < 0 { 0 } else { value - 1 }
+    });
+    (
+        [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
+        frame,
+    )
 }

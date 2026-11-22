@@ -259,7 +259,7 @@ impl Builds {
             device.clone(),
         );
         let work = move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Normal);
             let (libraries, cache, state, device) = shared;
             for (key, library, lods) in nodes {
                 if lock(&state).flags.get(&key).is_some_and(Option::is_none) {
@@ -356,7 +356,7 @@ impl Drop for Queued {
                 self.device.clone(),
             );
             let work = move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Normal);
                 let (libraries, cache, state, device) = shared;
                 while let Some(request) = lock(&requests).pop_front() {
                     run(request, (&libraries, &cache, &device), &state);

@@ -2,9 +2,9 @@ use std::{collections::HashMap, io};
 
 use viewer_scene_base::line_lod;
 
-use viewer_foundation::map::province_map::{HeightField, ProvinceMap};
+use viewer_gpu::province_map::{HeightField, ProvinceMap};
 #[cfg(test)]
-use viewer_foundation::map::province_map::{WATER_HEIGHT, world_from_pixel};
+use viewer_gpu::province_map::{WATER_HEIGHT, world_from_pixel};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())

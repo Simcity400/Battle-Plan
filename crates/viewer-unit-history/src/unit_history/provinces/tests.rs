@@ -3,7 +3,7 @@ use super::super::{
     test_support::{GATES, target},
 };
 use super::*;
-use viewer_foundation::{unit_class::CounterClass, unit_handle::Unit};
+use viewer_runtime::{unit_class::CounterClass, unit_handle::Unit};
 
 fn xorshift(mut state: u32) -> impl FnMut() -> u32 {
     move || {

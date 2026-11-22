@@ -10,4 +10,4 @@ Tooltip producers own their localisation keys and scopes. Missing localisation k
 
 Recorded trigger content is initialized with the document. Coastal checks use static movement terrain, state neighbour checks use the province graph, and subtype visibility uses the recorded character templates and their role disclosures. Resource and naval invasion terms come from the content defines. Unit handles are separated by their native class. A transported land unit retains its own class when rendering standstill slots, and task forces use the land directional range for edges from either surface.
 
-[Recorded labels](../../crates/viewer-foundation/src/recorded_labels.rs) · [Tooltip clock](../../crates/viewer-foundation/src/tooltip_painter.rs) · [Tooltip text](../../crates/viewer-foundation/src/tooltip_text.rs) · [Trigger content](../../crates/viewer-foundation/src/trigger_content.rs)
+[Recorded labels](../../crates/viewer-runtime/src/recorded_labels.rs) · [Tooltip clock](../../crates/viewer-native-gui/src/tooltip_painter.rs) · [Tooltip text](../../crates/viewer-foundation/src/tooltip_text.rs) · [Trigger content](../../crates/viewer-foundation/src/trigger_content.rs)

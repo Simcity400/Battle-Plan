@@ -6,7 +6,7 @@ use super::{
 use crate::playhead_host::mirror::Mirrors;
 use playhead::Step;
 use std::{io, sync::Arc};
-use viewer_foundation::map::textures::IntelCells;
+use viewer_gpu::textures::IntelCells;
 
 pub struct Content {
     cells: IntelCells,

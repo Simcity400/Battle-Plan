@@ -1,15 +1,12 @@
 
 use super::*;
 use std::collections::HashMap;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::{Painted, PoolView};
-use viewer_foundation::map::{
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::{Painted, PoolView};
+use viewer_native_gui::{
     icon_windows::{Owner, Plan},
-    native_gui::{
-        self, SpriteSetter,
-        lifecycle::{Instance, MapIconPool, SlotId},
-    },
+    native_gui::{self, SpriteSetter, lifecycle::{Instance, MapIconPool, SlotId}},
     native_resources::Context,
 };
 
@@ -126,7 +123,7 @@ impl View {
         std::array::from_fn(|at| self.pools[at].unkept())
     }
 
-    pub fn retries(&self) -> Vec<viewer_foundation::map::icon_windows::Retry> {
+    pub fn retries(&self) -> Vec<viewer_native_gui::icon_windows::Retry> {
         self.pools.iter().filter_map(PoolView::retry).collect()
     }
     pub fn take_running(&mut self) -> bool {
@@ -496,8 +493,8 @@ impl PreparedBases {
                 let drawn = if composed.parts.iter().all(Vec::is_empty) {
                     painted[family as usize]
                         .paint(
-                            viewer_foundation::map::sprites::WindowKey::new(
-                                viewer_foundation::map::sprites::WindowPool::Base,
+                            viewer_native_gui::sprites::WindowKey::new(
+                                viewer_native_gui::sprites::WindowPool::Base,
                                 family as u32,
                                 placed.id,
                             ),
@@ -583,7 +580,7 @@ pub(super) fn record_hit(
     layer: u64,
     report: &mut CounterReport,
 ) {
-    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
+    let _observe_profile = viewer_runtime::profiling::span("dc_observe");
     for button in ["bg_btn", "bg_strat_btn"]
         .into_iter()
         .filter_map(|name| root.find(native::Kind::Button, name))
@@ -597,7 +594,7 @@ pub(super) fn record_hit(
         ) {
             report
                 .base_hits
-                .push(viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+                .push(viewer_native_gui::counter_hovers::unit_hits::Blocker {
                     rect: hit.rect,
                     layer,
                 });
@@ -716,7 +713,7 @@ fn air_text(
     } else {
         'W'
     };
-    let control = viewer_foundation::map::native_text::COLOR;
+    let control = viewer_native_gui::native_text::COLOR;
     instance.set_text(
         root,
         wings,
@@ -750,10 +747,8 @@ fn air_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {
-        native_gui::{PartKind, lifecycle::Tick},
-        viewer_foundation::map::test_support::gui::fixture,
-    };
+    use native_gui::{PartKind, lifecycle::Tick};
+    use viewer_native_gui::test_support::gui::fixture;
 
     fn window(children: &str) -> native::Element {
         native::read(format!("guiTypes = {{ containerWindowType = {{ name = test size = {{ width = 50 height = 40 }} {children} }} }}").as_bytes())
@@ -813,7 +808,7 @@ mod tests {
             rows::TableId, rows::TableRows,
         };
         use replay_frame::frame::TableView;
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
 
         content_reader_core::test_game::enter();
         let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
@@ -883,7 +878,7 @@ mod tests {
         use super::super::tests::{action_gui, wings_frame, with_counter_inputs_fixture};
         use replay_data::{rows::RadarCoverageRow, rows::StateRow, rows::TableId, rows::TableRows};
         use replay_frame::frame::TableView;
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
 
         content_reader_core::test_game::enter();
         let (mut frame, vision) =
@@ -1394,7 +1389,7 @@ mod tests {
         let resources = fixture();
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
         instance.gui_show(&root, &root).unwrap();
-        let color = viewer_foundation::map::native_text::COLOR;
+        let color = viewer_native_gui::native_text::COLOR;
         for (planes, shown, expected) in [
             (201, true, Some(format!("{color}R201/200{color}!"))),
             (200, true, Some(format!("{color}W200/200{color}!"))),
@@ -1457,7 +1452,7 @@ mod tests {
         let resources = fixture();
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
         instance.gui_show(&root, &root).unwrap();
-        let color = viewer_foundation::map::native_text::COLOR;
+        let color = viewer_native_gui::native_text::COLOR;
         for (shown, volunteers, text) in [
             (true, Some((2, 2)), Some(format!("{color}W2/2{color}!"))),
             (true, Some((3, 2)), Some(format!("{color}R3/2{color}!"))),
@@ -1499,7 +1494,7 @@ mod tests {
     #[test]
     fn retained_base_offers_reproject_every_family_in_order_including_previously_hidden_anchors() {
         content_reader_core::test_game::enter();
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
         crate::map::counters::tests::with_counter_inputs_fixture(
             crate::map::counters::tests::action_gui(false),
             |_| {},

@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::map::air_detection::{Countries, CountryModifier};
+use viewer_unit_reads::air_detection::{Countries, CountryModifier};
 
 #[derive(Clone, Copy)]
 pub(super) struct Defines {

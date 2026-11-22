@@ -9,8 +9,8 @@ use replay_frame::frame::{DecodedFrame, kept};
 
 use crate::unit_models::ModelStatus;
 
-use viewer_foundation::map::tables::{Available, core, rows, rows_fields};
-use viewer_foundation::table_access::{TokenKeys, TokenNames};
+use viewer_foundation::tables::{Available, core, rows, rows_fields};
+use dashboard_text::table_access::{TokenKeys, TokenNames};
 
 const SNOW: &str = "snow";
 

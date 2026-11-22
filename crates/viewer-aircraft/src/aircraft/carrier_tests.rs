@@ -1,14 +1,11 @@
 use super::*;
-use viewer_foundation::map::province_map::WATER_HEIGHT;
+use viewer_gpu::province_map::WATER_HEIGHT;
 
 use replay_data::{rows::TableId, rows::TableRows, rows::TaskForceMapMotionRow};
 use replay_frame::{frame::Metrics, frame::TableView};
 
-use {
-    viewer_foundation::map::counter_move::RouteWorld,
-    viewer_foundation::map::task_force_visual::TaskForceMotions,
-    viewer_foundation::movement_timing::MovementContent,
-};
+use viewer_unit_reads::{counter_move::RouteWorld, task_force_visual::TaskForceMotions};
+use viewer_foundation::movement_timing::MovementContent;
 
 fn fixture() -> (DecodedFrame, AirRegistrySources, AirBaseRow) {
     let mut frame = DecodedFrame {

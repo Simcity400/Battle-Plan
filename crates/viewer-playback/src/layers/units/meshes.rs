@@ -192,7 +192,7 @@ impl Meshes {
         let spawned = std::thread::Builder::new().name("unit meshes".into()).spawn({
             let shared = Arc::clone(&shared);
             move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
                 run.started(&absent).work(&shared, &reader, maker);
             }
         });
@@ -292,7 +292,7 @@ impl Meshes {
     }
 
     pub fn record_view(&self) {
-        use viewer_foundation::view_record::set;
+        use viewer_runtime::view_record::set;
         let held = self.shared.lock();
         set("units", "choices_waiting", held.waiting);
         set("units", "keys_declared", held.keys);
@@ -380,8 +380,8 @@ impl Run {
                 _ => {}
             }
         }
-        viewer_foundation::view_record::add("units", "entering", counts.0);
-        viewer_foundation::view_record::add("units", "leaving", counts.1);
+        viewer_runtime::view_record::add("units", "entering", counts.0);
+        viewer_runtime::view_record::add("units", "leaving", counts.1);
         let mut held = shared.lock();
         (held.counts.entering, held.counts.leaving) = (held.counts.entering + counts.0, held.counts.leaving + counts.1);
     }
@@ -413,7 +413,7 @@ impl Run {
 
     fn publish(&self, shared: &Shared, reader: &views::Reader, running: bool) {
         let waiting = self.waiting.iter().filter(|ask| matches!(ask, Ask::Stack(..))).count() as u64;
-        let keyed_rows = viewer_foundation::view_record::on().then(|| self.keyed_rows(reader));
+        let keyed_rows = viewer_runtime::view_record::on().then(|| self.keyed_rows(reader));
         let mut held = shared.lock();
         held.owed = running || self.owed();
         (held.waiting, held.keys) = (waiting, self.declared.len() as u64);
@@ -546,8 +546,8 @@ impl Run {
                 None => counts.parts.push((name, ns)),
             }
         }
-        viewer_foundation::view_record::add("units", "choices_looked_up", looked_up);
-        viewer_foundation::view_record::add("units", "choices_made_new", made.selections as u64);
+        viewer_runtime::view_record::add("units", "choices_looked_up", looked_up);
+        viewer_runtime::view_record::add("units", "choices_made_new", made.selections as u64);
         held.refused = refused;
         if !self.again && held.refused.is_none() {
             held.hour = Some(frame.hour);

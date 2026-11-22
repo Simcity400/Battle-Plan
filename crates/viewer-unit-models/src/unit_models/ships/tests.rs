@@ -1,9 +1,9 @@
 use super::*;
 use std::sync::Arc;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::province_map::HeightField;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::province_map::HeightField;
 
 #[test]
 fn shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
@@ -227,7 +227,7 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
         rows::TaskForceMapMotionRow, rows::TaskForceMissionRow, rows::TaskForceRow,
     };
     use replay_frame::{frame::Metrics, frame::TableView};
-    use viewer_foundation::map::unit_rules::PATROL;
+    use viewer_foundation::unit_rules::PATROL;
     const FORCE: u64 = (6689 << 32) | 51;
     const SHIP: u64 = (12 << 32) | 51;
     let frame = |counter_inputs: bool| {
@@ -826,7 +826,7 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
     let camera = Placement {
         center: [3246.0, 1749.0],
         height: 112.619_415_283_203_12_f64 as f32,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     for count in [1, 2, 3, 3] {

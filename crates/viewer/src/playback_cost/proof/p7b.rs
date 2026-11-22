@@ -10,7 +10,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 
 fn note(compared: &mut Compared, what: String) {
     compared.differing += 1;

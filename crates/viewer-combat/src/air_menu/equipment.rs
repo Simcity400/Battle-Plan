@@ -6,7 +6,7 @@ use replay_derive::air_region_derive::{
     self as derive, EquipmentOrder, EquipmentPool, EquipmentPools, Filter, Retained,
 };
 use std::collections::BTreeMap;
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 pub(super) struct Sources<'a> {
     content: &'a Content,

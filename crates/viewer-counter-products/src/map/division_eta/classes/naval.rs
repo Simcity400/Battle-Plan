@@ -8,8 +8,8 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, sync::OnceLock};
 #[cfg(test)]
-use viewer_foundation::table_access::TokenError;
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenError;
+use dashboard_text::table_access::TokenNames;
 
 type Index<'a, K, R> = OnceLock<Fact<BTreeMap<K, &'a R>>>;
 

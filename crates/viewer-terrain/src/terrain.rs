@@ -1,10 +1,10 @@
 
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::frustum::{OBJECT_TOP, TERRAIN_TOP};
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::frustum::{OBJECT_TOP, TERRAIN_TOP};
 
 use viewer_scene_base::line_lod::MARGIN;
 use super::terrain_shader::SIDE;
@@ -172,7 +172,7 @@ fn outside([a, b, c, d]: [f32; 4], [min, max]: [[f32; 3]; 2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::camera::{Free, Lens, Pose};
+    use viewer_gpu::camera::{Free, Lens, Pose};
 
     const VIEWPORT: [u32; 2] = [1600, 900];
 

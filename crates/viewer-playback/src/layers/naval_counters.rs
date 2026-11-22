@@ -13,14 +13,9 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{FleetMarker, ForceFields, NavalJoins, NavalMember, Port, PortSummary, port_force_unrecorded, port_undecided_reason, naval_member, type_tint};
-use viewer_foundation::map::{
-    camera::{Placement, Pose},
-    counter_inputs,
-    counter_move::UnitRoute,
-    mode_visibility::UnitKinds,
-    perspective::{Choice, Vision},
-    task_force_visual,
-};
+use viewer_gpu::camera::{Placement, Pose};
+use viewer_unit_reads::{counter_inputs, counter_move::UnitRoute, task_force_visual};
+use viewer_foundation::{mode_visibility::UnitKinds, perspective::{Choice, Vision}};
 
 pub trait Waters: Send + Sync {
     fn land(&self, province: u32) -> bool;
@@ -56,8 +51,8 @@ impl Waters for crate::document::Content {
         if viewport == [0, 0] {
             return None;
         }
-        let map = viewer_foundation::map::camera::MapSize::of(&self.map);
-        let admission = viewer_foundation::map::province_admission::Admission::new(placement.on(map, self.map_defines), viewport);
+        let map = viewer_gpu::camera::MapSize::of(&self.map);
+        let admission = viewer_gpu::province_admission::Admission::new(placement.on(map, self.map_defines), viewport);
         let counters = Arc::clone(&self.counters);
         Some(Arc::new(move |province| admission.admits_province(&counters.bounds, province)))
     }
@@ -65,12 +60,12 @@ impl Waters for crate::document::Content {
 
 impl crate::document::Content {
     pub fn ground(&self) -> viewer_counters::map::counters::SeaGround<'_> {
-        let heights = viewer_foundation::map::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
+        let heights = viewer_gpu::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
         viewer_counters::map::counters::SeaGround {
             content: &self.counters,
             map: &self.map,
             movement: self.movement.as_deref(),
-            world: self.movement.as_deref().map(|movement| viewer_foundation::map::counter_move::RouteWorld { map: &movement.map, heights, width: viewer_foundation::map::camera::MapSize::of(&self.map).x() }),
+            world: self.movement.as_deref().map(|movement| viewer_unit_reads::counter_move::RouteWorld { map: &movement.map, heights, width: viewer_gpu::camera::MapSize::of(&self.map).x() }),
         }
     }
 }
@@ -187,7 +182,7 @@ fn motion_route<'a>(motion: &Mirror, row: u32, columns: &Columns, path: &'a mut 
     alternate.extend(u32s(bytes_of(motion.list(columns.alternate_path, row))));
     let combat_role = motion.number(columns.combat_role, row).value().unwrap_or(0);
     UnitRoute {
-        class: viewer_foundation::unit_class::CounterClass::TaskForce,
+        class: viewer_runtime::unit_class::CounterClass::TaskForce,
         combat_role,
         combat_count: u32::from(combat_role != 0),
         combat_province: 0,

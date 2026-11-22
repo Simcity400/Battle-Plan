@@ -2,8 +2,8 @@
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, mesh};
-use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission, admit_slot};
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_foundation::building_facts::{self, SiteSlots, SlotAdmission, admit_slot};
+use viewer_gpu::province_map::ProvinceMap;
 
 use super::Random;
 use viewer_models::ModelInstance;

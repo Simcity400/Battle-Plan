@@ -2,7 +2,7 @@ use super::{air_assignment, map_mode};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::unit_handle::Unit;
+use viewer_runtime::unit_handle::Unit;
 
 #[derive(Clone, Copy)]
 pub struct Colors {
@@ -271,7 +271,7 @@ mod tests {
     fn taskforce_and_fleet_sources_keep_repeats_empty_gates_and_distinct_highlights() {
         use replay_data::rows::*;
         use std::sync::Arc;
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut frame = test_frame(1);
         put(
             &mut frame,
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn empty_selection_demands_no_recorded_table_or_colour() {
-        let frame = viewer_foundation::map::test_support::test_frame(1);
+        let frame = viewer_foundation::test_support::test_frame(1);
         let product = read(
             &frame,
             1,

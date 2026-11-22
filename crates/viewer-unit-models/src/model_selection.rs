@@ -5,7 +5,7 @@ pub use dashboard_text::subunit_requirements::{
 use content_reader_core::ResolvedLayers;
 use replay_data::rows::{DivisionEquipmentRow, VariantDefinitionRow};
 use std::{cmp::Reverse, io, ops::Deref};
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 pub(crate) mod facts;
 pub(crate) mod model_facts;

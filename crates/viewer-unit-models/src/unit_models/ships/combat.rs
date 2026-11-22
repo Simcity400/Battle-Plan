@@ -18,7 +18,7 @@ impl UnitModelAssets {
             .candidates
             .iter()
             .filter(|candidate| {
-                candidate.class == viewer_foundation::unit_class::CounterClass::TaskForce
+                candidate.class == viewer_runtime::unit_class::CounterClass::TaskForce
                     && matches!(candidate.slot, 9 | 10)
             })
             .map(|candidate| candidate.identity)
@@ -181,7 +181,7 @@ impl UnitModelAssets {
         for row in members.rows().iter().filter(|row| {
             wanted.contains(&row.combat)
                 && row.member_source == 0
-                && row.group_index != viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP
+                && row.group_index != viewer_foundation::unit_rules::PAIRED_ONLY_GROUP
         }) {
             by_combat.entry(row.combat).or_default().push(row);
         }

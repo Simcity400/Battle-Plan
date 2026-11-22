@@ -59,7 +59,7 @@ impl GunRoute {
 
     pub(super) fn route(&self) -> counter_move::UnitRoute<'_> {
         counter_move::UnitRoute {
-            class: viewer_foundation::unit_class::CounterClass::RailwayGun,
+            class: viewer_runtime::unit_class::CounterClass::RailwayGun,
             combat_role: self.combat_role,
             combat_count: self.combat_count,
             combat_province: self.combat_province,

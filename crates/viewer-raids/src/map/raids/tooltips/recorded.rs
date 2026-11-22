@@ -12,7 +12,7 @@ use replay_data::{rows::RaidRow, rows::RaidScope, rows::RaidTargetRow, rows::tab
 use replay_frame::frame::DecodedFrame;
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
-use viewer_foundation::map::native_text::FLAG;
+use viewer_native_gui::native_text::FLAG;
 use viewer_foundation::tooltip_text::localise;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
 
@@ -465,14 +465,14 @@ impl<'a> Context<'a, '_> {
                     &mut Vec::new(),
                 )?;
                 (
-                    viewer_foundation::map::unit_pose::elapsed_hours(travelled, speed),
-                    viewer_foundation::map::unit_pose::remaining_hours(distance, travelled, speed),
+                    viewer_gpu::unit_pose::elapsed_hours(travelled, speed),
+                    viewer_gpu::unit_pose::remaining_hours(distance, travelled, speed),
                 )
             }
             _ => (0, 0),
         };
         Ok((elapsed.wrapping_add(remaining) > 0)
-            .then(|| viewer_foundation::map::unit_pose::phase_progress(elapsed, remaining)))
+            .then(|| viewer_gpu::unit_pose::phase_progress(elapsed, remaining)))
     }
     fn current_for(&self, scope: &RaidScope, viewer: u32) -> Result<i64> {
         let lane = if scope.building_type == 0 {

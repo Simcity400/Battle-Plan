@@ -7,7 +7,8 @@ use std::{
     fmt, io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::{map::memo::Keyed, table_access::TokenNames};
+use viewer_runtime::memo::Keyed;
+use dashboard_text::table_access::TokenNames;
 
 const INPUTS: &[TableId] = &[TableId::VariantDefinitions, TableId::LexicalTokens];
 

@@ -8,4 +8,4 @@ Frame zero takes the first frame, positive frame numbers are one-based, and nega
 
 The tooltip path resolves the tooltip template and default text box, prewraps with soft-line indent preservation, and then updates its text sprite. The width applies the authored border in both steps. The bake receives a zero requested height and still respects the type's fixed-size rule.
 
-[Text sprite preparation](../../crates/viewer-foundation/src/map/native_gui/text_sprites.rs) · [Draw submission](../../crates/viewer-foundation/src/map/native_shader/draw.rs)
+[Text sprite preparation](../../crates/viewer-native-gui/src/native_gui/text_sprites.rs) · [Draw submission](../../crates/viewer-native-gui/src/native_shader/draw.rs)

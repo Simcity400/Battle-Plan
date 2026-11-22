@@ -10,7 +10,7 @@ use crate::{
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;
 use std::sync::Arc;
-use viewer_foundation::map::perspective::{Choice, Country, Vision};
+use viewer_foundation::perspective::{Choice, Country, Vision};
 
 fn world(store: &mut Store) {
     put(store, TableId::CountryLinks, 0, Some(10), &[("canonical_slot", Cell::U32(0))]);
@@ -102,7 +102,7 @@ fn a_part_changed_in_a_step_is_made_again_and_equals_composed() {
     reach(&mut side, 150);
     side.settle_all().unwrap();
     let first = layer(&side).values().cloned().expect("the base counters draw");
-    let site = first.wings.get(&(1, viewer_foundation::map::building_facts::AIR_BASE)).copied().expect("state 1's air base");
+    let site = first.wings.get(&(1, viewer_foundation::building_facts::AIR_BASE)).copied().expect("state 1's air base");
     assert_eq!((site.planes, site.capacity, site.shown, site.stationed), (5, 10, true, Some(true)));
     assert_eq!(first.controlled.get(&6), Some(&false));
     let made = layer(&side).made();
@@ -112,7 +112,7 @@ fn a_part_changed_in_a_step_is_made_again_and_equals_composed() {
     assert_eq!(layer(&side).made() - made, 1, "a wing's planes remake the wings part only; a controller is a province");
     settled_equals_composed(&mut side);
     let changed = layer(&side).values().cloned().unwrap();
-    assert_eq!(changed.wings[&(1, viewer_foundation::map::building_facts::AIR_BASE)].planes, 9);
+    assert_eq!(changed.wings[&(1, viewer_foundation::building_facts::AIR_BASE)].planes, 9);
     assert_eq!(changed.controlled.get(&6), Some(&true));
 }
 
@@ -151,7 +151,7 @@ fn one_base_s_wings_copy_its_shard_alone_and_share_every_other_part_with_the_win
     side.settle_all().unwrap();
     let next = Arc::clone(layer(&side).published().unwrap());
     assert!(!Arc::ptr_eq(&window, &next), "a changed wing is a new version");
-    let site = (40 * 3 + 2, viewer_foundation::map::building_facts::AIR_BASE);
+    let site = (40 * 3 + 2, viewer_foundation::building_facts::AIR_BASE);
     assert_eq!((window.wings[&site].planes, next.wings[&site].planes), (5, 9));
     assert_eq!(layer(&side).made() - made, 1, "the wing's one site is made again, nothing whole");
     assert!(Arc::ptr_eq(&window.radar_notes, &next.radar_notes), "the parts it does not touch are the window's");
@@ -178,7 +178,7 @@ fn one_changed_wing_costs_the_same_rows_whatever_the_number_of_bases() {
         let (work, made) = (layer(&side).work(), layer(&side).made());
         reach(&mut side, 204);
         side.settle_all().unwrap();
-        assert_eq!(layer(&side).values().unwrap().wings[&(122, viewer_foundation::map::building_facts::AIR_BASE)].planes, 9);
+        assert_eq!(layer(&side).values().unwrap().wings[&(122, viewer_foundation::building_facts::AIR_BASE)].planes, 9);
         settled_equals_composed(&mut side);
         (layer(&side).work() - work, layer(&side).made() - made)
     };
@@ -227,7 +227,7 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
     reach(&mut side, 243);
     settled_equals_composed(&mut side);
     let partial = layer(&side).values().cloned().unwrap();
-    let site = partial.wings[&(1, viewer_foundation::map::building_facts::AIR_BASE)];
+    let site = partial.wings[&(1, viewer_foundation::building_facts::AIR_BASE)];
     assert_eq!((site.stationed, site.foreign), (Some(true), None), "a truncated census decides only our own row's base");
     reach(&mut side, 303);
     side.settle_all().unwrap();
@@ -235,7 +235,7 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
     assert!(layer(&side).values().is_none(), "a refused layer keeps nothing");
     reach(&mut side, 320);
     settled_equals_composed(&mut side);
-    assert_eq!(layer(&side).values().unwrap().wings[&(1, viewer_foundation::map::building_facts::AIR_BASE)].foreign, Some(false));
+    assert_eq!(layer(&side).values().unwrap().wings[&(1, viewer_foundation::building_facts::AIR_BASE)].foreign, Some(false));
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn on_their_worker_the_base_counters_equal_composed_at_each_hour() {
         assert_eq!(fed(&side).values(), fresh.values(), "hour {hour}: the worker's values against those composed from the frame's mirrors");
         assert_eq!(fed(&side).refused(), fresh.refused());
         let values = fed(&side).values().expect("the base counters draw");
-        assert_eq!(values.wings[&(1, viewer_foundation::map::building_facts::AIR_BASE)].planes, planes, "hour {hour}");
+        assert_eq!(values.wings[&(1, viewer_foundation::building_facts::AIR_BASE)].planes, planes, "hour {hour}");
         assert_eq!(values.controlled.get(&6), Some(&controlled), "hour {hour}");
     }
 }
@@ -378,7 +378,7 @@ fn after_a_slower_pace_the_first_step_built_again_reaches_the_worker() {
         fresh.compose(mirrors).unwrap();
         assert_eq!(fed(&side).values(), fresh.values(), "hour {hour}: the worker's values against those composed from the frame's mirrors");
         let values = fed(&side).values().expect("the base counters draw");
-        assert_eq!(values.wings[&(1, viewer_foundation::map::building_facts::AIR_BASE)].planes, if hour >= 13 { 9 } else { 5 }, "hour {hour}");
+        assert_eq!(values.wings[&(1, viewer_foundation::building_facts::AIR_BASE)].planes, if hour >= 13 { 9 } else { 5 }, "hour {hour}");
     }
     assert!(voided >= 1, "the four-hour steps lent past the head were voided");
 }

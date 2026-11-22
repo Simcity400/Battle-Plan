@@ -2,15 +2,13 @@ use shader_pipeline::gpu::stats::CountedPasses as _;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::{
-    errors::invalid,
-    map::{
-        camera::Camera,
-        gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, buffer},
-        ribbon_content::{ArrowType, Mode, OrderAssets, OrderDraw, OrderField},
-        ribbon_native as native,
-        textures::{ColorSpace, upload},
-    },
+use viewer_runtime::errors::invalid;
+use viewer_gpu::{
+    camera::Camera,
+    gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, buffer},
+    ribbon_content::{ArrowType, Mode, OrderAssets, OrderDraw, OrderField},
+    ribbon_native as native,
+    textures::{ColorSpace, upload},
 };
 
 #[repr(C)]
@@ -97,7 +95,7 @@ fn places(parts: &[Option<&OrderField>; ORDER_PARTS]) -> ([Part; ORDER_PARTS], u
 }
 
 fn changed_runs(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_PARTS], held: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
+    let stride = std::mem::size_of::<viewer_gpu::ribbon_content::Vertex>();
     let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
     for &part in &LAYOUT {
         let Some(field) = parts[part] else { continue };
@@ -139,7 +137,7 @@ fn draw_list(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_P
             draws.retain(|draw| !draw.air_mode);
         }
         draws.extend(field.draws.iter().map(|draw| moved(part, draw, false)));
-        viewer_foundation::map::ribbon_mesh::sort_draws(&mut draws);
+        viewer_gpu::ribbon_mesh::sort_draws(&mut draws);
     }
     draws
 }
@@ -274,7 +272,7 @@ impl OrderPass {
     }
 
     pub fn upload_parts(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, parts: [Option<&OrderField>; ORDER_PARTS]) -> io::Result<OrderUpload> {
-        let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
+        let stride = std::mem::size_of::<viewer_gpu::ribbon_content::Vertex>();
         let (mut placed, total) = places(&parts);
         let size = total as usize * stride;
         let mut done = OrderUpload::default();
@@ -599,7 +597,7 @@ impl Drawing<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::{ribbon_content::Vertex, ribbon_mesh};
+    use viewer_gpu::{ribbon_content::Vertex, ribbon_mesh};
 
     fn draw(arrow: &str, declaration_index: usize, air_mode: bool, label: Option<usize>, strips: std::ops::Range<u32>) -> OrderDraw {
         OrderDraw {
@@ -734,7 +732,7 @@ mod tests {
     fn the_slot_matches_the_shaders_constant_buffer() {
         assert_eq!(std::mem::size_of::<Slot>(), 128);
         assert_eq!(
-            std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>(),
+            std::mem::size_of::<viewer_gpu::ribbon_content::Vertex>(),
             32
         );
     }

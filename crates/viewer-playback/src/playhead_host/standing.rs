@@ -87,7 +87,7 @@ impl Standings {
             }
         };
         let (behind, since) = self.standing(stands);
-        let record = viewer_foundation::view_record::on();
+        let record = viewer_runtime::view_record::on();
         let (check, hour) = (self.check || (bound != BOUND && self.check_rates), self.hour);
         let layer = &mut self.layers[at];
         if let (Some(product_at), Some(stands)) = (layer.at, stands)

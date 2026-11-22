@@ -26,7 +26,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective::{Choice, VISION_TABLES, Vision}, presentation::Continuity};
+use viewer_foundation::perspective::{Choice, VISION_TABLES, Vision};
+use viewer_runtime::presentation::Continuity;
 
 #[derive(Default)]
 struct Gate {
@@ -151,7 +152,7 @@ impl Build for InOrder {
 }
 
 fn vision_content() -> Arc<vision::Content> {
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
@@ -485,7 +486,7 @@ fn a_compose_lets_the_product_built_before_it_go() {
 
 #[test]
 fn a_viewing_country_change_lets_the_product_made_for_the_country_before_go() {
-    use viewer_foundation::map::perspective::Country;
+    use viewer_foundation::perspective::Country;
     let gate = Gate::opened();
     let mut side = window_side(record(), &gate);
     let _opens = Opens(Arc::clone(&gate));

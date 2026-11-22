@@ -1,6 +1,6 @@
 #[cfg(test)]
 use content_reader_localisation::localisation::Localisation;
-pub use viewer_foundation::recorded_labels::RecordedLabels;
+pub use viewer_runtime::recorded_labels::RecordedLabels;
 
 #[cfg(test)]
 pub(crate) fn english() -> &'static RecordedLabels {

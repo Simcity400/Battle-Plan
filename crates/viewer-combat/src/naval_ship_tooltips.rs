@@ -4,11 +4,12 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::table_access::country_slot;
+use dashboard_text::table_access::country_slot;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::state_name;
 use viewer_foundation::tooltip_text::tooltip_keys;
-use {super::content::Content as StaticContent, viewer_foundation::table_access::rows};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::rows;
 use {
     super::{
         INLINE_FLAG,

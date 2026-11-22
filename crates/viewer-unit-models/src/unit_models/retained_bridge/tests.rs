@@ -219,9 +219,9 @@ fn assets() -> UnitModelAssets {
 fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> PreparedModels {
     equipment_graphics::test_support::with_world(frame, &[], |limits| {
         let motions =
-            viewer_foundation::map::task_force_visual::TaskForceMotions::read(frame).unwrap();
+            viewer_unit_reads::task_force_visual::TaskForceMotions::read(frame).unwrap();
         let missions =
-            viewer_foundation::map::task_force_visual::MissionSkips::read(frame).unwrap();
+            viewer_unit_reads::task_force_visual::MissionSkips::read(frame).unwrap();
         assets
             .prepare(PrepareInputs {
                 frame,
@@ -365,7 +365,7 @@ fn naval_rows(frame: &mut DecodedFrame, hour: i32) {
             } else {
                 100
             },
-            mission: viewer_foundation::map::unit_rules::PATROL,
+            mission: viewer_foundation::unit_rules::PATROL,
             ..Default::default()
         })
         .collect();
@@ -713,7 +713,7 @@ fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
                 anchor: &|province, _| Some([province as f32, 0., province as f32 * 0.25]),
                 world: None, terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
-                    motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(),
+                    motions: &viewer_unit_reads::task_force_visual::TaskForceMotions::default(),
                     movement: None, land: &|_| false, missions: &Default::default(),
                     region: &|_| None, scale: &|_, _| 1.,
                 },

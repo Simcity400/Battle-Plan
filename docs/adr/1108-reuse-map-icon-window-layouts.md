@@ -8,4 +8,4 @@ Skip the manager pass when its owners, viewport and inputs are unchanged, no dir
 
 Use one content-derived GUI viewport for parentless layout, projection and reading. Unsupported or undisclosed hit shapes block input within their reported bounds and never dispatch callbacks. For a supported observer, use the native geometry when available. A zero stretch alone cannot show that a native rectangular hit is empty.
 
-[Icon windows](../../crates/viewer-foundation/src/map/icon_windows.rs) · [Viewport and hit geometry](../../crates/viewer-foundation/src/map/gui_resources.rs)
+[Icon windows](../../crates/viewer-native-gui/src/icon_windows.rs) · [Viewport and hit geometry](../../crates/viewer-native-gui/src/gui_resources.rs)

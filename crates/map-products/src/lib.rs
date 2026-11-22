@@ -20,15 +20,13 @@ use std::{
 };
 use viewer_counter_products::map::orders;
 use viewer_foundation::{
-    map::{
-        perspective,
-        tables::{self, Limitations},
-        textures::{self, IntelMap},
-        visibility::FogContent,
-    },
-    profiling::BuilderSpans,
+    perspective,
+    tables::{self, Limitations},
+    visibility::FogContent,
     trigger_content::TriggerContent,
 };
+use viewer_gpu::textures::{self, IntelMap};
+use viewer_runtime::profiling::BuilderSpans;
 use viewer_map_text::animated_map_text::events;
 use viewer_map_icons::labels;
 use viewer_models::strike_effects;
@@ -120,11 +118,11 @@ impl ProductContent {
 
     pub fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
         Some((
-            viewer_foundation::map::counter_anchors::stack_anchor(
+            viewer_unit_reads::counter_anchors::stack_anchor(
                 &self.anchors,
                 &self.default_anchors,
                 province,
-                viewer_foundation::map::unit_rules::STANDSTILL,
+                viewer_foundation::unit_rules::STANDSTILL,
             )?,
             *self.bounds.get(&province)?,
         ))
@@ -184,7 +182,7 @@ pub struct FogProduct {
     music_inputs: Option<music_inputs::Kept>,
 }
 
-type ProvinceFog = viewer_foundation::map::perspective::values::Values<u32, u8>;
+type ProvinceFog = viewer_foundation::perspective::values::Values<u32, u8>;
 
 struct IntelMemo {
     choice: perspective::Choice,
@@ -417,7 +415,7 @@ impl<'a> ProductHour<'a> {
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
         let _cost = replay_frame::cpu::scope("viewer", Some("music/battle/audio descriptors"));
         use replay_data::rows::tables;
-        use viewer_foundation::table_access::{Available, rows};
+        use dashboard_text::table_access::{Available, rows};
         let audio = self.content.audio.as_ref()?;
         audio.battle.as_ref()?;
         let mut refusals = Vec::new();

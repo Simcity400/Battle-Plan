@@ -18,11 +18,9 @@ use std::{
     time::Instant,
 };
 use viewer_counters::map::counters::{LandStacks, Member, type_tint};
-use viewer_foundation::map::{
-    camera::Placement,
-    counter_action::Action,
-    perspective::{Choice, Vision},
-};
+use viewer_gpu::camera::Placement;
+use viewer_unit_reads::counter_action::Action;
+use viewer_foundation::perspective::{Choice, Vision};
 
 type Relating = Option<(Arc<type_tint::Index>, Option<Arc<relations::Facts>>)>;
 
@@ -424,7 +422,7 @@ impl Layer for Fed {
         self.spec.inputs(view, inputs)
     }
 
-    fn moved_at(&self, step: &playhead::Step, mirrors: &Mirrors, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+    fn moved_at(&self, step: &playhead::Step, mirrors: &Mirrors, into: &mut viewer_unit_reads::counter_move::MovedHours) {
         self.spec.moved_at(step, mirrors, into);
     }
 
@@ -435,7 +433,7 @@ impl Layer for Fed {
             #[cfg(any(test, feature = "test-support"))]
             let gate = Arc::clone(&self.gate);
             thread::Builder::new().name("counters fold".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(
                     receive,
                     send,

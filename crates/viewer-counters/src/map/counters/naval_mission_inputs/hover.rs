@@ -65,7 +65,7 @@ impl Prepared {
         &self,
         loc: &Localisation,
         recorded: &str,
-        labels: Option<&viewer_foundation::naval_labels::RecordedLabels>,
+        labels: Option<&viewer_runtime::recorded_labels::RecordedLabels>,
     ) -> Tooltip {
         let mut out = Tooltip::default();
         for op in &self.0 {

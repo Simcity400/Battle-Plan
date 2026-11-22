@@ -14,4 +14,4 @@ For ordinary interaction, gather edge pan, per-notch wheel movement and arrow pa
 
 Ease the shown camera toward the persistent target with the configured interpolation and camera-speed setting, clamped to a full step per frame. Keep the target after settling so the next wheel notch starts there. Clamp target and shown heights to the whole-unit limits, and carry the target's vertical coordinate with a map-boundary correction so easing does not repeatedly chase an unreachable point. When the user settings file is absent use the constructed preferences.
 
-[Map camera](../../crates/viewer-foundation/src/map/camera.rs) · [Free-eye poses](../../crates/viewer-foundation/src/map/camera/pose.rs) · [Frustum clipping](../../crates/viewer-foundation/src/map/camera/frustum.rs) · [Camera motion](../../crates/viewer-foundation/src/map/camera/motion.rs)
+[Map camera](../../crates/viewer-gpu/src/camera.rs) · [Free-eye poses](../../crates/viewer-gpu/src/camera/pose.rs) · [Frustum clipping](../../crates/viewer-gpu/src/camera/frustum.rs) · [Camera motion](../../crates/viewer-gpu/src/camera/motion.rs)

@@ -11,13 +11,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::engaged::Engaged;
-use viewer_foundation::engagement_history::CombatFlags;
-use viewer_foundation::map::perspective::Vision;
+use viewer_engagements::engaged::Engaged;
+use viewer_engagements::engagement_history::CombatFlags;
+use viewer_foundation::perspective::Vision;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::viewing_tag as tooltip_text_viewing_tag;
-use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
+use super::content::Content as StaticContent;
+use viewer_foundation::tables::rows;
 use {
     super::{
         Values, Widget,

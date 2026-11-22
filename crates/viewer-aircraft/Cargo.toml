@@ -13,6 +13,12 @@ doctest = false
 test-support = []
 
 [dependencies]
+dashboard-text.workspace = true
+replay-derive.workspace = true
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-equipment-graphics.workspace = true
@@ -25,18 +31,20 @@ engine-air-history.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 shader-pipeline.workspace = true
-viewer-foundation.workspace = true
 viewer-models.workspace = true
 viewer-scene-base.workspace = true
 viewer-unit-models.workspace = true
 
 [dev-dependencies]
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-derive.workspace = true
 replay-frame = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-unit-models = { workspace = true, features = ["test-support"] }
 
@@ -48,7 +56,6 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

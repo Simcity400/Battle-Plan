@@ -1,6 +1,6 @@
 use super::{LiveParticle, Simulation};
 use content_reader_core::particles::{RenderDescriptor, Sort};
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 
 const GAPS: [usize; 6] = [1, 4, 1, 16, 1, 64];
 

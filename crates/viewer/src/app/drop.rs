@@ -1,6 +1,6 @@
 
-use viewer_foundation::map::camera::{Camera, WATER_HEIGHT, frustum::TERRAIN_TOP};
-use viewer_foundation::map::province_map::HeightField;
+use viewer_gpu::camera::{Camera, WATER_HEIGHT, frustum::TERRAIN_TOP};
+use viewer_gpu::province_map::HeightField;
 
 const TOUCH: f32 = 1e-4;
 const BISECTIONS: u32 = 32;
@@ -186,7 +186,7 @@ impl Pick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::camera::{Free, Lens, MapDefines, MapSize, Pose};
+    use viewer_gpu::camera::{Free, Lens, MapDefines, MapSize, Pose};
 
     const WIDTH: u32 = 128;
     const VIEWPORT: [u32; 2] = [640, 480];

@@ -1,13 +1,11 @@
 use std::sync::Mutex;
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_foundation::map::counter_move::SharedMovement;
-use viewer_foundation::map::icon_windows::Pools;
-use viewer_foundation::map::province_schedule::Shared;
-use viewer_foundation::unit_handle::Unit;
-use {
-    viewer_counters::map::counters::{CounterSettings, naval_windows},
-    viewer_foundation::map::icon_windows::{PoolView, Retry},
-};
+use viewer_unit_reads::counter_move::SharedMovement;
+use viewer_native_gui::icon_windows::Pools;
+use viewer_gpu::province_schedule::Shared;
+use viewer_runtime::unit_handle::Unit;
+use viewer_counters::map::counters::{CounterSettings, naval_windows};
+use viewer_native_gui::icon_windows::{PoolView, Retry};
 
 fn counter_owners(
     frame: &replay_frame::frame::DecodedFrame,
@@ -215,7 +213,7 @@ impl Views {
             adjacency_rules: self.adjacency_rules.take_running(),
         };
         for (running, name) in running.named() {
-            viewer_foundation::map::redraws::note(name, u64::from(running));
+            viewer_runtime::redraws::note(name, u64::from(running));
         }
         running
     }
@@ -279,7 +277,7 @@ impl Presentation {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .running();
-        viewer_foundation::map::redraws::note("running.movement", u64::from(moving));
+        viewer_runtime::redraws::note("running.movement", u64::from(moving));
         Running { any: windows.any() || moving, visible, windows }
     }
 }
@@ -304,7 +302,7 @@ pub struct CounterView {
     pub operatives: bool,
     pub occupation: Option<viewer_map_icons::occupation_icons::Mode>,
     pub presentation: Arc<Presentation>,
-    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
+    pub visibility: viewer_foundation::mode_visibility::Visibility,
     pub raid_details: Option<(u32, Arc<viewer_raids::map::raids::tooltips::Details>)>,
     pub raid_hovered: Option<u32>,
 }

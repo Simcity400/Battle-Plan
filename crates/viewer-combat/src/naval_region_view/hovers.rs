@@ -6,8 +6,8 @@ use crate::tooltips::{hover_text, set_hover};
 use content_reader_localisation::localisation::{Argument, crt_case_text};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap as Sources;
-use viewer_foundation::{map::perspective::Vision, tooltip_text::ensure_newlines, tooltip_text::viewing_tag};
+use viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap as Sources;
+use viewer_foundation::{perspective::Vision, tooltip_text::{ensure_newlines, viewing_tag}};
 
 const ACCESS: [(&str, &str); 3] = [
     ("naval_access_rule_allowed", "NAVAL_REGION_ACCESS_ALLOWED"),
@@ -54,7 +54,7 @@ fn leader(content: &Content, frame: &DecodedFrame, region: u32) -> Result<Option
     else {
         return Ok(None);
     };
-    let slot = viewer_foundation::map::naval_region_control::canonical(&links(frame)?, row.country)?;
+    let slot = replay_derive::naval_region_control::canonical(&links(frame)?, row.country)?;
     marked(content, frame, row.country, slot).map(Some)
 }
 

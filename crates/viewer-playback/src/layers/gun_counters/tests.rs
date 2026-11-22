@@ -22,10 +22,8 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{Gun, GunMember};
-use viewer_foundation::{
-    map::perspective::{Choice, Country, Vision},
-    table_access::TokenKeys,
-};
+use viewer_foundation::perspective::{Choice, Country, Vision};
+use dashboard_text::table_access::TokenKeys;
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Default)]

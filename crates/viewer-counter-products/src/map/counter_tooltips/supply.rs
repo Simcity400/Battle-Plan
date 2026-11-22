@@ -277,7 +277,7 @@ fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
     let slot = if owner == 0 { 0 } else { context.slot(owner)? };
     let tag = content_reader_country_names::country_names::original_or_own_tag(context.frame, slot)?;
     if let Some(name) =
-        viewer_foundation::map::label_reads::label_name(context.loc, None, Some(tag), id)
+        viewer_runtime::label_reads::label_name(context.loc, None, Some(tag), id)
             .map_err(|e| e.to_string())?
             .filter(|name| !name.is_empty())
     {

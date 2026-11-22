@@ -4,7 +4,7 @@ use crate::{document::Document, layers::{Layer, Upstream, engagements::Index}, c
 use serde_json::json;
 use std::{io, sync::Arc};
 use viewer_counters::map::counters::NavalMarkerValues;
-use viewer_foundation::engagement_history::History;
+use viewer_engagements::engagement_history::History;
 
 pub fn make_with(document: &Document, index: Option<Index>) -> Box<dyn Layer> {
     Box::new(NavalMarkers::new(Arc::clone(&document.content) as Arc<dyn Shore>, index))
