@@ -61,7 +61,6 @@ kind = "crates"
 toolchain = "rust"
 shared = ["tools/clippy-wrapper.py"]
 command = ["cargo", "clippy", "{packages}"]
-local = ["boat", "clippy", "{packages}"]
 [[job]]
 name = "test"
 group = "all"
@@ -185,7 +184,7 @@ class Crates(unittest.TestCase):
         self.assertEqual(decide("clippy", ctx).state, "not run")
 
     def test_a_job_without_dependents_takes_the_changed_crates_only(self):
-        pipeline = ci.load_pipeline(PIPELINE.replace('local = ["boat", "clippy", "{packages}"]\n', 'local = ["boat", "clippy", "{packages}"]\ndependents = false\n'))
+        pipeline = ci.load_pipeline(PIPELINE.replace('command = ["cargo", "clippy", "{packages}"]\n', 'command = ["cargo", "clippy", "{packages}"]\ndependents = false\n'))
         ctx = context(["crates/core/src/lib.rs"])
         ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
         job = next(job for job in pipeline.jobs if job.name == "clippy")
@@ -567,15 +566,12 @@ class RestoredTarget(unittest.TestCase):
 
 
 class Local(unittest.TestCase):
-    def test_the_local_run_uses_a_jobs_local_command_and_ci_runs_the_other(self):
-        job = next(job for job in ci.load_pipeline(PIPELINE).jobs if job.name == "clippy")
-        self.assertEqual(job.local[0], "boat")
-        self.assertEqual(job.command[0], "cargo")
-
-    def test_every_test_job_is_left_to_ci(self):
+    def test_every_job_that_compiles_or_tests_is_left_to_ci(self):
         pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
-        runs_here = [job.name for job in pipeline.jobs if not job.ci_only and not (job.kind == "crates" and not job.local)]
-        self.assertFalse([name for name in runs_here if re.search(r"(^|-)tests?$", name)], runs_here)
+        runs_here = [job for job in pipeline.jobs if not job.ci_only and job.kind != "crates"]
+        self.assertFalse([job.name for job in runs_here if re.search(r"(^|-)tests?$", job.name)], [job.name for job in runs_here])
+        compiles = [job.name for job in runs_here if {"cargo", "tools/boat.py"} & set(job.command)]
+        self.assertEqual(compiles, [])
 
 
 class Pipeline(unittest.TestCase):

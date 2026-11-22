@@ -12,8 +12,8 @@ GitHub's hosted CI (.github/workflows/ci.yml) is the only test runner and the on
 runs `job` for its group, or for its share of a sharded job. `times` prepares a target folder
 restored from a cache, and `warm` fills one for the cache. `weights` writes the measured crate
 costs the legs are balanced by, from a cold run's timings and test report. `check` is a quick run
-here before a push: the jobs a change touches that compile and test nothing on this machine, with
-Clippy on Boat. Exit 0 on success, 1 on a failure, 2 when a job that should have run could not.
+here before a push: the jobs a change touches that compile and test nothing, so nothing goes to
+Boat. Exit 0 on success, 1 on a failure, 2 when a job that should have run could not.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +33,6 @@ import xml.etree.ElementTree as ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "tools" / "ci.toml"
-BOAT_FAILED = 75
 NEXTEST_TESTS_FAILED = 100
 SHOWN_LINES = 40
 PANIC = re.compile(r"^thread '(?P<thread>[^'\r\n]*)'(?: \(\d+\))? panicked at [^\r\n]*:\r?\n(?P<message>[^\r\n]*)", re.M)
@@ -103,7 +102,6 @@ class Job:
     inputs: tuple
     shared: tuple
     command: tuple
-    local: tuple
     ci_only: bool
     group: str
     whole: tuple
@@ -138,7 +136,7 @@ def load_pipeline(text):
             name=table["name"], tier=table["tier"], kind=table.get("kind", "command"),
             toolchain=table["toolchain"], inputs=tuple(table.get("inputs", ())),
             shared=tuple(table.get("shared", ())), command=tuple(table.get("command", ())),
-            local=tuple(table.get("local", ())), ci_only=table.get("ci-only", False),
+            ci_only=table.get("ci-only", False),
             group=table.get("group", ""), whole=tuple(table.get("whole", ())), base=table.get("base", False),
             unset=tuple(table.get("unset", ())), widen=tuple(table.get("widen", ())),
             report=table.get("report", ""),
@@ -594,8 +592,7 @@ def held_detail(held):
 
 
 class Runner:
-    """Runs decided jobs, each logging to its own file in the run's folder, with the CI command or,
-    with `local`, a job's local command."""
+    """Runs decided jobs, each logging to its own file in the run's folder."""
 
     def __init__(self, folder, values, local=False):
         self.folder, self.values, self.local = folder, values, local
@@ -617,7 +614,7 @@ class Runner:
         started = time.monotonic()
         held = ""
         values = dict(self.values, files=decision.arguments, packages=decision.arguments)
-        command = job.local if self.local and job.local else job.command
+        command = job.command
         report = ROOT / job.report if job.report and not self.local else None
         if job.kind == "files" and decision.whole and job.whole:
             code = self.execute(expand(job.whole, values), log, job.unset)
@@ -645,8 +642,6 @@ class Runner:
         detail = ", ".join(filter(None, [decision.detail, held, compiled(log) if job.kind == "crates" else ""]))
         if code == 0:
             return Outcome(job.name, "pass", detail, seconds, str(log))
-        if self.local and job.kind == "crates" and (code == BOAT_FAILED or b"BOAT UNAVAILABLE" in log.read_bytes()):
-            return Outcome(job.name, "not run", "Boat itself failed (exit 75); run again", seconds, str(log))
         if code == 127:
             return Outcome(job.name, "not run", "the command could not start", seconds, str(log))
         return Outcome(job.name, "fail", ", ".join(filter(None, [detail, f"exit {code}"])), seconds, str(log))
@@ -854,13 +849,13 @@ def job_group(args):
 
 def check(args):
     """The quick run here before a push: the check tier's jobs the change touches, except those
-    that compile or test on this machine, which CI runs; Clippy runs on Boat."""
+    that compile or test, which CI runs."""
     _, values, decisions, base = plan("check", args.base)
     print(f"ci check: HEAD {git('rev-parse', 'HEAD').strip()[:10]} against {base[:10]}, {len(changed_since(base))} changed files", flush=True)
     outcomes = []
     running = []
     for decision in decisions:
-        if decision.state == "run" and (decision.job.ci_only or (decision.job.kind == "crates" and not decision.job.local)):
+        if decision.state == "run" and (decision.job.ci_only or decision.job.kind == "crates"):
             outcomes.append(Outcome(decision.job.name, "ci only", decision.detail))
         elif decision.state == "run":
             running.append(decision)
