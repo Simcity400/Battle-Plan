@@ -1,16 +1,20 @@
 use super::{
-    Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, battle_sounds,
-    character_inputs, characters, combat_details, combat_log, construction, country_appearance,
-    country_counters, country_factories, country_stability, country_tactic_unlocks, economy,
-    faction_theatres, fog, game_score, group_counters, hired_advisors, industrial_organisations,
+    Captured, Divisions, MISSING, army_icon_inputs, battle_sounds, combat_details, combat_log,
+    construction, country_appearance, country_counters, country_factories, country_stability,
+    country_tactic_unlocks, economy, faction_theatres, hired_advisors, industrial_organisations,
     leader_paths, leader_portraits, logistics, map_facilities, map_names, model_inputs,
     modifier_definitions, naval_bases, naval_combat_sources, naval_counters, naval_details,
-    naval_history, naval_mission_inputs, naval_result_details, peace_bids, production,
-    production_modifiers, projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses,
-    railway_guns, resource_map, saved_event_targets, scatter, session, state_building_inputs,
-    unpublished, visibility, war_overview,
+    naval_result_details, peace_bids, production, production_modifiers, projects,
+    raid_launch_inputs, raid_state_inputs, raid_target_statuses, railway_guns, resource_map,
+    saved_event_targets, scatter, session, state_building_inputs, unpublished, visibility,
+    war_overview,
 };
-use crate::{division_census::UnitInputs, map_capture::Orders};
+use collector_air::extended::{air, fog, game_score};
+use collector_characters::extended::{active_abilities, character_inputs, characters};
+use collector_division_templates::extended::group_counters;
+use collector_divisions::{division_census::UnitInputs, orders::Orders};
+use collector_naval_history::extended::naval_history;
+use collector_naval_missions::extended::naval_mission_inputs;
 use engine_native::{Memory, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
@@ -892,7 +896,10 @@ impl Captured {
             hour,
             force_full,
             packs,
-            plans: std::mem::replace(&mut self.plans, super::plans::Captured::vacant()),
+            plans: std::mem::replace(
+                &mut self.plans,
+                collector_plans::extended::plans::Captured::vacant(),
+            ),
         }
     }
 
@@ -1044,11 +1051,12 @@ impl Captured {
         let mut packs = self.gated_spare.take().expect("gated spare present");
         self.swap_gated(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
-        packs.fog.stationed = super::records_any(
+        packs.fog.stationed = collector_extended_support::outcomes::records_any(
             self.capture_mode,
             &[TableId::TheatreAreas, TableId::StationedUnits],
         );
-        packs.projects_recorded = super::records_any(self.capture_mode, &projects::TABLES);
+        packs.projects_recorded =
+            collector_extended_support::outcomes::records_any(self.capture_mode, &projects::TABLES);
         crate::acquisition_jobs::GatedRequest {
             base,
             game_state: state,
@@ -1589,11 +1597,13 @@ impl OrdinaryPart {
                         naval_missions.force_full,
                         naval_missions.fingerprints.as_deref_mut(),
                         navies.holder(),
-                        crate::navy_ledger_changes::Skip::current(),
+                        collector_missions::navy_ledger_changes::Skip::current(),
                     ),
                     &mut ticks,
                 );
-                crate::navy_ledger_changes::record(packs.naval_mission_inputs.ledger_counts());
+                collector_missions::navy_ledger_changes::record(
+                    packs.naval_mission_inputs.ledger_counts(),
+                );
                 naval_reader.clear();
                 navies.finish();
                 ticks[country_counters::TABLES[0].index()] += navies.ticks();
@@ -1612,8 +1622,9 @@ pub(crate) struct NavalMissionLoan {
 #[derive(Default)]
 pub(crate) struct SlowStores {
     pub(crate) doctrine_bytes: Option<u64>,
-    pub(crate) doctrines:
-        Option<engine_allocation::SharedBox<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
+    pub(crate) doctrines: Option<
+        engine_allocation::SharedBox<std::sync::Mutex<collector_slow_tables::doctrines::Store>>,
+    >,
     pub(crate) available: Option<Box<crate::slicing::SliceFingerprints>>,
     pub(crate) advisors: Option<Box<hired_advisors::AdvisorStore>>,
     pub(crate) local_subunits: Option<Box<model_inputs::LocalStore>>,
@@ -1786,8 +1797,11 @@ impl ProductionDailyPacks {
     }
 
     pub(crate) fn recorded(mode: replay_data::scope::CaptureMode) -> bool {
-        super::records_any(mode, &industrial_organisations::TABLES)
-            || super::records_any(mode, &production_modifiers::TABLES)
+        collector_extended_support::outcomes::records_any(mode, &industrial_organisations::TABLES)
+            || collector_extended_support::outcomes::records_any(
+                mode,
+                &production_modifiers::TABLES,
+            )
     }
 
     pub(crate) fn capture(
@@ -2046,7 +2060,9 @@ impl SlowPacks {
                 .capture(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
-        let recorded = |tables: &[TableId]| super::records_any(self.capture_mode, tables);
+        let recorded = |tables: &[TableId]| {
+            collector_extended_support::outcomes::records_any(self.capture_mode, tables)
+        };
         macro_rules! staggered {
             ($($pack:ident),+ $(,)?) => {$(
                 if recorded(&$pack::TABLES) {
@@ -2056,7 +2072,7 @@ impl SlowPacks {
                         &mut ticks,
                     );
                 } else {
-                    self.$pack.fail_capture(hour, force_full, super::NOT_RECORDED);
+                    self.$pack.fail_capture(hour, force_full, collector_extended_support::outcomes::NOT_RECORDED);
                 }
             )+};
         }
@@ -2120,8 +2136,11 @@ impl SlowPacks {
                 &mut ticks,
             );
         } else {
-            self.hired_advisors
-                .fail_capture(hour, force_full, super::NOT_RECORDED);
+            self.hired_advisors.fail_capture(
+                hour,
+                force_full,
+                collector_extended_support::outcomes::NOT_RECORDED,
+            );
         }
         self.ticks = ticks;
     }
@@ -2285,8 +2304,12 @@ pub(crate) struct GatedPacks {
 
 #[derive(Default)]
 pub(crate) struct CharacterInputRoles {
-    pub(crate) census: Option<engine_allocation::SharedBox<super::characters::census::RoleCensus>>,
-    pub(crate) store: Option<Box<super::character_inputs::RoleStore>>,
+    pub(crate) census: Option<
+        engine_allocation::SharedBox<
+            collector_characters::extended::characters::census::RoleCensus,
+        >,
+    >,
+    pub(crate) store: Option<Box<collector_characters::extended::character_inputs::RoleStore>>,
 }
 
 pub(crate) struct CharacterInputsRequest {
@@ -2381,8 +2404,8 @@ pub(crate) struct FinalInputsReport {
     pub economy: [u64; economy::N],
     pub session: [u64; session::N],
     pub characters: [u64; characters::N],
-    pub destruction: [u64; super::equipment_destruction::N],
-    pub naval_sources: [u64; super::naval_result_sources::N],
+    pub destruction: [u64; collector_equipment_destruction::extended::equipment_destruction::N],
+    pub naval_sources: [u64; collector_naval_results::extended::naval_result_sources::N],
     pub air_losses: [u64; super::air_losses::N],
     pub air_records: [u64; super::air_records::N],
     pub bombing: [u64; super::building_bombing::N],
@@ -2404,8 +2427,8 @@ pub(crate) struct FinalInputsRequest {
     economy: economy::Captured,
     session: session::Captured,
     characters: characters::Captured,
-    destruction: super::equipment_destruction::Captured,
-    naval_sources: super::naval_result_sources::Captured,
+    destruction: collector_equipment_destruction::extended::equipment_destruction::Captured,
+    naval_sources: collector_naval_results::extended::naval_result_sources::Captured,
     air_losses: super::air_losses::Captured,
     air_records: super::air_records::Captured,
     bombing: super::building_bombing::Captured,
@@ -2557,11 +2580,12 @@ impl Captured {
             characters: std::mem::replace(&mut self.characters, characters::Captured::vacant()),
             destruction: std::mem::replace(
                 &mut self.equipment_destruction,
-                super::equipment_destruction::Captured::vacant(),
+                collector_equipment_destruction::extended::equipment_destruction::Captured::vacant(
+                ),
             ),
             naval_sources: std::mem::replace(
                 &mut self.naval_result_sources,
-                super::naval_result_sources::Captured::vacant(),
+                collector_naval_results::extended::naval_result_sources::Captured::vacant(),
             ),
             air_losses: std::mem::replace(
                 &mut self.air_losses,

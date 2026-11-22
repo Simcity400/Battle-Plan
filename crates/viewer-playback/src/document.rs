@@ -677,6 +677,14 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
+    pub fn motion_layout(&self) -> Option<&viewer_foundation::map::counter_move::DrawnLayout> {
+        self.icons.motion_layout()
+    }
+
+    pub fn set_motion_continuity(&mut self, continuity: u64) {
+        self.icons.set_motion_continuity(continuity);
+    }
+
     pub fn set_pressed(
         &mut self,
         pressed: Option<viewer_foundation::unit_handle::Unit>,
@@ -1796,6 +1804,7 @@ impl Document {
         uncovered_reads: content_reader_core::content::UncoveredReads,
     ) -> io::Result<Self> {
         let serial = viewer_foundation::load_record::stage("content.serial");
+        let game_version = replay.identity.game_version.clone();
         let content = Arc::new(content);
         std::thread::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
@@ -2841,12 +2850,14 @@ impl Document {
             let adjacency_icons = match content_reader_core::adjacency_rules::read(&content.layers) {
                 Ok(rules) => {
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
+                        .with_build(game_version)
                 }
                 Err(error) => {
                     warnings.push(format!(
                     "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
                 ));
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                        .with_build(game_version)
                 }
             };
             let trade_routes = crate::map_assets::graphics_define(

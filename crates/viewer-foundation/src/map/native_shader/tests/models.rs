@@ -237,6 +237,7 @@ pub(super) fn part(kind: gui::PartKind, asset: Arc<library::Effect>, technique: 
     gui::Part {
         path: "synthetic GUI submission fixture".into(),
         child: None,
+        background_index: None,
         kind,
         clip: None,
         color: [1.; 4],

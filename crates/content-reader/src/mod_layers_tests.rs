@@ -123,19 +123,17 @@ fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() 
                 "technocracy",
                 Some([12.0 / 255.0, 200.0 / 255.0, 180.0 / 255.0, 1.0])
             ),
-            ("mystic", None)
+            (
+                "mystic",
+                Some([113.0 / 255.0, 22.0 / 255.0, 128.0 / 255.0, 22.0 / 255.0])
+            )
         ]
     );
     assert_eq!(
         added.group_of("futurism").unwrap().unwrap().token,
         "technocracy"
     );
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.1.contains("mystic") && w.1.contains("packed colour 16711680")),
-        "{warnings:?}"
-    );
+    assert!(warnings.is_empty(), "{warnings:?}");
     let (replaced, _) = crate::ideologies::read(&stack.layers(&["common/ideologies"])).unwrap();
     assert!(replaced.get("democratic").unwrap().is_none());
     assert!(replaced.get("technocracy").unwrap().is_some());

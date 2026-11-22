@@ -10,4 +10,4 @@ Counts expose a missing roster occurrence and new occurrences force a read. A qu
 
 A template display-name certificate compares exact bytes with the complete current dictionary row. A partial update's changed subset cannot serve as that dictionary. On dictionary refusal or truncation, write the name as a self-contained override. Quiet frames can borrow the encoder's identical rows without cloning their names, while a new key or changed display value remains readable at a keyframe and after direct seek.
 
-[Template capture and conversion](../../crates/collector/src/extended/division_templates.rs)
+[Template capture and conversion](../../crates/collector-division-templates/src/extended/division_templates.rs)

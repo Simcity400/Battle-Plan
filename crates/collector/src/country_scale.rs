@@ -1,8 +1,8 @@
+use collector_primitives::country_slots::MIN_COUNTRY_CELLS;
 
-pub use crate::country_slots::{census_rows, note_slots, raise, reserve_census, rows};
+pub use crate::country_slots::{census_rows, note_slots, raise, rows};
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine_native::{Memory, cgame_state, country_memory::Cache};
-use std::sync::atomic::{AtomicUsize, Ordering};
 mod navies;
 pub(crate) mod source_demand;
 pub(crate) mod table_demand;
@@ -10,19 +10,7 @@ pub(crate) use table_demand::presize as presize_table_inputs;
 
 pub(crate) use collector_extended_support::demand::{demand_air_game_state, demand_game_state};
 
-#[cfg(test)]
-pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
-    let guard = crate::country_slots::hint_guard();
-    AIR_WING_NAME_BYTES.store(0, Ordering::Relaxed);
-    for hint in &CARRIER_HINT {
-        hint.store(0, Ordering::Relaxed);
-    }
-    guard
-}
-
 pub const ENGINE_SLOT_CEILING: usize = 1 << 16;
-
-pub const MIN_COUNTRY_CELLS: usize = 8192;
 
 pub fn observe(memory: &impl Memory, base: usize) -> Option<usize> {
     let slots = cgame_state::read_country_registry_size(memory, base)?.slots();
@@ -40,19 +28,6 @@ pub fn observe_saved_targets(
         .map(Some)
         .ok_or("saved target sizing demand unreadable or invalid")
 }
-pub fn observe_game_score(
-    memory: &impl Memory,
-    base: usize,
-) -> std::io::Result<Option<engine_native::game_score_inputs::ArenaSizing>> {
-    match demand_game_state(memory, base) {
-        Ok(Some(state)) => {
-            engine_native::game_score_inputs::arena_demand(memory, base, state).map(Some)
-        }
-        Ok(None) => Ok(None),
-        Err(reason) => engine_native::game_score_inputs::ArenaSizing::unavailable(reason).map(Some),
-    }
-}
-
 pub fn observe_country_intel(
     memory: &impl Memory,
     base: usize,
@@ -63,107 +38,6 @@ pub fn observe_country_intel(
     let rows = engine_native::ccountry_intel::native_rows(memory, base, state)
         .ok_or("country intel sizing census unreadable or invalid")?;
     Ok(Some(rows))
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AceNamesDemand {
-    pub aces: usize,
-    pub ace_bytes: usize,
-}
-
-pub(crate) fn observe_ace_names(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Option<AceNamesDemand>, &'static str> {
-    let Some(state) = demand_game_state(memory, base)? else {
-        return Ok(None);
-    };
-    let walked = engine_native::cace::count(memory, base, state);
-    let aces = match walked.outcome {
-        engine_native::walk::Outcome::Rows { len } => len,
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
-            .checked_add(unread_rows as usize)
-            .ok_or("ace roster sizing overflow")?,
-        engine_native::walk::Outcome::Unavailable { reason } => return Err(reason),
-    };
-    Ok(Some(AceNamesDemand {
-        aces,
-        ace_bytes: walked.required_bytes,
-    }))
-}
-
-static AIR_WING_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
-static CARRIER_HINT: [AtomicUsize; 12] = [const { AtomicUsize::new(0) }; 12];
-
-pub(crate) fn carrier_demand() -> engine_native::cair_base::CarrierDemand {
-    let [
-        bases,
-        registrations,
-        pools,
-        indexed,
-        resolved,
-        country_terms,
-        aces,
-        forecasts,
-        countries,
-        name_bytes,
-        raw_spans,
-        raw_bytes,
-    ] = std::array::from_fn(|index| CARRIER_HINT[index].load(Ordering::Relaxed));
-    engine_native::cair_base::CarrierDemand {
-        bases,
-        registrations,
-        pools,
-        indexed,
-        resolved,
-        country_terms,
-        aces,
-        forecasts,
-        countries,
-        name_bytes,
-        raw_spans,
-        raw_bytes,
-        ..Default::default()
-    }
-}
-
-pub(crate) fn note_carrier_demand(demand: engine_native::cair_base::CarrierDemand) -> bool {
-    let mut changed = false;
-    for (hint, count) in CARRIER_HINT.iter().zip([
-        demand.bases,
-        demand.registrations,
-        demand.pools,
-        demand.indexed,
-        demand.resolved,
-        demand.country_terms,
-        demand.aces,
-        demand.forecasts,
-        demand.countries,
-        demand.name_bytes,
-        demand.raw_spans,
-        demand.raw_bytes,
-    ]) {
-        changed |= hint.fetch_max(count, Ordering::Relaxed) < count;
-    }
-    changed
-}
-
-pub(crate) fn air_wing_name_bytes() -> usize {
-    AIR_WING_NAME_BYTES.load(Ordering::Relaxed)
-}
-
-pub(crate) fn note_air_wing_name_bytes(bytes: usize) {
-    AIR_WING_NAME_BYTES.fetch_max(bytes, Ordering::Relaxed);
-}
-
-pub fn observe_air_wing_names(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Option<usize>, &'static str> {
-    let Some(state) = demand_game_state(memory, base)? else {
-        return Ok(None);
-    };
-    engine_native::cair_wing::name_demand(memory, base, state).map(Some)
 }
 
 pub(crate) use crate::extended::railway_guns::note_railway_gun_names;
@@ -480,7 +354,7 @@ pub struct PoliticsDemand {
     pub original_tag_lists: engine_stability::original_tag_lists::Demand,
     pub country_array: usize,
     pub co_belligerents: usize,
-    pub character_inputs: crate::extended::character_inputs::Demand,
+    pub character_inputs: collector_characters::extended::character_inputs::Demand,
 }
 
 impl PoliticsDemand {
@@ -680,7 +554,8 @@ pub fn observe_politics(
     let strategic_operatives = demand(strategic.outcome)?;
     let (available_advisors, available_advisor_bytes) =
         engine_native::ccountry_characters::demand_available(memory, base, state)?;
-    let advisor_modifiers = extended::characters::advisors::live_modifier_demand();
+    let advisor_modifiers =
+        collector_characters::extended::characters::advisors::live_modifier_demand();
     let mut pride_name_bytes = 0_usize;
     let mut pride_name_failure = None;
     let mut references = engine_native::creference_registry::ScopedResolver::new(base);
@@ -757,12 +632,16 @@ pub fn observe_politics(
         active_characters,
         retired_characters,
         party_leaders: engine_native::cpolitical_status::party_leader_demand(memory, base, state)?,
-        civil_wars: demand(engine_native::ccountry::count_civil_wars(memory, base, state))?,
+        civil_wars: demand(engine_native::ccountry::count_civil_wars(
+            memory, base, state,
+        ))?,
         advisor_tokens,
         advisor_token_bytes: tokens.required_bytes,
         faction_advisors,
         faction_advisor_bytes: factions.required_bytes,
-        character_inputs: crate::extended::character_inputs::Demand::observe(memory, base, state)?,
+        character_inputs: collector_characters::extended::character_inputs::Demand::observe(
+            memory, base, state,
+        )?,
     }))
 }
 
@@ -833,6 +712,7 @@ impl Sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     struct ProvinceHeaderMemory {
         count: u32,
@@ -1060,7 +940,7 @@ mod tests {
         assert!(sizing.extended != before);
         let before = sizing.extended;
         sizing.extended.raise_for_politics(PoliticsDemand {
-            character_inputs: crate::extended::character_inputs::Demand {
+            character_inputs: collector_characters::extended::character_inputs::Demand {
                 traits: 1 << 20,
                 ..Default::default()
             },

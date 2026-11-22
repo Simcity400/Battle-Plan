@@ -1,5 +1,4 @@
-
-use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
+use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
 
 pub(crate) struct Request {
@@ -195,7 +194,7 @@ impl Request {
 pub(crate) struct TemplatesRequest {
     pub(crate) workers: crate::acquisition_jobs::variant_workers::Dispatch,
     countries: engine_allocation::SharedBox<Cache>,
-    templates: crate::extended::division_templates::Captured,
+    templates: collector_division_templates::extended::division_templates::Captured,
     base: usize,
     game_state: usize,
     hour: i32,
@@ -210,7 +209,7 @@ impl TemplatesRequest {
         countries: &engine_allocation::SharedBox<Cache>,
         base: usize,
         game_state: usize,
-        templates: &mut crate::extended::division_templates::Captured,
+        templates: &mut collector_division_templates::extended::division_templates::Captured,
         hour: i32,
         force_full: bool,
     ) -> Self {
@@ -219,7 +218,7 @@ impl TemplatesRequest {
             countries: engine_allocation::SharedBox::clone(countries),
             templates: std::mem::replace(
                 templates,
-                crate::extended::division_templates::Captured::vacant(),
+                collector_division_templates::extended::division_templates::Captured::vacant(),
             ),
             base,
             game_state,
@@ -238,10 +237,12 @@ impl TemplatesRequest {
             self.game_state,
             self.hour,
             self.force_full,
-            Some(crate::extended::division_templates::TemplateWorkers {
-                lanes: workers.lanes(),
-                walk: &mut walk,
-            }),
+            Some(
+                collector_division_templates::extended::division_templates::TemplateWorkers {
+                    lanes: workers.lanes(),
+                    walk: &mut walk,
+                },
+            ),
         );
         TemplatesReport
     }
@@ -259,7 +260,7 @@ impl TemplatesRequest {
 
     pub(crate) fn restore(
         mut self,
-        templates: &mut crate::extended::division_templates::Captured,
+        templates: &mut collector_division_templates::extended::division_templates::Captured,
         failure: Option<&'static str>,
     ) {
         if let Some(reason) = failure {
@@ -272,7 +273,6 @@ impl TemplatesRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acquisition;
     use engine_native::{
         cconvoys, cgame_state, cpolitical_status, memory::SliceMemory, msvc_string,
     };
@@ -358,10 +358,8 @@ mod tests {
     }
 
     fn snapshot(bytes: &[u8], cells: usize) -> engine_allocation::SharedBox<Cache> {
-        let mut cache = engine_allocation::shared(
-            Cache::try_with_capacity(cells).unwrap(),
-        )
-        .unwrap();
+        let mut cache =
+            engine_allocation::shared(Cache::try_with_capacity(cells).unwrap()).unwrap();
         Cache::prepare_shared(&mut cache, &SliceMemory { base: 0, bytes }, 0, STATE).unwrap()
     }
 
@@ -413,10 +411,8 @@ mod tests {
                 let mut traced = Traced::new(&bytes);
                 traced.fault = fault;
                 let memory = CountedMemory::new(traced);
-                let mut storage = engine_allocation::shared(
-                    Cache::try_with_capacity(cells).unwrap(),
-                )
-                .unwrap();
+                let mut storage =
+                    engine_allocation::shared(Cache::try_with_capacity(cells).unwrap()).unwrap();
                 let snapshot = read_accounting::with_table(TableId::Countries, || {
                     Cache::prepare_shared(&mut storage, &memory, 0, STATE).unwrap()
                 });
@@ -434,10 +430,8 @@ mod tests {
 
                 let mut original = Traced::new(&bytes);
                 original.fault = fault;
-                let mut original_storage = engine_allocation::shared(
-                    Cache::try_with_capacity(cells).unwrap(),
-                )
-                .unwrap();
+                let mut original_storage =
+                    engine_allocation::shared(Cache::try_with_capacity(cells).unwrap()).unwrap();
                 let original_snapshot =
                     Cache::prepare_shared(&mut original_storage, &original, 0, STATE).unwrap();
                 let cached = original_snapshot.view(&original);
@@ -569,12 +563,16 @@ mod tests {
         for workers in [0, 1, 3] {
             let bytes = fixture();
             let snapshot = snapshot(&bytes, 256);
-            let pool = acquisition::Pool::start(workers, 1, move |request: &mut Request| {
-                request.run(&SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                })
-            })
+            let pool = collector_workers::acquisition::Pool::start(
+                workers,
+                1,
+                move |request: &mut Request| {
+                    request.run(&SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    })
+                },
+            )
             .unwrap();
             let mut rows = vec![ccountry::Row::default(); 2];
             let mut links = vec![ccountry::LinkRow::default(); 8];
@@ -635,7 +633,7 @@ mod tests {
 
     #[test]
     fn the_template_job_preacquires_or_refuses_the_hours_templates() {
-        use crate::extended::division_templates;
+        use collector_division_templates::extended::division_templates;
         let bytes = fixture();
         let snapshot = snapshot(&bytes, 256);
         let memory = Traced::new(&bytes);

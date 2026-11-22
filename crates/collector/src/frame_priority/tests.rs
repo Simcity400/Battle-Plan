@@ -191,12 +191,7 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
 fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wake() {
     let pipeline = fixture(true);
     let callback = pipeline.callback();
-    for role in [
-        Role::Spool,
-        Role::Helper(0),
-        Role::Helper(1),
-        Role::Sizing,
-    ] {
+    for role in [Role::Spool, Role::Helper(0), Role::Helper(1), Role::Sizing] {
         pipeline.register(role);
     }
     let calls = AtomicUsize::new(0);
@@ -371,18 +366,4 @@ fn availability_counts_every_published_frame_and_each_claim() {
     }
     assert_eq!(pipeline.free_count(), crate::frame_pool::STEADY * 3);
     assert_eq!(pipeline.pressure(), 0);
-}
-
-#[test]
-fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
-    let cores = Cores::from_sets(&[(0, 0, 256), (1, 0, 257), (2, 1, 258), (3, 1, 259)]).unwrap();
-    assert_eq!(away_sets(Some(&cores), Some(0)), Some(&[258, 259][..]));
-    assert_eq!(away_sets(Some(&cores), Some(1)), Some(&[258, 259][..]));
-    assert_eq!(away_sets(Some(&cores), Some(3)), Some(&[256, 257][..]));
-    assert_eq!(away_sets(Some(&cores), Some(4)), None);
-    assert_eq!(away_sets(Some(&cores), None), None);
-    assert_eq!(away_sets(None, Some(0)), None);
-    let single = Cores::from_sets(&[(0, 0, 256), (1, 0, 257)]).unwrap();
-    assert_eq!(away_sets(Some(&single), Some(1)), None);
-    assert!(Cores::from_sets(&[]).is_none());
 }

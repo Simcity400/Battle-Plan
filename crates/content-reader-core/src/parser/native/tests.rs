@@ -615,10 +615,10 @@ fn a_value_without_a_key_consumes_the_next_token() {
 #[test]
 fn definitions_follow_the_readers_consumption() {
     let read = test_read(
-        b"@x = 1 a = { n = @x @x = 2 n = \"@x\" trigger = { @y = 3 z = 1 } n = @y } b = { n = @y @z = 4 } c = { n = 5 }",
+        b"@x = 1 a = { n = @x @x = 2 n = \"@x\" obj = { @y = 3 z = 1 } n = @y } b = { n = @y @z = 4 } c = { n = 5 }",
     );
     let a = block(&read.items, "a");
-    assert_eq!(keys(a), ["n", "=", "n", "trigger", "n"]);
+    assert_eq!(keys(a), ["n", "=", "n", "obj", "n"]);
     assert_eq!(a[0].value, Value::Scalar(b"1".to_vec()));
     assert_eq!(a[2].value, Value::Scalar(b"@x".to_vec()));
     assert!(a[2].quoted());
@@ -1129,4 +1129,330 @@ fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
         .items()
         .unwrap();
     assert_eq!(priority[0].value.items(), Some(modifier));
+}
+
+#[test]
+fn keyed_definitions_under_unknown_dispatch_refuse_dependent_suffix() {
+    let direct = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = 1 } } c = { n = @y } d = { n = 4 }",
+    );
+    let unsettled = direct.unsettled.as_ref().expect("dependent suffix refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&direct.items), ["a", "b", "c"]);
+    assert_eq!(block(&direct.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+    assert!(block(&direct.items, "c").is_empty());
+
+    let nested = test_read(
+        b"a = { n = 1 } b = { trigger = { nested = { @y = 3 z = 1 } } } c = { n = @y }",
+    );
+    let unsettled = nested.unsettled.as_ref().expect("nested dependent suffix refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("nested"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&nested.items), ["a", "b", "c"]);
+    assert!(block(&nested.items, "c").is_empty());
+
+    let redefined = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = 1 } } @y = 5 c = { n = @y }",
+    );
+    let unsettled = redefined.unsettled.as_ref().expect("redefinition refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&redefined.items), ["a", "b"]);
+
+    let local_only = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = @y } } c = { n = 2 }",
+    );
+    assert!(local_only.unsettled.is_none(), "{local_only:?}");
+    assert_eq!(keys(&local_only.items), ["a", "b", "c"]);
+    let trigger = block(block(&local_only.items, "b"), "trigger");
+    assert_eq!(trigger[0].value, Value::Scalar(b"3".to_vec()));
+    assert_eq!(block(&local_only.items, "c")[0].value, Value::Scalar(b"2".to_vec()));
+
+    let observed = test_read(
+        b"a = { obj = { @y = 3 z = 1 } skipped = { @z = 9 } n = @y } b = { n = @z }",
+    );
+    assert!(observed.unsettled.is_none(), "{observed:?}");
+    assert_eq!(block(&observed.items, "a")[2].value, Value::Scalar(b"3".to_vec()));
+    assert_eq!(block(&observed.items, "b")[0].value, Value::Scalar(b"@z".to_vec()));
+}
+
+#[test]
+fn trailing_definition_before_close_under_unknown_dispatch_refuses_without_swallowing_brace() {
+    let read = test_read(b"a = { n = 1 } b = { trigger = { @x = 3 } n = @x } c = { n = 4 }");
+    let unsettled = read.unsettled.as_ref().expect("trailing definition refused");
+    assert!(
+        unsettled.what.contains("@x") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+    assert!(block(block(&read.items, "b"), "trigger").is_empty());
+}
+
+#[test]
+fn mixed_list_with_nested_definition_under_unknown_dispatch_refuses() {
+    let read = test_read(
+        b"a = { n = 1 } b = { trigger = { nested = { @x = 3 z = 1 } loose } n = @x } c = { n = 4 }",
+    );
+    let unsettled = read
+        .unsettled
+        .as_ref()
+        .expect("mixed list nested definition refused");
+    assert!(unsettled.what.contains("@x"), "{unsettled}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+}
+
+#[test]
+fn direct_resolution_readers_stop_before_storing_ambiguous_values() {
+    let raw_list = read(
+        b"opaque = { @t = support marker = yes } type = { @t infantry } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"type") => Shape::RawListFirst,
+            _ => Shape::One,
+        },
+    );
+    assert!(raw_list.unsettled.is_some(), "{raw_list:?}");
+    assert_eq!(keys(&raw_list.items), ["opaque", "type"]);
+    assert!(block(&raw_list.items, "type").is_empty());
+
+    let pair = read(
+        b"opaque = { @s = first marker = yes } pair = { @s second } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"pair") => Shape::Strings,
+            _ => Shape::One,
+        },
+    );
+    assert!(pair.unsettled.is_some(), "{pair:?}");
+    assert_eq!(keys(&pair.items), ["opaque", "pair"]);
+    assert!(block(&pair.items, "pair").is_empty());
+
+    let color = read(
+        b"opaque = { @c = 10 marker = yes } col = { @c 20 30 } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"col") => Shape::Color,
+            _ => Shape::One,
+        },
+    );
+    assert!(color.unsettled.is_some(), "{color:?}");
+    assert_eq!(keys(&color.items), ["opaque", "col"]);
+    assert!(block(&color.items, "col").is_empty());
+}
+
+#[test]
+fn valueless_definition_before_close_under_unknown_dispatch_refuses_without_swallowing_brace() {
+    let read = test_read(b"a = { trigger = { @x = } n = @x } c = { n = 4 }");
+    let unsettled = read.unsettled.as_ref().expect("valueless definition refused");
+    assert!(
+        unsettled.what.contains("@x") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    assert!(block(block(&read.items, "a"), "trigger").is_empty());
+}
+
+#[test]
+fn mixed_list_with_quoted_nested_definition_under_unknown_dispatch_refuses() {
+    let read = test_read(
+        br#"a = { n = 1 } b = { trigger = { nested = { "@x" = 3 marker = 1 } loose } n = @x } c = { n = 4 }"#,
+    );
+    let unsettled = read
+        .unsettled
+        .as_ref()
+        .expect("quoted nested definition refused");
+    assert!(unsettled.what.contains("@x"), "{unsettled}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+}
+
+#[test]
+fn known_dispatch_definition_at_eof_preserves_quoted_token_kind() {
+    let read = read(
+        br#"k = old @x = "tail""#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _| Shape::Current,
+    );
+    assert!(read.unsettled.is_none(), "{read:?}");
+    assert_eq!(read.items.len(), 2);
+    assert_eq!(read.items[1].kind, Kind::Quoted);
+    assert_eq!(read.items[1].value, Value::Scalar(b"tail".to_vec()));
+}
+
+#[test]
+fn equipment_limit_and_math_arguments_preserve_proved_partial_children_on_refusal() {
+    crate::test_game::enter();
+    let names = KeyNames::default();
+    let equip = read(
+        b"opaque = { @x = flag marker = yes } enable_equipments = { limit = { always = yes has_country_flag = @x } tank_1 } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        Some(&names),
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"enable_equipments") => Shape::TechnologyEquipment,
+            _ => Shape::One,
+        },
+    );
+    assert!(equip.unsettled.is_some(), "{equip:?}");
+    assert_eq!(keys(&equip.items), ["opaque", "enable_equipments"]);
+    let limit_items = block(block(&equip.items, "enable_equipments"), "limit");
+    assert_eq!(keys(limit_items), ["always"]);
+    assert_eq!(limit_items[0].value, Value::Scalar(b"yes".to_vec()));
+
+    let math = read(
+        b"opaque = { @x = 5 marker = yes } expr = { value = 1 clamp = { min = { value = 2 add = @x } max = 9 } } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"expr") => Shape::Expression,
+            _ => Shape::One,
+        },
+    );
+    assert!(math.unsettled.is_some(), "{math:?}");
+    assert_eq!(keys(&math.items), ["opaque", "expr"]);
+    let clamp = block(block(&math.items, "expr"), "clamp");
+    assert_eq!(keys(clamp), ["min"]);
+    let min = block(clamp, "min");
+    assert_eq!(keys(min), ["value"]);
+    assert_eq!(min[0].value, Value::Scalar(b"2".to_vec()));
+}
+
+#[test]
+fn duplicate_valueless_definition_before_close_under_unknown_dispatch_refuses_without_absorbing_sibling() {
+    let read = read(
+        br#"@x = 1 a = { trigger = { @x = } n = @x } b = { n = 4 }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+}
+
+#[test]
+fn balanced_valueless_operator_before_close_refuses_without_swallowing_siblings() {
+    let read = read(
+        br#"a = { trigger = { loose k = } @x = 7 n = @x } b = { n = @x }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    let trigger = block(block(&read.items, "a"), "trigger");
+    assert_eq!(trigger.len(), 1, "{trigger:?}");
+    assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
+}
+
+#[test]
+fn balanced_final_variable_reference_at_eof_refuses_unknown_dispatch_definition() {
+    let read = read(
+        br#"a = { @v = 7 marker = yes } b = { loose k = @v"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _field: &Field<'_>| Shape::ByKey,
+    );
+    let unsettled = read.unsettled.as_ref().expect("unsettled refusal");
+    assert!(unsettled.what.contains("@v"), "{unsettled:?}");
+    assert!(unsettled.what.contains("`a`"), "{unsettled:?}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    let b = block(&read.items, "b");
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].value, Value::Scalar(b"loose".to_vec()));
+}
+
+#[test]
+fn balanced_variable_resolving_to_open_brace_refuses_without_shifting_boundary() {
+    let read = read(
+        br#"@o = { a = { trigger = { loose k = @o } @x = 7 n = @x } b = { n = @x } }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    let trigger = block(block(&read.items, "a"), "trigger");
+    assert_eq!(trigger.len(), 1, "{trigger:?}");
+    assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
+}
+
+#[test]
+fn balanced_embedded_end_marker_refuses_instead_of_continuing_past_scan() {
+    let read = read(
+        b"opaque = { one two k = 1\xff @x = 7 marker = yes } probe = @x ",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["opaque"]);
+    let opaque = block(&read.items, "opaque");
+    assert_eq!(opaque.len(), 2, "{opaque:?}");
+    assert_eq!(opaque[0].value, Value::Scalar(b"one".to_vec()));
+    assert_eq!(opaque[1].value, Value::Scalar(b"two".to_vec()));
+}
+
+#[test]
+fn eof_variable_copy_warning_keeps_retained_source_name() {
+    let read = read(
+        b"@source = 7 @copy = @source",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _| Shape::One,
+    );
+    assert!(
+        read.misreads
+            .iter()
+            .any(|note| note.what.contains("@source")),
+        "{:?}",
+        read.misreads
+    );
 }

@@ -10,4 +10,4 @@ Order and group names have separate arenas with one common capacity measure. Row
 
 The synthetic Late request runner reads only owned Rust payloads, so submitting its fixture does not borrow a live game source.
 
-[Plan acquisition](../../crates/collector/src/extended/plans.rs) · [Split fixture](../../crates/collector/src/extended/plans/orders_parts_fixture.rs)
+[Plan acquisition](../../crates/collector-plans/src/extended/plans.rs) · [Split fixture](../../crates/collector-plans/src/extended/plans/orders_parts_fixture.rs)
