@@ -2047,7 +2047,7 @@ mod launch_gate {
         }
     }
 
-    fn airborne(values: [i64; 10]) -> Eval {
+    fn airborne(values: [Option<i64>; 10]) -> Eval {
         use replay_data::{
             rows::StockpileArchetypeRow, rows::StockpileRow, rows::VariantDefinitionRow,
             rows::VariantStatsRow,
@@ -2158,12 +2158,23 @@ mod launch_gate {
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
         content_reader_core::test_game::enter_viewer();
-        let mut long_first = [1; 10];
-        long_first[0] = 100 * 100_000;
+        let mut long_first = [Some(1); 10];
+        long_first[0] = Some(100 * 100_000);
         assert_eq!(airborne(long_first), Eval::True);
-        let mut long_second = [1; 10];
-        long_second[1] = 100 * 100_000;
+        let mut long_second = [Some(1); 10];
+        long_second[1] = Some(100 * 100_000);
         assert_eq!(airborne(long_second), Eval::False);
+        let mut withheld = [Some(100 * 100_000); 10];
+        withheld[0] = None;
+        match airborne(withheld) {
+            Eval::Unknown(reasons) => {
+                assert!(
+                    reasons.iter().any(|reason| reason.contains("air_range")),
+                    "{reasons:?}"
+                );
+            }
+            other => panic!("withheld air_range must stay unknown, got {other:?}"),
+        }
     }
 
     #[test]

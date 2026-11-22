@@ -605,10 +605,24 @@ impl Variants {
             held: &mut self.organisation_holds,
             fresh: force_full || !self.organisations_complete,
         };
+        let mut stat_witness = design_changes::StatLaneWitness;
         capture_source(&mut self.stats, source, |source, rows| {
-            cequipment_variant::walk_stats_carried(memory, source, rows, &mut organisation_carry)
+            cequipment_variant::walk_stats_carried(
+                memory,
+                base,
+                source,
+                rows,
+                &mut organisation_carry,
+                &mut stat_witness,
+            )
         });
-        self.organisations_complete = matches!(self.stats.outcome, Outcome::Rows { .. });
+        if let Outcome::Rows { len } = self.stats.outcome {
+            self.organisation_holds.truncate(len);
+        }
+        self.organisations_complete = matches!(
+            self.stats.outcome,
+            Outcome::Rows { len } if len == source.map_or(0, <[_]>::len)
+        );
         self.organisation_bytes = self
             .stats
             .rows

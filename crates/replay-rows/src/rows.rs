@@ -1624,24 +1624,49 @@ fn column_context(error: io::Error, key: u128, column: &str) -> io::Error {
 macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
-        typed_codec!(
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked| $check,
+            |_withheld_field, _withheld_format| false
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr, |$wf:ident, $wfmt:ident| $withhold:expr) => {
+        $crate::typed_codec!(
             $ty,
             $bits,
             |$row| $key,
             |$key_name| $initial,
             { $($index => ($($field)+): $kind $(@ $step)?),+ },
             |$checked, mask| {
-                let all = full_mask(Self::SCHEMA.len());
+                let all = $crate::rows::full_mask(Self::SCHEMA.len());
                 if mask & all == all {
                     $check
                 } else {
                     Ok(())
                 }
-            }
+            },
+            |$wf, $wfmt| $withhold
         );
     };
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident, $mask:ident| $check:expr) => {
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked, $mask| $check,
+            |_withheld_field, _withheld_format| false
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident, $mask:ident| $check:expr, |$wf:ident, $wfmt:ident| $withhold:expr) => {
         $crate::row!($ty, |$key_name| $initial, { $(($($field)+): $kind),+ });
         #[cfg(any(test, feature = "test-support"))]
         impl $crate::checkpoint::endpoint::sparse::SparseReference for $ty {
@@ -1795,7 +1820,17 @@ macro_rules! typed_codec {
             fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;
-                $(row.$($field)+ = read_stepped_field($index, Kind::$kind, $crate::display_step!($($step)?), input)?;)+
+                $(row.$($field)+ = if {
+                    let ($wf, $wfmt) = ($index, input.format);
+                    $withhold
+                } {
+                    if $index < input.recorded_fields {
+                        Kind::$kind.decode(input)?;
+                    }
+                    NativeValue::not_recorded()?
+                } else {
+                    read_stepped_field($index, Kind::$kind, $crate::display_step!($($step)?), input)?
+                };)+
                 Ok(row)
             }
             fn patch_from_wire<'a>(&mut self, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<bool> {
@@ -1845,9 +1880,24 @@ macro_rules! typed_codec {
                 };
                 let mut input = Decoder::new(&delta.values);
                 input.format = delta.format;
-                $(if $index >= fields { row.$($field)+ = NativeValue::not_recorded()?; })+
+                $(if $index >= fields || {
+                    let ($wf, $wfmt) = ($index, delta.format);
+                    $withhold
+                } {
+                    row.$($field)+ = NativeValue::not_recorded()?;
+                })+
 
-                $(if delta.mask & (1_u64 << $index) != 0 { apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::display_step!($($step)?), &mut input)?; })+
+                $(if delta.mask & (1_u64 << $index) != 0 {
+                    if {
+                        let ($wf, $wfmt) = ($index, delta.format);
+                        $withhold
+                    } {
+                        Kind::$kind.decode_change(&mut input)?;
+                        row.$($field)+ = NativeValue::not_recorded()?;
+                    } else {
+                        apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::display_step!($($step)?), &mut input)?;
+                    }
+                })+
                 input.finish()?;
                 Ok(row)
             }
