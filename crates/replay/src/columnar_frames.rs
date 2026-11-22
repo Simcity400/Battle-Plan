@@ -12,7 +12,7 @@ use std::{io, sync::Arc, time::Instant};
 mod input;
 mod reader;
 pub use input::{NotSaved, Source, is_not_saved};
-pub use reader::{Damage, DamageScope, Recording, Run, strings_frame, strings_of, table_name};
+pub use reader::{Damage, DamageScope, Recording, Run, TableCoverage, strings_frame, strings_of, table_name};
 pub use replay_columnar::container::Open;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -71,6 +71,50 @@ pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
         }
     }
     Ok(withheld)
+}
+
+pub(crate) const REQUIRED_DERIVED_VERSIONS: &[(TableId, u32, &str)] = &[(
+    TableId::SupplyHealth,
+    2,
+    "SupplyHealth was derived by version 1 (from rounded display supply ratios) and cannot decide off-grid supply thresholds",
+)];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DerivedCoverage {
+    pub(crate) table: usize,
+    pub(crate) from_run: u32,
+    pub(crate) from_ordinal: u32,
+    pub(crate) reason: String,
+}
+
+pub(crate) fn encode_derived_from(from_run: u32, from_ordinal: u32) -> io::Result<Vec<u8>> {
+    let mut writer = replay_columnar::leaf::Writer::new();
+    writer.varint(u64::from(from_run))?;
+    writer.varint(u64::from(from_ordinal))?;
+    Ok(writer.into_bytes())
+}
+
+pub(crate) fn decode_derived_from(bytes: &[u8]) -> io::Result<(u32, u32)> {
+    let mut reader = replay_columnar::leaf::Reader::new(bytes);
+    let from_run = reader.varint_u32()?;
+    let from_ordinal = reader.varint_u32()?;
+    reader.finish()?;
+    Ok((from_run, from_ordinal))
+}
+
+pub(crate) fn derived_withheld(root: &replay_columnar::container::Root, tables: usize, withheld: &mut Vec<(usize, String)>) {
+    for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
+        let index = table.index();
+        if index < tables
+            && !withheld.iter().any(|(held, _)| *held == index)
+            && root
+                .section(replay_columnar::container::SectionKey::derived(index as u32))
+                .map_or(1, |section| section.version)
+                < required
+        {
+            withheld.push((index, reason.to_owned()));
+        }
+    }
 }
 
 pub fn view_heap_bytes(view: &TableView) -> usize {
@@ -303,8 +347,28 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
         }
         self.stepped = self.built == Some((run, self.ordinal));
         self.ordinal += 1;
+        let ordinal = self.ordinal;
         let timed = self.timed;
-        self.slots.par_iter_mut().try_for_each(|slot| move_slot(slot, timed, |reader| reader.step(recording).map(drop)))?;
+        self.slots.par_iter_mut().try_for_each(|slot| {
+            if slot.reader.is_none()
+                && recording.predates(slot.id.index()).is_none()
+                && matches!(recording.table_coverage(slot.id.index(), run), TableCoverage::WithheldBefore { ordinal: valid, .. } if ordinal == valid)
+            {
+                slot.lost = None;
+                slot.view = None;
+                slot.update = None;
+                slot.reader = match TableReader::new(recording, run, slot.id, None) {
+                    Ok(reader) => Some(reader),
+                    Err(error) => {
+                        slot.lost = Some(lost(error)?);
+                        None
+                    }
+                };
+                move_slot(slot, timed, |reader| reader.go_to(recording, ordinal))
+            } else {
+                move_slot(slot, timed, |reader| reader.step(recording).map(drop))
+            }
+        })?;
         Ok(true)
     }
 

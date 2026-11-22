@@ -64,6 +64,7 @@ pub fn at(recording: &Recording, run: u32, table: TableId, hour: i32, columns: O
 }
 
 pub fn at_keys(recording: &Recording, run: u32, table: TableId, hour: i32, columns: Option<&[usize]>, keys: Keys<'_>) -> io::Result<Snapshot> {
+    check_withheld_run(recording, run, table, hour, hour)?;
     let ordinal = ordinal_of(recording, run, hour)?;
     let mut reader = TableReader::new(recording, run, table, columns)?;
     reader.seek(recording, ordinal)?;
@@ -109,6 +110,13 @@ pub fn at_each(
     let mut asks = asks.to_vec();
     asks.sort_unstable();
     asks.dedup();
+    if let (Some(first), Some(last)) = (asks.first(), asks.last()) {
+        if let Some(valid) = check_withheld_run(recording, run, table, first.0, last.0)?
+            && first.0 < valid
+        {
+            check_withheld_run(recording, run, table, first.0, first.0)?;
+        }
+    }
     let mut reader = TableReader::new(recording, run, table, columns)?;
     reader.index_keys();
     for hour_asks in asks.chunk_by(|a, b| a.0 == b.0) {
@@ -328,17 +336,12 @@ pub fn log_span(
     if recording.predates(index).is_some() {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
-    if let Some(reason) = recording.withheld_reason(index) {
-        return Err(crate::columnar_frames::Damage::wrap(
-            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
-            invalid(reason.to_owned()),
-        ));
-    }
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
     if held.ordinals == 0 {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     if from > to {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
@@ -553,9 +556,34 @@ pub fn log_span(
     Ok(LogSpan { columns: columns.to_vec(), texts: sink.texts, gaps })
 }
 
+fn check_withheld_run(recording: &Recording, run: u32, table: TableId, _from: i32, to: i32) -> io::Result<Option<i32>> {
+    let index = table.index();
+    if recording.predates(index).is_some() {
+        return Ok(None);
+    }
+    match recording.table_coverage(index, run) {
+        crate::columnar_frames::TableCoverage::Valid => Ok(None),
+        crate::columnar_frames::TableCoverage::WithheldAll(reason) => Err(crate::columnar_frames::Damage::wrap(
+            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+            invalid(reason.to_owned()),
+        )),
+        crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+            let valid = recording.run(run)?.first_hour + ordinal as i32;
+            if to < valid {
+                return Err(crate::columnar_frames::Damage::wrap(
+                    crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+                    invalid(reason.to_owned()),
+                ));
+            }
+            Ok(Some(valid))
+        }
+    }
+}
+
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
     if first > last {
         return Ok(Vec::new());
@@ -612,8 +640,9 @@ pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i3
 }
 
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<StatusRun>> {
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
     if first > last {
         return Ok(Vec::new());
@@ -767,19 +796,41 @@ fn uncovered(recording: &Recording, run: u32, blocks: std::ops::Range<u32>, cove
     let held = recording.run(run)?;
     let first_hour = i64::from(held.first_hour);
     let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut remain: Vec<(i64, i64)> = Vec::new();
+    let mut next: Vec<(i64, i64)> = Vec::new();
     for block in blocks {
         let (start, hours) = held.block(block as usize);
-        let (from, to) = (first_hour + i64::from(start), first_hour + i64::from(start + hours));
-        if covered.iter().any(|&(begin, end)| begin <= from && to <= end) {
-            continue;
-        }
         let (a, b) = (start.max(first), (start + hours - 1).min(last));
         if a > b {
             continue;
         }
-        match out.last_mut() {
-            Some((_, end)) if *end + 1 == a => *end = b,
-            _ => out.push((a, b)),
+        remain.clear();
+        remain.push((first_hour + i64::from(a), first_hour + i64::from(b) + 1));
+        for &(begin, end) in covered {
+            if remain.is_empty() {
+                break;
+            }
+            next.clear();
+            for &(lo, hi) in &remain {
+                if end <= lo || begin >= hi {
+                    next.push((lo, hi));
+                } else {
+                    if lo < begin {
+                        next.push((lo, begin));
+                    }
+                    if end < hi {
+                        next.push((end, hi));
+                    }
+                }
+            }
+            std::mem::swap(&mut remain, &mut next);
+        }
+        for &(lo, hi) in &remain {
+            let (a, b) = ((lo - first_hour) as u32, (hi - 1 - first_hour) as u32);
+            match out.last_mut() {
+                Some((_, end)) if *end + 1 == a => *end = b,
+                _ => out.push((a, b)),
+            }
         }
     }
     Ok(out)
@@ -815,14 +866,41 @@ impl Bin {
             };
             return;
         }
-        if fold.min < self.min {
-            (self.min, self.min_bucket) = (fold.min, bucket(fold.min_bucket));
+        let first_bucket = bucket(fold.first_bucket);
+        let last_bucket = bucket(fold.last_bucket);
+        let min_bucket = bucket(fold.min_bucket);
+        let max_bucket = bucket(fold.max_bucket);
+        if first_bucket < self.first_bucket {
+            (self.first, self.first_bucket) = (fold.first, first_bucket);
         }
-        if fold.max > self.max {
-            (self.max, self.max_bucket) = (fold.max, bucket(fold.max_bucket));
+        if fold.min < self.min || (fold.min == self.min && min_bucket < self.min_bucket) {
+            (self.min, self.min_bucket) = (fold.min, min_bucket);
         }
-        (self.last, self.last_bucket) = (fold.last, bucket(fold.last_bucket));
+        if fold.max > self.max || (fold.max == self.max && max_bucket < self.max_bucket) {
+            (self.max, self.max_bucket) = (fold.max, max_bucket);
+        }
+        if last_bucket >= self.last_bucket {
+            (self.last, self.last_bucket) = (fold.last, last_bucket);
+        }
         self.hours += fold.hours;
+    }
+
+    fn merge_later(&mut self, later: &Self) {
+        if self.hours == 0 {
+            *self = *later;
+            return;
+        }
+        if later.hours == 0 {
+            return;
+        }
+        if later.min < self.min {
+            (self.min, self.min_bucket) = (later.min, later.min_bucket);
+        }
+        if later.max > self.max {
+            (self.max, self.max_bucket) = (later.max, later.max_bucket);
+        }
+        (self.last, self.last_bucket) = (later.last, later.last_bucket);
+        self.hours += later.hours;
     }
 }
 
@@ -918,6 +996,10 @@ pub fn chart(
 
 pub const WALKED: u8 = u8::MAX;
 
+const fn ceil_multiple(hour: i64, size: i64) -> i64 {
+    (hour + size - 1).div_euclid(size) * size
+}
+
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart_at(
     recording: &Recording,
@@ -930,9 +1012,32 @@ pub fn chart_at(
     level: u8,
     bin_hours: i64,
 ) -> io::Result<Chart> {
+    let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let first_bin_hour = i64::from(from).div_euclid(bin_hours) * bin_hours;
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
-    let (first, last) = (ordinal_of(recording, run, from)?, ordinal_of(recording, run, to)?);
+    let (read_from, min_bucket_hour) = match valid_hour {
+        Some(valid) if from < valid => {
+            let aligned = ceil_multiple(i64::from(valid), bin_hours);
+            if aligned > i64::from(to) {
+                return Ok(Chart {
+                    level,
+                    bin_hours,
+                    first_bin_hour,
+                    bins,
+                    keys: Vec::new(),
+                    values: Vec::new(),
+                    totals: Vec::new(),
+                    life: Vec::new(),
+                    pieces: 0,
+                    walked: 0,
+                });
+            }
+            (aligned as i32, aligned)
+        }
+        Some(valid) => (from, i64::from(valid)),
+        None => (from, i64::MIN),
+    };
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = match level {
         WALKED => Vec::new(),
@@ -971,7 +1076,17 @@ pub fn chart_at(
         .collect::<io::Result<Vec<_>>>()?;
     let covered: Vec<(i64, i64)> = decoded
         .iter()
-        .map(|(piece, _)| (piece.directory.first_hour, piece.directory.first_hour + i64::from(piece.directory.hours)))
+        .filter_map(|(piece, _)| {
+            let size = summary::bucket_hours(piece.directory.level);
+            let floor = if min_bucket_hour > i64::MIN {
+                ceil_multiple(min_bucket_hour, size)
+            } else {
+                i64::MIN
+            };
+            let lo = piece.directory.first_hour.max(floor);
+            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
+            (lo < hi).then_some((lo, hi))
+        })
         .collect();
     let mut asked: Vec<u128> = match keys {
         Some(keys) => keys.iter().copied().filter(|&key| decoded.iter().any(|(piece, _)| piece.key_at(key).is_some())).collect(),
@@ -980,11 +1095,12 @@ pub fn chart_at(
     asked.sort_unstable();
     asked.dedup();
     let grid = Grid {
-        from: i64::from(from),
+        from: i64::from(read_from),
         to: i64::from(to),
         first_bin_hour,
         bin_hours,
         bins,
+        min_bucket_hour,
     };
     chart.values = vec![Bin::default(); asked.len() * bins];
     chart.life = vec![0; asked.len() * bins];
@@ -1020,9 +1136,9 @@ pub fn chart_at(
         walked.sort_unstable_by_key(|(key, _)| *key);
         for (key, folded) in walked {
             let row = chart.row(key, &mut rows);
-            for bin in 0..bins {
-                chart.life[row * bins + bin] += folded.life[bin];
-                if let Some(fold) = folded.fold(bin) {
+            for (bin, walked_bin) in folded.bins {
+                chart.life[row * bins + bin] += walked_bin.life;
+                if let Some(fold) = walked_bin.fold() {
                     chart.add(row, bin, &fold);
                 }
             }
@@ -1033,6 +1149,21 @@ pub fn chart_at(
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
     let held = recording.run(run)?;
+    let valid_hour = match recording.predates(table.index()) {
+        Some(_) => None,
+        None => match recording.table_coverage(table.index(), run) {
+            crate::columnar_frames::TableCoverage::Valid => None,
+            crate::columnar_frames::TableCoverage::WithheldAll(reason) => {
+                return Err(crate::columnar_frames::Damage::wrap(
+                    crate::columnar_frames::DamageScope::Withheld { table: table.index() as u32 },
+                    invalid(reason.to_owned()),
+                ));
+            }
+            crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => {
+                Some(i64::from(held.first_hour) + i64::from(ordinal))
+            }
+        },
+    };
     let blocks = held.pages() as u32;
     let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;
     let mut spans: HashMap<u128, (i64, i64), foldhash::fast::RandomState> = HashMap::default();
@@ -1073,7 +1204,13 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
             }
         }
     }
-    let mut out: Vec<(u128, i64, i64)> = spans.into_iter().map(|(key, (first, last))| (key, first, last)).collect();
+    let mut out: Vec<(u128, i64, i64)> = spans
+        .into_iter()
+        .filter_map(|(key, (first, last))| {
+            let first = valid_hour.map_or(first, |floor| first.max(floor));
+            (first <= last).then_some((key, first, last))
+        })
+        .collect();
     out.sort_unstable();
     Ok(out)
 }
@@ -1108,19 +1245,48 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(blocks)
 }
 
+#[derive(Clone, Copy, Default)]
+struct WalkBin {
+    value: Option<Fold>,
+    life: u32,
+    changes: u64,
+    falls: u64,
+    last_hour: i64,
+}
+
+impl WalkBin {
+    fn fold(&self) -> Option<Fold> {
+        let mut fold = self.value?;
+        fold.changes += self.changes;
+        fold.falls += self.falls;
+        Some(fold)
+    }
+}
+
+#[derive(Default)]
 struct Row {
-    values: Vec<Option<Fold>>,
-    life: Vec<u32>,
-    counts: Vec<(u64, u64)>,
+    bins: Vec<(usize, WalkBin)>,
     lived: Option<(i64, i64)>,
 }
 
 impl Row {
-    fn fold(&self, bin: usize) -> Option<Fold> {
-        let mut fold = self.values[bin]?;
-        fold.changes += self.counts[bin].0;
-        fold.falls += self.counts[bin].1;
-        Some(fold)
+    fn bin(&mut self, bin: usize) -> &mut WalkBin {
+        if let Some(&(last, _)) = self.bins.last() {
+            if last == bin {
+                return &mut self.bins.last_mut().expect("last").1;
+            }
+            if bin > last {
+                self.bins.push((bin, WalkBin::default()));
+                return &mut self.bins.last_mut().expect("pushed").1;
+            }
+        }
+        match self.bins.binary_search_by_key(&bin, |&(at, _)| at) {
+            Ok(at) => &mut self.bins[at].1,
+            Err(at) => {
+                self.bins.insert(at, (bin, WalkBin::default()));
+                &mut self.bins[at].1
+            }
+        }
     }
 }
 
@@ -1160,13 +1326,7 @@ impl<'a> Walk<'a> {
     }
 
     fn row(&mut self, key: u128) -> &mut Row {
-        let bins = self.bins;
-        self.rows.entry(key).or_insert_with(|| Row {
-            values: vec![None; bins],
-            life: vec![0; bins],
-            counts: vec![(0, 0); bins],
-            lived: None,
-        })
+        self.rows.entry(key).or_default()
     }
 
     fn parts(&self, from: i64, to: i64) -> Vec<(usize, i64, i64)> {
@@ -1189,7 +1349,7 @@ impl<'a> Walk<'a> {
         let parts = self.parts(from, to);
         let row = self.row(key);
         for (bin, start, end) in parts {
-            row.life[bin] += (end - start) as u32;
+            row.bin(bin).life += (end - start) as u32;
         }
         let lived = row.lived.get_or_insert((from, to - 1));
         lived.0 = lived.0.min(from);
@@ -1198,13 +1358,23 @@ impl<'a> Walk<'a> {
 
     fn add_value(&mut self, key: u128, value: i64, from: i64, to: i64) {
         let parts = self.parts(from, to);
+        if parts.is_empty() {
+            return;
+        }
         let row = self.row(key);
         for (bin, start, end) in parts {
             let mut part = Fold::constant(value, (end - start) as u32, summary::bucket_of(start, 0));
             part.last_bucket = summary::bucket_of(end - 1, 0);
-            match &mut row.values[bin] {
-                Some(held) => held.merge(&part),
-                slot @ None => *slot = Some(part),
+            let slot = row.bin(bin);
+            match &mut slot.value {
+                Some(held) => {
+                    held.merge(&part);
+                    slot.last_hour = slot.last_hour.max(end - 1);
+                }
+                empty @ None => {
+                    *empty = Some(part);
+                    slot.last_hour = end - 1;
+                }
             }
         }
     }
@@ -1239,9 +1409,9 @@ impl<'a> Walk<'a> {
             && before != now
             && let Some(&(bin, _, _)) = self.parts(hour, hour + 1).first()
         {
-            let counts = &mut self.row(key).counts[bin];
-            counts.0 += 1;
-            counts.1 += u64::from(now < before);
+            let slot = self.row(key).bin(bin);
+            slot.changes += 1;
+            slot.falls += u64::from(now < before);
         }
     }
 
@@ -1401,13 +1571,14 @@ struct Grid {
     first_bin_hour: i64,
     bin_hours: i64,
     bins: usize,
+    min_bucket_hour: i64,
 }
 
 impl Grid {
     fn bin(&self, directory: &summary::Directory, bucket: u32) -> Option<usize> {
         let size = summary::bucket_hours(directory.level);
         let start = (directory.first_bucket + i64::from(bucket)) * size;
-        if start + size <= self.from || start > self.to {
+        if start < self.min_bucket_hour || start + size <= self.from || start > self.to {
             return None;
         }
         usize::try_from((start - self.first_bin_hour).div_euclid(self.bin_hours))
@@ -1438,7 +1609,7 @@ impl Grid {
                 totals[bin].add(&fold);
             }
         };
-        for (place, (piece, frame)) in pieces.iter().enumerate() {
+        for (piece, frame) in pieces {
             let Some(at) = piece.key_at(key) else { continue };
             let directory = &piece.directory;
             let buckets = directory.buckets;
@@ -1456,7 +1627,7 @@ impl Grid {
                     summary::Span::None(count) => bucket += run(count, bucket)?,
                     summary::Span::One(fold) => {
                         if let Some(bin) = self.bin(directory, bucket) {
-                            merge(bin, fold, directory.level, mark(place, bucket));
+                            merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket)));
                         }
                         bucket += 1;
                     }
@@ -1473,7 +1644,7 @@ impl Grid {
                             if let Some(bin) = bin {
                                 let mut fold = Fold::constant(value, hours, directory.first_bucket + i64::from(start));
                                 fold.last_bucket = directory.first_bucket + i64::from(bucket - 1);
-                                merge(bin, fold, directory.level, mark(place, bucket - 1));
+                                merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket - 1)));
                             }
                         }
                     }
@@ -1523,8 +1694,15 @@ impl By {
     }
 }
 
-fn mark(piece: usize, bucket: u32) -> u64 {
-    ((piece as u64) << 32 | u64::from(bucket)) + 1
+fn hour_mark(hour: i64) -> u64 {
+    (hour - i64::from(i32::MIN) + 1) as u64
+}
+
+fn bucket_last_hour(directory: &summary::Directory, bucket: u32) -> i64 {
+    let size = summary::bucket_hours(directory.level);
+    let bucket_end = (directory.first_bucket + i64::from(bucket) + 1) * size;
+    let piece_end = directory.first_hour + i64::from(directory.hours);
+    bucket_end.min(piece_end) - 1
 }
 
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
@@ -1555,6 +1733,7 @@ fn top_with(
     by: By,
     ranked: bool,
 ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+    let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let per_pixel = ((i64::from(to) - i64::from(from) + 1) / i64::from(width.max(1))).max(1);
     if per_pixel < summary::bucket_hours(0) {
         return Err(invalid("A top-N view's bins are six hours or wider"));
@@ -1569,8 +1748,20 @@ fn top_with(
     if n == 0 {
         return Ok(vec![Vec::new(); bins]);
     }
-    let (first, last) = (ordinal_of(recording, run, from)?, ordinal_of(recording, run, to)?);
-    let extents = pieces(recording, run, table.index(), first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1, level)?;
+    let (read_from, min_bucket_hour) = match valid_hour {
+        Some(valid) if from < valid => {
+            let aligned = ceil_multiple(i64::from(valid), bin_hours);
+            if aligned > i64::from(to) {
+                return Ok(vec![Vec::new(); bins]);
+            }
+            (aligned as i32, aligned)
+        }
+        Some(valid) => (from, i64::from(valid)),
+        None => (from, i64::MIN),
+    };
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
+    let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
+    let extents = pieces(recording, run, table.index(), blocks.clone(), level)?;
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
@@ -1581,7 +1772,38 @@ fn top_with(
             Ok((piece, frame, column))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let from_ranks = ranked && by == By::Last && !decoded.is_empty() && decoded.iter().all(|(piece, _, column)| usize::from(piece.rank(*column)) >= n);
+    let covered: Vec<(i64, i64)> = decoded
+        .iter()
+        .filter_map(|(piece, _, _)| {
+            let size = summary::bucket_hours(piece.directory.level);
+            let floor = if min_bucket_hour > i64::MIN {
+                ceil_multiple(min_bucket_hour, size)
+            } else {
+                i64::MIN
+            };
+            let lo = piece.directory.first_hour.max(floor);
+            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
+            (lo < hi).then_some((lo, hi))
+        })
+        .collect();
+    let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
+    let walked: HashMap<u128, Row, foldhash::fast::RandomState> = if ranges.is_empty() {
+        HashMap::default()
+    } else {
+        let registry = crate::summaries::registry()?;
+        let Some((_, Shape::Values(columns))) = registry.iter().find(|(held, _)| *held == table.index()) else {
+            return Err(invalid("The table has no summarized columns"));
+        };
+        let column = *columns
+            .iter()
+            .find(|column| column.source.id() == source)
+            .ok_or_else(|| invalid("The summary holds no such column"))?;
+        let mut walk = Walk::new(Some(column.source), None, first_bin_hour, bin_hours, bins);
+        walk_ranges(recording, run, table, &inputs(column.source), &ranges, &mut walk)?;
+        walk.rows
+    };
+    let from_ranks =
+        ranges.is_empty() && ranked && by == By::Last && !decoded.is_empty() && decoded.iter().all(|(piece, _, column)| usize::from(piece.rank(*column)) >= n);
     let ranks = match from_ranks {
         true => decoded
             .par_iter()
@@ -1591,15 +1813,16 @@ fn top_with(
     };
     let decoded: Vec<(Piece<'_>, ColumnFrame)> = decoded.into_iter().map(|(piece, frame, _)| (piece, frame)).collect();
     let grid = Grid {
-        from: i64::from(from),
+        from: i64::from(read_from),
         to: i64::from(to),
         first_bin_hour,
         bin_hours,
         bins,
+        min_bucket_hour,
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
-        false => grid.top_folded(&decoded, n, by),
+        false => grid.top_folded(&decoded, &walked, n, by),
     }
 }
 
@@ -1644,9 +1867,15 @@ impl Grid {
             .collect())
     }
 
-    fn top_folded(&self, pieces: &[(Piece<'_>, ColumnFrame)], n: usize, by: By) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+    fn top_folded(
+        &self,
+        pieces: &[(Piece<'_>, ColumnFrame)],
+        walked: &HashMap<u128, Row, foldhash::fast::RandomState>,
+        n: usize,
+        by: By,
+    ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
         use std::cmp::Ordering;
-        let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).collect();
+        let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).chain(walked.keys().copied()).collect();
         keys.sort_unstable();
         keys.dedup();
         let bins = self.bins;
@@ -1658,6 +1887,25 @@ impl Grid {
                 values.fill(Bin::default());
                 marks.fill(0);
                 self.fold_key(pieces, key, &mut values, &mut life, None, Some(&mut marks))?;
+                if let Some(row) = walked.get(&key) {
+                    for &(bin, walked_bin) in &row.bins {
+                        if let Some(fold) = walked_bin.fold() {
+                            let mark = hour_mark(walked_bin.last_hour);
+                            if values[bin].hours == 0 {
+                                values[bin].add(&fold);
+                                marks[bin] = mark;
+                            } else if mark < marks[bin] {
+                                let mut combined = Bin::default();
+                                combined.add(&fold);
+                                combined.merge_later(&values[bin]);
+                                values[bin] = combined;
+                            } else {
+                                values[bin].add(&fold);
+                                marks[bin] = mark;
+                            }
+                        }
+                    }
+                }
                 for (bin, held) in values.iter().enumerate() {
                     if held.hours == 0 {
                         continue;

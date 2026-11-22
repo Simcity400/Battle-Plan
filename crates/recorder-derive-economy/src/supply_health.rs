@@ -25,7 +25,13 @@ const SLOT: [usize; 1] = columns::<CountryRow, 1>(["canonical_slot"]);
 const LINK: [usize; 1] = columns::<CountryLinkRow, 1>(["canonical_slot"]);
 const OWNERS: [usize; 2] = columns::<DivisionRow, 2>(["roster_owner", "expeditionary_owner"]);
 const TRANSFER: [usize; 1] = columns::<DivisionLandInputsRow, 1>(["naval_transfer"]);
-const SUPPLY: [usize; 4] = columns::<DivisionStatusRow, 4>(["supply_ratio", "supply_grace_maximum", "supply_grace_remaining", "supply_ratio_exact"]);
+const SUPPLY: [usize; 5] = columns::<DivisionStatusRow, 5>([
+    "supply_ratio",
+    "supply_grace_maximum",
+    "supply_grace_remaining",
+    "supply_ratio_exact",
+    "supply_grace_exact",
+]);
 
 const fn read(table: TableId, columns: &'static [usize]) -> Read {
     Read { table, columns: Columns::These(columns), watch: Watch::Changed, required: true }
@@ -68,9 +74,9 @@ struct Thresholds {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Operands {
-    received: i64,
+    received: [i64; 2],
     maximum_grace: i64,
-    remaining_grace: i64,
+    remaining_grace: [i64; 2],
     naval_transfer: bool,
 }
 
@@ -81,19 +87,8 @@ impl Thresholds {
         Ok(Self { grace: value(GRACE)?, low: value(LOW)?, very_low_icon: value(VERY_LOW_ICON)?, low_icon: value(LOW_ICON)? })
     }
 
-    fn effective(self, division: &Operands) -> i64 {
-        if division.maximum_grace <= 0 {
-            return 0;
-        }
-        let divisor = self.grace * ONE;
-        let sentinel = matches!(division.remaining_grace, i64::MAX | i64::MIN | -0x7fff_ffff_ffff_ffff);
-        let grace = if divisor == 0 || sentinel { 0xffff_ffff } else { division.remaining_grace.wrapping_mul(ONE) / divisor };
-        division.received.max(grace).clamp(0, ONE)
-    }
-
-    fn state(self, division: &Operands) -> u8 {
-        let low = !division.naval_transfer && self.effective(division) < self.low;
-        let shown = if low { division.received } else { ONE };
+    fn state_at(self, low: bool, received: i64) -> u8 {
+        let shown = if low { received } else { ONE };
         if shown < self.very_low_icon {
             NO_SUPPLY
         } else if shown < self.low_icon || low {
@@ -101,6 +96,51 @@ impl Thresholds {
         } else {
             IN_SUPPLY
         }
+    }
+
+    fn state(self, division: &Operands) -> u8 {
+        if division.naval_transfer {
+            return self.state_at(false, ONE);
+        }
+        let [eff_low, eff_high] = DivisionStatusRow::effective_supply_bounds(
+            division.received,
+            division.maximum_grace,
+            division.remaining_grace,
+            self.grace as i32,
+        );
+        let mut decided: Option<u8> = None;
+        let mut observe = |candidate: u8| -> bool {
+            match decided {
+                None => {
+                    decided = Some(candidate);
+                    true
+                }
+                Some(existing) => existing == candidate,
+            }
+        };
+        if eff_high >= self.low && !observe(self.state_at(false, ONE)) {
+            return UNKNOWN;
+        }
+        if eff_low < self.low {
+            let [r_low, r_high] = division.received;
+            let low_r_high = if division.maximum_grace <= 0 || self.low > ONE {
+                r_high
+            } else {
+                r_high.min(self.low.saturating_sub(1))
+            };
+            if r_low <= low_r_high {
+                if !observe(self.state_at(true, r_low)) {
+                    return UNKNOWN;
+                }
+                if r_low < self.very_low_icon
+                    && self.very_low_icon <= low_r_high
+                    && !observe(self.state_at(true, self.very_low_icon))
+                {
+                    return UNKNOWN;
+                }
+            }
+        }
+        decided.unwrap_or(UNKNOWN)
     }
 }
 
@@ -116,12 +156,12 @@ fn transfer(hour: &Hour<'_>, id: u64) -> Option<bool> {
     view.bool(TRANSFER[0], view.slot(u128::from(id))?)
 }
 
-fn supply(hour: &Hour<'_>, id: u64) -> io::Result<Option<[i64; 3]>> {
+fn supply(hour: &Hour<'_>, id: u64, grace: i32) -> io::Result<Option<([i64; 2], i64, [i64; 2])>> {
     let view = hour.table(TableId::DivisionStatus);
     let Some(at) = view.slot(u128::from(id)) else { return Ok(None) };
     let status: DivisionStatusRow = row(&view, at, &SUPPLY)?;
-    Ok(match (status.displayed_supply_ratio(), status.supply_grace_maximum, status.supply_grace_remaining) {
-        (Some(received), Recorded::Value(maximum), Recorded::Value(remaining)) => Some([received, maximum, remaining]),
+    Ok(match (status.recorded_supply_ratio_bounds(), status.supply_grace_maximum, status.recorded_supply_grace_bounds(grace)) {
+        (Some(received), Recorded::Value(maximum), Some(remaining)) => Some((received, maximum, remaining)),
         _ => None,
     })
 }
@@ -159,8 +199,8 @@ impl SupplyHealth {
         if slot == NONE {
             return Ok(Division { slot, state: UNKNOWN });
         }
-        let state = match (transfer(hour, id), supply(hour, id)?) {
-            (Some(naval_transfer), Some([received, maximum_grace, remaining_grace])) => thresholds.state(&Operands { received, maximum_grace, remaining_grace, naval_transfer }),
+        let state = match (transfer(hour, id), supply(hour, id, thresholds.grace as i32)?) {
+            (Some(naval_transfer), Some((received, maximum_grace, remaining_grace))) => thresholds.state(&Operands { received, maximum_grace, remaining_grace, naval_transfer }),
             _ => UNKNOWN,
         };
         Ok(Division { slot, state })
@@ -262,7 +302,11 @@ impl Writer for SupplyHealth {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
+    }
+
+    fn accepts_version(&self, version: u32) -> bool {
+        matches!(version, 1 | 2)
     }
 
     fn tables(&self) -> &'static [Output] {

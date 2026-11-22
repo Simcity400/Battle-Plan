@@ -267,7 +267,10 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
             if matches!(status.out_of_supply_days, Recorded::Value(Some(days)) if days != 0) {
                 terms.push("days out of supply");
             }
-            if status.displayed_supply_ratio().is_some_and(|ratio| ratio < 100_000) {
+            if status
+                .recorded_supply_ratio_bounds()
+                .is_some_and(|[_, high]| high < 100_000)
+            {
                 terms.push("partial supply");
             }
         }

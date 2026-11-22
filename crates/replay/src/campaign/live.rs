@@ -769,6 +769,7 @@ impl LiveWriter {
             writer.compress_on(encoder.frames());
         }
         writer.container().section(SectionKey::FACTS, sections::FACTS)?;
+        writer.record_derived_versions(self.kinds.len(), &self.writers.table_versions())?;
         for part in &mut self.parts {
             let owner = |entry: &&StateEntry| !matches!(entry.owner.kind, SectionKind::WorldLog | SectionKind::Records);
             part.open(writer.container(), entries.iter().find(owner))?;
@@ -1376,6 +1377,7 @@ impl LiveWriter {
                 writer.compress_on(encoder.frames());
             }
             writer.container().section(SectionKey::FACTS, sections::FACTS)?;
+            writer.record_derived_versions(self.kinds.len(), &self.writers.table_versions())?;
             for part in &mut self.parts {
                 part.open(writer.container(), None)?;
             }

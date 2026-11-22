@@ -236,9 +236,10 @@ impl GunMember {
             hp: self.hp,
             org: 0,
             bars: true,
+            status_recorded: true,
             status: counter_status::Member {
-                supply_ratio: self.supply_ratio,
-                naval_transfer: self.naval_transfer,
+                supply_ratio: counter_status::SupplyRatio::exact(self.supply_ratio),
+                naval_transfer: Some(self.naval_transfer),
                 own: self.own,
                 ..Default::default()
             },
