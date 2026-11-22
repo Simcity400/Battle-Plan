@@ -1504,7 +1504,7 @@ fn convoy_weapon_bound_for_frame(
     database: Option<&content_reader_core::equipment::Database>,
     frame: &DecodedFrame,
 ) -> io::Result<Result<[i64; 2], String>> {
-    use content_reader_core::equipment::{STAT_COUNT, StatComponents, stat_index};
+    use content_reader_core::equipment::{STAT_COUNT, StatComponents, StatGroup, stat_index};
     use content_reader_core::parser::c_string;
 
     let mut range = match static_bound {
@@ -1536,6 +1536,9 @@ fn convoy_weapon_bound_for_frame(
         .iter()
         .filter_map(|name| stat_index(name.as_bytes()))
         .collect();
+    let unread_weapon_term = |group: &StatGroup| {
+        group.unread.iter().find(|(index, _)| stats.contains(index)).map(|(_, why)| why.clone())
+    };
     let mut upgrades_by_variant: Option<BTreeMap<u64, Vec<&replay_data::rows::VariantUpgradeRow>>> =
         None;
     let mut modules_by_variant: Option<BTreeMap<u64, Vec<&replay_data::rows::VariantModuleRow>>> =
@@ -1711,6 +1714,13 @@ fn convoy_weapon_bound_for_frame(
                         String::from_utf8_lossy(name)
                     )));
                 };
+                if let Some(why) = unread_weapon_term(group) {
+                    return Ok(Err(format!(
+                        "convoy variant {} upgrade {}: {why}",
+                        definition.id,
+                        String::from_utf8_lossy(name)
+                    )));
+                }
                 if let Err(error) = components.apply(group, i64::from(upgrade.level) * ONE) {
                     return Ok(Err(format!(
                         "convoy variant {} upgrade {}: {error}",
@@ -1742,6 +1752,13 @@ fn convoy_weapon_bound_for_frame(
                         String::from_utf8_lossy(name)
                     )));
                 };
+                if let Some(why) = unread_weapon_term(group) {
+                    return Ok(Err(format!(
+                        "convoy variant {} module {}: {why}",
+                        definition.id,
+                        String::from_utf8_lossy(name)
+                    )));
+                }
                 if let Err(error) = components.apply_module(group, kind) {
                     return Ok(Err(format!(
                         "convoy variant {} module {}: {error}",

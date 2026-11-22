@@ -192,8 +192,7 @@ impl Episodes {
             }
             let observable = c.projects.reader.status() == Status::Complete && c.proven.0.len() == c.linked.len();
             observed_change |= boundary;
-            if observable {
-                if boundary {
+            if boundary && c.projects.reader.status() == Status::Complete {
                     let (reads, histories) = c.proven.clone();
                     let mut history: BTreeMap<u128, Vec<Entry>> = BTreeMap::new();
                     for (&key, cells) in &c.history.rows {
@@ -216,15 +215,14 @@ impl Episodes {
                         row, read: reads[&row.owner], history: histories.get(&row.owner).map(|&read| (read, history.get(key).map_or(&[][..], Vec::as_slice))),
                         person: person(row.program, (row.program as u32 == PROGRAM_REFERENCE).then(|| c.scientists.as_ref().and_then(|t| t.rows.get(&u128::from(row.program >> 32))).map(AsRef::as_ref))),
                     }).collect();
-                    self.fold.observe(piece.possession(), next, next, &shown);
-                } else { self.fold.extend(before, next); }
+                    if observable {
+                        self.fold.observe(piece.possession(), next, next, &shown);
+                    } else {
+                        self.fold.absent(piece.possession(), next, |raw| reads.contains_key(&raw), &shown);
+                    }
+            } else if observable { self.fold.extend(before, next); }
+            if observable {
                 extend(&mut self.observed, next, next);
-            } else if boundary && c.projects.reader.status() == Status::Complete {
-                let present: Vec<_> = c.projects.rows.iter()
-                    .filter_map(|(&key, cells)| project_row((key >> 32) as u32, key as u32, cells))
-                    .filter(|row| c.proven.0.contains_key(&row.owner))
-                    .map(|row| ((row.owner, row.local, row.definition), super::fold::state(&row))).collect();
-                self.fold.absent(piece.possession(), |raw| c.proven.0.contains_key(&raw), &present);
             }
             c.piece.last = next;
         }

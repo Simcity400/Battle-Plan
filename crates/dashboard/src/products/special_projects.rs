@@ -674,11 +674,6 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
                 rows.push((raw, row, scientist));
             }
         }
-        if projects_read.len() != linked.len() {
-            let present: Vec<_> = rows.iter().map(|(_, row, _)| ((row.owner, row.local, row.definition), fold::state(row))).collect();
-            fold.absent(piece.possession(), |raw| projects_read.contains_key(&raw), &present);
-            continue;
-        }
         let shown: Vec<Observed<'_>> = rows
             .iter()
             .map(|(raw, row, scientist)| Observed {
@@ -688,6 +683,10 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
                 person: person(row.program, *scientist),
             })
             .collect();
+        if projects_read.len() != linked.len() {
+            fold.absent(piece.possession(), first, |raw| projects_read.contains_key(&raw), &shown);
+            continue;
+        }
         fold.observe(piece.possession(), first, last, &shown);
         extend(observed, first, last);
     }

@@ -34,6 +34,8 @@ fn localisation() -> Localisation {
         ("PRODUCTION_MATERIALS_STEEL", "Steel"),
         ("AIRWING_MISSION_TYPE_CAS", "Close Air Support"),
         ("deck", "Flight Deck"),
+        ("EQ_MOD_SLOT_main_TITLE", "Main Slot"),
+        ("motor", "$missing_name$"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -138,10 +140,10 @@ fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability
     assert!(refused.contains("lost_gun") && refused.contains("hull_3"), "{refused}");
     let hull_5 = totals("hull_5").unwrap();
     assert_eq!(hull_5.lineage[0].resources, [(b"steel".to_vec(), Ok(100_000))], "the equipment's own resources keep their names and amounts");
-    assert_eq!(hull_5.modules.iter().map(|(source, _)| source.as_str()).collect::<Vec<_>>(), ["Default module Flight Deck", "Default module motor (name unavailable)"]);
+    assert_eq!(hull_5.modules.iter().map(|(source, _)| source.as_str()).collect::<Vec<_>>(), ["Default module Flight Deck in Main Slot", "Default module motor (name unavailable) in engine (name unavailable)"], "a slot names itself by its title, and a name whose text cannot be made is named as unavailable, never blank");
     assert!(hull_5.withheld.is_empty(), "known values are never withheld: {:?}", hull_5.withheld);
     let hull_6 = totals("hull_6").unwrap();
-    assert_eq!(hull_6.withheld, BTreeMap::from([(stat("lg_attack"), "Default module bad (name unavailable): lg_attack = unknown_amount is not a number".to_owned())]), "an unreadable module term withholds the stat it feeds, never a total without it");
+    assert_eq!(hull_6.withheld, BTreeMap::from([(stat("lg_attack"), "Default module bad (name unavailable) in Main Slot: lg_attack = unknown_amount is not a number".to_owned())]), "an unreadable module term withholds the stat it feeds, never a total without it");
 }
 
 #[test]

@@ -495,7 +495,7 @@ fn a_restart_read_while_another_owner_is_unstamped_ends_the_completed_episode() 
     let mut fold = Fold::new(START);
     observe(&mut fold, 1_020, 1_020, &[(done(1), None, Person::Unassigned)]);
     let restarted = running(1, 5);
-    fold.absent(HOLDER, |raw| raw == restarted.owner, &[((restarted.owner, 1, restarted.definition), fold::state(&restarted))]);
+    fold.absent(HOLDER, 1_021, |raw| raw == restarted.owner, &[Observed { row: &restarted, read: 1_021, history: None, person: Person::Unassigned }]);
     observe(&mut fold, 1_022, 1_030, &[(done(1), None, Person::Unassigned)]);
     let completions: Vec<_> = fold.episodes.iter().map(|episode| episode.runs.last().and_then(|run| run.completion.clone())).collect();
     assert_eq!(
@@ -539,4 +539,70 @@ fn an_iterations_episode_is_proven_by_its_own_owners_reads_whatever_other_owners
     let query = crate::answer::query(&source, 1).unwrap();
     let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
     assert!(one_episode(&query, &country, (9001, 1, 40), CHOICE, LAST).unwrap(), "another owner lacking a stamp at the choice hour proves nothing about this owner's project");
+}
+
+#[test]
+fn an_unknown_state_between_a_completion_and_a_running_read_keeps_the_completion_apart() {
+    let mut fold = Fold::new(START);
+    observe(&mut fold, 1_020, 1_020, &[(done(1), None, Person::Unassigned)]);
+    observe(&mut fold, 1_021, 1_021, &[(Row { offset: 0x99, ..done(1) }, None, Person::Unassigned)]);
+    observe(&mut fold, 1_022, 1_030, &[(running(1, 5), None, Person::Unassigned)]);
+    let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+    assert_eq!(starts, [1_020, 1_022], "a state the replay does not know is no evidence the completion was undone");
+}
+
+fn counted_frame(hour: i32, choices: impl Fn(i32) -> u32, stamped: impl Fn(u32, i32) -> Option<i32>) -> replay_frame::frame::DecodedFrame {
+    use replay_data::rows::{ProjectHistoryRow, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = project_frame(hour, |_| (0x18, 1), stamped);
+    let choice = |ordinal| ProjectHistoryRow { owner: 9001, project: 1, ordinal, prototype_reward_handle: 3, option_handle: 4, date: 20, ..Default::default() };
+    *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory((0..choices(hour)).map(choice).collect()));
+    frame
+}
+
+#[test]
+fn a_fall_in_choices_read_while_another_owner_is_unstamped_ends_the_episode_in_the_list_as_in_the_iteration_lookup() {
+    const FIRST: i32 = 20;
+    const RESET: std::ops::Range<i32> = 25..30;
+    const LAST: i32 = 35;
+    let choices = |hour: i32| if RESET.contains(&hour) { 0 } else { 2 };
+    let stamped = |owner: u32, hour: i32| (owner != 11 || !RESET.contains(&hour)).then_some(hour);
+    let frame = |hour| counted_frame(hour, choices, stamped);
+    for (fold, ..) in folded("special-projects-reset-unstamped", FIRST, LAST, frame) {
+        let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+        assert_eq!(starts, [FIRST, RESET.end], "the owner's complete history read with fewer choices is a replacement, whatever another owner's stamps");
+    }
+    let source = synthetic("special-projects-reset-lookup", FIRST, LAST, frame);
+    let query = crate::answer::query(&source, 1).unwrap();
+    let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
+    assert!(!one_episode(&query, &country, (9001, 1, 40), FIRST, LAST).unwrap(), "the iteration lookup splits there too");
+}
+
+#[test]
+fn a_completion_seen_again_after_an_unknown_holder_hour_is_the_same_completion() {
+    use replay_frame::frame::TableView;
+    const FIRST: i32 = 20;
+    const UNKNOWN: i32 = 25;
+    const LAST: i32 = 30;
+    let frame = |hour: i32| {
+        let mut frame = project_frame(hour, |_| (0xe8, 0), |_, hour| Some(hour));
+        if hour == UNKNOWN {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        frame
+    };
+    for (fold, ..) in folded("special-projects-unknown-gap", FIRST, LAST, frame) {
+        assert_eq!(fold.episodes.len(), 1, "one completion, seen on both sides of an hour whose holder is unknown, is counted once: {:?}", fold.episodes);
+    }
+    let running = |hour: i32| {
+        let mut frame = project_frame(hour, |_| (0x18, 1), |_, hour| Some(hour));
+        if hour == UNKNOWN {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        frame
+    };
+    for (fold, ..) in folded("special-projects-unknown-gap-running", FIRST, LAST, running) {
+        let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+        assert_eq!(starts, [FIRST, UNKNOWN + 1], "a running project is never joined across an hour whose holder is unknown");
+    }
 }

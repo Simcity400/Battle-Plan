@@ -117,23 +117,62 @@ impl Fold {
     }
 
     pub fn hold(&mut self, holder: Possession) {
-        if self.holder.is_some_and(|held| held != holder) {
-            self.open.clear();
-            self.ended.clear();
+        match self.holder {
+            Some(held) if (held.0, held.1) != (holder.0, holder.1) => {
+                self.open.clear();
+                self.ended.clear();
+            }
+            Some(held) if held != holder => {
+                let ended = &self.ended;
+                self.open.retain(|key, _| ended.contains(key));
+            }
+            _ => {}
         }
         self.holder = Some(holder);
     }
 
-    pub fn absent(&mut self, holder: Possession, proven: impl Fn(u32) -> bool, present: &[((u32, u32, u32), ProjectState)]) {
-        self.hold(holder);
-        for &(key, state) in present {
-            if terminal(state) {
-                self.ended.insert(key);
-            } else if resumed(state) && self.ended.remove(&key) {
-                self.open.remove(&key);
-            }
+    fn evidence<'h>(&mut self, key: (u32, u32, u32), state: ProjectState, observed: &Observed<'h>, hour: i32) -> Evidence<'h> {
+        if resumed(state) && self.ended.contains(&key) {
+            self.open.remove(&key);
         }
-        self.open.retain(|key, _| !proven(key.0) || present.iter().any(|(held, _)| held == key));
+        let mut held = self.open.get(&key).map(|index| (*index, self.since[index]));
+        let since = held.map_or(observed.read, |(_, since)| since);
+        let mut history = observed.history.filter(|&(read, _)| read >= since);
+        if state == ProjectState::Completed
+            && let Some((index, _)) = held
+            && let Some(known) = self.episodes[index].runs.last().and_then(|run| run.completion.as_ref())
+            && history.and_then(|(_, entries)| completion_date(entries, hour, self.campaign_start)).is_some_and(|marker| marker.hour > known.hour)
+        {
+            self.open.remove(&key);
+            held = None;
+            history = observed.history.filter(|&(read, _)| read >= observed.read);
+        }
+        let iterations = history.map(|(_, entries)| entries.iter().filter(|entry| !entry.completion).count() as i32);
+        if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
+            self.open.remove(&key);
+        }
+        let ended = terminal(state) || (!resumed(state) && self.open.contains_key(&key) && self.ended.contains(&key));
+        Evidence { history, iterations, ended }
+    }
+
+    pub fn absent(&mut self, holder: Possession, hour: i32, proven: impl Fn(u32) -> bool, present: &[Observed<'_>]) {
+        self.hold(holder);
+        let mut seen = Vec::with_capacity(present.len());
+        for observed in present {
+            let row = observed.row;
+            let key = (row.owner, row.local, row.definition);
+            let evidence = self.evidence(key, state(row), observed, hour);
+            if let Some(&index) = self.open.get(&key) {
+                if let Some(count) = evidence.iterations {
+                    self.last_iterations.insert(index, count);
+                }
+                if evidence.ended { self.ended.insert(key); } else { self.ended.remove(&key); }
+            } else {
+                self.ended.remove(&key);
+            }
+            seen.push(key);
+        }
+        self.open.retain(|key, _| !proven(key.0) || seen.contains(key));
         let open = &self.open;
         self.ended.retain(|key| open.contains_key(key));
     }
@@ -150,27 +189,8 @@ impl Fold {
                 continue;
             }
             let done = state == ProjectState::Completed;
-            let restarted = resumed(state) && self.open.contains_key(&key) && self.ended.contains(&key);
-            if restarted {
-                self.open.remove(&key);
-            }
-            let mut held = self.open.get(&key).map(|index| (*index, self.since[index]));
-            let since = held.map_or(observed.read, |(_, since)| since);
-            let mut history = observed.history.filter(|&(read, _)| read >= since);
-            if done
-                && let Some((index, _)) = held
-                && let Some(known) = self.episodes[index].runs.last().and_then(|run| run.completion.as_ref())
-                && history.and_then(|(_, entries)| completion_date(entries, first, self.campaign_start)).is_some_and(|marker| marker.hour > known.hour)
-            {
-                self.open.remove(&key);
-                held = None;
-                history = observed.history.filter(|&(read, _)| read >= observed.read);
-            }
-            let iterations = history.map(|(_, entries)| entries.iter().filter(|entry| !entry.completion).count() as i32);
+            let Evidence { history, iterations, ended: terminal_seen } = self.evidence(key, state, observed, first);
             let iterations_read = history.and_then(|(read, entries)| (!(done && entries.iter().any(|entry| entry.completion))).then_some(read));
-            if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
-                self.open.remove(&key);
-            }
             let index = match self.open.get(&key) {
                 Some(&index) => index,
                 None => {
@@ -181,7 +201,7 @@ impl Fold {
                 }
             };
             next.insert(key, index);
-            if terminal(state) {
+            if terminal_seen {
                 ended.insert(key);
             }
             let previous = self.episodes[index].runs.last().cloned();
@@ -217,6 +237,12 @@ impl Fold {
         self.open = next;
         self.ended = ended;
     }
+}
+
+struct Evidence<'h> {
+    history: Option<(i32, &'h [Entry])>,
+    iterations: Option<i32>,
+    ended: bool,
 }
 
 fn terminal(state: ProjectState) -> bool {

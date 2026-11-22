@@ -213,10 +213,14 @@ fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 fn named(localisation: &Localisation, key: &str, token: &str) -> String {
-    match localisation.get(key).is_some().then(|| localisation.localise_with(key.as_bytes(), &[])) {
-        Some(Ok(name)) => name,
-        _ => format!("{token} (name unavailable)"),
+    if localisation.get(key).is_some()
+        && let (Ok(name), notes) = localisation.localise_with_fallbacks(key.as_bytes(), &[])
+        && notes.is_empty()
+        && !name.trim().is_empty()
+    {
+        return name;
     }
+    format!("{token} (name unavailable)")
 }
 
 fn missions(localisation: &Localisation, missions: &[Vec<u8>]) -> String {
@@ -266,7 +270,7 @@ fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, localisatio
     for (slot, module) in database.default_modules(equipment)? {
         let (shown, slot) = (lossy(module), lossy(slot));
         let design = database.module_design(module).ok_or_else(|| format!("Default module {shown} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"))?;
-        let source = format!("Default module {}", named(localisation, &shown, &shown));
+        let source = format!("Default module {} in {}", named(localisation, &shown, &shown), named(localisation, &format!("EQ_MOD_SLOT_{slot}_TITLE"), &slot));
         if let Some(group) = database.module_stats(module) {
             components.apply_module(group, equipment)?;
             for (index, why) in &group.unread {

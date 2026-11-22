@@ -1136,6 +1136,7 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
             global_gun = { lg_attack = 1.0 }
             avg_first = { add_stats = { lg_attack = 2 } add_average_stats = { lg_attack = -2 } }
             avg_zero = { add_average_stats = { lg_attack = -2 } }
+            broken_gun = { add_stats = { lg_attack = unknown_amount } }
          }
          equipments = {
             convoy_1 = { type = convoy lg_attack = 0.6 }
@@ -1184,6 +1185,10 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
                 LexicalTokenRow {
                     token: 16,
                     literal: b"avg_zero".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 17,
+                    literal: b"broken_gun".to_vec(),
                 },
             ]),
         );
@@ -1294,6 +1299,26 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     )
     .unwrap();
     assert_eq!(upgrade_bound, Ok([0, 120_000]));
+    let broken_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![VariantUpgradeRow {
+            variant: 70,
+            source_ordinal: 0,
+            definition_token: 17,
+            level: 1,
+        }],
+        Vec::new(),
+    );
+    let broken_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &broken_frame,
+    )
+    .unwrap();
+    assert!(
+        broken_bound.as_ref().is_err_and(|why| why.contains("lg_attack = unknown_amount is not a number")),
+        "a recorded upgrade whose weapon term is unreadable gives no bound: {broken_bound:?}"
+    );
 
     let unrecorded_frame = base_frame(Recorded::NotRecorded, Vec::new(), Vec::new());
     assert!(
