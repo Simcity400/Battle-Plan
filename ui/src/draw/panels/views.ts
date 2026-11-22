@@ -7,7 +7,9 @@ import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { detailTexts, detailsStructure, validateProjectDetails } from '../../widgets/special-projects/projectDetailsData.ts';
+import { detailTexts, detailsStructure, effectsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
+import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
+import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 import { projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
@@ -41,6 +43,9 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
 
 const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
   'occupied-states': raw => occupiedStructure(validateOccupiedStates(raw)),
+  'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
+  'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
+  'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {

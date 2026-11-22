@@ -735,3 +735,28 @@ test('a staged product computes its structural result only once', () => {
   [...followed.structures(true)];
   assert.ok(prepared > 0); assert.equal(validations, prepared);
 });
+
+test('a changed effects, stats or pending reward reply reaches the page while playing', () => {
+  const runs = (text: string) => [{ kind: 'text', text, tone: null }];
+  const effects = (text: string) => ({ runs: runs(text), refusals: {} });
+  const replies: Record<string, (text: string) => unknown> = {
+    'technology-effects': text => ({ hour: 1, runs: runs(text), refusals: {}, unavailable: null, warnings: [] }),
+    'content-entity-stats': text => ({ hour: 1, kind: 'equipment', token: 'rifle', name: 'Rifle', stats: [{ label: runs('Attack'), value: runs(text) }], refusals: {}, unavailable: null, warnings: [] }),
+    'special-project-effects': text => ({ hour: 1, output: effects('output'), options: [effects(text)], unavailable: null, warnings: [] }),
+  };
+  for (const [product, reply] of Object.entries(replies)) {
+    const followed = new Followed(() => {});
+    followed.add(1, 'a', product); followed.bind('a', 1, 1);
+    const led: unknown[] = [];
+    const step = (hour: number, text: string) => {
+      followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: hour,
+        panels: [{ id: 1, hour, stepped: true, panel: { data: reply(text), refused: null } }] } }], message => {
+        if (message.type === 'structureLead') led.push(...message.updates.map(update => update.panel?.data));
+      });
+      followed.drain(hour);
+      [...followed.structures(true)];
+    };
+    step(1, 'first'); step(2, 'first'); step(3, 'changed');
+    assert.deepEqual(led, [reply('first'), reply('changed')], product);
+  }
+});
