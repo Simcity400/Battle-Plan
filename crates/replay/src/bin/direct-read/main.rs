@@ -144,11 +144,13 @@ fn seek(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
         Ok((spent, json!({ "run": run, "ordinal": ordinal, "rows": rows, "cells_bytes": reader.held_bytes(), "advanced_ms": round(advanced.wall_ms) })))
     };
     phase("seek: each opened");
+    let purge_requested = options.get("purge").is_some();
+    let mut cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
     let mut cold = Vec::new();
     let mut details = Vec::new();
     for &(run, ordinal) in &hours {
-        if options.get("purge").is_some() {
-            purge(path)?;
+        if purge_requested {
+            cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
         }
         let recording = open(path)?;
         let (spent, mut detail) = one(&recording, run, ordinal)?;
@@ -174,7 +176,9 @@ fn seek(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
         "command": "seek",
         "table": format!("{table:?}"),
         "samples": samples,
-        "purged": options.get("purge").is_some(),
+        "purge_requested": purge_requested,
+        "system_cache_evicted": cache.system_cache_evicted,
+        "cache": cache,
         "each_from_a_recording_opened_for_it": summarize(&cold),
         "again_from_one_recording": summarize(&warm),
         "cells_bytes": spread(&mut details.iter().map(|detail| detail["cells_bytes"].as_f64().unwrap_or(0.0)).collect::<Vec<_>>()),
@@ -225,8 +229,9 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
     let (start, ordinals) = (i64::from(held.first_hour), held.ordinals);
     let eight = eight_keys(&recording, table)?;
     drop(recording);
+    let cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
     let time = |keys: Option<&[u128]>, from: i32, to: i32, level: u8, bin_hours: i64| -> io::Result<Value> {
-        purge(path)?;
+        let probe = replay::cold_cache::probe_file(std::path::Path::new(path))?;
         let cold = open(path)?;
         let meter = Meter::start();
         let chart = lanes::chart_at(&cold, 0, table, source, keys, from, to, level, bin_hours)?;
@@ -237,10 +242,10 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
             lanes::chart_at(&cold, 0, table, source, keys, from, to, level, bin_hours)?;
             warm.push(meter.stop().wall_ms);
         }
-        Ok(json!({ "keys": chart.keys.len(), "pieces": chart.pieces, "walked": chart.walked, "bins": chart.bins, "cold": first.json(), "warm_ms": spread(&mut warm) }))
+        Ok(json!({ "keys": chart.keys.len(), "pieces": chart.pieces, "walked": chart.walked, "bins": chart.bins, "cache_state": probe.label, "process_cold": first.json(), "warm_ms": spread(&mut warm) }))
     };
     let top = |from: i32, to: i32| -> io::Result<Value> {
-        purge(path)?;
+        let probe = replay::cold_cache::probe_file(std::path::Path::new(path))?;
         let cold = open(path)?;
         let meter = Meter::start();
         let got = lanes::top(&cold, 0, table, source, from, to, width as u32, 10, lanes::By::Last)?;
@@ -251,7 +256,7 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
             lanes::top(&cold, 0, table, source, from, to, width as u32, 10, lanes::By::Last)?;
             warm.push(meter.stop().wall_ms);
         }
-        Ok(json!({ "bins": got.len(), "cold": first.json(), "warm_ms": spread(&mut warm) }))
+        Ok(json!({ "bins": got.len(), "cache_state": probe.label, "process_cold": first.json(), "warm_ms": spread(&mut warm) }))
     };
     let mut shown = Vec::new();
     for (name, from, to) in views(start, ordinals) {
@@ -272,21 +277,15 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
     let whole = (end - start + 2 * size).div_euclid(size) * size;
     phase("rank");
     let rank = time(None, start as i32, (end - 1) as i32, level, whole)?;
-    Ok(json!({ "command": "chart-time", "table": format!("{table:?}"), "column": source, "views": shown, "rank_all_keys_whole_run": rank, "memory": labelled() }))
+    Ok(json!({ "command": "chart-time", "table": format!("{table:?}"), "column": source, "cache": cache, "views": shown, "rank_all_keys_whole_run": rank, "memory": labelled() }))
 }
 
-#[cfg(windows)]
 pub fn purge(path: &str) -> io::Result<Value> {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_NO_BUFFERING).open(path)?;
-    let bytes = file.metadata()?.len();
-    Ok(json!({ "command": "purge", "file_bytes": bytes }))
-}
-
-#[cfg(not(windows))]
-pub fn purge(_: &str) -> io::Result<Value> {
-    Err(io::Error::other("purge needs Windows"))
+    replay::cold_cache::probe_file(std::path::Path::new(path))?;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "direct-read purge cannot evict or verify the Windows system file cache: opening a handle with FILE_FLAG_NO_BUFFERING only selects unbuffered I/O for that handle and does not evict cached pages for later opens",
+    ))
 }
 
 fn readall(path: &str) -> io::Result<Value> {

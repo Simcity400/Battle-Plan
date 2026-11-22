@@ -11,6 +11,7 @@ pub const FEATURES: &[&str] = &[
 pub mod at;
 pub mod campaign;
 pub mod cells;
+pub mod cold_cache;
 pub mod columnar_file;
 pub mod columnar_frames;
 #[cfg(any(test, feature = "journal"))]
