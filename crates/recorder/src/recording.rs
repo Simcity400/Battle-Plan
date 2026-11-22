@@ -3803,20 +3803,31 @@ fn step_summary(directory: &Path, from: &str, to: &str) -> Option<String> {
         to,
     )
 }
+#[cfg(test)]
 #[derive(Default)]
 struct ProgressClock {
-    #[cfg(test)]
     fixed: Option<std::rc::Rc<dyn Fn() -> Instant>>,
 }
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct ProgressClock;
 
 impl ProgressClock {
     #[inline]
     fn now(&self) -> Instant {
-        #[cfg(test)]
-        if let Some(clock) = &self.fixed {
-            return clock();
-        }
-        Instant::now()
+        self.fixed().unwrap_or_else(Instant::now)
+    }
+
+    #[cfg(test)]
+    fn fixed(&self) -> Option<Instant> {
+        self.fixed.as_ref().map(|clock| clock())
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn fixed(&self) -> Option<Instant> {
+        None
     }
 }
 

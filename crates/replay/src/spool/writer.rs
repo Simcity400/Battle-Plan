@@ -370,20 +370,31 @@ impl SegmentBackend for FileBackend {
 
 pub type SpoolWriteStartHook = fn(Option<(u32, u64)>);
 
+#[cfg(test)]
 #[derive(Default)]
 struct SyncClock {
-    #[cfg(test)]
     fixed: Option<Arc<dyn Fn() -> Instant + Send + Sync>>,
 }
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct SyncClock;
 
 impl SyncClock {
     #[inline]
     fn now(&self) -> Instant {
-        #[cfg(test)]
-        if let Some(clock) = &self.fixed {
-            return clock();
-        }
-        Instant::now()
+        self.fixed().unwrap_or_else(Instant::now)
+    }
+
+    #[cfg(test)]
+    fn fixed(&self) -> Option<Instant> {
+        self.fixed.as_ref().map(|clock| clock())
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn fixed(&self) -> Option<Instant> {
+        None
     }
 }
 
