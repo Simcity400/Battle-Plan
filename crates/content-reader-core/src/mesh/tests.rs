@@ -2973,16 +2973,28 @@ fn recovery_handles_astra_r3_edge_cases() {
     );
     write(
         "base/gfx/entities/0_other.asset",
-        br#"entity = { name = "dropped_clone_target" pdxmesh = "m" }"#,
+        br#"
+            entity = { name = "dropped_clone_target" pdxmesh = "m" }
+            entity = { name = "chain_parent" pdxmesh = "m" }
+        "#,
     );
     write(
         "base/gfx/entities/1_clone.asset",
-        br#"entity = { name = "dropped_clone_target" clone = "absent_parent" }"#,
+        br#"
+            entity = { name = "dropped_clone_target" clone = "absent_parent" }
+            entity = { name = "chain_child" clone = "chain_parent" }
+            entity = { name = "chain_grandchild" clone = "chain_child" }
+        "#,
     );
     let overlay_dir = root.join("overlay");
     write(
         "overlay/gfx/entities/1_clone.asset",
-        br#"entity = { name = "dropped_clone_target" pdxmesh = "m" game_data = { atlas_size = { @u = 1 } } }"#,
+        br#"
+            entity = { name = "dropped_clone_target" pdxmesh = "m" game_data = { atlas_size = { @u = 1 } } }
+            entity = { name = "chain_parent" pdxmesh = "m" }
+            entity = { name = "chain_child" clone = "chain_parent" }
+            entity = { name = "chain_grandchild" clone = "chain_child" }
+        "#,
     );
     let descriptor = format!(
         "name=\"VisualOverride\"\npath=\"{}\"\n",
@@ -3024,6 +3036,18 @@ fn recovery_handles_astra_r3_edge_cases() {
             .refused_declaration("dropped_clone_target")
             .is_some()
     );
+    for descendant in ["chain_parent", "chain_child", "chain_grandchild"] {
+        assert_eq!(
+            overlay_roster
+                .unreadable_names
+                .get(descendant)
+                .map(String::as_str),
+            Some("gfx/entities/1_clone.asset"),
+            "same-file clone refusal must propagate to {descendant}; refused={:?}",
+            overlay_roster.unreadable_names
+        );
+        assert!(overlay_roster.refused_declaration(descendant).is_some());
+    }
 
     let mut many_short_positions =
         String::from("entity = { name = \"many_short_positions\" pdxmesh = \"m\"\n");

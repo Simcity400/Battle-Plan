@@ -1104,15 +1104,28 @@ impl Roster {
                     roster.lights.insert(name, fields.to_vec());
                 }
             }
+            let mut file_clones = Vec::new();
             for item in parsed.items {
-                if item.keyword_is("entity")
-                    && let Some(name) = entities.declare(&item.value, &file, &mut roster)?
-                {
-                    registered.insert(name);
+                if item.keyword_is("entity") {
+                    if let Some(fields) = item.value.items()
+                        && let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty())
+                        && let Some(parent) =
+                            last_text(fields, "clone").filter(|parent| !parent.is_empty())
+                    {
+                        file_clones.push((name, parent));
+                    }
+                    if let Some(name) = entities.declare(&item.value, &file, &mut roster)? {
+                        registered.insert(name);
+                    }
                 }
             }
             if let Some(overlay_names) = parsed.overlay_fallback_names {
                 roster.record_overlay_refusals(overlay_names, &registered, &path);
+                for (child, parent) in file_clones {
+                    if let Some(source) = roster.unreadable_names.get(&parent).cloned() {
+                        roster.unreadable_names.entry(child).or_insert(source);
+                    }
+                }
             }
         }
         for (name, declarations) in animations {
