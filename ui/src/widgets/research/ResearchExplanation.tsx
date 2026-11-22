@@ -16,7 +16,6 @@ import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry } fro
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
-const days = (raw: bigint) => { const text = amount(raw); return `${text} ${text === '1' ? 'day' : 'days'}`; };
 
 function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active: boolean; daysLeft: number | null }) {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
@@ -28,7 +27,6 @@ function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active
   const shownTotal = shown.reduce((sum, s) => sum + s.value, 0n);
   const tookTotal = took.reduce((sum, s) => sum + s.value, 0n);
   const width = (value: bigint) => `${Number(value * 100_000n / axis) / 1000}%`;
-  const difference = expectedTotal - elapsed - split.remaining;
   const segment = (s: ResearchSegment) => <span key={s.key} className={`is-${s.tone}${hovered?.key === s.key ? ' is-hovered' : ''}`}
     data-tooltip={`${s.name}${s.kind ? ` (${s.kind})` : ''}: ${s.effect}`}
     style={{ flexGrow: Number(s.value), '--shade': s.index ?? 0 } as CSSProperties}
@@ -41,12 +39,6 @@ function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active
     <span className="research-time-label">Actual</span>
     <span className="research-time-track"><span className="research-time-row" style={{ width: width(tookTotal) }}>{took.map(segment)}</span></span>
     <span className="research-time-value">{amount(elapsed)} d</span>
-    <p className="research-time-readout" aria-hidden="true">
-      {hovered ? <><span className={`research-time-swatch is-${hovered.tone}`} style={{ '--shade': hovered.index ?? 0 } as CSSProperties} /><span className="research-time-name">{hovered.name}</span><small>{hovered.kind}</small><strong>{hovered.effect}</strong></>
-        : active ? <span>{rows.left === null ? `${days(split.remaining)} of base research time still to do` : `${days(rows.left)} left at the current research speed`}</span>
-          : difference === 0n ? <span>As expected</span>
-            : <><span>{difference > 0n ? 'Faster' : 'Slower'}</span><strong data-tone={difference > 0n ? 'faster' : 'slower'}>{difference > 0n ? '−' : '+'}{days(difference)}</strong></>}
-    </p>
   </div>;
 }
 
