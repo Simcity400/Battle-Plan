@@ -476,7 +476,7 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
             let mut units: Vec<_> = forces.iter().map(|force| port_unit(force, 0)).collect();
             let keys =
                 naval_regional::sort_own(&mut units, selected, context, grouping.coarse).unwrap();
-            port_runs(grouping, &keys, |_| Allegiance::Ours)
+            port_runs(grouping, &keys, |_| (0, Some(Allegiance::Ours)))
                 .into_iter()
                 .map(|run| units[run].iter().map(|u| u.force.id).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
@@ -963,6 +963,90 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
             let fresh = prepare_cached(&inputs, &early_tables).unwrap();
             assert_eq!(members(&arrived), members(&fresh));
             assert_eq!(arrived.fixed.report, fresh.fixed.report);
+        },
+    );
+}
+
+#[test]
+fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavailable() {
+    content_reader_core::test_game::enter();
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(
+            br#"guiTypes={
+        containerWindowType={name=unit_counter_navy size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+    }"#,
+        ),
+    )]);
+    crate::map::counters::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| {
+            content.defines.coarse_distance = [100., 160.];
+            content.defines.groups.strategic_distance = 200.;
+        },
+        |mut inputs| {
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.visibility.political_mode = true;
+            inputs.camera.height = 50.;
+            let forces = vec![
+                TaskForceRow { id: 1, roster_owner: 10, ..Default::default() },
+                TaskForceRow { id: 2, roster_owner: 10, ..Default::default() },
+                TaskForceRow { id: 3, roster_owner: 20, ..Default::default() },
+            ];
+            let countries = Arc::new(Countries {
+                sides: [(0, Allegiance::Ours)].into(),
+                ..Default::default()
+            });
+            let vision = Arc::new(Vision::default());
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 1,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let ports = PortTables {
+                rosters: [(7, vec![(1, 0), (2, 1), (3, 2)])].into(),
+                ..Default::default()
+            };
+            with_port_context(&forces, |context| {
+                context.ships = Arc::new(forces.iter().map(|force| (force.id, (1, 100_000))).collect());
+                let tables = CounterTables {
+                    type_tints: context.type_tints,
+                    countries: &countries,
+                    icons: &Arc::new(TemplateIcons::default()),
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: context.native,
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &Default::default(),
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let mut out = CounterFrame::default();
+                let items = port_items(&inputs, &frame, &|raw| Some(raw), &tables, context, &ports, None, &mut out)
+                    .unwrap()
+                    .remove(&7)
+                    .unwrap()
+                    .unwrap();
+                let grouped: Vec<Vec<u64>> = items
+                    .into_iter()
+                    .map(|item| item.selectable.map_or_else(Vec::new, |(_, members)| members.to_vec()))
+                    .collect();
+                assert_eq!(grouped, vec![vec![1, 2], vec![3]]);
+            });
         },
     );
 }

@@ -57,6 +57,9 @@ const COUNT: &str = "its count";
 const ENTRY_PLACE: &str = "its place in the missions list";
 const ENTRY_KEPT: [&str; 2] = [COUNT, ENTRY_PLACE];
 const LIST_PLACE: &str = "its missions list's place";
+const ICON_PLACE: &str = "its screen position";
+const UNANCHORED_PLACE: &str = "its strategic region has no icon position";
+const UNPROJECTED_PLACE: &str = "its icon position cannot be projected";
 
 const NAVAL_UI_MODE: i32 = 2;
 
@@ -551,6 +554,7 @@ pub(super) struct MissionView {
     icons: HashMap<SlotId, PooledIcon>,
     entries_withheld: Withheld<(SlotId, usize)>,
     diverged: Option<Cow<'static, str>>,
+    census_undecided: Option<&'static str>,
     unsettled: Vec<(MissionWindow, String)>,
     kept_off_screen: bool,
     pub(super) updated_grids: Vec<(u32, SlotId)>,
@@ -569,7 +573,7 @@ pub(super) enum MissionWindow {
 struct Reached<'p> {
     region: u32,
     entries: Option<&'p [MissionEntry]>,
-    point: [i32; 2],
+    point: Result<[i32; 2], &'static str>,
 }
 
 type Laid = Result<Option<LaidIcon>, native_gui::Refusals>;
@@ -1009,6 +1013,13 @@ impl MissionView {
         }
     }
 
+    fn hold_undecided(&mut self, why: &'static str) {
+        self.census_undecided = Some(why);
+        self.updated_grids.clear();
+        self.kept_off_screen = false;
+        self.diverged = Some(format!("the pass runs but cannot be planned: {why}").into());
+    }
+
     fn frame_on(
         &mut self,
         pool: &mut Pool<u32>,
@@ -1019,6 +1030,7 @@ impl MissionView {
         report: &mut CounterReport,
     ) -> Result<(), String> {
         let root = windows.root;
+        self.census_undecided = None;
         self.updated_grids.clear();
         let mut erased: Vec<(SlotId, Vec<Held>)> = Vec::new();
         for owner in reached {
@@ -1057,10 +1069,13 @@ impl MissionView {
                 erased.push((slot, pool.erase(root, &region)?));
             }
         }
-        let pass = pool.update(root, |region, _| {
+        let pass = pool.update(root, |region, instance| {
             match reached.iter().find(|owner| owner.region == *region) {
-                Some(owner) => Admission::Inside(owner.point),
-                None => Admission::Empty,
+                Some(owner) if owner.entries.is_some() => match owner.point {
+                    Ok(point) => Admission::Inside(point),
+                    Err(_) => Admission::Inside(instance.position()),
+                },
+                _ => Admission::Empty,
             }
         })?;
         erased.extend(pass.erased.into_iter().map(|gone| (gone.slot, gone.held)));
@@ -1073,6 +1088,14 @@ impl MissionView {
             let Some(owner) = reached.iter().find(|owner| owner.region == region) else {
                 continue;
             };
+            match owner.point {
+                Ok(_) => pool.rewrote(slot, Rewrote::Part(ICON_PLACE)),
+                Err(why) => pool.refuse(
+                    slot,
+                    Unknown::Part(ICON_PLACE),
+                    format!("{MISSION_WINDOW} is not drawn: {why}").into(),
+                ),
+            }
             let entries = owner.entries.unwrap_or_default();
             let (Some(instance), Some(icon)) = (pool.get(slot), self.icons.get_mut(&slot)) else {
                 continue;
@@ -1081,7 +1104,9 @@ impl MissionView {
             reach_entries(icon, windows, &held)?;
             match update_icon(windows, resources, instance, icon, entries, viewport) {
                 Ok(updated) => {
-                    self.updated_grids.push((region, slot));
+                    if owner.point.is_ok() {
+                        self.updated_grids.push((region, slot));
+                    }
                     if self.mode == NAVAL_UI_MODE
                         && let Some(counts) = self.badge_counts.get(&region)
                     {
@@ -1310,6 +1335,16 @@ impl MissionView {
         let Some(pool) = &self.pool else {
             return Vec::new();
         };
+        if let Some(why) = self.census_undecided {
+            let count = pool.visible().count();
+            if count != 0 {
+                *report
+                    .naval_mission_gaps
+                    .entry(format!("{MISSION_WINDOW} is not drawn: {why}").into())
+                    .or_default() += count;
+            }
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for icon in pool.visible() {
             let (region, slot, instance) = (*icon.owner, icon.slot, icon.instance);
@@ -1446,6 +1481,10 @@ pub(super) fn update<'n>(
             .or_default() += 1;
         return None;
     }
+    if let Some(why) = pass.undecided {
+        view.hold_undecided(why);
+        return Some(windows);
+    }
     let mut candidates: BTreeSet<u32> = pass
         .regions
         .iter()
@@ -1469,24 +1508,15 @@ pub(super) fn update<'n>(
             .and_then(|regions| regions.get(&region))
             .map(Vec::as_slice);
         let point = match inputs.content.region_icon(region) {
-            Some(anchor) => inputs.screen(anchor),
+            Some(anchor) => inputs
+                .screen(anchor)
+                .map(|point| point.map(|value| value.round() as i32))
+                .ok_or(UNPROJECTED_PLACE),
             None => {
                 if entries.is_some() {
                     report.unanchored_naval_missions += 1;
                 }
-                None
-            }
-        };
-        let (entries, point) = match point {
-            Some(point) => (entries, point.map(|value| value.round() as i32)),
-            None => {
-                if entries.is_some() {
-                    view.diverged = Some(
-                        format!("region {region}'s icon with no decided place is not requested")
-                            .into(),
-                    );
-                }
-                (None, [0; 2])
+                Err(UNANCHORED_PLACE)
             }
         };
         view.kept_off_screen |= !in_view && entries.is_some();
@@ -1495,9 +1525,6 @@ pub(super) fn update<'n>(
             entries,
             point,
         });
-    }
-    if let Some(why) = pass.undecided {
-        view.diverged = Some(format!("the pass runs but cannot be planned: {why}").into());
     }
     view.mode = pass.mode;
     view.badge_counts = pass

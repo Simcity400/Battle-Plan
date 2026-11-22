@@ -720,7 +720,7 @@ impl Harness {
             .map(|&(region, entries, point)| Reached {
                 region,
                 entries,
-                point,
+                point: Ok(point),
             })
             .collect();
         self.windows
@@ -1526,12 +1526,12 @@ fn a_frame_that_stops_withholds_every_icon_until_rebuilt() {
         Reached {
             region: 1,
             entries: None,
-            point: [0, 0],
+            point: Ok([0, 0]),
         },
         Reached {
             region: 2,
             entries: Some(&two),
-            point: [0, 0],
+            point: Ok([0, 0]),
         },
     ];
     let tick = harness.tick(0.01);
@@ -1571,7 +1571,7 @@ fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
     let reached = [Reached {
         region: 1,
         entries: Some(&two),
-        point: [0, 0],
+        point: Ok([0, 0]),
     }];
     harness
         .windows
@@ -2031,5 +2031,172 @@ fn gaps_and_unanchored_icons_are_named_and_counted() {
     assert!(
         warnings[3].contains("1 naval mission entries")
             && warnings[3].contains("GFX_mapicon_naval_invasion_support")
+    );
+}
+
+#[test]
+fn slot_history_survives_unknown_census_and_unplaced_regions_becoming_drawable() {
+    content_reader_core::test_game::enter();
+    let gui_text = format!(
+        "guiTypes={{containerWindowType={{name=unit_counter size={{width=81 height=29}} \
+         buttonType={{name=count_bg spriteType=GFX_synthetic_plate}} \
+         iconType={{name=onmap_action_icon spriteType=GFX_synthetic_actions}} \
+         iconType={{name=counter_overlay spriteType=GFX_synthetic_overlay}}}}}}\n\
+         {SYNTHETIC_NAVY_GUI}\n{SYNTHETIC_NAVAL_GUI}\n{SYNTHETIC_MISSION_GUI}"
+    );
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(gui_text.as_bytes()),
+    )]);
+    super::super::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| {
+            content.region_provinces.insert(4, vec![140]);
+            content.region_provinces.insert(5, vec![150]);
+            content.region_provinces.insert(6, vec![160]);
+            content.region_icons.insert(4, [0.0, 0.0, 0.0]);
+            content.region_icons.insert(5, [0.0, 200.0, 0.0]);
+        },
+        |mut inputs| {
+            let mut schedule = Schedule::default();
+            schedule.advance([140, 150, 160], |_| true, true);
+            let res = Res::new();
+            let resources = gui_windows::gui_assets(&inputs, None);
+            let mut view = MissionView::default();
+            let one = kinds(1);
+
+            let known = MissionPass {
+                regions: Some(BTreeMap::from([(4, one.clone())])),
+                undecided: None,
+                ..Default::default()
+            };
+            let mut report = CounterReport::default();
+            let windows = update(&inputs, &known, &mut view, &resources, &schedule, &mut report)
+                .expect("mission windows exist");
+            let slot4 = view
+                .pool
+                .as_ref()
+                .unwrap()
+                .slot_of(&4)
+                .expect("region 4 admitted");
+            assert_eq!(
+                view.laid(&windows, &res, &|_| one.clone(), &res.defined(), &mut report)
+                    .len(),
+                1
+            );
+
+            let unknown = MissionPass {
+                regions: Some(BTreeMap::new()),
+                undecided: Some("NavalMissionLedgers is incomplete"),
+                ..Default::default()
+            };
+            let mut report = CounterReport::default();
+            let windows = update(&inputs, &unknown, &mut view, &resources, &schedule, &mut report)
+                .expect("mission windows exist");
+            assert_eq!(
+                view.pool.as_ref().unwrap().slot_of(&4),
+                Some(slot4),
+                "unknown census must not erase or advance retained slot"
+            );
+            assert!(
+                view.laid(&windows, &res, &|_| Vec::new(), &res.defined(), &mut report)
+                    .is_empty(),
+                "unknown census must not draw stale mission icons"
+            );
+            assert!(
+                report
+                    .naval_mission_gaps
+                    .keys()
+                    .any(|why| why.contains("NavalMissionLedgers is incomplete")),
+                "{:?}",
+                report.naval_mission_gaps
+            );
+
+            let mut report = CounterReport::default();
+            let windows = update(&inputs, &known, &mut view, &resources, &schedule, &mut report)
+                .expect("mission windows exist");
+            assert_eq!(
+                view.pool.as_ref().unwrap().slot_of(&4),
+                Some(slot4),
+                "decided frame after unknown census keeps the same slot"
+            );
+            assert_eq!(
+                view.laid(&windows, &res, &|_| one.clone(), &res.defined(), &mut report)
+                    .len(),
+                1
+            );
+            assert!(report.naval_mission_gaps.is_empty(), "{:?}", report.naval_mission_gaps);
+
+            let mut view2 = MissionView::default();
+            inputs.camera.height = 50.0;
+            assert!(
+                inputs.screen([0.0, 200.0, 0.0]).is_none(),
+                "region 5 starts behind the camera"
+            );
+            let reg5_and_6 = MissionPass {
+                regions: Some(BTreeMap::from([(5, one.clone()), (6, one.clone())])),
+                undecided: None,
+                ..Default::default()
+            };
+            let mut report = CounterReport::default();
+            let windows = update(&inputs, &reg5_and_6, &mut view2, &resources, &schedule, &mut report)
+                .expect("mission windows exist");
+            let slot5 = view2
+                .pool
+                .as_ref()
+                .unwrap()
+                .slot_of(&5)
+                .expect("unprojectable registered region still admits its logical slot");
+            let slot6 = view2
+                .pool
+                .as_ref()
+                .unwrap()
+                .slot_of(&6)
+                .expect("unanchored registered region still admits its logical slot");
+            assert_ne!(slot5, slot6);
+            assert_eq!(view2.diverged, None);
+            assert!(
+                view2
+                    .laid(&windows, &res, &|_| one.clone(), &res.defined(), &mut report)
+                    .is_empty(),
+                "unplaced regions cannot draw geometry"
+            );
+            assert!(
+                report
+                    .naval_mission_gaps
+                    .keys()
+                    .any(|why| why.contains("icon position")),
+                "{:?}",
+                report.naval_mission_gaps
+            );
+
+            inputs.camera.height = 400.0;
+            assert!(
+                inputs.screen([0.0, 200.0, 0.0]).is_some(),
+                "region 5 is now projectable"
+            );
+            let reg5 = MissionPass {
+                regions: Some(BTreeMap::from([(5, one.clone())])),
+                undecided: None,
+                ..Default::default()
+            };
+            let mut report = CounterReport::default();
+            let windows = update(&inputs, &reg5, &mut view2, &resources, &schedule, &mut report)
+                .expect("mission windows exist");
+            assert_eq!(
+                view2.pool.as_ref().unwrap().slot_of(&5),
+                Some(slot5),
+                "becoming drawable keeps the same logical slot"
+            );
+            assert_eq!(view2.diverged, None);
+            assert_eq!(
+                view2
+                    .laid(&windows, &res, &|_| one.clone(), &res.defined(), &mut report)
+                    .len(),
+                1
+            );
+            assert!(report.naval_mission_gaps.is_empty(), "{:?}", report.naval_mission_gaps);
+        },
     );
 }
