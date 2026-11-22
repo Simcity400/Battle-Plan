@@ -117,6 +117,7 @@ jobs:
           GROUP: ${{ matrix.group }}
           JOBS: ${{ matrix.jobs }}
           SHARD: ${{ matrix.shard }}
+          RUST_MIN_STACK: '33554432'
         run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT ${SHARD:+--shard "$SHARD"}
       - if: failure() && matrix.needs_rust
         uses: actions/upload-artifact@v7

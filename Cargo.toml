@@ -330,12 +330,10 @@ opt-level = 3
 
 [profile.ci]
 inherits = "dev"
+opt-level = 0
 
 [profile.ci.package."*"]
 opt-level = 1
-
-[profile.ci.package.collector]
-opt-level = 0
 
 [profile.release-lto]
 inherits = "release"

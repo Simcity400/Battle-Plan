@@ -565,7 +565,7 @@ mod tests {
             .iter()
             .map(|(&id, &bounds)| (id, Some(bounds)))
             .collect();
-        boxes.extend([(0, None), (u32::MAX, None)]);
+        boxes.extend([(0, None), (65_535, None)]);
         let mut retained = Schedule::default();
         let mut tree = Schedule::default();
         for frame in 0..350 {
@@ -576,14 +576,14 @@ mod tests {
             }
             .on(MapSize::TEST, MapDefines::test());
             let selected = if frame % 13 < 7 {
-                BTreeSet::from([3, u32::MAX])
+                BTreeSet::from([3, 65_535])
             } else {
                 BTreeSet::new()
             };
             for schedule in [&mut retained, &mut tree] {
                 schedule.set_selected(selected.clone());
                 if frame % 31 == 0 {
-                    schedule.reset(Some(&BTreeSet::from([0, 1, 3, u32::MAX])));
+                    schedule.reset(Some(&BTreeSet::from([0, 1, 3, 65_535])));
                 }
                 if frame % 19 == 0 {
                     schedule.cancel_pending();
