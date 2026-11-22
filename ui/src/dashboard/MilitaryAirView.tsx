@@ -279,6 +279,34 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     {air && options.view === 'lines' && <p className="chart-line-key">Solid: enemy losses. Dashed: own losses.</p>}
     {!!index?.unknown.length && <p className="chart-line-key">Unattributed: {leftLabel.toLowerCase()} {ledgerLabel(unknown?.taken ?? 0n, family)}; {rightLabel.toLowerCase()} {ledgerLabel(unknown?.dealt ?? 0n, family)}.</p>}
   </div>;
+  const shown = drill ? drill.hour ?? bombingHour ?? hour : hour;
+  const airPin = (() => {
+    if (!air || !airActor || airChoices || airAt < from || airAt > end || !track) return null;
+    const current = index && ledgerCountryAt(index, airActor.tag, from, airAt, airActor.identity);
+    const span = widget.time.mode === 'range' ? airControl.gate.span(from, airAt) : null;
+    const timed = widget.time.mode === 'range' ? span ? airControl.gate.checkTime(span, 'range') : { time: null, refused: 'The range’s start was not recorded.' } : airControl.gate.checkTime();
+    const holding = airControl.gate.checkHold({ tag: current?.tag ?? airActor.tag, origin: airAt });
+    if (!timed.time) return { refused: timed.refused };
+    if (!holding.held) return { refused: holding.refused };
+    if (heldIdentity(holding.held) !== airActor.identity) return { refused: 'The tag is held by another country at this time.' };
+    const { time } = timed, held = holding.held;
+    return { run: () => { if (active && airPickRef.current === airPickOwner) runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, held, time)); } };
+  })();
+  const bombingPin = (() => {
+    if (air || !drill || shown < from || shown > end || !track) return null;
+    const span = widget.time.mode === 'range' ? bombingControl.gate.span(from, shown) : null;
+    const timed = widget.time.mode === 'range' ? span ? bombingControl.gate.checkTime(span, 'range') : { time: null, refused: 'The range’s start was not recorded.' } : bombingControl.gate.checkTime();
+    if (!timed.time) return { refused: timed.refused };
+    const time = timed.time;
+    return { run: () => {
+      if (!active || airPickRef.current !== airPickOwner) return;
+      const pinned = createWidget('bombing-damage-breakdown', track.id);
+      const pinnedTag = index && ledgerCountryAt(index, drill.tag, from, shown, drill.identity)?.tag || drill.tag;
+      runtime.addWidgetBelow(widget.id, { ...pinned, campaign: widget.campaign, trackIds: widget.trackIds, countries: { kind: 'tags', tags: [pinnedTag] }, time,
+        contentScale: widget.contentScale, options: { direction: drill.dealt ? 'dealt' : 'taken',
+          holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, pinnedTag, drill.identity]) } });
+    } };
+  })();
   if (air) {
     const detail = pending ? <WidgetState kind="loading" label="Loading aircraft loss causes…" /> : index && airActor ? <AirLossDrill index={index} runtime={runtime} track={track} tag={airActor.tag} identity={airActor.identity}
       countrySlot={pinnedAir ? countrySlot : null} headerSelection={widget.countries.kind === 'tags' && widget.countries.tags.length === 1 && pinnedIdentity
@@ -298,14 +326,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         close: () => { if (active && airPickRef.current === airPickOwner) airControl.close(); } }} runtime={runtime}
         mode={options.drill === 'popout' ? 'popout' : 'inline'} title={metric === 'dealt' ? 'Enemy losses by cause' : 'Own losses by cause'}
         day={dayText(airAt)} canFollow={!airChoices && !!airActor && liveHour != null} anchor={root} returnFocus=".country-race-chart canvas"
-        onPin={airActor && !airChoices && airAt >= from && airAt <= end ? () => {
-          if (!active || airPickRef.current !== airPickOwner) return;
-          const current = index && ledgerCountryAt(index, airActor.tag, from, airAt, airActor.identity);
-          const span = widget.time.mode === 'range' ? airControl.gate.span(from, airAt) : null;
-          const time = widget.time.mode === 'range' ? span && airControl.time(span, 'range') : airControl.time();
-          const held = airControl.hold({ tag: current?.tag ?? airActor.tag, origin: airAt });
-          if (time && held && heldIdentity(held) === airActor.identity) runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, held, time));
-        } : undefined} main={main}>
+        onPin={airPin && 'run' in airPin ? airPin.run : undefined} pinRefused={airPin && 'refused' in airPin ? airPin.refused : null} main={main}>
         {airChoices ? <div className="military-air-ledger">
           <p className="drill-empty">Choose a country for this moment.</p>
           <CountryPicker countries={track.source.metadata.countries} allowedTags={airChoices.tags.map(key => airLossDrillActor(key).tag)}
@@ -319,7 +340,6 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
       </DrillHost>
     </div>;
   }
-  const shown = drill ? drill.hour ?? bombingHour ?? hour : hour;
   return <div ref={root} className="military-air-ledger">{groupFailure}
     <DrillHost drill={{ ...bombingControl, open: !!drill, outside: drill ? bombingControl.outside : null,
       close: () => { if (active && airPickRef.current === airPickOwner) bombingControl.close(); },
@@ -327,18 +347,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
       pause: () => { if (active && airPickRef.current === airPickOwner) bombingControl.pick(shown); } }} runtime={runtime}
       mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Bombing damage breakdown" day={dayText(shown)}
       canFollow={!!drill && bombingLive != null} anchor={root}
-      onPin={drill && shown >= from && shown <= end ? () => {
-        if (!active || airPickRef.current !== airPickOwner) return;
-        const pinned = createWidget('bombing-damage-breakdown', track.id);
-        const pinnedTag = index && ledgerCountryAt(index, drill.tag, from, shown, drill.identity)?.tag || drill.tag;
-        const span = widget.time.mode === 'range' ? bombingControl.gate.span(from, shown) : null;
-        const time = widget.time.mode === 'range' ? span && bombingControl.time(span, 'range') : bombingControl.time();
-        if (!time) return;
-        runtime.addWidgetBelow(widget.id, { ...pinned, campaign: widget.campaign, trackIds: widget.trackIds, countries: { kind: 'tags', tags: [pinnedTag] },
-          time,
-          contentScale: widget.contentScale, options: { direction: drill.dealt ? 'dealt' : 'taken',
-            holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, pinnedTag, drill.identity]) } });
-      } : undefined} main={main}>
+      onPin={bombingPin && 'run' in bombingPin ? bombingPin.run : undefined} pinRefused={bombingPin && 'refused' in bombingPin ? bombingPin.refused : null} main={main}>
       {drill && (detail.error ? <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />
         : !detail.data ? <WidgetState kind="loading" label="Loading bombing damage breakdown…" />
           : <BombingDrill data={detail.data} runtime={runtime} track={track} tag={drill.tag} identity={drill.identity} from={from} hour={shown} end={end} dealt={drill.dealt} active={active} headAt={bombingHead}

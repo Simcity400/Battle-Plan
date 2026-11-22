@@ -3,10 +3,9 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { PlaybackController } from '../../dashboard/playback';
-import type { HourSpan } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { LiveDrillParts } from '../../charts/drill/DrillParts';
-import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
+import { ownerKeys, useKeyedSeries, useSeriesParts, type SeriesOwner } from '../../dashboard/keyedSeries';
 import { keyId } from '../../dashboard/keyedSeriesData.ts';
 import type { CoveredBranch } from '../../dashboard/regionTime';
 import { useProducts } from '../../dashboard/products';
@@ -20,9 +19,10 @@ export const PARTS_FAMILY = { kind: 'stability-parts', measure: 'value' } as con
 
 
 export function useStabilityParts(client: DashboardClient, clock: PlaybackController, gate: Gate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
-  tag: string | null, within: readonly HourSpan[] | null, extent: readonly [number, number], lastHour: number, measure: Measure,
+  owner: SeriesOwner | null, extent: readonly [number, number], lastHour: number, measure: Measure,
   hour: number | null, hover: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
   const branchId = branch?.id;
+  const tag = owner?.key ?? null;
   const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
   const listed = useSeriesParts(client, source, branchId, PARTS_FAMILY, tag, span, active);
   const all = useMemo(() => [...new Set((listed.data?.parts ?? []).map(part => part.part))], [listed.data]);
@@ -35,11 +35,11 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
     warnings: [...new Set(namedAll.data.flatMap(reply => reply.warnings))] } }), [namedAll, tag, span]);
   const names = useMemo(() => new Map<string, StabilityPartName>((named.data?.parts ?? []).map(part => [part.part, part])), [named.data]);
   const parts = useMemo(() => all.filter(part => measureOf(part) === measure), [all, measure]);
-  const keys = useMemo(() => tag ? parts.map(part => ({ tag, part })) : [], [tag, parts]);
+  const { keys, within } = useMemo(() => ownerKeys(owner, parts), [owner, parts]);
   const spec = useMemo(() => source && branch && listed.data && keys.length ? { source, branch, family: PARTS_FAMILY, keys,
-    partBits: listed.data.partBits, lastHour, within: within ? new Map(keys.map(key => [keyId(key), within])) : undefined } : null,
+    partBits: listed.data.partBits, lastHour, within } : null,
   [source, branch, listed.data, keys, lastHour, within]);
-  const series = useKeyedSeries(client, clock, gate, spec, following ? null : gate.recorded(hour), gate.recorded(hover), following, active, root);
+  const series = useKeyedSeries(client, clock, gate, spec, following ? null : gate.recorded(hour, owner?.spans), gate.recorded(hover, owner?.spans), following, active, root);
   const lines = useMemo(() => new Map<string, ChartSummary | undefined>(keys.map(key => [key.part, series.summaryByKey.get(keyId(key))?.summary])),
     [keys, series.summaryByKey]);
   const geometry = useMemo<MeasureParts>(() => partsFromLines(parts, lines, names), [parts, lines, names]);

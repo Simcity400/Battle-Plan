@@ -549,7 +549,7 @@ impl AtHour for AirSuperiorityAt {
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirSuperiorityParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres, "regions[]"];
     type Reply = AirSuperiorityReply;
     type Context = AirContext;
 

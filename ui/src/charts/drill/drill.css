@@ -37,3 +37,4 @@
 .drill-part-row:is(.is-muted, .is-unattributed) .drill-part-label { color: var(--muted); }
 .drill-part-row.is-unattributed .drill-part-label { font-style: italic; }
 .drill-total { grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) max-content 50px; padding: var(--space-2); border-top: 1px solid var(--line-soft); font-weight: 600; }
+.drill-header .icon-button[aria-disabled="true"] { cursor: default; opacity: 0.55; }

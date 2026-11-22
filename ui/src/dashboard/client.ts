@@ -1,7 +1,7 @@
 import type { RecorderSettings as PanelRecorderSettings } from '../recorder/status';
 import type { Compression } from '../recorder/compression';
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
-import type { GatedParams } from './regionTime';
+import type { ParamsFor } from './regionTime';
 import type { CampaignMapSettings, CounterFilter, MapAudio, MapGraphics, MapSettingsReply } from '../generated/dashboard';
 
 export type { CampaignMapSettings, MapGraphics, MapSettingsReply } from '../generated/dashboard';
@@ -13,11 +13,11 @@ export interface DashboardSource {
   metadata: ReplayMetadata;
 }
 
-export interface ProductRequest<P extends GatedParams = GatedParams> {
+export interface ProductRequest<K extends string = string> {
   sourceId: string;
   revision: string;
-  product: string;
-  params: P;
+  product: K;
+  params: ParamsFor<K>;
   asksFrom?: number;
 }
 

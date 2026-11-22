@@ -16,6 +16,16 @@ import type { BoundWindow, CoveredBranch, GatedHour, GatedParams } from './regio
 import type { Gate } from './regionGate';
 
 export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within'>;
+
+export interface SeriesOwner { readonly key: string; readonly spans: readonly HourSpan[] | null }
+
+export const seriesOwner = (country: { readonly history: { key: string; spans: readonly HourSpan[] } | null } | null | undefined, tag: string | null): SeriesOwner | null =>
+  country?.history ?? (tag === null ? null : { key: tag, spans: null });
+
+export function ownerKeys(owner: SeriesOwner | null, parts: readonly string[]): { keys: SeriesKey[]; within: ReadonlyMap<string, readonly HourSpan[]> | undefined } {
+  const keys = owner ? parts.map(part => ({ tag: owner.key, part })) : [];
+  return { keys, within: owner?.spans ? new Map(keys.map(key => [keyId(key), owner.spans!])) : undefined };
+}
 import { followStore } from './follow/connection.ts';
 import { rowAmount } from './follow/painters.ts';
 import { followsHead, useFollow } from './follow/useFollow.ts';

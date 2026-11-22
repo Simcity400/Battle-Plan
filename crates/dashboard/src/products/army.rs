@@ -192,7 +192,7 @@ impl Product for ArmySize {
     const KEY: &'static str = "army-size";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmySizeParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, countFor, byType, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, countFor, byType, window, "countries[]"];
     type Reply = ArmySizeReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -697,6 +697,11 @@ fn token_name(tokens: &TableView<'_>, slot: Option<u32>, token: u32) -> String {
     let Ok(literal) = dashboard_declare::field(TableId::LexicalTokens, "literal") else { return unresolved() };
     let Some(slot) = slot else { return unresolved() };
     read::text(tokens, literal, slot).and_then(|bytes| std::str::from_utf8(bytes).ok()).map_or_else(unresolved, str::to_owned)
+}
+
+#[cfg(test)]
+pub(crate) fn tile_family_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<Family>()
 }
 
 #[derive(Deserialize)]

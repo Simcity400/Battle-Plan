@@ -126,8 +126,8 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
-  const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
-    : drillData?.resources.find(resource => resource.id === resourceId);
+  const picked = !saved ? drillData?.resources.find(resource => resource.id === resourceId)
+    : savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey) : drillData?.resources[0];
   const dayAt = drillFollows ? breakdown.at : drillAt;
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && dayAt !== null && drillTag ? [{ tag: drillTag, hour: dayAt }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={breakdown.error} hour={dayAt} reason={null}
@@ -152,7 +152,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     : breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
       : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
-          : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
+          : !picked ? <p className="drill-empty">{saved && !savedKey ? 'No resource was recorded at this time.' : 'Resource unavailable. Choose another in settings.'}</p>
             : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} history={drillControl.gate.country?.history ?? null} resource={picked} data={drillData} live={breakdown.live}
               hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
@@ -163,13 +163,14 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   if (saved) return <div ref={anchor} className="resource-balance">
     <div className="drill-body" ref={breakdown.root}>
       {pinnedHeader}
-      {following && !drillFollows && <button type="button" className="button small quiet" onClick={() => dispatch({ type: 'close' })}>Follow playback</button>}
+      {!drillFollows && <button type="button" className="button small quiet" onClick={drillControl.follow}>Follow playback</button>}
       {detail}
     </div>
     {menu.menu}
   </div>;
 
-  const pinTime = drillControl.time();
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   const pinExtent = drillControl.gate.span(extent[0], extent[1]);
   const country = drillControl.hold(drillControl.gate.country?.holder, pinExtent);
   const main = options.view === 'time'
@@ -177,9 +178,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     : <ResourceBars {...props} onPick={open} />;
   return <div ref={anchor} className="resource-balance-host">
     <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
-      title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} canFollow={following}
+      title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={picked && pinTime && pinExtent && country ? () => {
+      pinRefused={pinTimed.refused ?? null} onPin={picked && pinTime && pinExtent && country ? () => {
         const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [country.tag] } }, { ...BREAKDOWN, label: resourceName(picked) }, track.id, pinTime);
         pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])), resourceCountry: country.token };
         runtime.addWidgetBelow(widget.id, pinned);

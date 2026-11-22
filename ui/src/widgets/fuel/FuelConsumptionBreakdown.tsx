@@ -62,9 +62,10 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
   const families = useMemo<LiveDrillParts>(() => mapLive(at.live, value => { shown(at.shownAt()); return { parts: familyRows(value, digits) }; }), [at, digits, shown]);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const demandHour = gate.recorded(follows ? (playing ? null : at.live.read()?.read?.readHour ?? null) : hour);
-  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: demandHour } } : null, chart.active, validateFuelDemand, track.source);
-  const data = demand.data && answersKey(demand.data.asked, tag) ? demand.data : undefined;
+  const demandTag = demandHour === null ? null : gate.country?.aliasAt(demandHour) ?? null;
+  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null && demandTag !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(demandTag), hour: demandHour } } : null, chart.active, validateFuelDemand, track.source);
+  const data = demand.data && answersKey(demand.data.asked, demandTag) ? demand.data : undefined;
   const basis = data ? demandBasis(track.branch.id, data) : null;
   const levelName = level && data && level.basis.country === data.country && level.basis.countryInstance === data.countryInstance ? level.level : level ? null : 'all';
   const available = levelName !== null && (!data || consumptionLevelAvailable(data, levelName));

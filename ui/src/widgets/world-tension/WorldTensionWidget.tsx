@@ -164,6 +164,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   }, [head.data, events.error, groups.error, onDiagnostics]);
 
   const report = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
+  const reportDrill = useCallback(() => shown(picked.shownAt()), [shown, picked.shownAt]);
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
       const reply = head.data;
@@ -183,22 +184,25 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   useEffect(() => { if (!head.data) shown(null); }, [head.data, shown]);
 
   const menu = useContextMenu('Chart actions');
-  const momentShown = Math.floor(playhead ?? extent[1]);
-  const eventRows = (list: readonly ThreatEvent[], divider: boolean, scale: number): TooltipRow[] => list.flatMap((event, index) => {
-    const first = event.added[0].addedRaw, now = addedAt(event, momentShown);
+  interface Region { moment: number | null; layers: typeof stableLayers; colourOf: (tag: string | null) => string; looks: { name(tag: string): string } }
+  const mainRegion: Region = { moment: Math.floor(playhead ?? extent[1]), layers: stableLayers, colourOf, looks };
+  const drillRegion: Region = { moment: drillAt === null ? null : Math.floor(drillAt), layers: drillLayers, colourOf: drillColourOf, looks: drillLooks };
+  const eventRows = ({ moment: momentShown, colourOf, looks }: Region, list: readonly ThreatEvent[], divider: boolean, scale: number): TooltipRow[] => list.flatMap((event, index) => {
+    const first = event.added[0].addedRaw, now = momentShown === null ? first : addedAt(event, momentShown);
     return [
       { label: event.reason, strong: true, divider: divider || index > 0 },
       { label: event.tag ? contributorName(event.tag, event.remembered, tag => looks.name(tag)) : 'Unknown country', swatch: colourOf(event.tag), value: dayLabel(event.hour) },
       { label: 'Tension generated', value: percent(first, scale, 2) },
-      ...(now !== first ? [{ label: `Adds by ${dayLabel(momentShown)}`, value: percent(now, scale, 2), tone: 'muted' as const }] : []),
+      ...(now !== first && momentShown !== null ? [{ label: `Adds by ${dayLabel(momentShown)}`, value: percent(now, scale, 2), tone: 'muted' as const }] : []),
     ];
   });
-  const tooltip = (hour: number, hoveredBadges: readonly EventBadge[]): TooltipContent | null => {
+  const tooltipIn = (region: Region) => (hour: number, hoveredBadges: readonly EventBadge[]): TooltipContent | null => {
+    const { colourOf, looks, layers } = region;
     const scale = head.data?.contributionScale ?? 100_000;
     const marked = hoveredBadges.map(badge => badges.get(badge)).filter((event): event is ThreatEvent => event != null);
-    if (marked.length === 1) return fitTooltip([{ title: marked[0].reason, rows: eventRows(marked, false, scale).slice(1) }], viewport);
+    if (marked.length === 1) return fitTooltip([{ title: marked[0].reason, rows: eventRows(region, marked, false, scale).slice(1) }], viewport);
     if (marked.length > 1) {
-      const full: TooltipContent = { title: `${marked.length} events on ${dayLabel(hour)}`, rows: eventRows(marked, false, scale) };
+      const full: TooltipContent = { title: `${marked.length} events on ${dayLabel(hour)}`, rows: eventRows(region, marked, false, scale) };
       const group = eventGroup(marked);
       const compact: TooltipContent = { title: `${marked.length} events · ${percent(group.totalRaw, scale, 2)} tension`, subtitle: dayLabel(hour), rows: [
         ...group.largest.slice(0, COMPACT_EVENTS).map((event): TooltipRow => ({ label: `${event.tag ? looks.name(event.tag) : 'Not named'}: ${event.reason}`,
@@ -219,14 +223,15 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     reply.contributions.slice(0, 12).forEach((item, index) => {
       const value = values.get(contributionCell(item.slot));
       const label = item.tag ? named(item.tag) : { name: 'Unknown country', flagReason: 'Unknown country at this hour.' };
-      rows.push({ label: contributorName(item.tag, item.remembered, () => label.name), countryFlag: item.tag ? label : undefined, swatch: stableLayers.some(layer => layer.slot === item.slot) ? colourOf(item.tag) : undefined,
+      rows.push({ label: contributorName(item.tag, item.remembered, () => label.name), countryFlag: item.tag ? label : undefined, swatch: layers.some(layer => layer.slot === item.slot) ? colourOf(item.tag) : undefined,
         value: value === undefined ? 'Not known' : percentOf(value, reply.contributionScale, 2), short: true, divider: index === 0 });
     });
     if (reply.contributions.length > 12) rows.push({ label: `${reply.contributions.length - 12} more countries`, tone: 'muted' });
     if (reply.unnamed) rows.push({ label: 'Countries never named', value: percentOf(world.unnamed, reply.contributionScale, 2), short: true });
-    rows.push(...eventRows((events.data?.events ?? []).filter(event => event.hour === Math.floor(hour)), true, reply.contributionScale));
+    rows.push(...eventRows(region, (events.data?.events ?? []).filter(event => event.hour === Math.floor(hour)), true, reply.contributionScale));
     return fitTooltip([{ title: dayLabel(hour), rows }], viewport, { more: hidden => `${hidden} more` });
   };
+  const tooltip = tooltipIn(mainRegion);
   const open = (hour: number) => drillControl.show(TENSION_BREAKDOWN.id, hour);
   const anchor = useRef<HTMLDivElement>(null);
   const followRoot = head.root;
@@ -240,7 +245,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     following={drillFollows} hour={breakdownHour} read={drillCoverage} reply={drillContribution} live={picked.live}
     error={picked.error}
     onRetry={picked.retry} looks={drillLooks} colour={drillColourOf} otherColour={otherColour} layers={drillLayers} events={events.data?.events ?? []}
-    tooltip={hour => tooltip(hour, [])} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))} report={report}
+    tooltip={hour => tooltipIn(drillRegion)(hour, [])} onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))} report={reportDrill}
     onPick={drillControl.pick} />;
   if (pinnedDrill) return <div className="world-tension-pinned" ref={picked.root}>
     <p className="drill-empty">{breakdownHour === null ? '' : formatDateTime(breakdownHour)} {!drillControl.following
@@ -275,7 +280,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   return <div ref={rootRef} style={{ height: '100%' }}>
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={TENSION_BREAKDOWN.label} root={picked.root}
       day={breakdownHour === null ? '' : formatDateTime(breakdownHour)} canFollow
-      onPin={!drillControl.time() ? undefined : () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, time)); }}
+      pinRefused={drillControl.pinRefused} onPin={!drillControl.time() ? undefined : () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, time)); }}
       main={main}>{breakdown}</DrillHost>
   </div>;
 }

@@ -83,7 +83,6 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const dispatch = drillControl.dispatch;
   const [region, setRegion] = useState<MissionRow | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setRegion(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
-  const following = widget.time.mode === 'follow';
   const onRowClick = useCallback((row: MissionRow) => {
     const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(axisAt(runtime.clock.getHour()));
     if (hour === null) return;
@@ -118,7 +117,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   return <div ref={attach} data-detail={failureDetails([...country.values()].map(nameReadFailure))} className="air-missions">
     {pill}
     <DrillHost drill={drillControl} runtime={runtime} subject={open} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
-      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)} canFollow={following} onClose={() => dispatch({ type: 'close' })} main={main}>
+      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}>
       <div ref={wings.root} className="air-missions">
         <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
       </div>

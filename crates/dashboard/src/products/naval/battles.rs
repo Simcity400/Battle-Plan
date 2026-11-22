@@ -540,7 +540,7 @@ impl Product for NavalBattlesRanking {
     const KEY: &'static str = "naval-battles-ranking";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalBattlesRankingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End, "countries.countries[]"];
     type Reply = NavalBattlesRankingReply;
 
     #[cfg(any(test, feature = "export-types"))]

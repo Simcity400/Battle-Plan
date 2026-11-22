@@ -109,7 +109,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const detailTime = drillAction(shownDrill);
   const detailRegion = useRegion(widget, detailTime);
   const detailCoverage = useRegionCoverage(runtime, detailRegion);
-  const at = useRegionHour(runtime, detailRegion, active && (saved || shownDrill.breakdown !== null));
+  const at = useRegionHour(runtime, detailRegion, active && (saved || shownDrill.breakdown !== null), heldEdges);
   const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? recordedHour(track, playbackHour) : playhead ?? head;
   const [automaticOrigin, setAutomaticOrigin] = useState<{ owner: object; hour: number } | null>(null);
   if (saved && !options.stockpileCountry && head !== null && automaticOrigin?.owner !== pickOwner) setAutomaticOrigin({ owner: pickOwner, hour: head });
@@ -193,8 +193,10 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     pickOwner={detailPickOwner} onPick={hour => act({ type: 'pick', hour })}
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
     : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinCountry = pinHeld.held;
   return <div ref={root} className="stockpile-drill-host">
     {saved ? <div className="drill-body">
       {pinnedHeader}
@@ -204,7 +206,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       title={picked && at !== null ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={at === null ? '' : dayLabel(at)}
       returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
       canFollow onClose={() => act({ type: 'close' })} main={main}
-      onPin={picked && selectedCountry && !actor.reason && at !== null && pinTime && pinCountry && choiceKey(picked, at) !== null ? () => {
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={picked && selectedCountry && !actor.reason && at !== null && pinTime && pinCountry && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
         const pinned = pinStockpileDrill(widget, track, pinCountry.tag, picked, grouping, mode, at, pinTime, pinCountry.token);
         if (pinned) runtime.addWidgetBelow(widget.id, pinned);

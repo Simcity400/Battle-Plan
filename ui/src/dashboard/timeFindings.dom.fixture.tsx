@@ -128,14 +128,14 @@ const read = () => {
 
 export interface Scene { kind: string; time: WidgetSpec['time']; options?: Record<string, unknown>; countries?: WidgetSpec['countries']; hour: number;
   replies?: Record<string, string>; failures?: string[]; groups?: unknown; trade?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
-  accept?: boolean; last?: number; plays?: boolean }
+  accept?: boolean; last?: number; requestsWhilePlaying?: boolean }
 
 const dated = new Map<string, boolean | undefined>();
-const playsBack = (kind: string, plays: boolean | undefined) => {
+const observeRequestsWhilePlaying = (kind: string, observe: boolean | undefined) => {
   for (const [held, was] of dated) Object.assign(widgetDefinition(held)!, { playsBackDated: was });
   dated.clear();
   const definition = widgetDefinition(kind);
-  if (!plays || !definition) return;
+  if (!observe || !definition) return;
   dated.set(kind, definition.playsBackDated);
   Object.assign(definition, { playsBackDated: true });
 };
@@ -160,7 +160,7 @@ Object.assign(window, { findings: {
     clock.setPlaying(false);
     clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });
     clock.seek(scene.hour);
-    playsBack(scene.kind, scene.plays);
+    observeRequestsWhilePlaying(scene.kind, scene.requestsWhilePlaying);
     const made = createWidget(scene.kind, 'main', 'finding');
     const widget = { ...made, time: scene.time, countries: scene.countries ?? made.countries, options: { ...made.options, ...scene.options } } as WidgetSpec;
     const element = document.body.appendChild(document.createElement('div'));

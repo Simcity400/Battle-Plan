@@ -494,7 +494,7 @@ pub const fn entry<P: AtHour>() -> Entry {
             #[cfg(any(test, feature = "export-types"))]
             types: None,
             #[cfg(any(test, feature = "export-types"))]
-            params: dashboard_query::fields::struct_fields::<P::Params>,
+            params: dashboard_query::fields::walk::<P::Params>,
         },
         panel: panel::<P>,
     }

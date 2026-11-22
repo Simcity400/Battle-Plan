@@ -177,14 +177,16 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
       follow: drillControl.followsAt(picked), owner: contextOwner }); }
     else dispatch({ type: 'close' });
   };
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(nativeSelection ? { tag: nativeSelection.tag, origin: nativeSelection.hour } : null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(nativeSelection ? { tag: nativeSelection.tag, origin: nativeSelection.hour } : null);
+  const pinCountry = pinHeld.held;
   if (pinned) return <div className="parts-race-drill">{header}{drillControl.outside ? <WidgetState kind="outside" read={coverageOf(drillControl.outside)} /> : selection ?? breakdown}</div>;
   return <div className="parts-race" ref={anchor}>
     <DrillHost drill={{ ...drillControl, follow, pause }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={title} day={following ? <LiveText live={dayLive} at="day" /> : dayLabel(hour)} canFollow={tag != null && liveHour != null}
       returnFocus=".country-race-chart canvas"
-      onPin={track && pinCountry && !drillOutside && pinTime ? () => { if (current()) runtime.addWidgetBelow(widget.id,
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={track && pinCountry && !drillOutside && pinTime ? () => { if (current()) runtime.addWidgetBelow(widget.id,
         pinNativeCountryParts(widget, track, pinCountry, pinTime, title)); } : undefined}
       main={main(open, !drillOpen || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>
   </div>;

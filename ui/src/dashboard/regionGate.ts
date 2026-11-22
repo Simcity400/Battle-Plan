@@ -12,7 +12,7 @@ import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from
 import { boundCountryToken, datedCountrySpans, readDatedCountry, type BoundCountry, type DatedCountrySelection } from './datedCountry.ts';
 import { selectionChangeHours, worldFilterQuery, worldRequestTags } from './groups.ts';
 import { useCountryGroups } from './useCountryGroups.ts';
-import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, validTime, type AxisHour,
+import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
   type BoundHour, type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
   type TimeRefusal, type TrackHour } from './regionTime.ts';
 import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
@@ -55,8 +55,14 @@ export interface Gate {
   span: (firstHour: number, lastHour: number) => BoundWindow | null;
   follow: (query: Readonly<Record<string, unknown>> | null) => FollowQuery | null;
   time: (window?: BoundWindow, mode?: 'pin' | 'range') => GatedTime | null;
+  checkTime: (window?: BoundWindow, mode?: 'pin' | 'range') => TimeRefusal;
   hold: (holder: Holder | null | undefined, extent?: BoundWindow | null) => HeldCountry | null;
+  checkHold: (holder: Holder | null | undefined, extent?: BoundWindow | null) => HoldRefusal;
 }
+
+export type HoldRefusal = { held: HeldCountry; refused?: undefined } | { held: null; refused: string };
+const NOTHING_HERE = 'This time is not recorded, so there is nothing to pin.';
+const NOT_HERE: TimeRefusal = { time: null, refused: NOTHING_HERE };
 
 const mint = (hour: TrackHour) => hour as GatedHour;
 const bounded = (hour: number) => hour as BoundHour;
@@ -267,27 +273,33 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
     const asked = gated !== null && follows && query && track ? followedProduct(query) : null;
     return asked && track && refusedHours(asked.product, asked.params, track.branch, true) === null ? query as FollowQuery : null;
   }, [gated, follows, track]);
-  const time = useCallback((chosen?: BoundWindow, mode: 'pin' | 'range' = 'pin') => {
-    if (!track || gated === null) return null;
-    if (!chosen && follows) return validTime({ mode: 'follow' }, tracks);
+  const checkTime = useCallback((chosen?: BoundWindow, mode: 'pin' | 'range' = 'pin'): TimeRefusal => {
+    if (!track || gated === null) return NOT_HERE;
+    if (!chosen && follows) return checkedTime({ mode: 'follow' }, tracks);
     const held = chosen ?? { firstHour: gated, lastHour: gated };
     const first = track.branch.firstHour, offsets = { firstOffset: held.firstHour - first, lastOffset: held.lastHour - first };
-    return validTime(mode === 'range' ? { mode, ...offsets } : { mode, windows: { [track.id]: offsets } }, tracks, track.id);
+    return checkedTime(mode === 'range' ? { mode, ...offsets } : { mode, windows: { [track.id]: offsets } }, tracks, track.id);
   }, [track, tracks, follows, gated]);
-  const hold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null) => {
-    if (!track || gated === null || !holder || !histories || recordedHour(track, holder.origin) === null) return null;
+  const time = useCallback((chosen?: BoundWindow, mode: 'pin' | 'range' = 'pin') => checkTime(chosen, mode).time, [checkTime]);
+  const identitiesError = groups.error;
+  const checkHold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null): HoldRefusal => {
+    if (!track || gated === null) return { held: null, refused: NOTHING_HERE };
+    if (!holder) return { held: null, refused: 'No country is chosen for this moment.' };
+    if (!histories) return { held: null, refused: identitiesError ? 'Country identities could not be loaded, so the country cannot be pinned.' : 'Country identities are still loading.' };
+    if (recordedHour(track, holder.origin) === null) return { held: null, refused: 'The hour the country was picked was not recorded.' };
     const first = track.branch.firstHour, last = track.branch.lastHour, picked = holderSelection(histories, track, holder);
-    if (!picked) return null;
+    if (!picked) return { held: null, refused: 'The picked country’s recorded identity is unavailable.' };
     const selection: DatedCountrySelection = { ...picked, ...extent ? { extent: [extent.firstHour - first, extent.lastHour - first] as [number, number] } : {} };
     const spans = datedCountrySpans(histories, selection, first, last);
     const identity = identityHistory(histories, selection, first, last);
-    if (!spans || !identity || countryDrillTagAt(spans, gated) === null) return null;
-    return { tag: selection.tag, origin: mint(first + selection.originOffset as TrackHour), slot: identity.slot, countryId: identity.countryId,
-      token: boundCountryToken(bound(selection)) } as HeldCountry;
-  }, [track, gated, histories]);
+    if (!spans || !identity || countryDrillTagAt(spans, gated) === null) return { held: null, refused: 'The picked country holds no tag at this time.' };
+    return { held: { tag: selection.tag, origin: mint(first + selection.originOffset as TrackHour), slot: identity.slot, countryId: identity.countryId,
+      token: boundCountryToken(bound(selection)) } as HeldCountry };
+  }, [track, gated, histories, identitiesError]);
+  const hold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null) => checkHold(holder, extent).held, [checkHold]);
   const holder = country?.holder ?? null;
   const held = useMemo(() => hold(holder), [hold, holder?.tag, holder?.origin]);
-  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, time, hold };
+  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, time, checkTime, hold, checkHold };
 }
 
 function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,

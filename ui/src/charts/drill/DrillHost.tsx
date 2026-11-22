@@ -10,9 +10,9 @@ import type { DrillControl } from './useDrill';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
-export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, anchor, returnFocus, root, main, children }: {
+export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, pinRefused = null, anchor, returnFocus, root, main, children }: {
   mode: 'inline' | 'popout'; drill: Pick<DrillControl, 'open' | 'following' | 'region' | 'gate' | 'outside' | 'follow' | 'pause' | 'close'>; runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; subject?: boolean;
-  title: string; day: ReactNode; canFollow: boolean; onClose?: () => void; onPin?: () => void;
+  title: string; day: ReactNode; canFollow: boolean; onClose?: () => void; onPin?: () => void; pinRefused?: string | null;
   anchor: RefObject<HTMLElement | null>;
   returnFocus?: string;
   root?: (element: HTMLDivElement | null) => void;
@@ -86,6 +86,7 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
     <span className="drill-day">{shut ? '' : day}</span>
     {canFollow && <FollowControl following={drill.following} onFollow={drill.follow} onPause={drill.pause} />}
     {onPin && !shut && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
+    {!onPin && pinRefused && !shut && <button type="button" className="icon-button small" aria-disabled="true" aria-label={`Can’t pin: ${pinRefused}`} data-tooltip={pinRefused}><Icon name="pin" /></button>}
     {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
   </div>;
 

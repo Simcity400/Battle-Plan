@@ -204,6 +204,15 @@ local = ["{python}", "tools/boat.py", "check", "--all-targets", "--manifest-path
 warm = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
 
 [[job]]
+name = "dashboard-contract"
+group = "rust"
+tier = "check"
+toolchain = "rust"
+inputs = ["crates/**", "ui/src/generated/dashboard.ts"]
+ci-only = true
+command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
+
+[[job]]
 name = "rust-test"
 group = "rust"
 tier = "check"

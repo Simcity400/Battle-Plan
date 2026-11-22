@@ -1079,7 +1079,7 @@ impl Product for EquipmentProduced {
     const KEY: &'static str = "equipment-produced";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EquipmentProducedParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, rankHour: Read, count, measure, types, refits, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, rankHour: Read, count, measure, types, refits, window, "countries[]"];
     type Reply = EquipmentProducedReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

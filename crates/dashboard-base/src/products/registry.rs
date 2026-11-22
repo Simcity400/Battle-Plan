@@ -79,7 +79,7 @@ pub struct Registered {
     #[cfg(any(test, feature = "export-types"))]
     pub types: Option<fn() -> Vec<String>>,
     #[cfg(any(test, feature = "export-types"))]
-    pub params: fn() -> Option<&'static [&'static str]>,
+    pub params: fn() -> dashboard_query::fields::Walk,
 }
 
 pub const fn register<P: Product>() -> Registered {
@@ -94,7 +94,7 @@ pub const fn register<P: Product>() -> Registered {
         #[cfg(any(test, feature = "export-types"))]
         types: None,
         #[cfg(any(test, feature = "export-types"))]
-        params: dashboard_query::fields::struct_fields::<P::Params>,
+        params: dashboard_query::fields::walk::<P::Params>,
     }
 }
 

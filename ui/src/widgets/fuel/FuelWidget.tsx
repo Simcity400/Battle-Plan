@@ -198,8 +198,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const chartData = useMemo<ChartData>(() => ({ revision: () => [fuel.revision(), capacity.revision(), gain.revision(), burn.revision()],
     subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
-  const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } })) : [], [track, hoverAt, tags, saved]);
+  const hoverTags = useMemo(() => hoverAt === null ? [] : tags.filter(tag => isMember(membership?.get(tag), hoverAt)), [tags, membership, hoverAt]);
+  const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? hoverTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } })) : [], [track, hoverAt, hoverTags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null || single ? [] : tags.map(tag => ({ tag, hour: Math.floor(hoverHour) })), active);
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
@@ -271,12 +272,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     const replies = hoverHour !== null && Math.floor(hoverHour) === at ? hovered.data : undefined;
     if (single) {
       if (!isMember(membership?.get(tags[0]), at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);
-      const reply = replies?.[0];
+      const reply = replies?.[hoverTags.indexOf(tags[0])];
       return fitTooltip(reply ? fuelTooltips(reply, dayLabel(at), colors, digits) : [{ title: dayLabel(at), rows: [{ label: hovered.error ? 'Could not load this day' : 'Loading…', tone: 'muted' as const }] }], viewport);
     }
     const rows: TooltipRow[] = tags.flatMap((tag): TooltipRow[] => {
       const label = hoverLabels.labelAt(at)(tag);
-      const reply = replies?.[tags.indexOf(tag)];
+      const reply = replies?.[hoverTags.indexOf(tag)];
       if (!isMember(membership?.get(tag), at)) return [{ label: label.name, countryFlag: label, value: 'Not in the group', tone: 'muted' as const }];
       if (!reply) return [{ label: label.name, countryFlag: label, value: 'Loading…', tone: 'muted' as const }];
       const tip = fuelTooltips(reply, label.name, colors, digits)[0];
@@ -352,8 +353,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     label={headerReady && drillTag && at !== null ? headerLabelAt(at)(drillTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
   const notices = groupRefreshError ? <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} /> : null;
 
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(drillCountry?.holder ?? null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(drillCountry?.holder ?? null);
+  const pinCountry = pinHeld.held;
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}{notices}
     {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
@@ -365,7 +368,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)}
     canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })}
     main={main}
-    onPin={drillTag && track && !actorState && pinTime && pinCountry ? () => {
+    pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={drillTag && track && !actorState && pinTime && pinCountry ? () => {
       const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [pinCountry.tag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id, pinTime);
       pinned.options = { ...pinned.options, fuelCountry: pinCountry.token,
         fuelRecipient: heldRecipient ? fuelRecipientToken(heldRecipient) : '', fuelConsumption: heldConsumption ? fuelConsumptionToken(heldConsumption) : '',

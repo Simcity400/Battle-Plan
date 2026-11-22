@@ -1096,7 +1096,7 @@ impl Product for LandBattlesRanking {
     const KEY: &'static str = "land-battles-ranking";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LandBattlesRankingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End, "countries.countries[]"];
     type Reply = LandBattlesRankingReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -165,7 +165,7 @@ impl AtHour for DivisionCareers {
     const TITLE: &'static str = "Division careers";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionCareersParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = DivisionCareersReply;
     type Context = Content;
 

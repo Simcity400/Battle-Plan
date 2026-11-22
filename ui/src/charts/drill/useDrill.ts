@@ -16,6 +16,7 @@ export interface DrillControl<S extends DrillState = DrillState, A = DrillAction
   outside: Outside | null;
   time: Gate['time'];
   hold: Gate['hold'];
+  pinRefused: string | null;
   dispatch(action: A | DrillAction): void;
   followsAt(hour: number): boolean;
   show(breakdown: string, hour: number, country?: DrillHolder | null): void;
@@ -50,7 +51,7 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
     const followsAt = (hour: number) => { const head = playhead(); return head !== null && recordedHour(track, hour) !== null && opensFollowing(parent, hour, clock.getSnapshot().playing, head); };
     return {
       state, open, following: drillFollows(parent, state), parent, region, gate, hour: open ? gate.hour : null, outside: open ? gate.outside : null,
-      time: gate.time, hold: gate.hold, dispatch, followsAt,
+      time: gate.time, hold: gate.hold, pinRefused: open ? gate.checkTime().refused ?? null : null, dispatch, followsAt,
       show: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: followsAt(hour), country: held ?? null }),
       showAt: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: false, country: held ?? null }),
       attach: breakdown => dispatch({ type: 'attach', breakdown }),

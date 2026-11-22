@@ -210,12 +210,13 @@ pub const FIELDS: crate::fields::Fields = {
         ("branchId", Undated), ("family", Undated), ("countries", Undated), ("lines", Undated), ("reads[].hour", Read), ("from", Start), ("to", End),
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("cursor", Undated), ("pageSize", Undated), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
-        ("withMarks", Undated), ("least", Undated),
+        ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated),
     ]
 };
 
-pub fn params_fields() -> Option<&'static [&'static str]> {
-    crate::fields::struct_fields::<Params>()
+pub fn params_walk() -> crate::fields::Walk {
+    crate::fields::walk::<Params>()
 }
 
 #[derive(Deserialize)]

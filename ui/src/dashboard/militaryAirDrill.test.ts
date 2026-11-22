@@ -15,6 +15,7 @@ import { pickLines } from '../charts/linePick.ts';
 import { tokensFromValues } from '../charts/tokens.ts';
 import type { WidgetProps } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
+import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
 import type { SunburstProps } from '../charts/sunburst/Sunburst';
@@ -56,6 +57,7 @@ function fixture() {
   return { hooks: [] as unknown[], cursor: 0, data: validateMilitaryAirReply(data()),
     track: { id: 'track', axisOffset: 1000, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } },
       branch: { id: 'branch', firstHour: 10, lastHour: 20, gaps: [span(17)] } }, hour: -988, playing: false, added: [] as WidgetSpec[],
+    groups: { retry() {} } as { retry(): void; data?: unknown },
     bombing: undefined as ComponentProps<typeof BombingDrill> | undefined,
     butterfly: undefined as { items: unknown[]; active: boolean; onSelect: (item: unknown, side: 'left' | 'right') => void } | undefined,
     chart: undefined as ComponentProps<typeof CountryRaceView> | undefined, host: undefined as (ComponentProps<typeof DrillHost> & { open: boolean; onFollow: () => void; onPause: () => void; following: boolean }) | undefined,
@@ -117,7 +119,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
   globals.__airDrill = state;
   const vite = await server({ ...common,
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__airDrill.data, track: globalThis.__airDrill.track, retry() {} });',
-    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => globalThis.__airDrill.groups;',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777";',
     '/charts/race/CountryRaceView.tsx': 'export default props => { globalThis.__airDrill.chart = props; return null; };',
     '/dashboard/AirLossDrill.tsx': 'export default props => { globalThis.__airDrill.detail = props; return null; };',
@@ -137,7 +139,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     const props = { widget: { id: 'widget', kind: 'air-kills-losses', title: 'Air', trackIds: ['track'],
       countries: { kind: 'group', group: { type: 'top', count: 2 }, membership: 'hour', aggregate: false }, time: { mode: 'follow' }, options: { view: 'lines', measure: 'dealt' } },
       runtime: { tracks: [state.track], client: {}, clock: { getHour: () => state.hour, getSnapshot: () => ({ playing: state.playing }) },
-        addWidgetBelow: (_id: string, widget: WidgetSpec) => state.added.push(widget) },
+        addWidgetBelow: (_id: string, widget: PinnedSpec) => state.added.push(persistedSpec(widget)) },
       active: true, onDiagnostics() {}, family: 'airLosses', fields: OPTIONS, title: 'Air kills & losses' } as unknown as WidgetProps & {
         family: 'airLosses'; fields: typeof OPTIONS; title: string;
       };
@@ -159,6 +161,10 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.equal(state.detail!.hour, 12); assert.equal(state.detail!.identity, '1:9');
     assert.equal(state.chart!.active, false, 'inline Drill suspends its inert main chart');
     state.detail!.onPick(14.9); render(); assert.equal(state.detail!.hour, 14);
+    assert.equal(state.host!.onPin, undefined, 'no Pin is offered while the country’s identity is unknown');
+    assert.equal(state.host!.pinRefused, 'Country identities are still loading.', 'the refused Pin says why');
+    state.groups = { retry() {}, data: { countryIdentities: ['A', 'B', 'C'].map((tag, slot) => ({ tag, identities: [{ slot, countryId: 9, firstHour: 10, lastHour: 20 }] })) } };
+    render();
     state.host!.onPin!();
     assert.deepEqual(state.added[0].time, { mode: 'pin', windows: { track: { firstOffset: 4, lastOffset: 4 } } });
     assert.equal(state.added[0].options!.show, 'breakdown');
@@ -368,7 +374,7 @@ test('bombing Drill follows the shared clock from a campaign view and rejects re
     const View = (await vite.ssrLoadModule('/ui/src/dashboard/MilitaryAirView.tsx')).default;
     const props = { widget: { id: 'bombing', kind: 'bombing-damage', trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' } },
       runtime: { tracks: [state.track], client: {}, clock: { getHour: () => state.hour, getSnapshot: () => ({ playing: state.playing }) },
-        addWidgetBelow: (_id: string, widget: WidgetSpec) => state.added.push(widget) }, active: true, onDiagnostics() {},
+        addWidgetBelow: (_id: string, widget: PinnedSpec) => state.added.push(persistedSpec(widget)) }, active: true, onDiagnostics() {},
       family: 'bombing', fields: metadata.OPTIONS, title: 'Bombing damage' };
     const render = () => { state.cursor = 0; state.bombing = undefined; return renderToStaticMarkup(createElement(View, props)); };
     render(); state.butterfly!.onSelect(state.butterfly!.items[0], 'left'); render();

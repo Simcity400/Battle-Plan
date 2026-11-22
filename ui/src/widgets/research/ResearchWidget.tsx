@@ -254,7 +254,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && shownSlot && shownEntry && <>
         <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
-        <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={detailHour!} history={data.history} slots={detailSlots!} slot={shownSlot} entry={shownEntry}
+        <ResearchExplanation client={runtime.client} gate={gate} track={track} tag={tag} hour={detailHour!} history={data.history} slots={detailSlots!} slot={shownSlot} entry={shownEntry}
           description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />
       </>}
     </Popover>

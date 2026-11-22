@@ -220,6 +220,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
       title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} canFollow={playhead != null}
       returnFocus={drillCountry == null || typeof CSS === 'undefined' ? undefined : `tr[data-table-row="${CSS.escape(drillCountry)}"]`}
-      onClose={() => dispatchDrill({ type: 'close' })} onPin={pin} main={main}>{drillBody}</DrillHost>
+      onClose={() => dispatchDrill({ type: 'close' })} pinRefused={drillControl.pinRefused} onPin={pin} main={main}>{drillBody}</DrillHost>
   </div></>;
 }

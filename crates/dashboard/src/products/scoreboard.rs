@@ -305,7 +305,7 @@ impl Product for Scoreboard {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ScoreboardParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, columns, countries, top];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, columns, countries, top, "countries[]", "top.count"];
     type Reply = ScoreboardReply;
 
     #[cfg(any(test, feature = "export-types"))]

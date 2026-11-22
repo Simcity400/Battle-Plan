@@ -19,10 +19,10 @@ use std::{
 
 pub const SERIES: &str = "player-apm";
 
-pub const HEADS: &[(&str, dashboard_base::products::Fields, fn() -> Option<&'static [&'static str]>)] = &[
+pub const HEADS: &[(&str, dashboard_base::products::Fields, fn() -> dashboard_query::fields::Walk)] = &[
     (SERIES, dashboard_base::fields![branchId, group, tags, players, firstHour: Start, lastHour: End, windowHours, "membership[].firstHour": Start, "membership[].lastHour": End],
-        dashboard_query::fields::struct_fields::<ApmHeadParams>),
-    ("campaign-clock", dashboard_base::fields![branchId, firstHour: Start, lastHour: End], dashboard_query::fields::struct_fields::<ClockHeadParams>),
+        dashboard_query::fields::walk::<ApmHeadParams>),
+    ("campaign-clock", dashboard_base::fields![branchId, firstHour: Start, lastHour: End], dashboard_query::fields::walk::<ClockHeadParams>),
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -333,6 +333,11 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
         }
     };
     Some(build().map_err(|error| error.to_string()))
+}
+
+#[cfg(test)]
+pub(crate) fn tile_family_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<TileFamily>()
 }
 
 #[derive(Deserialize)]

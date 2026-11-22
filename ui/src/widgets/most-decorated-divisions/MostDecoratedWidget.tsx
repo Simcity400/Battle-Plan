@@ -104,7 +104,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Division service record"
       day={shownHour === null ? '' : formatDateTime(shownHour)} canFollow anchor={anchor}
       onClose={() => dispatch({ type: 'close' })}
-      onPin={drill.breakdown && track && drillControl.time() ? () => {
+      pinRefused={drillControl.pinRefused} onPin={drill.breakdown && track && drillControl.time() ? () => {
         const time = drillControl.time();
         const history = time?.value.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
         const kept = history ? drillControl.time(history) : time;

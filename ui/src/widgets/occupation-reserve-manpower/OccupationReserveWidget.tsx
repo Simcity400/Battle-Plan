@@ -131,7 +131,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   return <div ref={root} className="parts-race occupation-reserve">{groupFailure}
     <DrillHost drill={drillControl} runtime={runtime} subject={drilled !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={drilled ? looks.name(drilled.tag, drillAt ?? moment) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={drilled && drillControl.time() ? () => {
+      pinRefused={drillControl.pinRefused} onPin={drilled && drillControl.time() ? () => {
         const time = drillControl.time();
         if (!time) return;
         const pin = pinnedBreakdown(widget, BREAKDOWN, track.id, time);

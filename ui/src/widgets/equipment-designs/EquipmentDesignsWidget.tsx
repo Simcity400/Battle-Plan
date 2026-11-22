@@ -140,7 +140,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={at === null ? '' : dayLabel(at)} canFollow={widget.time.mode === 'follow'}
+      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={at === null ? '' : dayLabel(at)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}>
       {picked && <DesignSheet />}
     </DrillHost>

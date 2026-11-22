@@ -174,7 +174,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   return <div ref={anchor} className="lend-lease-agreements-host">{parent ? null : groupFailure}
     {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
+      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
       {picked && (drillTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={drillTags} selected={`agreement:${picked.terms.id}`} />

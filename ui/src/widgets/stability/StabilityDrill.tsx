@@ -16,25 +16,24 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { fixedNumber } from '../../charts/valueAxis';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { PlaybackController } from '../../dashboard/playback';
-import type { HourSpan } from '../../generated/dashboard';
 import WidgetState from '../../components/WidgetState';
 import { engineSum, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, stackRange, visibleSegment } from './partsData';
 import { formatPercent } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { useStabilityParts } from './stabilityParts';
 import type { CoveredBranch } from '../../dashboard/regionTime';
+import type { SeriesOwner } from '../../dashboard/keyedSeries';
 import type { MeasureParts, StabilityPart } from './types';
 
 export const MEASURE_NAMES: Record<Measure, string> = { stability: 'Stability', warSupport: 'War support' };
 
-export default function StabilityDrill({ client, clock, gate, source, branch, lastHour, tag, measure, onMeasure, hour, following, liveHead, onPick,
-  onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, within, onDiagnostics }: {
+export default function StabilityDrill({ client, clock, gate, source, branch, lastHour, owner, measure, onMeasure, hour, following, liveHead, onPick,
+  onContextMenu, extent, playback, branchStart, hoursPerSecond, active, tokens, onDiagnostics }: {
   client: DashboardClient; clock: PlaybackController; gate: Gate; source: DashboardSource; branch: CoveredBranch & { id: string }; lastHour: number;
-  tag: string | null;
+  owner: SeriesOwner | null;
   playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
   measure: Measure; onMeasure?: (measure: Measure) => void;
-  within: readonly HourSpan[] | null;
   hour: number | null; onPick?: (hour: number) => void;
   following: boolean; liveHead?: Live<number>;
   extent: readonly [number, number]; branchStart: number; hoursPerSecond: number | undefined; active: boolean; tokens: ChartTokens;
@@ -43,7 +42,8 @@ export default function StabilityDrill({ client, clock, gate, source, branch, la
   const viewport = useViewportHeight();
   const root = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
-  const parts = useStabilityParts(client, clock, gate, source, branch, tag, within, extent, lastHour, measure, hour, hover, following, active, root);
+  const parts = useStabilityParts(client, clock, gate, source, branch, owner, extent, lastHour, measure, hour, hover, following, active, root);
+  const within = owner?.spans ?? null, tag = owner?.key ?? null;
   const shownParts = useMemo<MeasureParts>(() => partsWithin(partsWithin(parts.geometry, [{ firstHour: extent[0], lastHour: extent[1] }]), within),
     [parts.geometry, within, extent[0], extent[1]]);
   const named = (part: StabilityPart) => parts.ready ? partName(part, measure)

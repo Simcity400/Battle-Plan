@@ -215,12 +215,13 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
         ...(lines.data?.bounds ? { note: factionNote(undefined, '', true)! } : {}) }]} />;
   if (group || !track) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); }}>{raceView(true)}</div>;
   const opened = drill.breakdown;
-  const pinTime = drillControl.time();
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={opened ? `${entityLooks.name(opened, membersHour)}: members` : 'Faction members'} day={dayLabel(membersHour)}
-      canFollow={widget.time.mode === 'follow'}
-      onPin={opened && pinTime ? () => runtime.addWidgetBelow(widget.id, pinFactionMembers(widget, track, opened, pinTime, membership)) : undefined}
+      canFollow
+      pinRefused={pinTimed.refused ?? null} onPin={opened && pinTime ? () => runtime.addWidgetBelow(widget.id, pinFactionMembers(widget, track, opened, pinTime, membership)) : undefined}
       main={raceView(opened == null || options.drill === 'popout')}>
       {opened ? allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
         : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(true) : null}

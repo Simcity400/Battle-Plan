@@ -163,7 +163,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   const at = drillAt;
   return <div ref={anchor} className="fuel-branches-host">
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={CONSUMPTION.label}
-      day={at === null ? '' : dayLabel(at)} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
+      day={at === null ? '' : dayLabel(at)} canFollow onClose={() => dispatch({ type: 'close' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
       <FuelConsumptionDrill />
     </DrillHost>
   </div>;

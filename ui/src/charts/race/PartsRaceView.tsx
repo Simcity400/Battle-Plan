@@ -329,14 +329,16 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
         dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
       }} />
   </div> : breakdown;
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(breakdownTag ? { tag: selection?.tag ?? breakdownTag, origin: selection?.hour ?? originHour } : null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(breakdownTag ? { tag: selection?.tag ?? breakdownTag, origin: selection?.hour ?? originHour } : null);
+  const pinCountry = pinHeld.held;
   return <div className="parts-race" ref={anchor}>
     <DrillHost drill={{ ...drillControl, open: drillOpen }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={partsLabel} day={breakdownFollows && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)}
       canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, selection
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, selection
         ? pinNativeCountryParts(widget, track, pinCountry, pinTime, partsLabel)
         : pinCountryParts(widget, track, pinCountry, pinTime, partsLabel)) : undefined}
       main={<CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open}

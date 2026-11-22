@@ -219,16 +219,81 @@ pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str,
     table
 }
 
+#[derive(Default)]
+struct ParamNode {
+    hour: Option<bool>,
+    fields: std::collections::BTreeMap<String, ParamNode>,
+    items: Option<Box<ParamNode>>,
+}
+
+impl ParamNode {
+    fn insert(&mut self, path: &str, exact: bool) {
+        let (segment, rest) = path.split_once('.').map_or((path, None), |(head, rest)| (head, Some(rest)));
+        let (name, many) = segment.strip_suffix("[]").map_or((segment, false), |name| (name, true));
+        let mut node = self.fields.entry(name.to_owned()).or_default();
+        if many {
+            node = node.items.get_or_insert_with(Box::default).as_mut();
+        }
+        match rest {
+            Some(rest) => node.insert(rest, exact),
+            None => node.hour = Some(node.hour.unwrap_or(false) || exact),
+        }
+    }
+
+    fn render(&self) -> String {
+        let mut alternatives = Vec::new();
+        if let Some(exact) = self.hour {
+            alternatives.push(if exact { "E".to_owned() } else { "B".to_owned() });
+        }
+        if !self.fields.is_empty() {
+            alternatives.push(self.object());
+        }
+        if let Some(items) = &self.items {
+            alternatives.push(format!("readonly ({})[]", items.render()));
+        }
+        alternatives.join(" | ")
+    }
+
+    fn object(&self) -> String {
+        let fields = self.fields.iter().map(|(name, node)| format!("readonly {name:?}?: {} | null", node.render())).collect::<Vec<_>>();
+        if fields.is_empty() { "{}".to_owned() } else { format!("{{ {} }}", fields.join("; ")) }
+    }
+}
+
 fn request_hours() -> String {
-    let rows = request_fields()
-        .iter()
-        .map(|(key, fields)| {
-            let roles = fields.iter().map(|(path, role)| format!("{path:?}: {role:?}")).collect::<Vec<_>>();
-            if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {} }},", roles.join(", ")) }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";\nexport const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};\n")
+    let table = request_fields();
+    let exact = |role: &str| role == "read" || role == "bucket";
+    let mut every: std::collections::BTreeMap<String, Option<bool>> = std::collections::BTreeMap::new();
+    let mut rows = Vec::with_capacity(table.len());
+    let mut params = Vec::with_capacity(table.len());
+    for (key, fields) in &table {
+        let roles = fields.iter().map(|(path, role)| format!("{path:?}: {role:?}")).collect::<Vec<_>>();
+        rows.push(if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {} }},", roles.join(", ")) });
+        let mut node = ParamNode::default();
+        for (path, role) in fields {
+            node.insert(path, exact(role));
+        }
+        for (name, field) in &node.fields {
+            let now = field.hour.filter(|_| field.fields.is_empty() && field.items.is_none());
+            let held = every.entry(name.clone()).or_insert(now);
+            *held = held.zip(now).map(|(was, now)| was || now);
+        }
+        params.push(format!("  {key:?}: {};", node.object()));
+    }
+    let every = ParamNode {
+        fields: every.into_iter().filter_map(|(name, hour)| Some((name, ParamNode { hour: Some(hour?), ..ParamNode::default() }))).collect(),
+        ..ParamNode::default()
+    };
+    let (rows, params, every) = (rows.join("\n"), params.join("\n"), every.object());
+    [
+        "export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";".to_owned(),
+        format!("export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};"),
+        "/** Each product's dated request fields, with E an exact read's hour and B a range bound's. */".to_owned(),
+        format!("export type RequestParams<E, B> = {{\n{params}\n}};"),
+        "/** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */".to_owned(),
+        format!("export type AnyRequestParams<E, B> = {every};\n"),
+    ]
+    .join("\n")
 }
 
 #[cfg(test)]

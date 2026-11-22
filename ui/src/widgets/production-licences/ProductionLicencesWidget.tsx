@@ -166,7 +166,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && picked !== null} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(drillAt)}
-      canFollow={widget.time.mode === 'follow'} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} main={main}>
+      canFollow onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} main={main}>
       {picked && (own.error && ownDay ? <WidgetState kind="error" failure={own.error} onRetry={own.retry} />
         : !drillData ? <WidgetState kind="loading" label="Loading licences…" />
           : drillData.missing ? <p className="drill-empty">{drillData.missing}</p>

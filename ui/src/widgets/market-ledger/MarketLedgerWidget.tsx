@@ -85,7 +85,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   </div>;
   return <div ref={anchor} className="market-ledger-host">
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={follow} onClose={() => dispatch({ type: 'close' })}
+      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
       {picked && (pickedTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={pickedTags} selected={ledgerSelection(picked)} />

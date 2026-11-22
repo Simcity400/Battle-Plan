@@ -112,6 +112,9 @@ impl Registry {
                     Err(reason) => return Ok(unavailable(reason)),
                 };
                 let asked = params.get("query").unwrap_or(&Value::Null);
+                if let Some(other) = other_branch(asked, branch) {
+                    return Ok(unavailable(format!("The followed query names branch {other}, not the followed branch {branch}")));
+                }
                 let is_panel = asked.get("panel").is_some();
                 if is_panel {
                     let shown = match panel(asked) {
@@ -208,6 +211,18 @@ fn id(params: &Value) -> io::Result<u32> {
 
 fn clock(params: &Value) -> io::Result<i32> {
     params["clock"].as_i64().and_then(|clock| i32::try_from(clock).ok()).ok_or_else(|| crate::invalid("A follow request's clock is not an hour"))
+}
+
+fn other_branch(asked: &Value, branch: u64) -> Option<String> {
+    match asked {
+        Value::Object(fields) => fields.iter().find_map(|(name, value)| match (name.as_str(), value) {
+            ("branchId", Value::String(id)) if id.parse::<u64>().ok() == Some(branch) => None,
+            ("branchId", other) => Some(other.as_str().map_or_else(|| other.to_string(), str::to_owned)),
+            _ => other_branch(value, branch),
+        }),
+        Value::Array(items) => items.iter().find_map(|item| other_branch(item, branch)),
+        _ => None,
+    }
 }
 
 fn branch(params: &Value) -> io::Result<u64> {

@@ -102,7 +102,6 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const drillOpen = picked !== null && drill.breakdown !== null;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
   useEffect(() => { setPicked(null); dispatch({ type: 'close' }); }, [track?.source.id, track?.branch.id]);
-  const following = widget.time.mode === 'follow';
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const mined = rows.filter(row => row.owners.length).length;
   const more = !!shown && (shown.unlisted > 0 || rows.some(row => !row.owners.length));
@@ -135,7 +134,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   return <div ref={attach} className="minefields">
     {pill}
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={picked?.name ?? 'Region'}
-      day={drillAt === null ? '' : dayLabel(drillAt)} canFollow={following}
+      day={drillAt === null ? '' : dayLabel(drillAt)} canFollow
       onClose={() => { setPicked(null); dispatch({ type: 'close' }); }} main={main}>
       {picked && <RegionDrill widget={widget} runtime={runtime} active={active} region={picked} hoursPerSecond={hoursPerSecond}
         name={tag => looks.name(tag, lookHour)} colour={tag => colour(tag, lookHour)} time={drillTime}

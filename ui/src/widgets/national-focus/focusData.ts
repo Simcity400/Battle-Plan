@@ -7,7 +7,7 @@ import { enTwoDecimals } from '../../charts/numberFormat.ts';
 export const PRODUCT = 'national-focus';
 const FIXED = 100_000n;
 
-export function focusRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<CountryParams> {
+export function focusRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<typeof PRODUCT> {
   return { sourceId, revision, product: PRODUCT, params };
 }
 

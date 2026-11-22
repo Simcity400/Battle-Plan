@@ -443,13 +443,15 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
           swatch: country(tag), short: true, countryFlag: label };
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(pinTag ? { tag: pinTag, origin: originHour } : null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(pinTag ? { tag: pinTag, origin: originHour } : null);
+  const pinCountry = pinHeld.held;
   return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
     <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
       title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinCountry, pinTime, measure)) : undefined}
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinCountry, pinTime, measure)) : undefined}
       main={main}>
       {choice}
     </DrillHost>

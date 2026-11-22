@@ -1,5 +1,6 @@
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
+import type { Gate } from '../../dashboard/regionGate';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../TimeChart';
@@ -19,7 +20,7 @@ import type { DashboardClient } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
-import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
+import { ownerKeys, seriesOwner, useKeyedSeries, useSeriesParts, type SeriesOwner } from '../../dashboard/keyedSeries';
 import { keyId } from '../../dashboard/keyedSeriesData.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useTiles } from '../../dashboard/tiles/useTiles';
@@ -39,10 +40,12 @@ class PartLines {
   subscribe = (wake: () => void) => { this.wakes.add(wake); return () => { this.wakes.delete(wake); }; };
 }
 
-function PartTile({ client, track, family, tag, id, active, live, lines, head, unrecorded }: { client: DashboardClient; track: BoundTrack; family: Record<string, unknown>;
-  tag: string; id: string; active: boolean; live: boolean; lines: PartLines; head: (() => number | null) | null;
+function PartTile({ client, track, family, owner, id, active, live, lines, head, unrecorded }: { client: DashboardClient; track: BoundTrack; family: Record<string, unknown>;
+  owner: SeriesOwner; id: string; active: boolean; live: boolean; lines: PartLines; head: (() => number | null) | null;
   unrecorded: (id: string, reason: string | null | undefined) => void }) {
-  const tiles = useTiles(client, { source: track.source, branchId: track.branch.id, family, tags: [tag], lastHour: track.branch.lastHour }, active, live);
+  const tag = owner.key;
+  const within = useMemo(() => owner.spans ? new Map([[tag, owner.spans]]) : undefined, [tag, owner.spans]);
+  const tiles = useTiles(client, { source: track.source, branchId: track.branch.id, family, tags: [tag], within, lastHour: track.branch.lastHour }, active, live);
   const { read, subscribe, onView } = tiles;
   useEffect(() => {
     lines.set(id, { read: () => read()?.get(tag)?.summary, subscribe, onView: view => { if (view.to >= view.from) onView(view); } });
@@ -60,7 +63,7 @@ export interface PartsBreakdownProps {
   tag: string; name: string;
   extent: [number, number]; playhead: number | null;
   hour: number;
-  gate: SeriesGate;
+  gate: SeriesGate & { readonly country?: Gate['country'] };
   at: GatedHour | null;
   head: PartsHead | null;
   values: PartValues | undefined;
@@ -78,11 +81,12 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const lines = useMemo(() => new PartLines(), []);
   const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
   const keyedFamily = parts.kind === 'keyed' ? parts.family as unknown as Record<string, unknown> : null;
-  const held = useSeriesParts(runtime.client, track.source, track.branch.id, keyedFamily, keyedFamily ? tag : null, keyedFamily ? span : null, active);
-  const keys = useMemo(() => keyedFamily ? (held.data?.parts ?? []).map(part => ({ tag, part: part.part })) : [], [keyedFamily, held.data, tag]);
+  const owner = useMemo(() => seriesOwner(gate.country, tag), [gate.country?.history, tag]);
+  const held = useSeriesParts(runtime.client, track.source, track.branch.id, keyedFamily, keyedFamily ? owner?.key ?? null : null, keyedFamily ? span : null, active);
+  const { keys, within } = useMemo(() => ownerKeys(keyedFamily ? owner : null, (held.data?.parts ?? []).map(part => part.part)), [keyedFamily, held.data, owner]);
   const root = useRef<HTMLDivElement>(null);
   const keyed = useKeyedSeries(runtime.client, runtime.clock, gate, keyedFamily && keys.length ? { source: track.source, branch: track.branch, family: keyedFamily,
-    keys, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, following ? null : at, null, following, active, root);
+    keys, within, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, following ? null : at, null, following, active, root);
   const items = useMemo(() => parts.kind === 'measures' ? drawnItems(parts.items).map(item => ({ id: item.id, label: item.label }))
     : keys.map(key => ({ id: key.part, label: parts.name(key.part) })), [parts, keys]);
   const colours = useMemo(() => partColours(items, tokens.categories), [items, tokens.categories]);
@@ -98,12 +102,12 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const summaries = useCallback((): ChartSummary[] | null => {
     const out: ChartSummary[] = [];
     for (const item of items) {
-      const summary = parts.kind === 'measures' ? lines.lines.get(item.id)?.read() : keyed.summaryOf(keyId({ tag, part: item.id }));
+      const summary = parts.kind === 'measures' ? lines.lines.get(item.id)?.read() : keyed.summaryOf(keyId({ tag: owner?.key ?? tag, part: item.id }));
       if (!summary) return null;
       out.push(summary);
     }
     return out.length && out.every(summary => summary.buckets.length === out[0].buckets.length) ? out : null;
-  }, [items, parts.kind, lines, keyed.summaryOf, tag]);
+  }, [items, parts.kind, lines, keyed.summaryOf, tag, owner?.key]);
   const stacked = useRef<{ summaries: readonly ChartSummary[]; stack: ReturnType<typeof summaryStack> } | null>(null);
   const stackOf = useCallback(() => {
     const now = summaries();
@@ -166,7 +170,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const failure = error ?? held.error ?? keyed.error;
   return <div className="parts-race-breakdown" ref={root}>
     {parts.kind === 'measures' && drawnItems(parts.items).map(item => <PartTile key={item.id} client={runtime.client} track={track} family={item.measure as unknown as Record<string, unknown>}
-      tag={tag} id={item.id} active={active} live={following} lines={lines} head={partHead(item.id)} unrecorded={partUnrecorded} />)}
+      owner={owner ?? { key: tag, spans: null }} id={item.id} active={active} live={following} lines={lines} head={partHead(item.id)} unrecorded={partUnrecorded} />)}
     {failure ? <WidgetState kind="error" what="the breakdown" failure={asFailure(failure)} onRetry={onRetry ?? keyed.retry} /> : null}
     <div className="country-race-chart">
       <TimeChart label={`${name} by ${parts.label.toLowerCase()}`} extent={extent} playhead={playhead} playback={playback} afterPlayhead={options.afterPlayhead === true}

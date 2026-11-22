@@ -169,7 +169,8 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const diagnostics = useMemo(() => !data ? (opinions.error ? [opinions.error.message] : NO_WARNINGS) : data.warnings, [data, opinions.error]);
   useDiagnostics(onDiagnostics, diagnostics);
   const drillOpen = drill.breakdown != null && picked != null;
-  const pinTime = drillControl.time();
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="handshake" message="Load a campaign to see opinions." />;
     const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
@@ -208,7 +209,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
         { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />);
     return <div ref={element => { anchor.current = element; opinions.root(element); }} className="diplomatic-relations" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>{state ? null : groupFailure}
       <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Pair history" day={drillControl.hour === null ? '' : dayLabel(drillControl.hour)} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }}
-        onPin={picked && pinTime ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id, pinTime);
+        pinRefused={pinTimed.refused ?? null} onPin={picked && pinTime ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id, pinTime);
           runtime.addWidgetBelow(widget.id, { ...pinned, title: `${label(picked.first, picked.hour).name} and ${label(picked.second, picked.hour).name} opinions`, options: { ...pinned.options, pair: setToken(pairToken(picked)) } }); } : undefined}
         main={main}>
         {picked && <PairHistory runtime={runtime} gate={drillControl.gate} track={track} pair={picked} hour={drillControl.hour} active={active} following={drillControl.following} />}

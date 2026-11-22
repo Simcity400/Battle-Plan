@@ -138,7 +138,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={windowOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow={widget.time.mode === 'follow'}
+      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}>
       {picked && Chooser && at === null && <WidgetState kind="outside" read={drillCoverage} />}
       {picked && Chooser && at !== null && <Chooser selection={{ ...picked, hour: at }} active={active} client={runtime.client}

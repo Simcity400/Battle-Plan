@@ -1,6 +1,6 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
 
-import type { HourRole, RecordingGap } from '../generated/dashboard';
+import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
 
 declare const TRACK: unique symbol;
@@ -53,15 +53,10 @@ export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, t
 
 declare const FOLLOWED: unique symbol;
 export type FollowQuery = Readonly<Record<string, unknown>> & { readonly [FOLLOWED]: 'gated' };
-export type GatedParams = {
-  readonly [key: string]: unknown;
-  readonly [key: `${string}Hour`]: BoundHour | null | undefined;
-  readonly hour?: GatedHour | null;
-  readonly from?: BoundHour | null;
-  readonly to?: BoundHour | null;
-  readonly reads?: readonly ({ readonly hour: GatedHour } | GatedHour)[];
-  readonly hours?: readonly GatedHour[];
-};
+type Unchecked = { readonly [key: string]: unknown };
+export type ParamsFor<K extends string> = Unchecked & AnyRequestParams<GatedHour, BoundHour>
+  & (K extends keyof RequestParams<GatedHour, BoundHour> ? RequestParams<GatedHour, BoundHour>[K] : unknown);
+export type GatedParams = ParamsFor<string>;
 
 export type { HourRole };
 export const exactRole = (role: HourRole): boolean => role === 'read' || role === 'bucket';

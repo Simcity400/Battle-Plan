@@ -6035,7 +6035,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "event-choices": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end" },
   "event-feed": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end" },
   "event-feed-span": { "from": "start", "to": "end" },
-  "events-page": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
+  "events-page": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
   "faction-details": { "hour": "read" },
   "faction-goal-rewards": { "hour": "read" },
   "faction-lines": { "from": "start", "to": "end", "members[].spans[].0": "start", "members[].spans[].1": "end", "unread[].0": "start", "unread[].1": "end" },
@@ -6111,17 +6111,17 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "regional-weather": { "firstHour": "start", "lastHour": "end" },
   "regional-weather-provinces": { "hour": "read" },
   "research": {},
-  "research-breakdown": { "parts[].firstObservedHour": "start", "parts[].lastHour": "end" },
+  "research-breakdown": { "parts[].firstObservedHour": "read", "parts[].lastHour": "end" },
   "research-slots": { "hour": "read" },
   "resource-balance": { "hour": "read" },
   "resource-sizes": { "from": "start", "to": "end" },
   "scoreboard": { "hour": "read" },
   "scoreboard-columns": {},
-  "series-next-change": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
-  "series-parts": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
-  "series-state": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
-  "series-summary": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
-  "series-tiles": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end" },
+  "series-next-change": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "series-parts": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "series-state": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "series-summary": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "series-tiles": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
   "ships-sunk": {},
   "ships-sunk-manifest": {},
   "special-project-details": { "hour": "read" },
@@ -6151,5 +6151,195 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "wars": {},
   "world-tension": { "hour": "read" },
 };
+/** Each product's dated request fields, with E an exact read's hour and B a range bound's. */
+export type RequestParams<E, B> = {
+  "agency-comparison": { readonly "hour"?: E | null };
+  "air-ace-portraits": { readonly "hour"?: E | null };
+  "air-aces": { readonly "hour"?: E | null };
+  "air-force-size": {};
+  "air-mission-wings": { readonly "hour"?: E | null };
+  "air-missions": { readonly "hour"?: E | null };
+  "air-statistics": { readonly "hour"?: E | null };
+  "air-statistics-regions": {};
+  "air-superiority": { readonly "hour"?: E | null };
+  "air-superiority-choices": {};
+  "air-superiority-ranking": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "air-superiority-timeline": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "aircraft-catalogue": {};
+  "army-losses": { readonly "hour"?: E | null };
+  "army-size": {};
+  "campaign-clock": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "casualty-breakdown": {};
+  "casualty-labels": {};
+  "casualty-pairs": {};
+  "civil-wars": {};
+  "combat-log-history": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
+  "construction-log": {};
+  "construction-log-manifest": {};
+  "construction-spending": {};
+  "convoy-health": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "country-experience": { readonly "hour"?: E | null };
+  "country-facts": {};
+  "country-flags": {};
+  "country-fuel": { readonly "hour"?: E | null };
+  "country-fuel-award-history": { readonly "hour"?: E | null };
+  "country-fuel-awards": { readonly "hour"?: E | null };
+  "country-fuel-demand": { readonly "hour"?: E | null };
+  "country-fuel-demand-history": { readonly "hour"?: E | null };
+  "country-groups": {};
+  "country-identities": {};
+  "country-people": { readonly "hour"?: E | null };
+  "country-stability-breakdown": { readonly "hour"?: E | null };
+  "country-styles": { readonly "hour"?: E | null };
+  "decisions": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "decryption": { readonly "hour"?: E | null };
+  "diplomatic-pacts": {};
+  "diplomatic-relations": { readonly "hour"?: E | null };
+  "division-careers": { readonly "hour"?: E | null };
+  "division-equipment": { readonly "hour"?: E | null };
+  "division-log": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "division-log-manifest": {};
+  "division-record": { readonly "hour"?: E | null };
+  "division-templates": { readonly "hour"?: E | null };
+  "doctrine-mastery": { readonly "hour"?: E | null };
+  "doctrine-rewards": { readonly "hour"?: E | null };
+  "doctrines": { readonly "hour"?: E | null };
+  "equipment-designs": {};
+  "equipment-loss-head": { readonly "hour"?: E | null };
+  "equipment-losses": { readonly "from"?: B | null; readonly "reads"?: readonly (E)[] | null; readonly "to"?: B | null };
+  "equipment-produced": { readonly "rankHour"?: E | null };
+  "equipment-produced-at": { readonly "hour"?: E | null };
+  "equipment-produced-country": {};
+  "equipment-produced-types": {};
+  "equipment-stockpile-at": { readonly "hour"?: E | null };
+  "equipment-stockpile-catalogue": { readonly "holders"?: readonly ({ readonly "within"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "equipment-stockpile-chart": { readonly "from"?: B | null; readonly "holders"?: readonly ({ readonly "within"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "to"?: B | null };
+  "espionage-ended": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "espionage-log": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "espionage-operation": { readonly "hour"?: E | null };
+  "espionage-operations": { readonly "hour"?: E | null };
+  "espionage-type-tokens": {};
+  "espionage-types": {};
+  "event-choices": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-feed": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-feed-span": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "events-page": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "faction-details": { readonly "hour"?: E | null };
+  "faction-goal-rewards": { readonly "hour"?: E | null };
+  "faction-lines": { readonly "from"?: B | null; readonly "members"?: readonly ({ readonly "spans"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null })[] | null; readonly "to"?: B | null; readonly "unread"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null };
+  "faction-rosters": { readonly "hour"?: E | null };
+  "faction-state": {};
+  "factory-groups": {};
+  "factory-parts": { readonly "hour"?: E | null };
+  "focus-artwork": { readonly "hour"?: E | null };
+  "focus-completions": {};
+  "focus-hour": { readonly "hour"?: E | null };
+  "focus-order-page": { readonly "hour"?: E | null };
+  "focus-unavailable": { readonly "hour"?: E | null };
+  "fuel-branches": { readonly "hour"?: E | null };
+  "game-score": { readonly "hour"?: E | null };
+  "head:campaign-clock": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "head:player-apm": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "idea-history": {};
+  "industrial-organisations": { readonly "hour"?: E | null };
+  "intel-details": { readonly "hour"?: E | null };
+  "intel-network-coverage": { readonly "hour"?: E | null };
+  "land-battle-course": {};
+  "land-battle-terrain": {};
+  "land-battles": {};
+  "land-battles-manifest": {};
+  "land-battles-ranking": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "land-owners": {};
+  "lend-lease-balance": { readonly "hour"?: E | null };
+  "lend-lease-history": {};
+  "lend-lease-partners": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "log-counts": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "log-page": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "market-ledger": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "market-lendlease": { readonly "hour"?: E | null };
+  "military-air-ledger": { readonly "fromHour"?: B | null };
+  "minefield-history": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "minefield-reports": { readonly "hour"?: E | null };
+  "minefields": { readonly "hour"?: E | null };
+  "national-focus": {};
+  "naval-battle-details": { readonly "battles"?: readonly ({ readonly "hour"?: E | null })[] | null };
+  "naval-battles": {};
+  "naval-battles-manifest": {};
+  "naval-battles-ranking": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "naval-losses": {};
+  "naval-management": { readonly "hour"?: E | null };
+  "naval-refits": { readonly "hour"?: E | null };
+  "naval-repairs": { readonly "hour"?: E | null };
+  "naval-supremacy": {};
+  "navy-size": {};
+  "nuclear-arsenal": { readonly "hour"?: E | null };
+  "occupation-at": { readonly "hour"?: E | null };
+  "occupation-reserve-history": {};
+  "occupation-reserve-manpower": { readonly "hour"?: E | null };
+  "occupied-states": { readonly "hour"?: E | null };
+  "operative-placements": { readonly "hour"?: E | null };
+  "operative-tenures": { readonly "hour"?: E | null };
+  "operatives-departed": { readonly "hour"?: E | null };
+  "operatives-roster": { readonly "hour"?: E | null };
+  "party-history": {};
+  "peace-deals": {};
+  "place-names": { readonly "places"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "states"?: readonly ({ readonly "hour"?: E | null })[] | null };
+  "player-apm": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "politics-state": { readonly "hour"?: E | null };
+  "politics-state-history": {};
+  "power-day": { readonly "hour"?: E | null };
+  "power-spending": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "production-licences": { readonly "hour"?: E | null };
+  "production-line-breakdown": { readonly "hour"?: E | null };
+  "production-line-detail": {};
+  "production-lines": {};
+  "production-lines-at": { readonly "hour"?: E | null };
+  "production-spending": {};
+  "raid-log": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "regional-weather": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "regional-weather-provinces": { readonly "hour"?: E | null };
+  "research": {};
+  "research-breakdown": { readonly "parts"?: readonly ({ readonly "firstObservedHour"?: E | null; readonly "lastHour"?: B | null })[] | null };
+  "research-slots": { readonly "hour"?: E | null };
+  "resource-balance": { readonly "hour"?: E | null };
+  "resource-sizes": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "scoreboard": { readonly "hour"?: E | null };
+  "scoreboard-columns": {};
+  "series-next-change": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-parts": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-state": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-summary": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-tiles": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "ships-sunk": {};
+  "ships-sunk-manifest": {};
+  "special-project-details": { readonly "hour"?: E | null };
+  "special-project-effects": { readonly "hour"?: E | null };
+  "special-projects": { readonly "hour"?: E | null };
+  "sprite-artwork": {};
+  "stability-part-names": { readonly "hour"?: E | null };
+  "stability-reads": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "stockpile-artwork": { readonly "hour"?: E | null };
+  "subjects": {};
+  "technology-artwork": {};
+  "template-roster": { readonly "hour"?: E | null };
+  "territory-breakdown": { readonly "hour"?: E | null };
+  "territory-share": { readonly "hour"?: E | null };
+  "threat-events": {};
+  "trade-flows": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "training-queue": { readonly "hour"?: E | null };
+  "unit-leader-career": {};
+  "unit-leader-choices": {};
+  "unit-leader-hour": { readonly "hour"?: E | null };
+  "unit-leader-portraits": { readonly "hour"?: E | null };
+  "unit-leaders": { readonly "hour"?: E | null };
+  "volunteers-expeditionaries": {};
+  "war-contributions": { readonly "hour"?: E | null };
+  "war-losses": { readonly "hour"?: E | null };
+  "wargoals": { readonly "hour"?: E | null };
+  "wars": {};
+  "world-tension": { readonly "hour"?: E | null };
+};
+/** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */
+export type AnyRequestParams<E, B> = { readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "fromHour"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "rankHour"?: E | null; readonly "to"?: B | null };
 /** Each map option until the user chooses: the game's own default for those it saves in settings.txt, the app's for the rest. */
 export const MAP_OPTION_DEFAULTS = { dayNight: true, alliedPlans: false, fog: true, countryCounterColours: false, playerCounters: false, radar: false } as const;

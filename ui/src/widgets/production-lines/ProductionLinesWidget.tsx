@@ -25,7 +25,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { readDatedCountry } from '../../dashboard/datedCountry';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import { useGate } from '../../dashboard/regionGate';
+import { useGate, useHeldEdges } from '../../dashboard/regionGate';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -82,8 +82,12 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Production line actions');
-  const detail = data?.detailHours ?? null;
-  const changes = useMemo(() => track && detail ? bucketEdges(track, detail) : NO_CHANGES, [track?.branch.firstHour, track?.branch.lastHour, detail]);
+  const drillLines = useProductionLines(widget, runtime, active);
+  const drillError = useHeldFailure(drillLines.error, drillLines.data !== undefined, drillLines.retry);
+  const detail = drillLines.data?.detailHours ?? null;
+  const [runEdges, holdRuns] = useHeldEdges();
+  const changes = useMemo(() => track && detail ? [...new Set([...bucketEdges(track, detail), ...runEdges])].sort((a, b) => a - b) : NO_CHANGES,
+    [track?.branch.firstHour, track?.branch.lastHour, detail, runEdges]);
   const drillNeeds = useMemo(() => ({ changes }), [changes]);
   const drillControl = useDrill(runtime, useRegion(widget), pinned ? options.show as string : null, undefined, undefined, drillNeeds);
   const drill = drillControl.state;
@@ -96,7 +100,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
   const savedCountry = pinned && track ? readDatedCountry(options.productionCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
-  const lineTag = savedCountry?.tag ?? (tag && isSlotKey(tag) ? data?.tag : tag);
+  const lineTag = savedCountry?.tag ?? (tag && isSlotKey(tag) ? drillLines.data?.tag : tag);
   const pinnedKey = pinned && track && lineTag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, lineTag, options.line) : null;
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
@@ -104,6 +108,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const breakdownHour = drillControl.hour;
   const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group,
     detail === null ? null : bucketRead(track, breakdownHour, detail), active && (pinned || drill.breakdown !== null));
+  useEffect(() => holdRuns(breakdown.data ? new Map([['runs', breakdown.data.runs]]) : null), [breakdown.data, holdRuns]);
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
   useDiagnostics(onDiagnostics, warnings);
@@ -118,7 +123,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   };
 
   if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." />;
-  const drillView = !key ? pinned && !lineTag ? error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : <WidgetState kind="loading" label="Loading production lines…" /> : <p className="drill-empty">Choose a production line in the widget settings.</p>
+  const drillView = !key ? pinned && !lineTag ? drillError ? <WidgetState kind="error" failure={drillError} onRetry={drillLines.retry} /> : <WidgetState kind="loading" label="Loading production lines…" /> : <p className="drill-empty">Choose a production line in the widget settings.</p>
+    : detail === null ? drillError ? <WidgetState kind="error" failure={drillError} onRetry={drillLines.retry} /> : <WidgetState kind="loading" label="Loading production lines…" />
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
         : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
@@ -140,7 +146,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
           { label: 'Output breakdown', run: () => open(lineKey, 'output', hour, true) }] : []])} />;
   return <div ref={anchor} className="production-lines">
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!opened} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow={widget.time.mode === 'follow'} main={main}
+      title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow main={main}
       onClose={() => { dispatch({ type: 'close' }); setOpened(null); }}>{drillView}</DrillHost>
     {menu.menu}
   </div>;

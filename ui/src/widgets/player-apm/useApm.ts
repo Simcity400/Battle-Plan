@@ -64,10 +64,14 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   const membershipGap = resolved?.unobserved.some(span => firstHour !== null && lastHour !== null && span.firstHour <= lastHour && firstHour <= span.lastHour);
   const reason = resolved?.reason ?? (membershipGap ? 'Country group membership was not recorded throughout this period.' : null);
   const span = firstHour !== null && lastHour !== null ? gate.span(firstHour, lastHour) : null;
+  const membership = useMemo(() => asked?.membership ? [...asked.membership.values()].flat().flatMap(run => {
+    const held = gate.span(run.firstHour, run.lastHour);
+    return held ? [{ tag: run.tag, ...held }] : [];
+  }) : null, [asked, gate.span]);
   const params = !followed && track && span && known && !reason ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, registry: false, ...span,
     tags: asked?.tags ?? null, players: contentSet(options.players).map(contentKey),
-    membership: asked?.membership ? [...asked.membership.values()].flat() : null,
+    membership,
     buckets: graph ? Math.max(1, Math.min(4096, Math.ceil(view?.width ?? 1024))) : 1,
   } : null;
   const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
@@ -79,7 +83,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   }, [product.moment]);
   const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: asked?.tags ?? null,
-    membership: asked?.membership ? [...asked.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),
+    membership, players: contentSet(options.players).map(contentKey),
   } : null;
   return { track, identity, options, window, first, last, playbackHour, known, reason, groups, answered, head, ...product };
 }

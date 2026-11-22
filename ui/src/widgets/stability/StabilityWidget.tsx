@@ -1,11 +1,11 @@
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
-import { answersKey, countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { answersKey, countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { countryDrillTagAt } from '../../dashboard/countryIdentity';
-import { chooseDrillCountry, drillCountrySpans, heldDrillCountry, readDrillCountry } from '../country-measure/drillCountry';
+import { chooseDrillCountry, drillCountryCoverage, drillCountrySpans, heldDrillCountry, readDrillCountry } from '../country-measure/drillCountry';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import StabilityDrill, { MEASURE_NAMES } from './StabilityDrill';
@@ -308,10 +308,11 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const pinnedAt = pinnedRegionAt;
   const drillCoverage = pinnedMeasure ? pinnedCoverage : coverageOf(drillControl.outside);
   const drillAt = pinnedMeasure ? pinnedAt : drillOpen ? drillControl.hour : null;
-  const drillFollows = pinnedMeasure ? pinnedFollowing && following : drillOpen && drill.follow;
+  const drillFollows = pinnedMeasure ? pinnedFollowing : drillOpen && drill.follow;
   const drillPlayhead = pinnedMeasure ? pinnedAt : drillOpen && drill.follow ? liveHour : playhead;
   const shownTag = actorSpans && drillAt !== null ? countryDrillTagAt(actorSpans, Math.floor(drillAt)) : null;
-  const drillWithin = shownTag && actorSpans ? actorSpans.get(shownTag) ?? null : null;
+  const drillOwner = useMemo(() => selectedCountry && actorSpans ? { key: countryKey(selectedCountry.slot), spans: drillCountryCoverage(actorSpans) } : null,
+    [selectedCountry, actorSpans]);
   const drillLabels = useCountryLabelsAt(runtime.client, track, (drillOpen || pinnedMeasure && savedCountry) && shownTag && drillAt !== null ? [{ tag: shownTag, hour: Math.floor(drillAt) }] : [], active);
   const actorReason = hasSavedCountry && !savedCountry ? 'Selected country unavailable.'
     : !groupData ? 'Loading country…' : !selectedCountry || !actorSpans || !shownTag ? 'Selected country unavailable.' : null;
@@ -360,9 +361,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   const drill_ = (measure: Measure, onMeasure: ((measure: Measure) => void) | undefined, onPick: (hour: number) => void) =>
     <StabilityDrill client={runtime.client} clock={runtime.clock} gate={pinnedMeasure ? pinnedGate : drillControl.gate} source={track.source} branch={track.branch} lastHour={lastHour}
-      tag={shownTag} measure={measure} onMeasure={onMeasure} hour={drillAt} following={drillFollows} liveHead={drillFollows ? clockHead : undefined}
+      owner={shownTag ? drillOwner : null} measure={measure} onMeasure={onMeasure} hour={drillAt} following={drillFollows} liveHead={drillFollows ? clockHead : undefined}
       playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
-      within={drillWithin} extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
+      extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
       branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} onDiagnostics={setDrillNotes} />;
   if (pinnedMeasure) {
     const body = pinnedAt === null ? <WidgetState kind="outside" read={pinnedCoverage} /> : !single ? resolved.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
@@ -491,8 +492,10 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     {error && <WidgetState kind="error" what="values" failure={error} onRetry={retry} />}
   </div>;
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
-  const pinTime = drillControl.time();
-  const pinCountry = drillControl.hold(selectedCountry && actorSpans ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
+  const pinHeld = drillControl.gate.checkHold(selectedCountry && actorSpans ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinCountry = pinHeld.held;
   return <div className="stability" ref={rootRef} onFocus={() => setFocused(true)}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
     {groupNotice}
@@ -500,7 +503,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`}
       day={drillAt == null ? '' : drillFollows ? <LiveText live={dayText} at="day" /> : dayLabel(Math.floor(drillAt))} canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
       returnFocus=".stability-chart canvas" onClose={() => { dispatchDrill({ type: 'close' }); setActorPick(null); }}
-      onPin={pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id,
+      pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id,
         pinStabilityDrill({ ...widget, options: { ...widget.options, stabilityCountry: JSON.stringify(heldDrillCountry(pinCountry, track)) } }, breakdownOf, track.id, pinCountry.tag, pinTime)) : undefined}
       main={main}>
       {choosingActor && chosen && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null}

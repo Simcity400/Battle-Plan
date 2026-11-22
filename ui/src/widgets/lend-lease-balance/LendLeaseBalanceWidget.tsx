@@ -121,7 +121,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   if (!track) return main;
   return <div ref={anchor} className="lend-lease-balance-host">
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!shownPick} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={shownPick ? `${shownPick.name}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
+      title={shownPick ? `${shownPick.name}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={<div ref={head.root} className="lend-lease-balance-host">{main}</div>}>
       {shownPick && <Partners widget={widget} runtime={runtime} active={active} tag={shownPick.tag} name={shownPick.name} hour={at} measure={measure}
         following={drill.follow && widget.time.mode === 'follow'} onPick={pick => dispatch({ type: 'pick', hour: pick })} />}

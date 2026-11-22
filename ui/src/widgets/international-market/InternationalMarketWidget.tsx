@@ -172,7 +172,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked?.title ?? DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={widget.time.mode === 'follow'}
+      title={picked?.title ?? DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow
       onClose={() => dispatch({ type: 'close' })}
       main={<div ref={head.root} className="international-market-table">{body}</div>}>
       {picked && <MarketDrill runtime={runtime} widget={widget} time={drillTime} tags={picked.tags} selected={picked.selected} active={active} onAnswered={setDrillShown} />}

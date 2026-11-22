@@ -23,8 +23,8 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-pub fn params_fields() -> Option<&'static [&'static str]> {
-    crate::fields::struct_fields::<Params>()
+pub fn params_walk() -> crate::fields::Walk {
+    crate::fields::walk::<Params>()
 }
 
 #[derive(Deserialize)]

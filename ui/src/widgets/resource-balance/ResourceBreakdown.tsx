@@ -18,7 +18,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import type { ReachedKeyLine } from '../../dashboard/keyedSeriesData';
-import { useKeyedSeries } from '../../dashboard/keyedSeries';
+import { ownerKeys, useKeyedSeries } from '../../dashboard/keyedSeries';
 import { mostNamed } from '../../dashboard/tiles/view.ts';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import ResourceDeals from './ResourceDealsView';
@@ -70,8 +70,7 @@ export default function ResourceBreakdown({ runtime, gate, track, active, histor
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const element = useMemo(() => ({ current: root }), [root]);
-  const keys = useMemo(() => history ? [{ tag: history.key, part: String(resource.id) }] : [], [history?.key, resource.id]);
-  const within = useMemo(() => history && keys[0] ? new Map([[keyId(keys[0]), history.spans]]) : undefined, [history, keys]);
+  const { keys, within } = useMemo(() => ownerKeys(history, [String(resource.id)]), [history, resource.id]);
   const spec = (index: number) => ({ source: track.source, branch: track.branch, family: PART_FAMILIES[index], keys, within, partBits: 32, lastHour: track.branch.lastHour });
   const head = following ? null : gate.recorded(hour);
   const hovered = gate.recorded(hoverHour);

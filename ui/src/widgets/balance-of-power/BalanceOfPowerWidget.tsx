@@ -150,13 +150,14 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
     playback={{ mode: playback, afterPlayhead, windowHours: Number(options.windowDays ?? 365) * 24 }} unknown={unknown}
     membersOf={membersOf} pickOwner={pickOwner} onChoose={setOption ? token => setOption('balance', token) : undefined}
     onPick={hour => dispatchDrill({ type: 'open', breakdown: WEEKLY_BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) })} />;
-  const pinTime = drillControl.time();
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   return <div className="balance-of-power" ref={anchor}>
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={`${countryName}: ${WEEKLY_BREAKDOWN.label}`} day={drillAt === null ? '' : dayLabel(drillAt)}
       canFollow={liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
       returnFocus=".balance-chart canvas" onClose={() => dispatchDrill({ type: 'close' })}
-      onPin={pinTime ? () => runtime.addWidgetBelow(widget.id, pinBalanceDrill(widget, track, pinTime, balance.token)) : undefined} main={main}>
+      pinRefused={pinTimed.refused ?? null} onPin={pinTime ? () => runtime.addWidgetBelow(widget.id, pinBalanceDrill(widget, track, pinTime, balance.token)) : undefined} main={main}>
       <BalanceDrill runtime={runtime} track={track} history={data} tag={tag} at={at} token={balance.token} details={details} active={active} />
     </DrillHost>
   </div>;

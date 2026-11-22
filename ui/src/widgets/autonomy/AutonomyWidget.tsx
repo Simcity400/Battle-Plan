@@ -139,8 +139,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }, [entry, places, tags, series.head]);
   useShownEachFrame(clock, () => data ? liveHead ? Math.min(liveHead.read(), lastHour) : head : null);
   const hovered = gate.recorded(hoverHour);
-  const scoreRequest = (measure: string) => track && hovered !== null && tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
+  const hoverTags = hovered === null ? [] : tags.filter(tag => within.get(tag)?.some(span => span.firstHour <= hovered && hovered <= span.lastHour));
+  const scoreRequest = (measure: string) => track && hovered !== null && hoverTags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: hoverTags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
   const scores = useProduct<MeasureStates>(runtime.client, scoreRequest('score'), active, validateMeasureStates, track?.source);
   const lowers = useProduct<MeasureStates>(runtime.client, scoreRequest('lower'), active, validateMeasureStates, track?.source);
   const uppers = useProduct<MeasureStates>(runtime.client, scoreRequest('upper'), active, validateMeasureStates, track?.source);

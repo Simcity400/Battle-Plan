@@ -479,7 +479,7 @@ impl Product for CasualtyPairs {
     const KEY: &'static str = "casualty-pairs";
     const CONTENT_DEPENDENT: bool = false;
     type Params = CasualtyPairsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, between, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, between, window, "countries[]"];
     type Reply = CasualtyPairsReply;
 
     #[cfg(any(test, feature = "export-types"))]

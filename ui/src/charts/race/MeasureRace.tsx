@@ -410,13 +410,14 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
       raceEmptyState: false, resetTimeView: true }}
     tooltip={tooltip} />;
   if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
-  const pinTime = drillControl.time();
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
   return <div className="parts-race" ref={attachRoot}>{follows}
     <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={drillTitle}
-      day={dayLabel(breakdownHour)} canFollow={following}
+      day={dayLabel(breakdownHour)} canFollow
       returnFocus=".country-race-chart canvas"
-      onPin={drill.breakdown && (!isSlotKey(drill.breakdown) || breakdownName) && pinTime ? () => runtime.addWidgetBelow(widget.id, { ...pinnedBreakdown(widget, { id: 'breakdown', label: parts.label }, track.id, pinTime),
+      pinRefused={pinTimed.refused ?? null} onPin={drill.breakdown && (!isSlotKey(drill.breakdown) || breakdownName) && pinTime ? () => runtime.addWidgetBelow(widget.id, { ...pinnedBreakdown(widget, { id: 'breakdown', label: parts.label }, track.id, pinTime),
         countries: { kind: 'tags', tags: [isSlotKey(drill.breakdown!) ? breakdownName! : drill.breakdown!] } }) : undefined}
       main={race(drill.breakdown == null || options.drill === 'popout')}>
       {drill.breakdown ? breakdownOf(drill.breakdown, true) : null}

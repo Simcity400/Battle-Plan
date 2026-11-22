@@ -140,7 +140,7 @@ impl AtHour for DiplomaticRelations {
     const TITLE: &'static str = "Diplomatic relations";
     const CONTENT_DEPENDENT: bool = false;
     type Params = DiplomaticRelationsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = DiplomaticRelationsReply;
     type Context = ();
 

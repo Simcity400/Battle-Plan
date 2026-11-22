@@ -151,7 +151,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   </div>;
   return <div ref={anchor} className="convoy-health-host" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!drilled} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : drillHour === null ? '' : dayLabel(drillHour)} canFollow={following}
+      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : drillHour === null ? '' : dayLabel(drillHour)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}>
       {drilled && <ConvoyDrill row={drilled} runtime={runtime} track={track} hour={drillHour} liveHead={drillFollows ? liveHead : undefined}
         liveFacts={liveFacts} extent={extent} active={active} scale={data.scale} onPick={hour => dispatch({ type: 'pick', hour })} />}

@@ -166,7 +166,7 @@ impl AtHour for Minefields {
     const TITLE: &'static str = "Minefields";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MinefieldsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = MinefieldsReply;
     type Context = Context;
 
@@ -290,7 +290,7 @@ impl Product for MinefieldHistory {
     const KEY: &'static str = "minefield-history";
     const CONTENT_DEPENDENT: bool = false;
     type Params = MinefieldHistoryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, region, countries, firstHour: Start, lastHour: End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, region, countries, firstHour: Start, lastHour: End, "countries[]"];
     type Reply = MinefieldHistoryReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

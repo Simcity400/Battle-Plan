@@ -3,13 +3,28 @@ import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
 import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
-  SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
+  SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
 
 const track = (id: string, firstHour: number, lastHour: number, axisOffset: number, gaps: { firstHour: number; lastHour: number; reason: string }[] = []) =>
   ({ id, axisOffset, branch: { id, firstHour, lastHour, gaps } }) as unknown as BoundTrack;
 const late = track('late', 1000, 1009, 900);
+
+type Takes<T, U> = [U] extends [T] ? true : false;
+const roles: readonly boolean[] = [
+  false satisfies Takes<ParamsFor<'equipment-produced'>, { rankHour: BoundHour }>,
+  true satisfies Takes<ParamsFor<'equipment-produced'>, { rankHour: GatedHour }>,
+  false satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: BoundHour }[] }>,
+  false satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: number }[] }>,
+  true satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: GatedHour; id: number }[] }>,
+  false satisfies Takes<ParamsFor<string>, { rankHour: BoundHour }>,
+  true satisfies Takes<ParamsFor<string>, { windowHour: number }>,
+];
+
+test('request params are typed from the contract’s roles: an exact read, nested ones included, takes only a gated hour, and a name decides nothing', () => {
+  assert.deepEqual(roles, [false, true, false, false, true, false, true]);
+});
 const early = track('early', 0, 9, 0);
 const tracks = [late, early];
 const widget = (time: WidgetTime, trackId = 'late') => ({ id: 'w', kind: 'unknown-kind', trackIds: [trackId], countries: { kind: 'all' }, time }) as unknown as WidgetSpec;
@@ -147,11 +162,17 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a bucket’s representative hour is recorded');
   assert.match(refusedHours('faction-lines', { from: 100, to: 109, members: [{ tag: 'GER', spans: [[90, 104]] }] }, GAPPED) ?? '', /members\[0\]\.spans\[0\]\[0\] names hour 90/);
   assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);
+  assert.match(refusedHours('series-tiles', { family: { kind: 'player-apm', membership: [{ tag: 'GER', firstHour: 95, lastHour: 104 }] } }, GAPPED) ?? '',
+    /family\.membership\[0\]\.firstHour names hour 95/, 'a nested family field is dated by the contract');
+  assert.match(refusedHours('research-breakdown', { parts: [{ slot: 0, firstObservedHour: 105, lastHour: 106 }] }, GAPPED) ?? '',
+    /parts\[0\]\.firstObservedHour names hour 105, which was not recorded/, 'an assignment’s first observation is an exact read');
   assert.match(refusedHours('no-such-product', {}, GAPPED) ?? '', /not a declared product/);
   const opened = new OpenedSources();
   opened.add({ id: 's', path: 's', revision: '1', metadata: { branches: [{ id: '1', ...GAPPED }] } } as never);
   assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'player-apm', params: { branchId: '1', firstHour: 100, lastHour: 109, windowHours: 720 } } } }), null);
   assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'player-apm', params: { branchId: '1', firstHour: 90, lastHour: 109 } } } }) ?? '', /firstHour names hour 90/);
+  assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'campaign-clock', params: { branchId: '2', firstHour: 100, lastHour: 109 } } } }),
+    'follow names branch 2, not the followed branch 1', 'a followed head reads the subscription branch, never another');
   const wide = { branchId: '1', hour: 95 };
   const narrow: { branchId: string } = wide;
   assert.match(opened.refusal({ sourceId: 's', product: 'country-fuel', params: narrow }) ?? '', /country-fuel: params\.hour names hour 95/);

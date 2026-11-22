@@ -129,7 +129,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
       title={pair ? `${pairLabels(pair.owner).name} → ${pairLabels(pair.target).name}` : PAIR.label}
       day={drillAt === null ? '' : dayLabel(drillAt)} canFollow
       onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={pair && drillControl.time() ? () => {
+      pinRefused={drillControl.pinRefused} onPin={pair && drillControl.time() ? () => {
         const time = drillControl.time();
         if (!time) return;
         const pinned = pinnedBreakdown(widget, PAIR, track.id, time);

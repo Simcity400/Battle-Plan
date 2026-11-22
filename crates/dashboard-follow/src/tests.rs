@@ -716,6 +716,11 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
     assert_eq!((none["available"].clone(), none["reason"].clone()), (serde_json::json!(false), serde_json::json!("No playhead for this recording")));
     let alone = crate::registry::Registry::new(None).answer(path, "follow", &follow_request(3, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
     assert_eq!(alone["available"], false, "a process with no playheads follows nothing");
+    let mut elsewhere = follow_request(5, "country-measure", "politicalPower");
+    elsewhere["query"] = serde_json::json!({ "head": "campaign-clock", "params": { "branchId": "2", "firstHour": 200, "lastHour": 209 } });
+    let refused = registry.answer(path, "follow", &elsewhere, |_| Ok(nobody()), Box::new(|_| panic!("a head naming another branch is never built"))).unwrap();
+    assert_eq!((refused["available"].clone(), refused["reason"].clone()),
+        (serde_json::json!(false), serde_json::json!("The followed query names branch 2, not the followed branch 1")));
     let followed = registry.answer(path, "follow", &follow_request(4, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
     assert_eq!(followed["available"], true);
     assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: false, hourly: false }]);

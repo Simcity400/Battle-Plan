@@ -264,7 +264,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={body} title="Supply classification"
       day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} canFollow={choices === null && track !== undefined}
       returnFocus=".supply-health-country-chart"
-      onPin={track && drillCountry && drillControl.time() ? () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinPartsRace(
+      pinRefused={drillControl.pinRefused} onPin={track && drillCountry && drillControl.time() ? () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinPartsRace(
         { ...widget, options: { ...widget.options, drillOriginHour: originHour } }, track, drillCountry, time, 'Supply classification')); } : undefined} main={state}>{choice}</DrillHost>}</div>
   </>;
 }

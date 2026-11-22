@@ -412,7 +412,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         dispatchDrill({ type: 'close' });
         if (pinnedView) setOption?.('show', 'main');
       }}
-      onPin={chosenSelection && drillControl.time() ? () => {
+      pinRefused={drillControl.pinRefused} onPin={chosenSelection && drillControl.time() ? () => {
         const time = drillControl.time();
         if (time) runtime.addWidgetBelow(widget.id, pinContributions(widget, track, chosenSelection, time, extent, countryFact?.tag ?? null));
       } : undefined} main={main}>
@@ -461,7 +461,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={!pinnedView && options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
         title="Market & lend-lease" day={drillData ? dayLabel(drillData.hour) : ''} canFollow
         returnFocus=".market-lendlease summary" onClose={() => { dispatchDrill({ type: 'close' }); if (pinnedView) setOption?.('show', 'main'); }}
-        onPin={!pickedMarket || !drillData || !drillControl.time() ? undefined : () => {
+        pinRefused={drillControl.pinRefused} onPin={!pickedMarket || !drillData || !drillControl.time() ? undefined : () => {
           const time = drillControl.time();
           if (!time) return;
           const pinned = pinContributions(widget, track, { kind: 'market', key: pickedMarket }, time, extent);

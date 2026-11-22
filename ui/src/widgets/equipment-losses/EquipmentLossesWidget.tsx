@@ -286,7 +286,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   </div>;
   const detail = !detailView ? <WidgetState kind="outside" /> : <>
     {detailView.since != null && <p className="chart-line-key">Counted {sinceLabel(detailView.since)}, after hours the recording lost.</p>}
-    {saved && <p className="chart-line-key">{following ? 'Following playback' : formatDateTime(detailView.hour)} {!following && followView && view.from == null && <button type="button" className="button small"
+    {saved && <p className="chart-line-key">{following ? 'Following playback' : formatDateTime(detailView.hour)} {!following && view.from == null && <button type="button" className="button small"
       onClick={drillControl.follow}>Follow playback</button>}</p>}
     {actorReason && <p className="drill-empty">{actorReason}</p>}
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>View all losses</button>}
@@ -322,11 +322,12 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
         return fitTooltip([{ title: 'Equipment losses', subtitle: `${formatDateTime(pointed)}${exactLossHour(data, pointed) ? '' : ' (to the chart\'s bin)'}`,
           rows: lossRows(withShips(data, pointed), { ...view, hour: pointed }, selected).map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
   </>;
-  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinHeld = drillControl.gate.checkHold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
+  const pinCountry = pinHeld.held;
   return <div ref={rootRef} className="equipment-losses">{countryHeader}{catalogueNotice}
     {saved ? detail : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} canFollow={followView && view.from == null}
-    onPin={detailView && pinCountry && drillControl.time() ? () => {
+    title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} canFollow={view.from == null}
+    pinRefused={pinHeld.refused ?? drillControl.pinRefused} onPin={detailView && pinCountry && drillControl.time() ? () => {
       const span = view.from != null ? drillControl.gate.span(view.from, detailView.hour) : null;
       const time = view.from != null ? span && drillControl.time(span, 'range') : drillControl.time();
       if (time) runtime.addWidgetBelow(widget.id, pinLosses(widget, track, pinCountry, time, selected ? [...selected] : null));

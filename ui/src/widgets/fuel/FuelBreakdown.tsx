@@ -75,8 +75,9 @@ export default function FuelBreakdown({ runtime, gate, widget, track, tag, measu
   const series = usePartSeries(runtime, gate, track, FUEL_DAYS, ids.map(([name]) => name), history, chart.active);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hoverAt = gate.recorded(hoverHour);
-  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } } : null, chart.active, validateCountryFuel, track.source);
+  const hoverAlias = hoverAt === null ? null : gate.country?.aliasAt(hoverAt) ?? null;
+  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null && hoverAlias !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(hoverAlias), hour: hoverAt } } : null, chart.active, validateCountryFuel, track.source);
   const amountAt = useCallback((id: string, transfer: boolean) => (when: number) => {
     const held = hovered.data && hoverHour === Math.floor(when) ? hovered.data : reply && hour === Math.floor(when) ? reply : null;
     if (!held?.read) return held ? held.missing ?? 'Not recorded' : 'Loading…';
