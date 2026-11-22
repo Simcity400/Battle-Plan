@@ -84,10 +84,10 @@ fn recorded_scopes(frame: &DecodedFrame, state: u32, kind: Kind) -> Result<Event
     } else {
         resistance.country
     };
-    let links = viewer_foundation::table_access::rows::<tables::CountryLinks>(frame)
+    let links = dashboard_text::table_access::rows::<tables::CountryLinks>(frame)
         .map_err(|why| why.to_string())?;
     let slot = |raw| {
-        viewer_foundation::table_access::country_slot(&links, raw).map(|slot| slot.unwrap_or(0))
+        dashboard_text::table_access::country_slot(&links, raw).map(|slot| slot.unwrap_or(0))
     };
     Ok(scopes(
         slot(state_row.controller)?,

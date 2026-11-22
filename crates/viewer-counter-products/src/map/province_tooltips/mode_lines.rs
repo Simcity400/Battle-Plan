@@ -1,7 +1,7 @@
 use super::{Context, ModeHover, line};
 use content_reader_localisation::localisation::Argument as Arg;
 use replay_data::{rows::Recorded, rows::tables};
-use viewer_foundation::map::native_text::FLAG;
+use viewer_native_gui::native_text::FLAG;
 use viewer_foundation::tooltip_text::Tooltip;
 
 fn highlighted(text: &str) -> String {
@@ -17,7 +17,7 @@ impl Context<'_> {
                 return Err("the state's live category is not recorded".to_owned());
             }
         };
-        let names = viewer_foundation::table_access::TokenNames::new(self.frame)
+        let names = dashboard_text::table_access::TokenNames::new(self.frame)
             .map_err(|e| e.to_string())?;
         let category = names.name(token).map_err(|e| e.to_string())?;
         let name = self.loc(category, &[])?;
@@ -128,7 +128,7 @@ impl Context<'_> {
         let args = [("COUNTRY", Arg::Text(&owner)), ("FROM", Arg::Text(&viewer))];
         let relation = if owner_slot == self.vision.ours() {
             highlighted(&owner)
-        } else if viewer_foundation::map::directed_wars::Owner::new(self.frame, viewer_raw)
+        } else if replay_derive::directed_wars::Owner::new(self.frame, viewer_raw)
             .map_err(|why| why.to_string())?
             .at_war(state.owner)
             .map_err(|why| why.to_string())?

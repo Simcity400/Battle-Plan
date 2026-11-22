@@ -1,9 +1,9 @@
 
 use std::sync::{Arc, mpsc};
-use viewer_foundation::retirement::Dropper;
+use viewer_runtime::retirement::Dropper;
 pub(crate) use viewer_playback::highlight::{Over, Picture};
 
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 use viewer_world::scene::FactionHighlight;
 
 #[derive(Clone, Debug, PartialEq)]

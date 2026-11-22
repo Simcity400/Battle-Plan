@@ -14,7 +14,7 @@ use replay_columnar::{manifest::Status, store::Store, unit::{Encoder, Settings a
 use replay_data::rows::{CountryLinkRow, CountryRow, Recorded, StateResistanceRow, StateRow, TableId, TableRows, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::Arc;
-use viewer_foundation::resource_origins::fixture::put;
+use viewer_runtime::resource_origins::fixture::put;
 use viewer_map_modes::map_mode::{ColorList, MapMode, Stock};
 use viewer_map_icons::occupation_icons::{self as icons, IconDefines, hour_marks};
 

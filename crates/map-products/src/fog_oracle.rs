@@ -5,7 +5,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::{
+use viewer_foundation::{
     allegiance,
     perspective::{Choice, Country, Resolution, SharingUnknown, Sight},
     tables::{Available, rows},

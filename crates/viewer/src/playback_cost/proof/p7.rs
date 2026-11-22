@@ -159,7 +159,7 @@ pub(super) fn names_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crat
 }
 
 fn viewing(document: &Document) -> Option<u32> {
-    document.hour().ok()?.vision(&viewer_foundation::map::perspective::Choice::default()).ok().map(|vision| vision.ours())
+    document.hour().ok()?.vision(&viewer_foundation::perspective::Choice::default()).ok().map(|vision| vision.ours())
 }
 
 pub(super) fn labels_make(document: &Document) -> Box<dyn Layer> {
@@ -285,7 +285,7 @@ pub(super) fn trains_today(layer: &dyn Layer, document: &Document) -> io::Result
         return Ok(compared);
     }
     compared.entries = 1;
-    let today = document.hour()?.train_plan(&viewer_foundation::map::perspective::Choice::default());
+    let today = document.hour()?.train_plan(&viewer_foundation::perspective::Choice::default());
     match (today, layer.refused()) {
         (Err(error), None) => note(&mut compared, format!("today refuses the hour ({error}), the layer draws it")),
         (Ok(_), Some(why)) => note(&mut compared, format!("the layer refuses the hour ({why}), today draws it")),

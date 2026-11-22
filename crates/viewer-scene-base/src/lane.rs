@@ -90,7 +90,7 @@ impl<T: Send + 'static> Lane<T> {
                 .name(self.name.to_owned())
                 .spawn_carried(move || {
                     let _cost = replay_frame::cpu::scope(name, Some("lane"));
-                    viewer_foundation::worker_priority::frame_priority();
+                    viewer_runtime::worker_priority::frame_priority();
                     while let Ok(job) = inbox.recv() {
                         if finished.send(catch_unwind(AssertUnwindSafe(job))).is_err() {
                             return;

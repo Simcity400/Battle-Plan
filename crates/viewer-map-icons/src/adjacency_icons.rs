@@ -2,17 +2,16 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Arc};
 
 use content_reader_core::{adjacency_rules::AdjacencyRule, defines::Defines};
-use viewer_foundation::map::{
-    camera::Camera,
-    free_icons::{IconAnchor, IconFamily},
+use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
+use viewer_native_gui::{
     gui_resources::{count_refused, viewport as gui_viewport},
     icon_windows::{Owner, Plan, PoolView},
-    mode_visibility::{Priorities, PriorityIcon, Visibility},
     native_gui::{self, lifecycle::MapIconPool},
     native_resources::Context,
     native_windows::ADJACENCY_RULE_WINDOW,
     sprites::{self, Batch},
 };
+use viewer_foundation::mode_visibility::{Priorities, PriorityIcon, Visibility};
 
 const ALIGNMENT: u8 = 0x0a;
 

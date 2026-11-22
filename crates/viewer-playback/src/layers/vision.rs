@@ -15,7 +15,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::{
+use viewer_foundation::{
     perspective::{self, Choice, FULL_VISIBILITY, LAND_FULL_LEVEL, LAND_SEEN_LEVEL, Parts, SHOWN_VISIBILITY, SharingUnknown, Sight, Vision as Seen},
     visibility::{self, FogContent},
 };
@@ -150,11 +150,11 @@ impl Notes {
         &self.perspective
     }
 
-    pub fn sight(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
+    pub fn sight(&self, statuses: &dyn viewer_foundation::tables::Statuses) -> Vec<String> {
         if !self.fog {
             return Vec::new();
         }
-        let mut out = viewer_foundation::map::tables::Limitations::default();
+        let mut out = viewer_foundation::tables::Limitations::default();
         out.note_fog_on_sight(statuses);
         let mut lines = out.into_lines();
         lines.extend(self.sight.iter().cloned());
@@ -163,7 +163,7 @@ impl Notes {
 
     pub fn fog_of_war(&self, fogged: usize) -> Option<String> {
         self.fog_drawn.then(|| {
-            let mut out = viewer_foundation::map::tables::Limitations::default();
+            let mut out = viewer_foundation::tables::Limitations::default();
             out.note_fog_of_war(fogged, 0.0);
             out.into_lines().remove(0)
         })
@@ -196,7 +196,7 @@ pub fn seen_made_here() -> u64 {
 pub struct Made {
     present: Vec<u32>,
     bytes: Vec<u8>,
-    values: Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>,
+    values: Arc<viewer_foundation::perspective::values::Values<u32, u8>>,
 }
 
 impl SeenCopy {
@@ -210,7 +210,7 @@ impl SeenCopy {
     }
 
     pub fn make_after(self, before: Option<&Made>) -> (Seen, Option<Made>) {
-        use viewer_foundation::map::perspective::values::Values;
+        use viewer_foundation::perspective::values::Values;
         #[cfg(any(test, feature = "test-support"))]
         MADE.with(|made| made.set(made.get() + 1));
         let Self { bytes, parts } = self;
@@ -1154,7 +1154,7 @@ impl Layer for Vision {
 #[cfg(test)]
 mod copy_tests {
     use super::SeenCopy;
-    use viewer_foundation::map::perspective::Parts;
+    use viewer_foundation::perspective::Parts;
 
     fn copy(bytes: &[(u32, u8)]) -> SeenCopy {
         let len = bytes.iter().map(|&(id, _)| id as usize + 1).max().unwrap_or(0);

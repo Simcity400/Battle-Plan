@@ -4,7 +4,7 @@ use replay_data::{
     rows::tables,
 };
 use std::{cell::OnceCell, collections::BTreeMap, io};
-use viewer_foundation::map::{air_detection, air_range};
+use viewer_unit_reads::{air_detection, air_range};
 
 const ONE: i64 = 100_000;
 const SENTINEL: i64 = u32::MAX as i64;

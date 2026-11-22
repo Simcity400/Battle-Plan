@@ -10,8 +10,8 @@ use std::{
     time::Instant,
 };
 use viewer_combat as combat;
-use viewer_foundation::map::sprites::Interface;
-use viewer_foundation::map::text::load;
+use viewer_native_gui::sprites::Interface;
+use viewer_native_gui::text::load;
 
 use content_reader_core::{
     ResolvedLayers, content::ResolvedContent, defines::Defines, gui::native::Cause,
@@ -198,7 +198,7 @@ pub fn run(
     match &defines {
         Some(defines) => {
             log.read("viewer.zoom_defines", || {
-                viewer_foundation::map::camera::motion::CameraLaw::content_defines(defines)
+                viewer_gpu::camera::motion::CameraLaw::content_defines(defines)
             });
             log.read("viewer.camera_heights", || {
                 Ok([
@@ -1420,7 +1420,7 @@ fn viewer_map_assets(
     log.typed("viewer.bridges", warnings);
     let mut warnings = Vec::new();
     if let Some(orders) = log.read("viewer.orders", || {
-        viewer_foundation::map::ribbon_content::OrderAssets::load(
+        viewer_gpu::ribbon_content::OrderAssets::load(
             layers,
             decode,
             (defines, defines),

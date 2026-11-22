@@ -1,5 +1,5 @@
 
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use content_reader_core::{
@@ -16,11 +16,11 @@ use std::{
     ops::Range,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::province_geometry::sort_edge_pixels;
-use viewer_foundation::map::tables::rows;
-use viewer_foundation::map::textures::load_uploadable;
+use viewer_gpu::province_geometry::sort_edge_pixels;
+use viewer_foundation::tables::rows;
+use viewer_gpu::textures::load_uploadable;
 use viewer_models::{ModelField, ModelInstance, ModelLibrary, WATER_HEIGHT};
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::Camera,
     gpu_contract::{DEPTH_FORMAT, buffer},
     province_map::HeightField,
@@ -1640,7 +1640,7 @@ impl RailPass {
         };
         self.warm(device);
         let compiled = self.compiled.borrow();
-        viewer_foundation::map::gpu_contract::compiled(compiled.as_ref().expect("compiled above"))?
+        viewer_gpu::gpu_contract::compiled(compiled.as_ref().expect("compiled above"))?
             .draw(
                 arena,
                 encoder,

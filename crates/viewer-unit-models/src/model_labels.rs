@@ -3,7 +3,7 @@ use content_reader_localisation::localisation::Localisation;
 use replay_data::{country_flags, rows::VariantDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::table_access::{Available, rows};
+use dashboard_text::table_access::{Available, rows};
 
 use super::model_selection::EquipmentModel;
 

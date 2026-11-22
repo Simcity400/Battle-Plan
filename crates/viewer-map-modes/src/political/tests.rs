@@ -1,9 +1,9 @@
 use super::test_support::{appearance, frame, map, occupied, province, strategic_regions};
 use super::*;
-use viewer_foundation::map::gradient_math::FieldDefines;
-use viewer_foundation::map::tables::limitations as tables_limitations;
+use viewer_gpu::gradient_math::FieldDefines;
+use viewer_foundation::tables::limitations as tables_limitations;
 use viewer_scene_base::gradient::{self, Layer, LayerKind, LayerPlane};
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_gpu::province_map::ProvinceMap;
 
 struct OracleLayers {
     textures: gradient::GradientTextures,

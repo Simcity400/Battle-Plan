@@ -9,7 +9,7 @@ use crate::{
 use replay_columnar::state::Cell;
 use replay_data::rows::TableId;
 use std::sync::Arc;
-use viewer_foundation::{
+use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{Covered, History, LAND, Provenance},
 };

@@ -1,12 +1,12 @@
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
-use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
-use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
-use viewer_foundation::map::province_admission::admits_box;
+use viewer_gpu::gpu_contract::DEPTH_FORMAT;
+use viewer_gpu::gpu_contract::SCENE_FORMAT;
+use viewer_gpu::province_admission::admits_box;
 mod draw;
 mod geometry;
 
-use viewer_foundation::map::movement_routes::Route;
+use viewer_unit_reads::movement_routes::Route;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,10 +22,8 @@ use content_reader_image::{dds, native::Decode};
 use shader_pipeline::gpu;
 
 use viewer_scene_base::shader_scene;
-use viewer_foundation::{
-    map::{gpu_contract::Targets, province_map::HeightField, textures::{self, ColorSpace}},
-    unit_handle::Unit,
-};
+use viewer_gpu::{gpu_contract::Targets, province_map::HeightField, textures::{self, ColorSpace}};
+use viewer_runtime::unit_handle::Unit;
 
 const STYLES: [&[u8]; 8] = [
     b"retreatArrow",
@@ -452,7 +450,7 @@ impl Player {
         targets: &Targets,
         caller: &mut shader_scene::State,
         matrix: &[[f32; 4]; 4],
-        planes: &viewer_foundation::map::province_admission::Planes,
+        planes: &viewer_gpu::province_admission::Planes,
         visible: bool,
     ) -> bool {
         self.retained.inherit(caller);
@@ -603,7 +601,7 @@ impl Bounds {
 
     fn offsets(
         self,
-        planes: &viewer_foundation::map::province_admission::Planes,
+        planes: &viewer_gpu::province_admission::Planes,
     ) -> impl Iterator<Item = f32> {
         [Some(0.0), self.companion]
             .into_iter()

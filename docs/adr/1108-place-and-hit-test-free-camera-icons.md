@@ -6,4 +6,4 @@ Visibility tests the whole icon along one sight line to its anchor, including te
 
 Resolve a hit from the drawn icon's family and key, because content can assign the same priority to distinct families. Transform the pointer back into the icon's unscaled layout, enforce its hit opacity threshold, and give the nearest icon priority. The map camera keeps its own placement path.
 
-[Free-camera placement](../../crates/viewer-foundation/src/map/free_icons.rs) · [Visibility and position tests](../../crates/viewer-foundation/src/map/free_icons/tests.rs)
+[Free-camera placement](../../crates/viewer-native-gui/src/free_icons.rs) · [Visibility and position tests](../../crates/viewer-native-gui/src/free_icons/tests.rs)

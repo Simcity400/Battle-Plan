@@ -75,7 +75,7 @@ impl Strikes {
         if self.noted.as_ref().is_some_and(|(refused, unplaced)| (refused, *unplaced) == (&self.refused, self.unplaced)) {
             return;
         }
-        let mut out = viewer_foundation::map::tables::Limitations::default();
+        let mut out = viewer_foundation::tables::Limitations::default();
         for refused in self.refused.iter().cloned().chain(strike_effects::unplaced_refusal(self.unplaced)) {
             out.note_field("Nuclear impact effects", &refused);
         }
@@ -285,7 +285,7 @@ impl Layer for Strikes {
     }
 
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
-        use viewer_foundation::map::presentation::Continuity;
+        use viewer_runtime::presentation::Continuity;
         if std::mem::take(&mut self.reset) {
             gpu.scene.set_nuclear_impacts([&self.product()], Continuity::Reset);
         }

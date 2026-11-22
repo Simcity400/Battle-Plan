@@ -1,8 +1,8 @@
 use super::budget_fixture::{budget_buildings, group, prepared};
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::province_admission::edge_boxes;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::province_admission::edge_boxes;
 #[test]
 fn only_states_the_building_producer_cannot_select_are_refused() {
     let descriptors = content_reader_core::mesh::parse_descriptors(br#"
@@ -27,7 +27,7 @@ use replay_data::{
     rows::RaidScope, rows::RaidTargetStatusRow, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
-use viewer_foundation::map::perspective::{Choice, Country, Vision};
+use viewer_foundation::perspective::{Choice, Country, Vision};
 
 const SAMPLE: &[u8] = br#"
 buildings = {
@@ -67,7 +67,7 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
     Placement {
         center,
         height,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test())
 }

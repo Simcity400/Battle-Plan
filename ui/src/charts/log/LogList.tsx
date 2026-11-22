@@ -24,7 +24,7 @@ import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { scheduler } from '../scheduler.ts';
 import { engine } from '../../engine/frame.ts';
 import type { FrameTask } from '../scheduler';
-import { EntryLayer, backdrop, backgroundsBehind } from './entryLayer.ts';
+import { EntryLayer, backdrop, backgroundsBehind, entryTime } from './entryLayer.ts';
 import { useWhyCommit } from '../../dashboard/widgetPerf.ts';
 
 export interface LogListProps<T> {
@@ -428,7 +428,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWante
       if (pooled.short) { pooled.short = false; inFrame(() => setPoolExtra(extra => extra + POOL_OVERSCAN * 2)); }
     }
     if (body.current) paintItems(body.current, glide.current, now, scrollGeometry(now.offsets[now.items.length], view.height), scrollPosition.current.logical, view.height, entering.current,
-      layer ? (row, height) => { layer.layer.add(row, height, performance.now()); scheduler.wake(layer.task); } : undefined);
+      layer ? (row, height) => { layer.layer.add(row, height, entryTime.now()); scheduler.wake(layer.task); } : undefined);
     if (emptyNote.current && now.ahead) emptyNote.current.hidden = now.offsets[now.items.length] > 0;
   }, []);
   const paint = useCallback(() => {
@@ -480,7 +480,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, sections, onWante
   useLayoutEffect(() => {
     if (!layered || !under.current || !over.current || !scroller) return;
     const layer = new EntryLayer(under.current, over.current);
-    const task: FrameTask = { frame: () => layer.paint(performance.now(), row => written.get(row), viewport.current.width) };
+    const task: FrameTask = { frame: () => layer.paint(entryTime.now(), row => written.get(row), viewport.current.width) };
     entries.current = { layer, task };
     const remove = scheduler.add(task, over.current);
     return () => { remove(); layer.clear(); entries.current = null; };

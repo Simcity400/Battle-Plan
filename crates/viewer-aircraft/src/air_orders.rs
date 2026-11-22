@@ -2,11 +2,12 @@ use content_reader_core::defines::Defines;
 use replay_data::{rows::AirBaseRow, rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{
-    air_registry_sources::AirRegistrySources,
+use viewer_unit_reads::air_registry_sources::AirRegistrySources;
+use viewer_gpu::{
     province_map::HeightField,
     ribbon_content::{ArrowType, OrderField},
-    ribbon_mesh, unit_pose,
+    ribbon_mesh,
+    unit_pose,
 };
 
 pub const MISSION_ARROW: &str = "air_mission_direction";
@@ -236,10 +237,8 @@ mod tests {
     #[test]
     fn recorded_global_order_activity_and_local_base_highlight_reach_the_ribbons() {
         use replay_data::rows::*;
-        use viewer_foundation::map::{
-            ribbon_content::ArrowTypes,
-            test_support::{test_frame, test_put as put},
-        };
+        use viewer_gpu::ribbon_content::ArrowTypes;
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut frame = test_frame(1);
         put(
             &mut frame,

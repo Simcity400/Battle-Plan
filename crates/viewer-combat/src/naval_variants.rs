@@ -5,14 +5,12 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::table_access::{Available, country_slot};
+use dashboard_text::table_access::{Available, country_slot};
 use viewer_foundation::tooltip_text::TextIcons;
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::displayable;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::table_access::{TokenNames, rows},
-};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::{TokenNames, rows};
 
 pub(super) struct Names<'a> {
     static_content: &'a StaticContent,

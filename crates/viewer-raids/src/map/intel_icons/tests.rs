@@ -10,7 +10,7 @@ use replay_data::{
 fn client(frame: &mut replay_frame::frame::DecodedFrame, country: u32, observer_country: u32) {
     put::<tables::LocalPlayer>(frame, vec![LocalPlayerRow { country, observer_country }]);
 }
-use viewer_foundation::map::{native_resources::Context, sprites::Batch, test_support::gui};
+use viewer_native_gui::{native_resources::Context, sprites::Batch, test_support::gui};
 
 fn defines() -> IntelDefines {
     IntelDefines {
@@ -540,7 +540,7 @@ fn state(kinds: &[EntryKind]) -> Arc<IntelIcons> {
 
 fn drawn_into(
     view: &mut IntelView,
-    windows: &viewer_foundation::map::native_windows::NativeWindows,
+    windows: &viewer_native_gui::native_windows::NativeWindows,
     writes: Vec<Write>,
 ) -> Vec<IntelHit> {
     let mut resources = gui::fixture();
@@ -632,7 +632,7 @@ fn title(hits: &[IntelHit], point: [f32; 2]) -> Option<String> {
 fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
     let hit = |layer: u64, title: &str| IntelHit {
         shapes: vec![
-            viewer_foundation::map::native_gui::HitGeometry::test_rectangle(
+            viewer_native_gui::native_gui::HitGeometry::test_rectangle(
                 [0, 0],
                 [20, 20],
                 [2048, 1152],

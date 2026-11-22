@@ -1,8 +1,11 @@
 
 use super::*;
 use replay_data::rows::TableId;
-use viewer_foundation::map::test_support::{
-    assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+use viewer_foundation::test_support::{
+    assert_reads_recorded,
+    complete_frame,
+    map_scoped,
+    put_sample_campaign,
 };
 
 const PRESENTED_ABSENT: [TableId; 4] = [
@@ -85,7 +88,7 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                 )
                 .unwrap();
                 let viewer = vision.ours();
-                let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+                let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
                 let tables = hour_tables(
                     &frame,
                     inputs.map,

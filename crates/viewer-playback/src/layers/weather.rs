@@ -28,7 +28,7 @@ pub struct Weather {
     installed: Option<(replay_data::Hour, bool)>,
     kinds_changed: bool,
     hour: Option<replay_data::Hour>,
-    view: Option<(viewer_foundation::map::camera::Placement, [u32; 2])>,
+    view: Option<(viewer_gpu::camera::Placement, [u32; 2])>,
     staged: Option<map_display_data::WeatherField>,
 }
 
@@ -192,16 +192,16 @@ impl Layer for Weather {
         let Some(field) = self.staged.take() else { return Ok(()) };
         let Some((placement, viewport)) = self.view else { return Ok(()) };
         let content = gpu.content;
-        let camera = viewer_foundation::map::camera::Camera {
+        let camera = viewer_gpu::camera::Camera {
             center: placement.center,
             height: placement.height,
-            map: viewer_foundation::map::camera::MapSize { width: content.map.width, height: content.map.height },
+            map: viewer_gpu::camera::MapSize { width: content.map.width, height: content.map.height },
             defines: content.map_defines,
             pose: placement.pose,
         };
         let assets = &content.weather_effects;
         let prepared = viewer_weather_effects::weather_effects::prepare(assets, field, camera, viewport);
-        let continuity = if self.installed.is_some() { viewer_foundation::map::presentation::Continuity::Continue } else { viewer_foundation::map::presentation::Continuity::Reset };
+        let continuity = if self.installed.is_some() { viewer_runtime::presentation::Continuity::Continue } else { viewer_runtime::presentation::Continuity::Reset };
         drop(gpu.scene.set_prepared_weather_effects(gpu.device, gpu.queue, Arc::clone(assets), prepared, continuity)?);
         (self.installed, self.kinds_changed) = (self.hour.map(|hour| (hour, true)), false);
         Ok(())

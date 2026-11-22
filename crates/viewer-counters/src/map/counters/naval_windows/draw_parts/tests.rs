@@ -2,15 +2,13 @@ use super::*;
 use crate::map::counters::gui_windows;
 use content_reader_core::gui::native;
 use std::sync::Arc;
-use viewer_foundation::map::{
-    native_gui::{
-        Part, PartKind,
-        lifecycle::{Call, Instance, Tick},
-    },
-    native_shader::{draw, library},
+use viewer_native_gui::{
+    native_gui::{Part, PartKind, lifecycle::{Call, Instance, Tick}},
+    native_shader::draw,
     sprites::Batch,
     test_support::gui::fixture,
 };
+use shader_pipeline::library;
 
 const VIEWPORT: [i32; 2] = [800, 600];
 const GUI: &[u8] = br#"guiTypes={

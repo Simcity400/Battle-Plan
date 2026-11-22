@@ -25,11 +25,11 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
-use viewer_foundation::map::{
+use viewer_foundation::{
     perspective::{Parts, VISION_TABLES, Vision as Seen},
-    presentation::Continuity,
     visibility::FogContent,
 };
+use viewer_runtime::presentation::Continuity;
 use viewer_map_text::animated_map_text::events::{self, Prepared};
 use viewer_models::strike_effects::Impacts;
 
@@ -305,7 +305,7 @@ impl MapText {
 }
 
 fn read_provinces(frame: &DecodedFrame) -> Option<Vec<u32>> {
-    let rows = viewer_foundation::table_access::rows::<tables::MapEvents>(frame).ok()?;
+    let rows = dashboard_text::table_access::rows::<tables::MapEvents>(frame).ok()?;
     let events: Vec<_> = rows.rows().iter().flat_map(|row| &row.events).collect();
     if events.is_empty() {
         return None;

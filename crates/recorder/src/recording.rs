@@ -3904,10 +3904,39 @@ fn step_summary(directory: &Path, from: &str, to: &str) -> Option<String> {
         to,
     )
 }
+#[cfg(test)]
+#[derive(Default)]
+struct ProgressClock {
+    fixed: Option<std::rc::Rc<dyn Fn() -> Instant>>,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct ProgressClock;
+
+impl ProgressClock {
+    #[inline]
+    fn now(&self) -> Instant {
+        self.fixed().unwrap_or_else(Instant::now)
+    }
+
+    #[cfg(test)]
+    fn fixed(&self) -> Option<Instant> {
+        self.fixed.as_ref().map(|clock| clock())
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn fixed(&self) -> Option<Instant> {
+        None
+    }
+}
+
 struct FinalizationProgress<'a> {
     directory: &'a Path,
     observe: &'a dyn Fn(u64),
     records: Cell<u64>,
+    clock: ProgressClock,
     last_write: Cell<Instant>,
     warned: Cell<bool>,
     work_warned: Cell<bool>,
@@ -3918,6 +3947,7 @@ impl<'a> FinalizationProgress<'a> {
             directory,
             observe,
             records: Cell::new(0),
+            clock: ProgressClock::default(),
             last_write: Cell::new(Instant::now()),
             warned: Cell::new(false),
             work_warned: Cell::new(false),
@@ -3927,7 +3957,7 @@ impl<'a> FinalizationProgress<'a> {
     }
     fn advance(&self) {
         self.records.set(self.records.get().saturating_add(1));
-        let now = Instant::now();
+        let now = self.clock.now();
         if now.duration_since(self.last_write.get()) >= Duration::from_secs(1) {
             self.last_write.set(now);
             self.publish();
@@ -6085,7 +6115,13 @@ mod tests {
         write_campaign_journal(&session, &allocation_records());
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
-        let progress = FinalizationProgress::new(&session, &observe);
+        let (base, ahead) = (Instant::now(), std::rc::Rc::new(Cell::new(Duration::ZERO)));
+        let mut progress = FinalizationProgress::new(&session, &observe);
+        progress.clock.fixed = Some({
+            let ahead = std::rc::Rc::clone(&ahead);
+            std::rc::Rc::new(move || base + ahead.get())
+        });
+        progress.last_write.set(base);
         let path = session.join("finalization-progress.json");
         let reader = fs::OpenOptions::new()
             .read(true)
@@ -6096,9 +6132,7 @@ mod tests {
         assert!(write_json(&path, &json!({"records": 1})).is_err());
 
         let done = replay_io::finalize_session_outcome_with_progress(&session, &output, &|| {
-            progress
-                .last_write
-                .set(Instant::now() - Duration::from_secs(2));
+            ahead.set(ahead.get() + Duration::from_secs(1));
             progress.advance();
             Ok(())
         })
@@ -6111,9 +6145,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before);
         drop(reader);
 
-        progress
-            .last_write
-            .set(Instant::now() - Duration::from_secs(2));
+        ahead.set(ahead.get() + Duration::from_secs(1));
         progress.advance();
         let resumed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(resumed["records"], observed.get());
@@ -6129,22 +6161,31 @@ mod tests {
         fs::write(&session, b"not a directory").unwrap();
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
-        let progress = FinalizationProgress::new(&session, &observe);
-        let previous_attempt = Instant::now() - Duration::from_secs(2);
-        progress.last_write.set(previous_attempt);
+        let (base, ahead) = (Instant::now(), std::rc::Rc::new(Cell::new(Duration::ZERO)));
+        let mut progress = FinalizationProgress::new(&session, &observe);
+        progress.clock.fixed = Some({
+            let ahead = std::rc::Rc::clone(&ahead);
+            std::rc::Rc::new(move || base + ahead.get())
+        });
+        progress.last_write.set(base);
+        ahead.set(Duration::from_secs(1) - Duration::from_nanos(1));
         progress.advance();
-        assert_eq!(observed.get(), 1);
-        assert!(progress.last_write.get() > previous_attempt);
+        assert_eq!(observed.get(), 0, "no attempt before a second has passed");
+        ahead.set(Duration::from_secs(1));
+        progress.advance();
+        assert_eq!(observed.get(), 2);
+        assert_eq!(progress.last_write.get(), base + Duration::from_secs(1), "a failed attempt still waits its second");
+        ahead.set(Duration::from_secs(2) - Duration::from_nanos(1));
+        progress.advance();
+        assert_eq!(observed.get(), 2);
         fs::remove_file(&session).unwrap();
         fs::create_dir(&session).unwrap();
-        progress
-            .last_write
-            .set(Instant::now() - Duration::from_secs(2));
+        ahead.set(Duration::from_secs(2));
         progress.advance();
         let resumed: Value =
             serde_json::from_slice(&fs::read(session.join("finalization-progress.json")).unwrap())
                 .unwrap();
-        assert_eq!(resumed["records"], 2);
+        assert_eq!(resumed["records"], 4);
         fs::remove_dir_all(root).unwrap();
     }
 

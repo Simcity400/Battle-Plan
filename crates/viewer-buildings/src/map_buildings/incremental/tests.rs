@@ -6,7 +6,7 @@ use replay_data::rows::{
     TableRows,
 };
 use replay_frame::frame::{Metrics, SharedView, TableView};
-use viewer_foundation::map::perspective::{Choice, Country};
+use viewer_foundation::perspective::{Choice, Country};
 
 #[test]
 fn streamed_slot_chunks_preserve_order() {
@@ -54,7 +54,7 @@ fn installed_live_buildings_keep_their_producer_pages_across_lookahead() {
             &vision,
             &terrain(hour.cities),
             Err("reference"),
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap();
     let wire = assets
@@ -501,7 +501,7 @@ fn step(
     let frame = hour.frame();
     let vision = hour.vision(&frame);
     let city = terrain(hour.cities);
-    let spans = || viewer_foundation::profiling::BuilderSpans::new(false);
+    let spans = || viewer_runtime::profiling::BuilderSpans::new(false);
     let full = assets.build(&frame, &vision, &city, Err("reference"), &mut spans());
     let patched = assets.build(&frame, &vision, &city, base.ok_or("no base"), &mut spans());
     match (full, patched) {
@@ -769,7 +769,7 @@ fn a_patched_hour_shares_every_chunk_it_did_not_change() {
             &vision,
             &terrain(false),
             Ok(&base),
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap();
     assert_eq!(built.path, BuildPath::Patched { slots: 1 });
@@ -963,7 +963,7 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
             &vision,
             &terrain(false),
             Err("reference"),
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap();
     let holders = Arc::strong_count(&vision);
@@ -1237,7 +1237,7 @@ fn immutable_city_bank_reuses_hub_operands_and_rejects_replaced_bank() {
             &vision,
             &city,
             Err("cold"),
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap();
     let first = built.city.take().unwrap();
@@ -1456,7 +1456,7 @@ fn floating_output_delta_and_tail_patch_match_the_frozen_scalar_reference() {
                 &vision,
                 &city,
                 base.as_ref().ok_or("cold"),
-                &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                &mut viewer_runtime::profiling::BuilderSpans::new(false),
             )
             .unwrap();
         let output = built.floating_output.as_ref().unwrap();
@@ -1489,7 +1489,7 @@ fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
             &vision,
             &terrain(hour.cities),
             Err("reference"),
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap();
     let city = built.city.take().unwrap();
@@ -1504,7 +1504,7 @@ fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
         (7, 0),
     ]);
     base.vision.provinces = Some(Arc::new(
-        viewer_foundation::map::perspective::values::Values::from_iter(
+        viewer_foundation::perspective::values::Values::from_iter(
             previous.iter().map(|(&key, &value)| (key, value)),
         ),
     ));

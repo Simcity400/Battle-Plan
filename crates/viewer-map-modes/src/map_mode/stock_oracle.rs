@@ -327,7 +327,7 @@ fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mode
             return Ok(None);
         }
     };
-    let names = viewer_foundation::table_access::TokenNames::new(inputs.frame)?;
+    let names = dashboard_text::table_access::TokenNames::new(inputs.frame)?;
     let mut styles = BTreeMap::new();
     let (mut unread, mut unnamed, mut uncoloured) = (0, 0, 0);
     for state in states {

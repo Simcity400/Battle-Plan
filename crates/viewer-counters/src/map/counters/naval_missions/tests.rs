@@ -4,15 +4,15 @@ use replay_data::{
     rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceMissionRow, rows::TaskForceRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::native_effects::Effect;
-use viewer_foundation::map::native_effects::synthetic;
-use viewer_foundation::map::native_text::Font;
-use viewer_foundation::map::native_text::monospace;
-use viewer_foundation::map::native_windows::NativeWindows;
+use viewer_native_gui::native_effects::Effect;
+use viewer_native_gui::native_effects::synthetic;
+use viewer_native_gui::native_text::Font;
+use viewer_native_gui::native_text::monospace;
+use viewer_native_gui::native_windows::NativeWindows;
 #[cfg(test)]
-use viewer_foundation::map::test_support::SYNTHETIC_NAVAL_GUI;
+use viewer_native_gui::test_support::SYNTHETIC_NAVAL_GUI;
 #[cfg(test)]
-use viewer_foundation::map::test_support::SYNTHETIC_NAVY_GUI;
+use viewer_native_gui::test_support::SYNTHETIC_NAVY_GUI;
 
 #[test]
 fn mission_icons_are_drawn_strictly_below_the_contents_cutoff() {

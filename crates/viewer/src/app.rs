@@ -6,49 +6,40 @@ use std::path::Path;
 use std::sync::OnceLock;
 use viewer_combat as combat;
 #[cfg(test)]
-use viewer_foundation::combat_selection::Hit as CombatHit;
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::camera::Pose;
-use viewer_foundation::map::camera::motion::{Input as MotionInput, Motion, Pan};
-use viewer_foundation::map::free_icons;
-use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
-use viewer_foundation::map::native_gui::pointer::Sound;
-use viewer_foundation::map::gpu_contract::device_requirements;
-use viewer_foundation::map::gpu_contract::is_software;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::presentation::Continuity;
-use viewer_foundation::map::presentation::Target;
-use viewer_foundation::map::province_pick::{motion_ground_point, pick, terrain_height};
-use viewer_foundation::map::ui_scale::PRESENTATION_FILTER;
-use viewer_foundation::map::ui_scale::Raster;
-use viewer_foundation::map::ui_scale::Setting;
-use viewer_foundation::map::ui_scale::extent as ui_scale_extent;
-use viewer_foundation::map::ui_scale::monitors as ui_scale_monitors;
-use viewer_foundation::map::ui_scale::monitors_generation;
-use viewer_foundation::map::ui_scale::points as ui_scale_points;
-use viewer_foundation::map::ui_scale::refresh_monitors;
-use viewer_foundation::map::ui_scale::to_interface;
-use viewer_foundation::profile_writer::profile_print;
-use viewer_foundation::profile_writer::profiling;
-use viewer_foundation::profiling::hz;
-use viewer_foundation::profiling::laps_line;
-use viewer_foundation::profiling::sweep as profiling_sweep;
-use viewer_foundation::retirement::Dropper;
+use viewer_engagements::combat_selection::Hit as CombatHit;
+use viewer_engagements::combat_selection::Selection;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::camera::Pose;
+use viewer_gpu::camera::motion::{Input as MotionInput, Motion, Pan};
+use viewer_native_gui::free_icons;
+use viewer_gpu::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_native_gui::native_gui::pointer::Sound;
+use viewer_gpu::gpu_contract::device_requirements;
+use viewer_gpu::gpu_contract::is_software;
+use viewer_foundation::perspective::Choice;
+use viewer_runtime::presentation::Continuity;
+use viewer_runtime::presentation::Target;
+use viewer_gpu::province_pick::{motion_ground_point, pick, terrain_height};
+use viewer_gpu::ui_scale::PRESENTATION_FILTER;
+use viewer_gpu::ui_scale::Raster;
+use viewer_gpu::ui_scale::Setting;
+use viewer_gpu::ui_scale::extent as ui_scale_extent;
+use viewer_gpu::ui_scale::monitors as ui_scale_monitors;
+use viewer_gpu::ui_scale::monitors_generation;
+use viewer_gpu::ui_scale::points as ui_scale_points;
+use viewer_gpu::ui_scale::refresh_monitors;
+use viewer_gpu::ui_scale::to_interface;
+use viewer_runtime::profile_writer::profile_print;
+use viewer_runtime::profile_writer::profiling;
+use viewer_runtime::profiling::hz;
+use viewer_runtime::profiling::laps_line;
+use viewer_runtime::profiling::sweep as profiling_sweep;
+use viewer_runtime::retirement::Dropper;
 use viewer_foundation::tooltip_text::Tooltip;
-use viewer_foundation::unit_handle::Unit;
+use viewer_runtime::unit_handle::Unit;
 use viewer_world::scene::Scene;
-use {
-    crate::{
-        Config, Options,
-        document::{Document, InitialHour},
-        render,
-    },
-    viewer_foundation::map::{
-        camera::{Camera, MapSize},
-        frame::{DayNight, GameSpeeds},
-    },
-};
+use crate::{Config, Options, document::{Document, InitialHour}, render};
+use viewer_gpu::{camera::{Camera, MapSize}, frame::{DayNight, GameSpeeds}};
 use eframe::{egui, wgpu};
 use std::{
     collections::BTreeMap,
@@ -57,10 +48,11 @@ use std::{
     time::{Duration, Instant},
 };
 use dashboard_core::map_display::option_defaults;
-use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
+use viewer_runtime::diagnostics_panel::tooltip_warning_lines;
 use viewer_world::scene::SceneInput;
 use viewer_counters::map::counters::CounterReport;
-use viewer_foundation::map::{name_draw::Placements, sprites::Batch};
+use viewer_runtime::name_draw::Placements;
+use viewer_native_gui::sprites::Batch;
 use viewer_map_icons::labels::LabelReport;
 use viewer_map_text::name_pass::{LayerFade, StrategicNames};
 use viewer_world::scene::{Overlay, Request};
@@ -248,7 +240,7 @@ fn profile_hover_point(
 
 struct Laps {
     enabled: bool,
-    frame_cpu: Option<viewer_foundation::profiling::ThreadSpan>,
+    frame_cpu: Option<viewer_runtime::profiling::ThreadSpan>,
     start: Instant,
     last: Instant,
     outside: f64,
@@ -266,8 +258,8 @@ fn mark_frame_end() {
 impl Laps {
     fn new(waited: Duration) -> Self {
         let enabled = profiling();
-        viewer_foundation::profiling::begin_thread_frame();
-        let frame_cpu = enabled.then(|| viewer_foundation::profiling::thread_span("frame"));
+        viewer_runtime::profiling::begin_thread_frame();
+        let frame_cpu = enabled.then(|| viewer_runtime::profiling::thread_span("frame"));
         let now = Instant::now();
         let outside = FRAME_END
             .lock()
@@ -348,7 +340,7 @@ pub(crate) struct View {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaintingPlaced {
     Placed,
-    Refused(viewer_foundation::map::anchored::Refused),
+    Refused(viewer_native_gui::anchored::Refused),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -391,7 +383,7 @@ fn overlay_matches_continuity(
     current_generation.is_none_or(|generation| ov_gen == generation)
         && ov_branch == branch
         && viewing.is_none_or(|viewing| viewing == ov_ours.to_string())
-        && !viewer_foundation::map::presentation::crosses_gap(
+        && !viewer_runtime::presentation::crosses_gap(
             gaps,
             branch,
             ov_hour.min(hour),
@@ -498,7 +490,7 @@ pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::campaign::Repla
 #[derive(Clone, Default)]
 struct Uploaded {
     order_key: Option<OrderKey>,
-    air_field: Option<((usize, Vec<u64>), Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
+    air_field: Option<((usize, Vec<u64>), Arc<viewer_gpu::ribbon_content::OrderField>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,8 +506,8 @@ pub(crate) fn order_at<T>(held: Option<&Arc<T>>) -> usize {
 }
 
 struct LayeredOrders {
-    plan: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
-    raids: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
+    plan: Option<Arc<viewer_gpu::ribbon_content::OrderField>>,
+    raids: Option<Arc<viewer_gpu::ribbon_content::OrderField>>,
     routes: Option<u64>,
 }
 
@@ -625,13 +617,13 @@ fn radar_province(
 }
 
 fn land_hover_matches_unit(
-    hover: &viewer_foundation::map::counter_hovers::land::CounterHover,
-    unit: &viewer_foundation::map::counter_hovers::unit_hits::Hit,
+    hover: &viewer_native_gui::counter_hovers::land::CounterHover,
+    unit: &viewer_native_gui::counter_hovers::unit_hits::Hit,
 ) -> bool {
     let kind = if hover.railway_gun {
-        viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+        viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
     } else {
-        viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+        viewer_native_gui::counter_hovers::unit_hits::Kind::Division
     };
     unit.kind == kind && unit.members == hover.members
 }
@@ -652,14 +644,14 @@ fn top_map_hit(
 fn unit_family(
     report: &CounterReport,
     index: usize,
-    hit: &viewer_foundation::map::counter_hovers::unit_hits::Hit,
-) -> free_icons::IconFamily {
+    hit: &viewer_native_gui::counter_hovers::unit_hits::Hit,
+) -> viewer_gpu::icon_tracks::IconFamily {
     if report.regional_naval_unit_hits.contains(&index) {
-        free_icons::IconFamily::Missions
+        viewer_gpu::icon_tracks::IconFamily::Missions
     } else if hit.port {
-        free_icons::IconFamily::Bases
+        viewer_gpu::icon_tracks::IconFamily::Bases
     } else {
-        free_icons::IconFamily::Columns
+        viewer_gpu::icon_tracks::IconFamily::Columns
     }
 }
 
@@ -722,7 +714,7 @@ pub struct Viewer {
     start_pick: drop::Pick,
     free_overlay: Batch,
     overlay_written: u64,
-    free_presented: Option<(viewer_foundation::map::camera::Camera, [u32; 2], u32, u64, viewer_foundation::map::anchored::Head)>,
+    free_presented: Option<(viewer_gpu::camera::Camera, [u32; 2], u32, u64, viewer_gpu::icon_tracks::Head)>,
     looks: Option<free_icons::Looks>,
     input: crate::controls::Input,
     orbit: crate::controls::orbit::Orbit,
@@ -736,7 +728,7 @@ pub struct Viewer {
     speed: f64,
     clock_anchor: Option<(Playhead, bool, f64)>,
     page_clock: crate::page_clock::PageClock,
-    day_night: viewer_foundation::map::frame::DayNightPlayback,
+    day_night: viewer_gpu::frame::DayNightPlayback,
     last_step: Instant,
     profile_playback: profile_playback::Clock,
     started: Instant,
@@ -769,7 +761,7 @@ pub struct Viewer {
         u8,
     )>,
     playhead: Option<Playhead>,
-    frame_head: viewer_foundation::map::frame_head::FrameHead,
+    frame_head: viewer_native_gui::frame_head::FrameHead,
     animation_seek: bool,
     map_animation_target: Option<Target>,
     playhead_map: Option<crate::playhead_host::side::SideThread>,
@@ -801,7 +793,7 @@ pub struct Viewer {
     head_rows: head_rows::HeadRows,
     highlight_wanted: bool,
     overlay_frame: Option<Arc<replay_frame::frame::DecodedFrame>>,
-    overlay_moved: Arc<viewer_foundation::map::counter_move::MovedHours>,
+    overlay_moved: Arc<viewer_unit_reads::counter_move::MovedHours>,
     overlay_tables: Option<Arc<crate::document::OverlayTables>>,
     overlay_routes_pending: bool,
     overlay_left: crate::document::LeftToLayers,
@@ -812,10 +804,10 @@ pub struct Viewer {
     overlay_placed: Option<Camera>,
     overlay_asked: Option<viewer_counters::map::counters::Shown>,
     overlay_placed_view: Option<([u32; 2], u32)>,
-    overlay_shifts: viewer_foundation::map::anchored::Shifts,
+    overlay_shifts: viewer_native_gui::anchored::Shifts,
     overlay_camera_before: Option<Camera>,
-    overlay_head_before: Option<viewer_foundation::map::anchored::Head>,
-    overlay_counted: viewer_foundation::map::overlay_count::Watch,
+    overlay_head_before: Option<viewer_gpu::icon_tracks::Head>,
+    overlay_counted: viewer_native_gui::overlay_count::Watch,
     overlay_unpainted: bool,
     overlay_generation: Option<u64>,
     overlay_clock_unavailable: bool,
@@ -853,7 +845,7 @@ pub struct Viewer {
     export_results: Vec<(u64, Result<String, String>)>,
     export_permits: Vec<(u64, replay::writes::Permit)>,
     combat_inputs: Option<usize>,
-    overlay_pools: viewer_foundation::map::icon_windows::Pools,
+    overlay_pools: viewer_native_gui::icon_windows::Pools,
 
     counter_view: CounterView,
     unit_selection: viewer_counters::map::unit_selection::Selection,
@@ -880,7 +872,7 @@ pub(crate) fn load_scene(
     queue: &wgpu::Queue,
     document: &Document,
     graphics: dashboard_core::protocol::MapGraphics,
-    workers: &viewer_foundation::parallel::Workers,
+    workers: &viewer_runtime::parallel::Workers,
 ) -> std::io::Result<Scene> {
     let _startup = crate::perf_log::StartupSpan::new("scene");
     let scene = engine_executable::executable_tables::scope(document.content.tables, || {
@@ -897,9 +889,9 @@ fn load_scene_scoped(
     queue: &wgpu::Queue,
     document: &Document,
     graphics: dashboard_core::protocol::MapGraphics,
-    workers: &viewer_foundation::parallel::Workers,
+    workers: &viewer_runtime::parallel::Workers,
 ) -> std::io::Result<Scene> {
-    use viewer_foundation::load_record::stage;
+    use viewer_runtime::load_record::stage;
     let textures = {
         let _stage = stage("scene.textures");
         document
@@ -1051,7 +1043,7 @@ impl Viewer {
                 .map(|()| (batch, report, prepared.label_report().clone(), prepared.raid_report().clone()))
         };
         let settle = |prepared: &mut crate::document::PreparedOverlay| {
-            let mut rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
+            let mut rounds = viewer_native_gui::icon_windows::DumpFrames::default();
             let mut drawn = draw(prepared);
             while drawn.is_ok() && rounds.next(&prepared.retries()) {
                 drawn = draw(prepared);
@@ -1165,7 +1157,7 @@ impl Viewer {
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
     ) -> Self {
         if let Some((device, _)) = &gpu {
-            crate::perf_log::gpu_timer(viewer_foundation::map::gpu_frame_time::support(device));
+            crate::perf_log::gpu_timer(viewer_gpu::gpu_frame_time::support(device));
         }
         if let Some(embedded) = &embedded
             && let Err(tables_error) = embedded
@@ -2062,7 +2054,7 @@ impl Viewer {
         self.overlay_fraction = None;
         self.overlay_unpainted = true;
         self.overlay_installed += 1;
-        viewer_foundation::map::redraws::note("made.laid", 1);
+        viewer_runtime::redraws::note("made.laid", 1);
     }
 
     fn withhold_overlay(&mut self, why: &str) {
@@ -2105,7 +2097,7 @@ impl Viewer {
             self.overlay_lay_ins.as_deref(),
         ) {
             Ok(()) => {
-                viewer_foundation::map::redraws::note("made.placed", 1);
+                viewer_runtime::redraws::note("made.placed", 1);
                 self.overlay_placed = Some(camera);
                 self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                 self.overlay_fraction = None;
@@ -2125,14 +2117,14 @@ impl Viewer {
         camera: Camera,
         pixels: [u32; 2],
         ui_scale: f32,
-        at: viewer_foundation::map::anchored::Head,
+        at: viewer_gpu::icon_tracks::Head,
     ) -> Result<PaintingPlaced, String> {
         let Some(placed) = self.overlay_placed else {
             return Ok(PaintingPlaced::Placed);
         };
         if self.overlay_placed_view != Some((pixels, ui_scale.to_bits())) {
             return Ok(PaintingPlaced::Refused(
-                viewer_foundation::map::anchored::Refused::NotAMove,
+                viewer_native_gui::anchored::Refused::NotAMove,
             ));
         }
         if placed == camera
@@ -2140,8 +2132,8 @@ impl Viewer {
         {
             return Ok(PaintingPlaced::Placed);
         }
-        let extent = viewer_foundation::map::gui_resources::viewport(pixels, ui_scale);
-        let _span = viewer_foundation::profiling::span("overlay_painting_placed");
+        let extent = viewer_native_gui::gui_resources::viewport(pixels, ui_scale);
+        let _span = viewer_runtime::profiling::span("overlay_painting_placed");
         let batch = self.overlay.as_mut().expect("the batch this frame painted");
         let moved = match self
             .overlay_shifts
@@ -2149,19 +2141,19 @@ impl Viewer {
         {
             Ok(moved) => moved,
             Err(why) => {
-                viewer_foundation::map::redraws::note("made.not_moved", 1);
-                if viewer_foundation::view_record::on() {
-                    viewer_foundation::view_record::add("overlay", why.why(), 1);
+                viewer_runtime::redraws::note("made.not_moved", 1);
+                if viewer_runtime::view_record::on() {
+                    viewer_runtime::view_record::add("overlay", why.why(), 1);
                 }
                 return Ok(PaintingPlaced::Refused(why));
             }
         };
-        viewer_foundation::map::redraws::note("made.painting_placed", 1);
-        viewer_foundation::map::redraws::note("moved.movers", moved.movers as u64);
-        viewer_foundation::view_record::add("overlay", "movers_placed", moved.movers as u64);
-        viewer_foundation::view_record::add("overlay", "quads_moved", moved.quads as u64);
+        viewer_runtime::redraws::note("made.painting_placed", 1);
+        viewer_runtime::redraws::note("moved.movers", moved.movers as u64);
+        viewer_runtime::view_record::add("overlay", "movers_placed", moved.movers as u64);
+        viewer_runtime::view_record::add("overlay", "quads_moved", moved.quads as u64);
         for (name, value) in moved.named() {
-            viewer_foundation::view_record::add("overlay", name, value);
+            viewer_runtime::view_record::add("overlay", name, value);
         }
         self.hits_stamp += 1;
         if !self.overlay_shifts.found().is_empty() {
@@ -2179,11 +2171,11 @@ impl Viewer {
         camera: Camera,
         pixels: [u32; 2],
         ui_scale: f32,
-        at: viewer_foundation::map::anchored::Head,
+        at: viewer_gpu::icon_tracks::Head,
         hour_fraction: f32,
         clock_unavailable: bool,
         relayout_and_repaint: impl FnOnce(&mut Self) -> Result<bool, String>,
-    ) -> Result<Option<viewer_foundation::map::anchored::Refused>, String> {
+    ) -> Result<Option<viewer_native_gui::anchored::Refused>, String> {
         self.overlay_shifts.clear();
         let outcome = match self.place_painting(camera, pixels, ui_scale, at)? {
             PaintingPlaced::Placed => PaintingPlaced::Placed,
@@ -2200,7 +2192,7 @@ impl Viewer {
         };
         match outcome {
             PaintingPlaced::Placed => {
-                if viewer_foundation::map::overlay_count::counting()
+                if viewer_runtime::profiling::counting()
                     && let Some(batch) = self.overlay.as_ref()
                 {
                     self.overlay_counted.painted(batch).record();
@@ -2244,7 +2236,7 @@ impl Viewer {
         camera: Camera,
         pixels: [u32; 2],
         ui_scale: f32,
-        at: viewer_foundation::map::anchored::Head,
+        at: viewer_gpu::icon_tracks::Head,
     ) -> Result<bool, String> {
         let moved = self.overlay_camera_before.is_some_and(|before| before != camera);
         self.overlay_camera_before = Some(camera);
@@ -2255,9 +2247,9 @@ impl Viewer {
             return Ok(false);
         };
         if self.overlay_unpainted {
-            viewer_foundation::map::redraws::note("made.not_moved", 1);
-            if viewer_foundation::view_record::on() {
-                viewer_foundation::view_record::add("overlay", "the batch is the painting before the overlay installed", 1);
+            viewer_runtime::redraws::note("made.not_moved", 1);
+            if viewer_runtime::view_record::on() {
+                viewer_runtime::view_record::add("overlay", "the batch is the painting before the overlay installed", 1);
             }
             return Ok(false);
         }
@@ -2270,25 +2262,25 @@ impl Viewer {
         let Some(batch) = self.overlay.as_mut() else {
             return Ok(false);
         };
-        let extent = viewer_foundation::map::gui_resources::viewport(pixels, ui_scale);
-        let _span = viewer_foundation::profiling::span("overlay_move");
+        let extent = viewer_native_gui::gui_resources::viewport(pixels, ui_scale);
+        let _span = viewer_runtime::profiling::span("overlay_move");
         match self
             .overlay_shifts
             .move_to(batch, &placed, &camera, pixels, extent, at, check_anchor())
         {
             Ok(moved) => {
-                viewer_foundation::map::redraws::note("made.moved", 1);
-                viewer_foundation::map::redraws::note("moved.movers", moved.movers as u64);
-                viewer_foundation::map::redraws::note("moved.pictures", u64::from(moved.quads > 0));
-                viewer_foundation::view_record::add("overlay", "movers_placed", moved.movers as u64);
-                viewer_foundation::view_record::add("overlay", "movers_still", moved.movers_still as u64);
+                viewer_runtime::redraws::note("made.moved", 1);
+                viewer_runtime::redraws::note("moved.movers", moved.movers as u64);
+                viewer_runtime::redraws::note("moved.pictures", u64::from(moved.quads > 0));
+                viewer_runtime::view_record::add("overlay", "movers_placed", moved.movers as u64);
+                viewer_runtime::view_record::add("overlay", "movers_still", moved.movers_still as u64);
                 for (name, value) in moved.named() {
-                    viewer_foundation::view_record::add("overlay", name, value);
+                    viewer_runtime::view_record::add("overlay", name, value);
                 }
-                viewer_foundation::view_record::set("overlay", "step_max", moved.step_max.unsigned_abs().into());
-                viewer_foundation::view_record::add("overlay", "anchors_moved", moved.anchors_moved as u64);
-                viewer_foundation::view_record::add("overlay", "quads_moved", moved.quads as u64);
-                viewer_foundation::view_record::set("overlay", "anchors", moved.anchors as u64);
+                viewer_runtime::view_record::set("overlay", "step_max", moved.step_max.unsigned_abs().into());
+                viewer_runtime::view_record::add("overlay", "anchors_moved", moved.anchors_moved as u64);
+                viewer_runtime::view_record::add("overlay", "quads_moved", moved.quads as u64);
+                viewer_runtime::view_record::set("overlay", "anchors", moved.anchors as u64);
                 self.hits_stamp += 1;
                 if !self.overlay_shifts.found().is_empty() {
                     return Err(format!(
@@ -2299,9 +2291,9 @@ impl Viewer {
                 Ok(true)
             }
             Err(why) => {
-                viewer_foundation::map::redraws::note("made.not_moved", 1);
-                if viewer_foundation::view_record::on() {
-                    viewer_foundation::view_record::add("overlay", why.why(), 1);
+                viewer_runtime::redraws::note("made.not_moved", 1);
+                if viewer_runtime::view_record::on() {
+                    viewer_runtime::view_record::add("overlay", why.why(), 1);
                 }
                 Ok(false)
             }
@@ -2363,19 +2355,19 @@ impl Viewer {
         self.live_map().and_then(|side| side.mode_on_screen()).unwrap_or(&self.map_mode)
     }
 
-    fn take_frame_head(&mut self) -> Option<viewer_foundation::map::anchored::Head> {
+    fn take_frame_head(&mut self) -> Option<viewer_gpu::icon_tracks::Head> {
         let clock = self.playhead?;
         let saved = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
         let published = self.overlay_shown.map(|(_, hour)| hour);
         let clock = f64::from(clock.hour) + clock.fraction;
-        let head = self.frame_head.take(viewer_foundation::map::frame_head::Frame {
+        let head = self.frame_head.take(viewer_native_gui::frame_head::Frame {
             clock,
             published,
             speed: self.speed,
             moving: self.playing && self.speed > 0.0 && !saved,
         });
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::{add, set};
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::{add, set};
             let at = f64::from(head.hour) + f64::from(head.fraction);
             add("head", "frames", 1);
             set("head", "behind_the_clock_milli_hours", ((clock - at) * 1e3) as u64);
@@ -2458,7 +2450,7 @@ impl Viewer {
         replay.block_at(clock.branch, clock.hour).is_none().then(|| crate::playback::gap_reason(replay, clock.branch, clock.hour))
     }
 
-    fn follow_continuity(&mut self, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
+    fn follow_continuity(&mut self, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_runtime::presentation::UnitRestart)> {
         let side = self.live_map()?;
         let on = side.on_screen()?;
         let hour = on.drawn.filter(|_| !on.composing)?;
@@ -2472,8 +2464,8 @@ impl Viewer {
         self.present_continuity((branch, hour, viewing), sought, gaps)
     }
 
-    fn present_continuity(&mut self, next: (replay_data::BranchId, i32, Option<String>), sought: bool, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
-        use viewer_foundation::map::presentation::{UnitRestart, continuity, unit_restart};
+    fn present_continuity(&mut self, next: (replay_data::BranchId, i32, Option<String>), sought: bool, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_runtime::presentation::UnitRestart)> {
+        use viewer_runtime::presentation::{UnitRestart, continuity, unit_restart};
         if !sought && self.presented.last.as_ref() == Some(&next) {
             return None;
         }
@@ -2717,7 +2709,7 @@ impl Viewer {
                 ui.weak(format!("Tooltip: {target}"));
             }
         }
-        if let Some(limit) = viewer_foundation::map::frame_limit::limit() {
+        if let Some(limit) = viewer_runtime::frame_limit::limit() {
             ui.weak(format!("Frame rate limit: {limit:.0} a second"));
         }
         for line in crate::screen_count::readout::lines() {
@@ -2733,7 +2725,7 @@ impl Viewer {
             self.diagnostics_open = !self.diagnostics_open;
         }
         if self.diagnostics_open {
-            viewer_foundation::diagnostics_panel::warning_list(ui, &self.map_warnings, max_height);
+            viewer_runtime::diagnostics_panel::warning_list(ui, &self.map_warnings, max_height);
         }
     }
 
@@ -2744,7 +2736,7 @@ impl Viewer {
     }
 
     fn open(&mut self, mut path: PathBuf, ctx: &egui::Context, expected_revision: Option<String>) {
-        let _stage = viewer_foundation::load_record::stage("open.ui");
+        let _stage = viewer_runtime::load_record::stage("open.ui");
         self.export_closed("its map was replaced before its picture was saved");
         if self.embedded.is_some() {
             match path.canonicalize() {
@@ -2817,8 +2809,8 @@ impl Viewer {
         let ctx = ctx.clone();
         let startup_content = self.startup_content.take();
         job_priority::spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
-            let _stage = viewer_foundation::load_record::stage("load");
+            viewer_runtime::worker_priority::background_priority();
+            let _stage = viewer_runtime::load_record::stage("load");
             let _generation = startup_content.as_ref().map_or_else(
                 content_reader_core::content::Generation::enter,
                 content_reader_core::content::Loading::enter_generation,
@@ -2831,7 +2823,7 @@ impl Viewer {
             };
             let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
-                    let _stage = viewer_foundation::load_record::stage("load.replay_revision");
+                    let _stage = viewer_runtime::load_record::stage("load.replay_revision");
                     let revision = dashboard_core::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
                     if expected_revision
@@ -2845,7 +2837,7 @@ impl Viewer {
                     None
                 };
                 let source = {
-                    let _stage = viewer_foundation::load_record::stage("load.open_map");
+                    let _stage = viewer_runtime::load_record::stage("load.open_map");
                     service
                         .as_ref()
                         .map(|service| service.open_map(&path, revision.as_deref()))
@@ -2879,8 +2871,8 @@ impl Viewer {
                                 && content.texture_quality == preferences.graphics.texture_quality
                         }) {
                             Some((_, content)) => {
-                                let _stage = viewer_foundation::load_record::stage("load.shared_content");
-                                viewer_foundation::load_record::count("content reused", 1, 0);
+                                let _stage = viewer_runtime::load_record::stage("load.shared_content");
+                                viewer_runtime::load_record::count("content reused", 1, 0);
                                 Document::from_shared_content(
                                     Arc::clone(content),
                                     source.replay(),
@@ -2917,7 +2909,7 @@ impl Viewer {
                     let workers = shared_pool
                         .as_ref()
                         .map_or_else(Default::default, |pool| pool.workers());
-                    let scene_stage = viewer_foundation::load_record::stage("load.scene");
+                    let scene_stage = viewer_runtime::load_record::stage("load.scene");
                     let scene = load_scene(&device, &queue, &document, preferences.graphics, &workers);
                     drop(scene_stage);
                     match scene {
@@ -3112,7 +3104,7 @@ impl Viewer {
                 source,
                 config,
             }))) => {
-                let _stage = viewer_foundation::load_record::stage("install");
+                let _stage = viewer_runtime::load_record::stage("install");
                 self.revision = revision;
                 self.source = source;
                 self.loaded_config = Some(config);
@@ -3194,7 +3186,7 @@ impl Viewer {
         if *monitor_seen != Some(seen) {
             *monitor_seen = Some(seen);
             let ctx = ctx.clone();
-            refresh_monitors(viewer_foundation::worker_priority::waking(move || ctx.request_repaint()));
+            refresh_monitors(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
         }
     }
 
@@ -3337,7 +3329,7 @@ impl Viewer {
         }
     }
 
-    fn hit_shifts(&self) -> Option<&viewer_foundation::map::anchored::Shifts> {
+    fn hit_shifts(&self) -> Option<&viewer_native_gui::anchored::Shifts> {
         (!self.overlay_shifts.is_empty()).then_some(&self.overlay_shifts)
     }
 
@@ -3355,15 +3347,15 @@ impl Viewer {
     fn map_hit(&self, point: [f32; 2]) -> Option<MapHit> {
         let shapes = self.hit_shapes();
         self.map_hits.borrow_mut().at(self.hits_stamp, point, &shapes, |point| {
-            self.overlay_hits.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point))
+            self.overlay_hits.intel_at(|hit| self.icon_point(viewer_gpu::icon_tracks::IconFamily::Intel, hit.layer, point))
         })
     }
 
-    fn icon_point(&self, family: free_icons::IconFamily, layer: u64, point: [f32; 2]) -> Option<([f32; 2], u32)> {
+    fn icon_point(&self, family: viewer_gpu::icon_tracks::IconFamily, layer: u64, point: [f32; 2]) -> Option<([f32; 2], u32)> {
         map_hits::local(self.hit_shifts(), self.looks.as_ref(), family, layer, point)
     }
 
-    fn hit_layer(&self, target: MapHit) -> Option<(free_icons::IconFamily, u64)> {
+    fn hit_layer(&self, target: MapHit) -> Option<(viewer_gpu::icon_tracks::IconFamily, u64)> {
         map_hits::hit_layer(&self.hit_shapes(), target)
     }
 
@@ -3373,7 +3365,7 @@ impl Viewer {
 
     fn local_point(
         &self,
-        layer: Option<(free_icons::IconFamily, u64)>,
+        layer: Option<(viewer_gpu::icon_tracks::IconFamily, u64)>,
         point: [f32; 2],
     ) -> [f32; 2] {
         layer
@@ -3381,7 +3373,7 @@ impl Viewer {
             .map_or(point, |(local, _)| local)
     }
 
-    fn shown_rect(&self, layer: Option<(free_icons::IconFamily, u64)>, rect: [f32; 4]) -> [f32; 4] {
+    fn shown_rect(&self, layer: Option<(viewer_gpu::icon_tracks::IconFamily, u64)>, rect: [f32; 4]) -> [f32; 4] {
         layer
             .and_then(|(family, layer)| map_hits::shown(self.hit_shifts(), self.looks.as_ref(), family, layer, rect))
             .unwrap_or(rect)
@@ -3539,8 +3531,8 @@ impl Viewer {
         let point = point?;
         let target = self.map_hit(point);
         if matches!(target, Some(MapHit::Intel)) {
-            let hit = self.overlay_hits.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point))?;
-            let layer = Some((free_icons::IconFamily::Intel, hit.layer));
+            let hit = self.overlay_hits.intel_at(|hit| self.icon_point(viewer_gpu::icon_tracks::IconFamily::Intel, hit.layer, point))?;
+            let layer = Some((viewer_gpu::icon_tracks::IconFamily::Intel, hit.layer));
             let rect = self.shown_rect(layer, hit.bounds());
             let empty = hit.tooltip.title.is_empty()
                 && hit.tooltip.body.is_empty()
@@ -3553,7 +3545,7 @@ impl Viewer {
         let head = &views;
         let repaint = || {
             let ctx = ctx.clone();
-            viewer_foundation::worker_priority::waking(move || ctx.request_repaint())
+            viewer_runtime::worker_priority::waking(move || ctx.request_repaint())
         };
         if let Some(MapHit::Occupation(index)) = target {
             let hit = self.overlay_hits.occupation.get(index)?;
@@ -3638,7 +3630,7 @@ impl Viewer {
             let vision = self.shown_vision().ok()?;
             let inputs = self.hover_inputs(document, &vision, ctx);
             let fleet_selected = !self.fleet_selection.fleets().is_empty()
-                || self.unit_selection.units().iter().any(|unit| matches!(unit, viewer_foundation::unit_handle::Unit::TaskForce(_)));
+                || self.unit_selection.units().iter().any(|unit| matches!(unit, viewer_runtime::unit_handle::Unit::TaskForce(_)));
             let key = inputs.key(hover_rows::What::NavalBase { province, fleet_selected }, [0, 0]);
             let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |_| inputs.naval_base(province, fleet_selected))?;
             return Some((text, self.shown_rect(layer, self.counter_report.base_hits[index].rect), None));
@@ -3682,7 +3674,7 @@ impl Viewer {
             let ours = self.shown_vision().ok()?.ours();
             let text = self.combat_rows.raid(head, document, ours, self.counter_view.settings.nato, hit.key.clone(), ctx)?;
             let rect = [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]];
-            let layer = Some((free_icons::IconFamily::Raids, hit.layer));
+            let layer = Some((viewer_gpu::icon_tracks::IconFamily::Raids, hit.layer));
             return Some((text, self.shown_rect(layer, rect), None));
         }
         let land_hit = match target {
@@ -3733,7 +3725,7 @@ impl Viewer {
                 && !hit.railway_gun
                 && hit.members.len() == 1
                 && hit.control
-                    == viewer_foundation::map::counter_hovers::land::CounterControl::Normal
+                    == viewer_native_gui::counter_hovers::land::CounterControl::Normal
             {
                 self.combat_rows.division_panel(head, document, text, hit.members[0], repaint())
             } else {
@@ -3811,7 +3803,7 @@ impl Viewer {
             .as_ref()
             .filter(|_| self.counter_view.visibility.trade_routes)
             .map(|routes| {
-                viewer_foundation::map::ribbon_content::trade_route_hit(
+                viewer_gpu::ribbon_content::trade_route_hit(
                     &routes.field.trade_route_hovers,
                     view.camera.eye(),
                     view.camera.ray(point.map(|v| v * view.ui_scale), view.viewport),
@@ -3937,7 +3929,7 @@ impl Viewer {
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
-        let _budget = viewer_foundation::map::frame_budget::begin(!whole);
+        let _budget = viewer_runtime::frame_budget::begin(!whole);
         let map_timer = Instant::now();
         self.drew_frame = false;
         let mut laps = self
@@ -3945,7 +3937,7 @@ impl Viewer {
             .take()
             .unwrap_or_else(|| Laps::new(Duration::ZERO));
         laps.lap("before_map");
-        viewer_foundation::map::counter_move::take_profile();
+        viewer_unit_reads::counter_move::take_profile();
         if profiling() {
             static ADAPTER_ONCE: std::sync::Once = std::sync::Once::new();
             shader_pipeline::gpu::stats::mark_window_thread();
@@ -4060,7 +4052,7 @@ impl Viewer {
                 self.combat_inputs = Some(content_at);
                 let raids = Arc::clone(&document.icons.raids);
                 self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
-                    viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+                    viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
                 }));
                 let content = Arc::clone(&document.content);
                 self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
@@ -4128,7 +4120,7 @@ impl Viewer {
                 && !saved
                 && let Some(covered) = live_of(&self.playhead_map).and_then(|side| side.products().overlay_hour)
             {
-                shown_head = shown_head.map(|head| viewer_foundation::map::frame_head::shown(head, Some(covered)));
+                shown_head = shown_head.map(|head| viewer_native_gui::frame_head::shown(head, Some(covered)));
             }
             if let Some(scene) = self.scene.as_mut() {
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
@@ -4138,7 +4130,7 @@ impl Viewer {
                 if let Some(installed) = side.installed_through()
                     && shown_head.is_some_and(|head| head.hour != installed)
                 {
-                    shown_head = Some(viewer_foundation::map::anchored::Head { hour: installed, fraction: 0.0 });
+                    shown_head = Some(viewer_gpu::icon_tracks::Head { hour: installed, fraction: 0.0 });
                 }
                 side.views().show_through(taken.zip(shown_head).map(|(taken, head)| taken.min(head.hour)));
             }
@@ -4371,7 +4363,7 @@ impl Viewer {
         };
         let interface_at = |pos: egui::Pos2| to_interface(frame_point(pos), ui_scale);
         let gui_input = Some(reaches.then(|| {
-            use viewer_foundation::map::native_gui::pointer::{Button, Input, Place};
+            use viewer_native_gui::native_gui::pointer::{Button, Input, Place};
             Input {
                 place: point.map(Place::new),
                 buttons: primary
@@ -4576,7 +4568,7 @@ impl Viewer {
         let mut started = false;
         if self.start_pick.choosing() {
             let shown = self.orbit.view(*camera);
-            let field = viewer_foundation::map::province_map::HeightField {
+            let field = viewer_gpu::province_map::HeightField {
                 width: document.map.width,
                 height: document.map.height,
                 values: document.assets.heightmap_texels(),
@@ -4765,7 +4757,7 @@ impl Viewer {
             self.camera_manual = crate::suite_input::apply_camera(camera, command.target, pixels, &floor);
             ui.ctx().request_repaint();
         }
-        let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
+        let shift = viewer_gpu::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {
             camera.center[0] += shift;
             self.zoom.shift([shift, 0.0]);
@@ -4801,7 +4793,7 @@ impl Viewer {
                 let map = self.orbit.view(*camera);
                 if free_mode {
                     let texels = document.assets.heightmap_texels();
-                    let field = viewer_foundation::map::province_map::HeightField {
+                    let field = viewer_gpu::province_map::HeightField {
                         width: document.map.width,
                         height: document.map.height,
                         values: texels,
@@ -5046,7 +5038,7 @@ impl Viewer {
         self.counter_view.plate_hovered = plate_hovered;
         change(
             plate(self.counter_view.pressed, self.counter_view.plate_hovered),
-            viewer_foundation::map::native_gui::pointer::LAST,
+            viewer_native_gui::native_gui::pointer::LAST,
             &mut counter_sounds,
         );
         self.counter_held = held;
@@ -5060,7 +5052,7 @@ impl Viewer {
             }
         }
         if (self.counter_view.pressed, self.counter_view.plate_hovered) != was {
-            viewer_foundation::map::redraws::note("asked.pointer", 1);
+            viewer_runtime::redraws::note("asked.pointer", 1);
             self.overlay_fraction = None;
         }
         if let Some(prepared) = self.prepared_overlay.as_mut() {
@@ -5113,7 +5105,7 @@ impl Viewer {
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
         drop(_other_cost);
-        let overlay_prepare_cpu = viewer_foundation::profiling::thread_span("overlay_prepare");
+        let overlay_prepare_cpu = viewer_runtime::profiling::thread_span("overlay_prepare");
         let left = self.overlay_left;
         let held = self.overlay_frame.clone().zip(self.overlay_tables.clone());
         if held.is_none() {
@@ -5143,12 +5135,12 @@ impl Viewer {
             let overlay_timer = Instant::now();
             if !document.icons.lazy.has_wake() {
                 let ctx = ui.ctx().clone();
-                document.icons.lazy.set_wake(viewer_foundation::worker_priority::waking(move || ctx.request_repaint()));
+                document.icons.lazy.set_wake(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
             }
             if std::mem::take(&mut self.overlay_routes_pending) && tables.counters().routes_by_key() {
                 let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
                 let (fill, counters, movement) = (Arc::clone(&tables), Arc::clone(&document.content.counters), document.content.movement.clone());
-                pool.try_submit(Box::new(move || viewer_foundation::map::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
+                pool.try_submit(Box::new(move || viewer_runtime::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
             }
             let overlay_state = live_of(&self.playhead_map).map(|side| {
                 let products = side.products();
@@ -5162,7 +5154,7 @@ impl Viewer {
             let head = head_rows::head(live_of(&self.playhead_map));
             let clock_speed = self
                 .head_rows
-                .map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed)
+                .map(head, frame, viewer_unit_reads::counter_move::MovementFrame::clock_speed)
                 .flatten();
             let clock_lost = clock_speed.is_none()
                 && (self.overlay.as_ref().is_some_and(Batch::moves)
@@ -5195,21 +5187,21 @@ impl Viewer {
                 && let Some(names) = side.products().placements.clone()
                 && !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names))
             {
-                viewer_foundation::view_record::add("names window", "taken_from_layer", 1);
+                viewer_runtime::view_record::add("names window", "taken_from_layer", 1);
                 drop(self.placements.replace(names));
             }
-            if viewer_foundation::view_record::on() {
+            if viewer_runtime::view_record::on() {
                 let draws = live_of(&self.playhead_map).is_some_and(|side| side.draws("names"));
-                viewer_foundation::view_record::set("names window", "layer_draws", u64::from(draws));
-                viewer_foundation::view_record::set("names window", "generation", self.placements.as_ref().map_or(0, |held| held.generation));
-                viewer_foundation::view_record::set("names window", "names", self.placements.as_ref().map_or(0, |held| held.country.len() as u64));
+                viewer_runtime::view_record::set("names window", "layer_draws", u64::from(draws));
+                viewer_runtime::view_record::set("names window", "generation", self.placements.as_ref().map_or(0, |held| held.generation));
+                viewer_runtime::view_record::set("names window", "names", self.placements.as_ref().map_or(0, |held| held.country.len() as u64));
             }
             overlay_prepare_cpu.finish();
             laps.lap("overlay_prepare");
             drop(_other_cost);
             let _other_cost = replay_frame::cpu::scope("frame.overlay.draw", Some("other"));
-            let overlay_draw_cpu = viewer_foundation::profiling::thread_span("overlay_draw");
-            let owners_span = viewer_foundation::profiling::span("overlay_owners");
+            let overlay_draw_cpu = viewer_runtime::profiling::thread_span("overlay_draw");
+            let owners_span = viewer_runtime::profiling::span("overlay_owners");
             let ours = Some(tables.ours());
             let head = head_rows::head(live_of(&self.playhead_map));
             let filtered = self.counter_owners.get(frame, head, &self.counter_filter);
@@ -5225,7 +5217,7 @@ impl Viewer {
                 self.overlay_fraction = None;
             }
             drop(owners_span);
-            let scene_span = viewer_foundation::profiling::span("overlay_scene_inputs");
+            let scene_span = viewer_runtime::profiling::span("overlay_scene_inputs");
             let (_, movement_hour) = self.hour_on_screen(document);
             if let Some(scene) = self.scene.as_mut() {
                 scene
@@ -5269,7 +5261,7 @@ impl Viewer {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .begin_frame(
-                            viewer_foundation::map::counter_move::MovementFrame {
+                            viewer_unit_reads::counter_move::MovementFrame {
                                 time: animation_time,
                                 hour: movement_hour,
                                 head: at,
@@ -5282,7 +5274,7 @@ impl Viewer {
                                 steady: self.options.window_dump,
                             },
                             schedule.updates().filter_map(|(province, update)| {
-                                (update == viewer_foundation::map::province_schedule::Update::InView)
+                                (update == viewer_gpu::province_schedule::Update::InView)
                                     .then_some(province)
                             }),
                         );
@@ -5305,18 +5297,18 @@ impl Viewer {
                 let quiet = self.overlay_fraction.is_some_and(f32::is_nan)
                     && self.overlay_drawn_fraction == Some(document.hour_fraction);
                 if quiet {
-                    viewer_foundation::map::redraws::note("made.quiet", 1);
+                    viewer_runtime::redraws::note("made.quiet", 1);
                     prepared
                         .draw_quiet(&now, overlay_camera, pixels, ui_scale, &self.overlay_layers, animation_time, self.overlay_pools)
                         .map_err(|error| error.to_string())?;
                     self.overlay_fraction = Some(document.hour_fraction);
                     self.overlay_drawn_fraction = Some(document.hour_fraction);
                 } else {
-                    viewer_foundation::map::redraws::note("made.draw", 1);
+                    viewer_runtime::redraws::note("made.draw", 1);
                     painted_now = true;
                     self.overlay_written += 1;
                     prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
-                    let mut rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
+                    let mut rounds = viewer_native_gui::icon_windows::DumpFrames::default();
                     let mut installed = false;
                     let mut settles = 0;
                     let mut art_place_failed = false;
@@ -5373,7 +5365,7 @@ impl Viewer {
                             continue;
                         }
                         if !pending.is_empty() {
-                            viewer_foundation::map::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
+                            viewer_runtime::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
                         }
                         document.icons.lazy.settle();
                         if !prepared.is_stale(&held) && !document.icons.lazy.has_pending() {
@@ -5398,7 +5390,7 @@ impl Viewer {
                         };
                         self.install_overlay(made, &document.playback.replay().gaps);
                         installed = true;
-                        rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
+                        rounds = viewer_native_gui::icon_windows::DumpFrames::default();
                     }
                     if !art_place_failed {
                         let withheld = self.finish_painting(
@@ -5458,7 +5450,7 @@ impl Viewer {
                 }
             }
             if let Some(scene) = self.scene.as_mut() {
-                let movement_span = viewer_foundation::profiling::span("overlay_unit_movement");
+                let movement_span = viewer_runtime::profiling::span("overlay_unit_movement");
                 let presentation = &self.counter_view.presentation;
                 presentation
                     .movement()
@@ -5469,7 +5461,7 @@ impl Viewer {
                             .as_ref()
                             .and_then(|prepared| prepared.motion_layout().cloned()),
                     );
-                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
+                let positions: Option<Box<dyn Iterator<Item = (viewer_runtime::unit_handle::Unit, &viewer_unit_reads::counter_move::Position, f32, f32)> + '_>> =
                     live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
                 if let Some(positions) = positions {
                     scene
@@ -5494,29 +5486,29 @@ impl Viewer {
                     Some((held, made, kept)) if held == identity => (made, kept),
                     _ => (0, 0),
                 };
-                viewer_foundation::map::redraws::note("lookups.made", made.saturating_sub(before_made));
-                viewer_foundation::map::redraws::note("lookups.kept", kept.saturating_sub(before_kept));
-                viewer_foundation::view_record::add("overlay", "lookups_made", made.saturating_sub(before_made));
-                viewer_foundation::view_record::add("overlay", "lookups_kept", kept.saturating_sub(before_kept));
+                viewer_runtime::redraws::note("lookups.made", made.saturating_sub(before_made));
+                viewer_runtime::redraws::note("lookups.kept", kept.saturating_sub(before_kept));
+                viewer_runtime::view_record::add("overlay", "lookups_made", made.saturating_sub(before_made));
+                viewer_runtime::view_record::add("overlay", "lookups_kept", kept.saturating_sub(before_kept));
                 self.overlay_lookups = Some((identity, made, kept));
             }
             if let (Some((shown_branch, shown_hour)), Some((branch, drawn))) = (self.overlay_shown, self.layers_on_screen())
                 && (shown_branch != branch || shown_hour != drawn)
             {
-                viewer_foundation::map::redraws::note("overlay.hour_apart", 1);
-                viewer_foundation::view_record::add("overlay", "hour_apart", 1);
-                viewer_foundation::view_record::set("overlay", "hours_apart", u64::from(shown_hour.abs_diff(drawn)));
+                viewer_runtime::redraws::note("overlay.hour_apart", 1);
+                viewer_runtime::view_record::add("overlay", "hour_apart", 1);
+                viewer_runtime::view_record::set("overlay", "hours_apart", u64::from(shown_hour.abs_diff(drawn)));
             }
             let running = self.counter_view.presentation.take_running();
             if running.any {
-                viewer_foundation::map::redraws::note("asked.running", 1);
+                viewer_runtime::redraws::note("asked.running", 1);
                 if running.visible {
                     self.overlay_fraction = None;
                 } else if running.windows.any() {
                     self.overlay_fraction = Some(f32::NAN);
                     self.overlay_pools = running.windows;
                 } else {
-                    viewer_foundation::map::redraws::note("asked.movement_only", 1);
+                    viewer_runtime::redraws::note("asked.movement_only", 1);
                 }
                 ui.ctx().request_repaint();
             }
@@ -5526,11 +5518,11 @@ impl Viewer {
                 && let Some(sprites) = self.overlay.as_ref()
             {
                 if self.free_presented == Some(presented) && self.looks.is_some() {
-                    viewer_foundation::map::redraws::note("free.placed_kept", 1);
+                    viewer_runtime::redraws::note("free.placed_kept", 1);
                     self.looks.take()
                 } else {
-                    let _span = viewer_foundation::profiling::span("overlay_free_present");
-                    viewer_foundation::map::redraws::note("free.placed", 1);
+                    let _span = viewer_runtime::profiling::span("overlay_free_present");
+                    viewer_runtime::redraws::note("free.placed", 1);
                     let ground = free_icons::Ground {
                         field: document.assets.height_field(),
                         sight: document.assets.terrain_sight(),
@@ -5552,7 +5544,7 @@ impl Viewer {
             };
             self.hits_stamp += 1;
             if check_overlay() {
-                let found = viewer_foundation::map::sprites::overlay_check_failures();
+                let found = viewer_native_gui::sprites::overlay_check_failures();
                 if !found.is_empty() {
                     return Err(format!(
                         "the overlay's resident GPU bytes differ from the same batch uploaded afresh: {}",
@@ -5624,7 +5616,7 @@ impl Viewer {
                     }
                 });
                 if fleet_added {
-                    self.selection_sounds(document, &[], true, ours, frame, viewer_foundation::map::native_gui::pointer::LAST);
+                    self.selection_sounds(document, &[], true, ours, frame, viewer_native_gui::native_gui::pointer::LAST);
                 }
             }
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
@@ -5721,7 +5713,7 @@ impl Viewer {
                 .collect();
             for (order, placed) in secondary_clicks {
                 if let Some((path, effect)) = &placed.click {
-                    let played = viewer_foundation::map::native_gui::pointer::Played {
+                    let played = viewer_native_gui::native_gui::pointer::Played {
                         effect: effect.clone(),
                         click: Some(path.clone()),
                         order,
@@ -5876,7 +5868,7 @@ impl Viewer {
                                     AirMissionClick::SelectMission(mission) => mission,
                                     AirMissionClick::Nothing => continue,
                                     AirMissionClick::OpenRegion => {
-                                        self.combat.open(viewer_foundation::combat_selection::Selection::AirRegion(hit.region));
+                                        self.combat.open(viewer_engagements::combat_selection::Selection::AirRegion(hit.region));
                                         continue;
                                     }
                                 };
@@ -6097,7 +6089,7 @@ impl Viewer {
             Vec::new()
         };
         laps.lap("diagnostics");
-        let render_cpu = viewer_foundation::profiling::thread_span("render");
+        let render_cpu = viewer_runtime::profiling::thread_span("render");
         self.update_faction_highlight(
             document,
             &state.device,
@@ -6126,7 +6118,7 @@ impl Viewer {
             };
             let hit = &self.counter_report.unit_hits[index];
             (!hit.port
-                && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
+                && hit.kind == viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce)
                 .then(|| Arc::clone(&hit.members))
         });
         let (_, shown_hour) = self.hour_on_screen(document);
@@ -6379,7 +6371,7 @@ impl Viewer {
                 camera.height,
                 map_timer.elapsed().as_secs_f64() * 1000.0,
                 overlay_ms,
-                viewer_foundation::map::counter_move::take_profile(),
+                viewer_unit_reads::counter_move::take_profile(),
                 document.playback.hour(),
                 laps.total(),
                 laps.outside,
@@ -6392,9 +6384,9 @@ impl Viewer {
                 self.scene
                     .as_ref()
                     .map_or_else(String::new, |scene| scene.detail_laps()),
-                viewer_foundation::profiling::take_spans(),
-                viewer_foundation::profiling::take_thread_spans(),
-                viewer_foundation::profiling::cpu_clock_hz()
+                viewer_runtime::profiling::take_spans(),
+                viewer_runtime::profiling::take_thread_spans(),
+                viewer_runtime::profiling::cpu_clock_hz()
                     .map_or_else(|| "unavailable".to_owned(), |hz| hz.to_string()),
                 playback_stamp.expect("PROFILE frame sampled its playback stamp"),
                 shown_stamp.expect("PROFILE frame sampled its shown stamp"),
@@ -6723,7 +6715,7 @@ struct InterfaceSound {
 }
 
 impl InterfaceSound {
-    fn new(producer: &str, played: &viewer_foundation::map::native_gui::pointer::Played) -> Self {
+    fn new(producer: &str, played: &viewer_native_gui::native_gui::pointer::Played) -> Self {
         use std::hash::{Hash, Hasher};
         Self {
             effect: Arc::from(String::from_utf8_lossy(&played.effect)),
@@ -6895,7 +6887,7 @@ impl Viewer {
     }
 
     fn campaign_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if let Some(recorder) = viewer_foundation::frame_writer::recorder() {
+        if let Some(recorder) = viewer_runtime::frame_writer::recorder() {
             let mut recording = Some(recorder.pass());
             let drawn = self.update(ui, frame, &mut recording);
             if let Some(recording) = recording {
@@ -6918,7 +6910,7 @@ impl Viewer {
         &mut self,
         ui: &mut egui::Ui,
         frame: &mut eframe::Frame,
-        recording: &mut Option<viewer_foundation::frame_writer::Pass<'_>>,
+        recording: &mut Option<viewer_runtime::frame_writer::Pass<'_>>,
     ) -> bool {
         if self
             .embedded
@@ -7517,8 +7509,9 @@ pub(crate) mod tests {
 
     #[test]
     fn occupation_controls_keep_independent_hits_and_follow_free_icon_visibility() {
-        use viewer_foundation::map::{
-            free_icons::{IconFamily, Looks, Present},
+        use viewer_gpu::icon_tracks::IconFamily;
+        use viewer_native_gui::{
+            free_icons::{Looks, Present},
             native_gui::HitGeometry,
             sprites::layer,
         };
@@ -7578,7 +7571,7 @@ pub(crate) mod tests {
         let base_layer = layer(20, 0, 0);
         report
             .base_hits
-            .push(viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+            .push(viewer_native_gui::counter_hovers::unit_hits::Blocker {
                 rect: [0., 0., 40., 40.],
                 layer: base_layer,
             });
@@ -7640,7 +7633,7 @@ pub(crate) mod tests {
     #[test]
     fn naval_mission_buttons_intercept_at_their_drawn_layer() {
         use viewer_counters::map::counters::{CounterReport, NavalMissionHit};
-        use viewer_foundation::map::counter_hovers::unit_hits::Blocker;
+        use viewer_native_gui::counter_hovers::unit_hits::Blocker;
         let mut report = CounterReport::default();
         report.naval_mission_hits.push(NavalMissionHit {
             region: 7,
@@ -7667,7 +7660,8 @@ pub(crate) mod tests {
     #[test]
     fn prepared_naval_mission_hover_keeps_exact_text_and_missions_footprint() {
         use viewer_counters::map::counters::NavalMissionHit;
-        use viewer_foundation::map::free_icons::{IconFamily, Looks, Present};
+        use viewer_gpu::icon_tracks::IconFamily;
+        use viewer_native_gui::free_icons::{Looks, Present};
         let mut report = CounterReport::default();
         let text = Arc::new(Tooltip {
             title: "Fleet\n§YStatus§!".into(),
@@ -7742,10 +7736,11 @@ pub(crate) mod tests {
 
     #[test]
     fn regional_naval_grid_units_use_the_missions_transform() {
-        use viewer_foundation::map::{
+        use viewer_native_gui::{
             counter_hovers::unit_hits::{Hit, Kind},
-            free_icons::{IconFamily, Looks, Present},
+            free_icons::{Looks, Present},
         };
+        use viewer_gpu::icon_tracks::IconFamily;
         let mut report = CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
@@ -7781,7 +7776,7 @@ pub(crate) mod tests {
 
     #[test]
     fn radar_toggle_hover_uses_the_top_base_and_never_a_covered_station() {
-        use viewer_foundation::map::counter_hovers::unit_hits::Blocker;
+        use viewer_native_gui::counter_hovers::unit_hits::Blocker;
         let mut report = viewer_counters::map::counters::CounterReport::default();
         report.base_hits.push(Blocker {
             rect: [0., 0., 20., 20.],
@@ -7819,13 +7814,9 @@ pub(crate) mod tests {
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
         content_reader_core::test_game::enter();
-        use {
-            viewer_foundation::map::counter_hovers::task_force::Control,
-            viewer_foundation::map::counter_hovers::task_force::Hover,
-            viewer_foundation::map::counter_hovers::unit_hits::Blocker,
-            viewer_foundation::map::counter_hovers::unit_hits::Hit,
-            viewer_foundation::map::counter_hovers::unit_hits::Kind,
-            viewer_foundation::map::sprites::layer,
+        use viewer_native_gui::{
+            counter_hovers::{task_force::{Control, Hover}, unit_hits::{Blocker, Hit, Kind}},
+            sprites::layer,
         };
         let mut report = viewer_counters::map::counters::CounterReport::default();
         report.unit_hits.push(Hit {
@@ -7871,7 +7862,7 @@ pub(crate) mod tests {
         report.unit_hits[0].kind = Kind::Division;
         assert_eq!(top_map_hit(point, &report, &[], &[], None, None), None);
 
-        use viewer_foundation::map::counter_hovers::task_force_port as port;
+        use viewer_native_gui::counter_hovers::task_force_port as port;
         report.unit_hits[0].kind = Kind::TaskForce;
         report.unit_hits[0].port = true;
         report.task_force_port_hovers.push(port::Hover {
@@ -7902,7 +7893,7 @@ pub(crate) mod tests {
         } }"#,
         );
         report.task_force_port_hovers[0].authored =
-            viewer_foundation::map::counter_hovers::gui_authored::Authored::read(
+            viewer_native_gui::counter_hovers::gui_authored::Authored::read(
                 gui.template("unbound").unwrap(),
                 false,
             );
@@ -7914,12 +7905,7 @@ pub(crate) mod tests {
 
     #[test]
     fn map_hits_follow_signed_layers_compose_order_and_actual_combat_attachment() {
-        use {
-            viewer_foundation::map::counter_hovers::unit_hits::Blocker,
-            viewer_foundation::map::counter_hovers::unit_hits::Hit,
-            viewer_foundation::map::counter_hovers::unit_hits::Kind,
-            viewer_foundation::map::sprites::layer,
-        };
+        use viewer_native_gui::{counter_hovers::unit_hits::{Blocker, Hit, Kind}, sprites::layer};
         let rect = [0.0, 0.0, 20.0, 20.0];
         let point = [5.0, 5.0];
         let mut report = viewer_counters::map::counters::CounterReport::default();
@@ -8091,7 +8077,7 @@ pub(crate) mod tests {
         let viewport = [2048, 1152];
         let mut intel = viewer_raids::map::intel_icons::IntelHit {
             shapes: vec![
-                viewer_foundation::map::native_gui::HitGeometry::test_rectangle(
+                viewer_native_gui::native_gui::HitGeometry::test_rectangle(
                     [0, 0],
                     [20, 20],
                     viewport,
@@ -8104,7 +8090,7 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], None, Some(&intel)),
             Some(MapHit::Intel)
         );
-        intel.shapes[0].form = viewer_foundation::map::native_gui::Hit::Alpha;
+        intel.shapes[0].form = viewer_native_gui::native_gui::Hit::Alpha;
         assert_eq!(
             top_map_hit(point, &report, &[], &[], None, Some(&intel)),
             Some(MapHit::Intel)
@@ -8117,11 +8103,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_free_view_hits_the_nearest_shown_icon_in_its_own_layout() {
-        use {
-            viewer_foundation::map::counter_hovers::unit_hits::{Blocker, Hit, Kind},
-            viewer_foundation::map::free_icons::{IconFamily, Looks, Present},
-            viewer_foundation::map::sprites::layer,
+        use viewer_native_gui::{
+            counter_hovers::unit_hits::{Blocker, Hit, Kind},
+            free_icons::{Looks, Present},
+            sprites::layer,
         };
+        use viewer_gpu::icon_tracks::IconFamily;
         let mut report = viewer_counters::map::counters::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
@@ -8177,10 +8164,11 @@ pub(crate) mod tests {
 
     #[test]
     fn carrier_wing_controls_take_the_columns_transform_and_win_over_their_parent() {
-        use viewer_foundation::map::{
+        use viewer_native_gui::{
             counter_hovers::unit_hits::{Blocker, Hit, Kind},
-            free_icons::{IconFamily, Looks, Present},
+            free_icons::{Looks, Present},
         };
+        use viewer_gpu::icon_tracks::IconFamily;
         let mut report = viewer_counters::map::counters::CounterReport::default();
         report.base_hits.push(Blocker {
             rect: [10., 10., 20., 20.],
@@ -8227,11 +8215,9 @@ pub(crate) mod tests {
 
     #[test]
     fn overlapping_land_and_naval_units_keep_separate_tooltip_namespaces() {
-        use {
-            viewer_foundation::map::counter_hovers::land::CounterControl,
-            viewer_foundation::map::counter_hovers::land::CounterHover,
-            viewer_foundation::map::counter_hovers::unit_hits::Hit,
-            viewer_foundation::map::counter_hovers::unit_hits::Kind,
+        use viewer_native_gui::counter_hovers::{
+            land::{CounterControl, CounterHover},
+            unit_hits::{Hit, Kind},
         };
         let members = Arc::from([7]);
         let hover = CounterHover {
@@ -9007,7 +8993,7 @@ pub(crate) mod tests {
     #[test]
     fn a_combat_named_at_load_that_is_not_drawn_is_refused() {
         let mut viewer = window_dump_viewer();
-        viewer.combat.open(viewer_foundation::combat_selection::Selection::Naval(2));
+        viewer.combat.open(viewer_engagements::combat_selection::Selection::Naval(2));
         viewer.combat.close();
         assert_eq!(viewer.saved_combat(true, None), Ok(true), "not named at load: a closed window is no window");
         viewer.options.combat = Some(viewer_combat::Selector::Id(2));
@@ -9317,12 +9303,11 @@ pub(crate) mod tests {
 
     #[test]
     fn place_painting_does_not_keep_prior_camera_placement_when_leaving_the_pad() {
-        use viewer_foundation::map::{
-            anchored::{Head, Refused},
+        use viewer_gpu::{
+            icon_tracks::{Head, IconAnchor, IconFamily},
             camera::{MapDefines, MapSize, Placement},
-            free_icons::{IconAnchor, IconFamily},
-            sprites::{Batch, Quad},
         };
+        use viewer_native_gui::{anchored::Refused, sprites::{Batch, Quad}};
         let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
         let outside_pad = Placement::map([1020.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
         let zoomed = Placement::map([1000.0, 500.0], 140.0).on(MapSize::TEST, MapDefines::test());
@@ -9439,11 +9424,8 @@ pub(crate) mod tests {
 
     #[test]
     fn failed_reprojection_on_resize_or_scale_withholds_overlay_without_stamping_view() {
-        use viewer_foundation::map::{
-            anchored::{Head, Refused},
-            camera::{MapDefines, MapSize, Placement},
-            sprites::{Batch, Quad},
-        };
+        use viewer_gpu::{icon_tracks::Head, camera::{MapDefines, MapSize, Placement}};
+        use viewer_native_gui::{anchored::Refused, sprites::{Batch, Quad}};
         let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
         let make_batch = || {
             let mut batch = Batch::default();

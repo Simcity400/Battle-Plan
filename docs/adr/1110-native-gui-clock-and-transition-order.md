@@ -8,4 +8,4 @@ Visibility and fade state are separate. Guarded show does not move or reveal a h
 
 A compiled technique's clock analysis determines whether the instance still needs presentation. A direct dependency on advancing time keeps it active. A saturating difference between time and animation time can settle after its final changed frame. Constants and trigger time reflect the drawable's own first draw. The equality boundary of a shader step can require another frame even at its nominal interval end. A program that may later overflow cannot prove that it has settled. A missing technique can inherit the previous program with the current drawable's clocks, including a state effect following a text draw. When that preceding program is unknown, the instance cannot certify settling.
 
-[GUI lifecycle fixtures](../../crates/viewer-foundation/src/map/native_gui/tests.rs) · [Shader draw records](../../crates/viewer-foundation/src/map/native_shader/draw.rs)
+[GUI lifecycle fixtures](../../crates/viewer-native-gui/src/native_gui/tests.rs) · [Shader draw records](../../crates/viewer-native-gui/src/native_shader/draw.rs)

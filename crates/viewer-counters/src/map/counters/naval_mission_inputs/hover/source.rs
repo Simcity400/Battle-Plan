@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::naval_labels::RecordedLabels;
+use viewer_runtime::recorded_labels::RecordedLabels;
 
 pub(super) fn prepare_ledger(
     hour: &Hour<'_>,

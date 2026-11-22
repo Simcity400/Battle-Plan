@@ -20,7 +20,7 @@ fn weather_parent_acceptance_is_a_fresh_ordered_prefix_with_plane_contact() {
     assert!((0..8).all(|view| !mask.contains(view)));
     assert!(mask.contains(8) && mask.contains(9));
 }
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::presentation::Continuity;
 
 #[test]
 fn native_tiles_consume_two_hashes_and_survive_particle_motion() {
@@ -105,7 +105,7 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     let graphics = reference_defines();
     let accepting = [(
         [0.0; 3],
-        [viewer_foundation::map::province_admission::OPEN; 6],
+        [viewer_gpu::province_admission::OPEN; 6],
     )];
     let mut starts = SoundStarts::new();
     let mut fades = fade::Fades::default();

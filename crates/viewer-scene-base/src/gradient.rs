@@ -5,14 +5,14 @@ use std::io;
 use std::{collections::HashMap, thread};
 
 #[cfg(any(test, feature = "test-support"))]
-use viewer_foundation::errors::invalid;
+use viewer_runtime::errors::invalid;
 
 pub const SLOPE_NUMERATOR: f32 = 255.0;
 #[cfg(any(test, feature = "test-support"))]
-use viewer_foundation::map::gradient_math::DIVISOR;
-use viewer_foundation::map::gradient_math::FieldDefines;
+use viewer_gpu::gradient_math::DIVISOR;
+use viewer_gpu::gradient_math::FieldDefines;
 #[cfg(any(test, feature = "test-support"))]
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_gpu::province_map::ProvinceMap;
 
 pub const ALPHA_BIAS: i32 = 8;
 pub const GRID_CELL: u32 = 16;
@@ -721,7 +721,7 @@ fn sample(
 }
 
 #[cfg(test)]
-use viewer_foundation::map::gradient_math::hsv_to_rgb;
+use viewer_gpu::gradient_math::hsv_to_rgb;
 
 #[cfg(test)]
 mod tests;

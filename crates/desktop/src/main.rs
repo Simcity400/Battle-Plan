@@ -478,7 +478,7 @@ fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges()
 
 fn main() {
     engine_heap::return_freed_memory_promptly();
-    viewer_foundation::parallel::name_shared_pool();
+    viewer_runtime::parallel::name_shared_pool();
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "BattlePlan\n\nreplay-desktop [recording.battleplan] [map options]\n\nThe map runs inside this app. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nMap options such as --branch, --hour and --camera open the campaign map\nthere. --diagnostics shows the maps' technical stats and data limitations\nfor this run; F3 or Settings > Diagnostics toggles and saves them.\n--window-dump <recording> --out <frame.png> draws one frame of the map to a\nfile and exits (the release smoke).\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"

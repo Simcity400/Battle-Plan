@@ -6,8 +6,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::map::memo::Keyed;
-use viewer_foundation::table_access::{Available, rows};
+use viewer_runtime::memo::Keyed;
+use dashboard_text::table_access::{Available, rows};
 use {
     super::fixed::{ONE, mul},
     viewer_foundation::tooltip_text::{TextIcons, builtin, token, token_with},

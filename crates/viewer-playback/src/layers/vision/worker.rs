@@ -23,7 +23,7 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 
 #[derive(Default, PartialEq)]
 struct Beside {
@@ -252,7 +252,7 @@ impl Work {
     }
 
     fn notes(&self, content: &Content, gap: Option<&'static str>) -> Notes {
-        use viewer_foundation::map::tables::{Limitations, Perspective};
+        use viewer_foundation::tables::{Limitations, Perspective};
         let global = &self.global;
         if global.failed.is_some() {
             return Notes::default();
@@ -481,7 +481,7 @@ impl Folder {
             let (send, made) = mpsc::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             if std::thread::Builder::new().name("vision fold".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(content, receive, send, due)
             }).is_ok() {
                 (self.jobs, self.made) = (Some(jobs), Some(made));
@@ -716,7 +716,7 @@ mod tests {
     use super::{Work, global, kind, shapes};
     use crate::layers::{owned::{Standing, Tables}, p6_tests, vision::Vision};
     use replay_data::rows::TableId;
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
 
     #[test]
     fn a_tag_whose_string_is_not_named_is_refused_by_name_not_read_as_empty() {

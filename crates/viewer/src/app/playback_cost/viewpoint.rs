@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::Country;
+use viewer_foundation::perspective::Country;
 
 pub(crate) struct Switches {
     pub countries: Vec<String>,
@@ -110,7 +110,7 @@ impl Run<'_> {
         let (mut work, mut frames, mut unsettled_after, mut after) = (Vec::new(), Vec::new(), 0u32, 0u32);
         let mut behind_after: BTreeMap<String, u32> = BTreeMap::new();
         for index in 0u64.. {
-            wait_until(requested + Duration::from_secs_f64(index as f64 / self.switches.refresh_hz));
+            wait_until(crate::playback_cost::frame_due(requested, index as f64 / self.switches.refresh_hz)?);
             let at_ms = requested.elapsed().as_secs_f64() * 1e3;
             let work_ms = self.frame(playing)?;
             let seen = seen(self.viewer, target, head.or(self.viewer.playhead), playing, &mut self.layers);
@@ -189,7 +189,7 @@ fn summary(records: &[Value], playing: bool) -> Value {
 }
 
 pub(crate) fn measure(config: dashboard_core::config::Config, mut options: Options, path: PathBuf, switches: &Switches) -> io::Result<Value> {
-    viewer_foundation::worker_priority::frame_priority();
+    viewer_runtime::worker_priority::frame_priority();
     shader_pipeline::gpu::stats::mark_window_thread();
     let state = render_state()?;
     let info = state.adapter.get_info();
@@ -249,7 +249,7 @@ pub(crate) fn measure(config: dashboard_core::config::Config, mut options: Optio
         run.viewer.anchor_playback(at, true, switches.play_speed, false, None, Instant::now(), last);
         let playing_from = Instant::now();
         while playing_from.elapsed() < Duration::from_secs(1) {
-            wait_until(Instant::now() + Duration::from_secs_f64(1.0 / switches.refresh_hz));
+            wait_until(crate::playback_cost::frame_due(Instant::now(), 1.0 / switches.refresh_hz)?);
             run.frame(true)?;
         }
         for _ in 0..switches.play_switches {

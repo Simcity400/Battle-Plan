@@ -1,19 +1,16 @@
 
 use std::collections::BTreeSet;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::errors::examples;
+use viewer_runtime::errors::examples;
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_tga_rgba8;
-use viewer_foundation::parallel::map;
+use viewer_runtime::test_support::test_tga_rgba8;
+use viewer_runtime::parallel::map;
 
 use content_reader_core::{ResolvedLayers, characters, characters::Authored, gui::native::resources};
 use content_reader_gfx::gfx::SpriteSet;
 use content_reader_image::{dds, native::Decode};
 
-use viewer_foundation::map::{
-    lazy_icons::{LazyImages, LazyTextures, Lookup},
-    sprites::SpriteSheet,
-};
+use viewer_native_gui::{lazy_icons::{LazyImages, LazyTextures, Lookup}, sprites::SpriteSheet};
 
 fn asset_path(path: &str) -> String {
     path.split(['/', '\\'])

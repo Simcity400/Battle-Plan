@@ -2,8 +2,8 @@ use crate::terrain_shader::{SIDE, Stand};
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use std::io;
-use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, scoped};
-use viewer_foundation::map::province_map::{HEIGHT_SCALE, WATER_HEIGHT};
+use viewer_gpu::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, scoped};
+use viewer_gpu::province_map::{HEIGHT_SCALE, WATER_HEIGHT};
 
 pub(crate) const SHADER: &str = include_str!("unknown_hatch.wgsl");
 
@@ -407,7 +407,7 @@ impl UnknownHatch {
 mod tests {
     use super::*;
     use crate::terrain_shader::{Patch, heights_into, positions};
-    use viewer_foundation::map::province_map::HeightField;
+    use viewer_gpu::province_map::HeightField;
 
     fn sampled(block: [u32; 4], map: [u32; 2], heights: &[u8]) -> Vec<[i16; 2]> {
         let mut stream = Vec::new();
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn the_hatch_stands_on_the_coast_capped_heights_the_terrain_draws() {
         use eframe::wgpu::util::DeviceExt;
-        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
         let map = [256u32, 128];
         let bytes: Vec<u8> = (0..map[1])
             .rev()
@@ -563,7 +563,7 @@ mod tests {
                     &queue,
                     &wgpu::TextureDescriptor {
                         label: None,
-                        size: viewer_foundation::map::gpu_contract::extent(size),
+                        size: viewer_gpu::gpu_contract::extent(size),
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
@@ -580,7 +580,7 @@ mod tests {
         let heights = texture(map, &bytes);
         let unknown = texture(grid, &vec![255; (grid[0] * grid[1]) as usize]);
         let size = [128, 64];
-        let targets = Targets::new(&device, size, size, 1, viewer_foundation::map::gpu_contract::SeaBed::Half);
+        let targets = Targets::new(&device, size, size, 1, viewer_gpu::gpu_contract::SeaBed::Half);
         let hatch = UnknownHatch::new(&device, 1).unwrap();
         let view_projection = [
             [1.0 / 128.0, 0.0, 0.0, 0.0],
@@ -623,7 +623,7 @@ mod tests {
                 )
                 .unwrap();
             queue.submit([encoder.finish()]);
-            let pixels = viewer_foundation::map::gpu_contract::read_texture(
+            let pixels = viewer_gpu::gpu_contract::read_texture(
                 &device,
                 &queue,
                 targets.scene_texture(),
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn invalid_pipeline_samples_fail_with_named_validation_error() {
-        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, _queue) = viewer_gpu::test_support::gpu::device();
         let error = UnknownHatch::new(&device, 3)
             .err()
             .expect("unsupported MSAA sample count must fail validation");

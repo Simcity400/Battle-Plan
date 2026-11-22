@@ -2,8 +2,8 @@ use content_reader_core::{defines::Defines, province_geometry::ProvinceGeometry}
 use replay_data::{rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{
-    air_range::{self},
+use viewer_unit_reads::{
+    air_range,
     air_region_reach::{Origin, RegionGeometry},
     air_registry_sources::AirRegistrySources,
 };
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn a_training_representative_blocks_and_unknown_raid_does_not_invent_red() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut frame = test_frame(1);
         put(
             &mut frame,
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn unselected_country_stripes_use_stored_enemy_allied_own_overwrite_order() {
         use replay_data::rows::*;
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut frame = test_frame(1);
         put(
             &mut frame,

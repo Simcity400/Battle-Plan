@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
-test('followed values are painted without a render, rows render, off-screen widgets follow when shown, a new root element keeps the follow, and 500 entries or a 439-row table paint in under a millisecond', async t => {
+test('followed values are painted without a render, rows render, off-screen widgets follow when shown, a new root element keeps the follow, a message lands without painting, and 500 entries or a 439-row table paint in one pass, one write a changed cell', async () => {
   await withNativePage('follow', '/ui/src/dashboard/follow/follow.dom.fixture.tsx', page => page.stage('follow', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.followFixture.${expression}`);
     await act('mount()');
@@ -28,22 +28,18 @@ test('followed values are painted without a render, rows render, off-screen widg
     assert.equal(await act('text("far")'), '528', 'painted once its first answer came');
     await act('scrollToTop()');
     assert.ok((await act<string[]>('sent()')).includes(`unfollow ${farId}`), 'off screen again: unfollowed');
-    const received = await act<{ times: number[]; bytes: number }>('receiveTimes(200)');
-    const ordered = [...received.times].sort((a, b) => a - b), p99 = ordered[Math.floor(ordered.length * 0.99)]!;
-    t.diagnostic(`receiving a ${received.bytes}-byte message into the store, 200 times: median ${ordered[100]!.toFixed(2)} ms, p99 ${p99.toFixed(2)} ms, worst ${ordered.at(-1)!.toFixed(2)} ms`);
-    assert.ok(p99 < 0.3, `receiving a message took ${p99.toFixed(2)} ms at p99`);
-    const { passes, delivered, last, bytes } = await act<{ passes: number[]; delivered: number[]; last: string; bytes: number }>('paintMany(30)');
-    t.diagnostic(`parsing and landing one message in 500 entries: worst ${Math.max(...delivered).toFixed(3)} ms, median ${[...delivered].sort((a, b) => a - b)[delivered.length >> 1]!.toFixed(3)} ms`);
-    assert.equal(last, String(499 + 29));
-    t.diagnostic(`passes: ${passes.map(pass => pass.toFixed(1)).join(' ')}`);
-    const sorted = [...passes].sort((a, b) => a - b), median = sorted[sorted.length >> 1]!;
-    t.diagnostic(`500 entries, one ${bytes}-byte message: ${passes.length} paint passes, median ${median.toFixed(1)} ms, worst ${sorted.at(-1)!.toFixed(1)} ms`);
-    assert.ok(median < 1, `a paint pass of 500 entries took ${median.toFixed(1)} ms at the median`);
-    const table = await act<{ passes: number[]; last: string; bytes: number }>('paintTable(439, 30)');
+    const received = await act<{ moved: number[]; frames: number; paints: number; decoded: number }>('receive(200)');
+    assert.deepEqual(new Set(received.moved), new Set([200]), 'each of 50 entries took each of 200 messages');
+    assert.deepEqual([received.frames, received.paints], [0, 0], 'entries nobody paints ask no frame');
+    assert.equal(received.decoded, 0, 'no name of an entry nobody paints is decoded');
+    type Rounds = { rounds: { received: number; frames: number; paints: number; once: number; others: number }[]; last: string };
+    const many = await act<Rounds>('paintMany(30)');
+    assert.equal(many.last, String(499 + 29));
+    assert.equal(many.rounds.length, 30);
+    for (const round of many.rounds) assert.deepEqual(round, { received: 0, frames: 1, paints: 500, once: 500, others: 0 }, 'a message of 500 entries: painted in one pass, once an entry, each cell written once and nothing else');
+    const table = await act<Rounds>('paintTable(439, 30)');
     assert.equal(table.last.replace(/\D/g, ''), String(438 * 7 + 29), 'the last row painted the last message');
-    const rows = [...table.passes].sort((a, b) => a - b), rowsMedian = rows[rows.length >> 1]!;
-    t.diagnostic(`a 439-row table by one column, one ${table.bytes}-byte message: ${rows.length} paint passes, median ${rowsMedian.toFixed(2)} ms, worst ${rows.at(-1)!.toFixed(2)} ms`);
-    assert.ok(rowsMedian < 1, `a paint pass of 439 rows took ${rowsMedian.toFixed(2)} ms at the median`);
+    for (const round of table.rounds) assert.deepEqual(round, { received: 0, frames: 1, paints: 1, once: 439, others: 0 }, 'a 439-row message: one paint, each value cell written once, the names untouched');
     await act('scrollToTop()');
     await act('swap(false)');
     const swapped = await act<string[]>('sent()');

@@ -7,11 +7,11 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-pub use viewer_foundation::map::stack_anchors::{
-    StackAnchors, default_anchor, seed_default_anchors,
-};
+pub use viewer_gpu::stack_anchors::{StackAnchors, default_anchor, seed_default_anchors};
 use viewer_foundation::{
-    map::visibility::FogContent, movement_timing::MovementContent, trigger_content::TriggerContent,
+    visibility::FogContent,
+    movement_timing::MovementContent,
+    trigger_content::TriggerContent,
 };
 
 #[derive(Clone)]
@@ -178,7 +178,7 @@ impl Loader {
         image: &content_reader_image::IndexedImage,
         map: [u32; 2],
     ) -> io::Result<()> {
-        self.result(viewer_foundation::map::textures::expect_size(
+        self.result(viewer_gpu::textures::expect_size(
             "map/heightmap.bmp",
             image.width,
             image.height,
@@ -293,7 +293,7 @@ impl TriggerLoader {
     }
 
     pub fn resource_bonuses(&self, defines: &Defines) -> io::Result<[i64; 2]> {
-        self.checked(viewer_foundation::state_resources::resource_bonuses(
+        self.checked(dashboard_text::state_resources::resource_bonuses(
             defines,
         ))
     }

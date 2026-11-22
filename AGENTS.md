@@ -75,18 +75,17 @@ All Rust is in `crates/`; names group by prefix.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
 - Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
-  - Check: `python tools/ci.py check` runs Clippy on Boat for changed crates and their direct dependents.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
 
 ## Verifying
 
-- GitHub CI (`.github/workflows/ci.yml`, the jobs in `tools/ci.toml`) is the only test runner and the gate: merge only when its `check` passes. A pull request runs the changed crates and their direct dependents; main runs the whole workspace. Before pushing, `python tools/ci.py check` runs the touched jobs that test nothing here (repo checks, UI typecheck, Clippy on Boat). New checks are jobs in `tools/ci.toml`.
+- GitHub CI (`.github/workflows/ci.yml`, the jobs in `tools/ci.toml`) is the only test runner and the gate: merge only when its `check` passes. A pull request runs the changed crates and their direct dependents; main runs the whole workspace. Before pushing, `python tools/ci.py check` runs the touched jobs that compile and test nothing (repo checks, UI typecheck); Clippy and Rust tests run only in CI. New checks are jobs in `tools/ci.toml`.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
 - Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
-- Never run a suite. Run only the test you added or changed, where it needs no local Rust compile.
+- Never run a suite. Run only the test you added or changed, where it needs no Rust compile; leave Rust tests to CI, not Boat.
 - A user-visible UI change gets one pass in the running app (`npm.cmd run dev`), done once by the primary agent after integrating. Subagents don't launch their own.
 
 ## Code

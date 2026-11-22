@@ -11,7 +11,7 @@ use crate::{
 use serde_json::json;
 use std::{collections::BTreeMap, io};
 use viewer_counters::map::counters::Member;
-use viewer_foundation::map::counter_action::Action;
+use viewer_unit_reads::counter_action::Action;
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(Fed::new(Counters::of_document(document)))

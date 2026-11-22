@@ -1765,7 +1765,7 @@ fn run(
     restore_hourly(
         &mut restored,
         &mut previous_errors,
-        detach_started,
+        || detach_started.elapsed(),
         || {
             hook.set_enabled(false)
                 .map_err(|_| "hourly hook restoration failed")
@@ -1787,7 +1787,7 @@ fn run(
     progress.step("final_hour_read", Some(u64::from(drained)));
     // SAFETY: Detach closes admission before waiting for admitted capture to complete.
     unsafe { HOURLY_ADMISSION.close() };
-    if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
+    if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, || detach_started.elapsed()) {
         progress.step("acquisitions_refused", None);
         retain_detach!(
             reason,
@@ -2738,7 +2738,7 @@ fn world_restore_ready(restored: &[bool; RestoreFamily::ALL.len()], active: bool
 fn restore_hourly(
     restored: &mut [bool; RestoreFamily::ALL.len()],
     previous_errors: &mut [bool; RestoreFamily::ALL.len()],
-    started: Instant,
+    elapsed: impl Fn() -> Duration,
     mut restore: impl FnMut() -> Result<bool, &'static str>,
     mut wait: impl FnMut(),
 ) {
@@ -2750,7 +2750,7 @@ fn restore_hourly(
                 return;
             }
             Ok(false) => {
-                if detach_retry_delay(started.elapsed(), Duration::from_millis(100)).is_none() {
+                if detach_retry_delay(elapsed(), Duration::from_millis(100)).is_none() {
                     return;
                 }
                 wait();
@@ -2833,9 +2833,12 @@ fn signal_done(output_lock: File, done: &Event) {
     unsafe { done.set() };
 }
 
-fn wait_acquisitions(admission: &CaptureAdmission, started: Instant) -> Result<(), &'static str> {
+fn wait_acquisitions(
+    admission: &CaptureAdmission,
+    elapsed: impl Fn() -> Duration,
+) -> Result<(), &'static str> {
     while !admission.quiet() {
-        if started.elapsed() >= DETACH_BUDGET {
+        if elapsed() >= DETACH_BUDGET {
             return Err("hourly acquisitions did not quiesce; collector retained");
         }
         std::thread::yield_now();
@@ -3506,13 +3509,12 @@ mod detach_tests {
 
     #[test]
     fn expired_detach_budget_does_not_restart_or_reset_acquisition_leases() {
-        let started = Instant::now() - DETACH_BUDGET;
         let mut restored = [false; RestoreFamily::ALL.len()];
         let mut errors = [false; RestoreFamily::ALL.len()];
         restore_hourly(
             &mut restored,
             &mut errors,
-            started,
+            || DETACH_BUDGET,
             || Ok(false),
             || panic!("hourly restoration restarted the detach budget"),
         );
@@ -3525,12 +3527,12 @@ mod detach_tests {
         // SAFETY: Detach closes admission before waiting for admitted capture to complete.
         unsafe { admission.close() };
         assert_eq!(
-            wait_acquisitions(&admission, started),
+            wait_acquisitions(&admission, || DETACH_BUDGET),
             Err("hourly acquisitions did not quiesce; collector retained"),
         );
         assert!(!admission.quiet());
         drop(lease);
-        assert_eq!(wait_acquisitions(&admission, started), Ok(()));
+        assert_eq!(wait_acquisitions(&admission, || DETACH_BUDGET), Ok(()));
     }
 
     #[test]
@@ -3786,14 +3788,15 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine_native::Memory,
         base: usize,
+        now: impl Fn() -> Instant,
     ) -> io::Result<Option<usize>> {
         if self
             .last_logistics
-            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+            .is_some_and(|last| now().saturating_duration_since(last) < Self::INTEL_INTERVAL)
         {
             return Ok(None);
         }
-        self.last_logistics = Some(Instant::now());
+        self.last_logistics = Some(now());
         collector_logistics::logistics_balance::prepare(memory, base).map(Some)
     }
 
@@ -4469,7 +4472,7 @@ fn spool_loop(
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
-    let mut reported = Instant::now() - Duration::from_secs(1);
+    let mut reported = EverySecond::default();
     let mut priority =
     // SAFETY: This is the dedicated worker applying its own session's priority policy.
     unsafe { OwnPriority::frame_pipeline() };
@@ -4764,7 +4767,7 @@ fn spool_loop(
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
                 .map_err(|_| "spool slow-frame allocation failed")?;
-            if reported.elapsed() >= Duration::from_secs(1) {
+            if reported.due(Instant::now()) {
                 break;
             }
         }
@@ -4807,7 +4810,7 @@ fn spool_loop(
             // SAFETY: This is the runtime's frame pool for the current session.
             unsafe { shared.frames() }.slots().map(|slot| &slot.fence),
         );
-        if reported.elapsed() >= Duration::from_secs(1) ||
+        if reported.due(Instant::now()) ||
             // SAFETY: The runtime and sole spool coordinate this session's drain and exit.
             unsafe { shared.stop_spool() }.load(Ordering::Acquire)
         {
@@ -4850,7 +4853,7 @@ fn spool_loop(
                         .map_err(|e| error_reason(e, "status directories allocation failed"))?,
                 )
                 .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
-            reported = Instant::now();
+            reported.done(Instant::now());
         }
         processor
             .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
@@ -5006,11 +5009,39 @@ impl SizingBackoff {
     }
 }
 
+trait Moment: Copy {
+    fn since(self, earlier: Self) -> Duration;
+}
+
+impl Moment for Instant {
+    fn since(self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+}
+
+struct EverySecond<T = Instant>(Option<T>);
+
+impl<T> Default for EverySecond<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Moment> EverySecond<T> {
+    fn due(&self, now: T) -> bool {
+        self.0.is_none_or(|last| now.since(last) >= Duration::from_secs(1))
+    }
+
+    fn done(&mut self, now: T) {
+        self.0 = Some(now);
+    }
+}
+
 struct SizingState {
     registry: RegistryWatch,
     applied_combat_hints: AppliedHints,
     fuel_demand_at: Instant,
-    second: Instant,
+    second: EverySecond,
     capacity_census: SizingBackoff,
     politics_frames: usize,
 }
@@ -5244,7 +5275,7 @@ impl SizingThread {
                 registry: RegistryWatch::default(),
                 applied_combat_hints: state.applied_combat_hints,
                 fuel_demand_at: Instant::now(),
-                second: Instant::now() - Duration::from_secs(1),
+                second: EverySecond::default(),
                 capacity_census: SizingBackoff::new(),
                 politics_frames: sampling::BUFFERS,
             }),
@@ -5488,7 +5519,7 @@ fn sizing_pass(
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
-    let once_a_second = state.second.elapsed() >= Duration::from_secs(1);
+    let once_a_second = state.second.due(Instant::now());
     let loading = collector_lifetime::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
     let capacity_census = state.capacity_census.due(
@@ -5500,7 +5531,7 @@ fn sizing_pass(
     // SAFETY: This worker records phases on the counters assigned to its spool role.
     unsafe { phases.span(Phase::Sizing) };
     if let Some(logistics_rows) = registry
-        .poll_logistics(&live, base)
+        .poll_logistics(&live, base, Instant::now)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
     {
         sizing.raise(shared, |capacities| {
@@ -6010,7 +6041,7 @@ fn sizing_pass(
         state.capacity_census.reset();
     }
     if once_a_second {
-        state.second = Instant::now();
+        state.second.done(Instant::now());
     }
     Ok(())
 }
@@ -7064,6 +7095,23 @@ mod tests {
         assert_eq!(cadence.interval, SizingBackoff::FAST);
     }
 
+    impl Moment for Duration {
+        fn since(self, earlier: Self) -> Duration {
+            self.saturating_sub(earlier)
+        }
+    }
+
+    #[test]
+    fn every_second_is_due_at_once_from_the_clock_origin_then_once_a_second() {
+        let origin = Duration::ZERO;
+        let mut every = EverySecond::default();
+        assert!(every.due(origin));
+        every.done(origin);
+        assert!(!every.due(origin));
+        assert!(!every.due(origin + Duration::from_millis(999)));
+        assert!(every.due(origin + Duration::from_secs(1)));
+    }
+
     fn sizing_fixture() -> (Shared, SizingThread) {
         let sizing = collector_capture::country_scale::Sizing::for_slots(0);
         let shared =
@@ -8086,13 +8134,15 @@ mod tests {
         }
         let memory = Reads(std::cell::Cell::new(0));
         let mut watch = RegistryWatch::default();
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), Some(0));
+        let start = Instant::now();
+        assert_eq!(watch.poll_logistics(&memory, 0, || start).unwrap(), Some(0));
         let first = memory.0.get();
         assert!(first > 0);
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), None);
+        let before = start + RegistryWatch::INTEL_INTERVAL - Duration::from_nanos(1);
+        assert_eq!(watch.poll_logistics(&memory, 0, || before).unwrap(), None);
         assert_eq!(memory.0.get(), first);
-        watch.last_logistics = Some(Instant::now() - RegistryWatch::INTEL_INTERVAL);
-        assert_eq!(watch.poll_logistics(&memory, 0).unwrap(), Some(0));
+        let due = start + RegistryWatch::INTEL_INTERVAL;
+        assert_eq!(watch.poll_logistics(&memory, 0, || due).unwrap(), Some(0));
         assert!(memory.0.get() > first);
     }
     #[test]

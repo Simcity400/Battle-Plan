@@ -6,7 +6,7 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::tables::Limitations;
+use viewer_foundation::tables::Limitations;
 
 fn weather_kind(row: &replay_data::rows::WeatherRegionRow) -> Option<usize> {
     [
@@ -22,7 +22,7 @@ fn weather_kind(row: &replay_data::rows::WeatherRegionRow) -> Option<usize> {
 
 pub fn weather_field(frame: &DecodedFrame) -> io::Result<data::WeatherField> {
     let mut kinds = data::copy_index::CopyIndex::default();
-    for row in viewer_foundation::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
+    for row in dashboard_text::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
         if let Some(kind) = weather_kind(row) {
             kinds = kinds.inserted(row.id, kind)?;
         }
@@ -179,11 +179,11 @@ impl ProductHour<'_> {
         std::collections::BTreeMap<u32, u32>,
         std::collections::BTreeMap<u32, String>,
     )> {
-        let links = viewer_foundation::map::tables::core::<tables::CountryLinks>(self.frame)?
+        let links = viewer_foundation::tables::core::<tables::CountryLinks>(self.frame)?
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
-        let tags = viewer_foundation::map::tables::core::<tables::Countries>(self.frame)?
+        let tags = viewer_foundation::tables::core::<tables::Countries>(self.frame)?
             .iter()
             .map(|r| {
                 (
@@ -197,12 +197,12 @@ impl ProductHour<'_> {
 
     pub fn seed_country(
         &self,
-        choice: &viewer_foundation::map::perspective::Choice,
+        choice: &viewer_foundation::perspective::Choice,
         id: u32,
         slot: u32,
     ) -> io::Result<()> {
         let (links, tags) = self.country_maps()?;
-        if !viewer_foundation::map::tables::core::<tables::Countries>(self.frame)?
+        if !viewer_foundation::tables::core::<tables::Countries>(self.frame)?
             .iter()
             .any(|row| row.id == id && row.canonical_slot == slot)
         {
@@ -211,20 +211,20 @@ impl ProductHour<'_> {
                 "country instance is not present this hour",
             ));
         }
-        let projected = viewer_foundation::map::memo::project(
+        let projected = viewer_runtime::memo::project(
             self.frame,
-            viewer_foundation::map::perspective::VISION_TABLES,
+            viewer_foundation::perspective::VISION_TABLES,
         );
-        let vision = viewer_foundation::map::perspective::Vision::read_resolved(
+        let vision = viewer_foundation::perspective::Vision::read_resolved(
             &projected,
             &links,
             &tags,
             choice.fog,
             (
                 slot,
-                viewer_foundation::map::perspective::Resolution::Requested,
+                viewer_foundation::perspective::Resolution::Requested,
             ),
-            viewer_foundation::map::visibility::FogContent::loaded(&self.content.fog),
+            viewer_foundation::visibility::FogContent::loaded(&self.content.fog),
         )?;
         self.seed_vision(choice, Arc::new(vision));
         Ok(())

@@ -20,7 +20,7 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::presentation::Continuity;
 
 const BAND: u32 = 8;
 const RUN: u32 = 8;
@@ -129,7 +129,7 @@ struct Shown {
 
 impl Shown {
     fn of(
-        camera: &viewer_foundation::map::camera::Camera,
+        camera: &viewer_gpu::camera::Camera,
         viewport: [u32; 2],
         [width, height]: [u32; 2],
     ) -> Option<Self> {
@@ -220,15 +220,15 @@ impl Target for OnScene<'_, '_> {
 pub struct Content {
     cells: SnowCells,
     winter: Winter,
-    size: viewer_foundation::map::camera::MapSize,
-    defines: viewer_foundation::map::camera::MapDefines,
+    size: viewer_gpu::camera::MapSize,
+    defines: viewer_gpu::camera::MapDefines,
     volumes: Vec<Vec<u32>>,
     boundary: Vec<u32>,
     on_boundary: Vec<bool>,
 }
 
 impl Content {
-    pub fn new(cells: SnowCells, winter: Winter, size: viewer_foundation::map::camera::MapSize, defines: viewer_foundation::map::camera::MapDefines) -> Self {
+    pub fn new(cells: SnowCells, winter: Winter, size: viewer_gpu::camera::MapSize, defines: viewer_gpu::camera::MapDefines) -> Self {
         let mut volumes = vec![Vec::new(); cells.provinces()];
         for (volume, records) in winter.records.iter().enumerate() {
             for record in records {
@@ -552,7 +552,7 @@ pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
 }
 
 pub fn for_document(document: &crate::document::Document) -> Box<dyn Layer> {
-    let size = viewer_foundation::map::camera::MapSize::of(&document.content.map);
+    let size = viewer_gpu::camera::MapSize::of(&document.content.map);
     let defines = document.content.map_defines;
     let content = document.content.products.snow_content().map(|content| Arc::new(Content::new(content.cells.clone(), content.winter.clone(), size, defines))).map_err(|error| error.to_string());
     Box::new(Snow::new(content))
@@ -596,7 +596,7 @@ impl Layer for Snow {
             let (send, made) = mpsc::channel();
             let (content, due) = (Arc::clone(content), self.fed.due());
             std::thread::Builder::new().name("snow fold".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(content, receive, send, due)
             })?;
             (self.jobs, self.made) = (Some(jobs), Some(made));

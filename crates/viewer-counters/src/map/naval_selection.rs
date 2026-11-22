@@ -184,17 +184,17 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
         return Ok(Vec::new());
     }
     let (fleet_inputs, truncated_missing) =
-        match viewer_foundation::map::tables::rows::<tables::FleetCounterInputs>(frame)? {
-            viewer_foundation::map::tables::Available::Complete(rows) => (rows, None),
-            viewer_foundation::map::tables::Available::Truncated { rows, missing } => {
+        match viewer_foundation::tables::rows::<tables::FleetCounterInputs>(frame)? {
+            viewer_foundation::tables::Available::Complete(rows) => (rows, None),
+            viewer_foundation::tables::Available::Truncated { rows, missing } => {
                 (rows, Some(missing))
             }
-            viewer_foundation::map::tables::Available::Unavailable { reason } => {
+            viewer_foundation::tables::Available::Unavailable { reason } => {
                 return Err(io::Error::other(format!(
                     "fleet task-force order is unavailable: {reason}"
                 )));
             }
-            viewer_foundation::map::tables::Available::NotRecorded { mode } => {
+            viewer_foundation::tables::Available::NotRecorded { mode } => {
                 return Err(io::Error::other(format!(
                     "fleet task-force order is unavailable: not recorded in a {mode} recording"
                 )));
@@ -295,7 +295,7 @@ mod tests {
     use replay_data::{
         rows::CountryLinkRow, rows::NavalMissionLedgerRow, rows::TableRows, rows::TaskForceRow,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     #[test]
     fn mission_click_keeps_registered_order_repeats_and_off_region_or_fighting_forces() {

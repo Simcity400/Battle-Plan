@@ -19,8 +19,19 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::resource_origins::{
-    self, Definition, Folds, INFRASTRUCTURE_TOKEN, Input, Origin, ResourceOperands, Values, building_grants_from, grant_lists, grant_of, resource_operands,
+use viewer_runtime::resource_origins::{
+    self,
+    Definition,
+    Folds,
+    INFRASTRUCTURE_TOKEN,
+    Input,
+    Origin,
+    ResourceOperands,
+    Values,
+    building_grants_from,
+    grant_lists,
+    grant_of,
+    resource_operands,
 };
 use viewer_map_icons::resource_icons::{HourIcons, Laid, laid_icon};
 

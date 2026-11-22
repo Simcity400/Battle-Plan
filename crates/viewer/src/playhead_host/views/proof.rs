@@ -6,7 +6,7 @@ use replay_data::rows::{Field, List, Opaque, RowRef, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView, discovering, undeclared_reads, view_reads};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io, io::Write, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 
 const LIMIT: Duration = Duration::from_secs(120);
 

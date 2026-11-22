@@ -3,7 +3,7 @@ use map_display_data::copy_index::CopyIndex;
 use replay_data::rows::RowCodec;
 use replay_frame::frame::ViewIdentity;
 use std::sync::atomic::{AtomicU64, Ordering};
-use viewer_foundation::map::perspective::MAP_OBJECT_VISIBILITY;
+use viewer_foundation::perspective::MAP_OBJECT_VISIBILITY;
 
 const CHUNK_SHIFT: u32 = 6;
 pub(super) const CHUNK_SIZE: usize = 1usize << CHUNK_SHIFT;
@@ -440,7 +440,7 @@ struct VisionOperands {
     ours: u32,
     fog: bool,
     visibility_gap: bool,
-    provinces: Option<Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>>,
+    provinces: Option<Arc<viewer_foundation::perspective::values::Values<u32, u8>>>,
 }
 
 impl VisionOperands {
@@ -543,7 +543,7 @@ impl BuildingsBase {
 pub struct BuildingsBase {
     assets: u64,
     defines: Defines,
-    facts: Arc<viewer_foundation::map::building_facts::BuildingFacts>,
+    facts: Arc<viewer_foundation::building_facts::BuildingFacts>,
     city: Retained<Vec<bool>>,
     pub(super) city_bank: Option<CityBank>,
     damage_refused: bool,

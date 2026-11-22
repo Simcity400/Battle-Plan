@@ -581,7 +581,7 @@ impl Kept {
         let columns = over(u64::MAX, self.kinds.len());
         let Some(at) = self.set(columns) else { return (not_declared(TableId::ALL[table]), None) };
         let Some(mirror) = mirror else {
-            viewer_foundation::view_record::add("map views", "sets_withheld", 1);
+            viewer_runtime::view_record::add("map views", "sets_withheld", 1);
             return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&self.views[at].made);
@@ -610,7 +610,7 @@ impl Kept {
         let Some(at) = self.set(columns) else { return (not_declared(TableId::ALL[table]), None) };
         let set = &self.views[at];
         let Some(mirror) = mirror.filter(|mirror| holds_every(mirror, set.columns, self.kinds.len())) else {
-            viewer_foundation::view_record::add("map views", "sets_withheld", 1);
+            viewer_runtime::view_record::add("map views", "sets_withheld", 1);
             return (not_declared(TableId::ALL[table]), None);
         };
         let mut held = lock(&set.made);
@@ -912,7 +912,7 @@ impl Store {
         {
             let mut jobs = lock(&self.shared.jobs);
             (jobs.queue, jobs.waiting, jobs.left, jobs.next) = (queue, waiting, left, 0);
-            jobs.made = Made::since(viewer_foundation::view_record::on().then(Instant::now));
+            jobs.made = Made::since(viewer_runtime::view_record::on().then(Instant::now));
             jobs.from = Some(Posted { mirrors: Arc::clone(mirrors), hour, branch, epoch });
         }
         if !ready.is_empty() {
@@ -1388,7 +1388,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             .map(|(table, _)| TableId::ALL[table])
             .collect();
         if !waiting.is_empty() {
-            viewer_foundation::view_record::add("map views", "frames_withheld", 1);
+            viewer_runtime::view_record::add("map views", "frames_withheld", 1);
             readers[place].arriving = waiting;
             continue;
         }
@@ -1607,7 +1607,7 @@ impl Reader {
             Ok(readers) => readers,
             Err(std::sync::TryLockError::Poisoned(held)) => held.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                viewer_foundation::view_record::add("map views", "frames_the_frame_did_not_wait_for", 1);
+                viewer_runtime::view_record::add("map views", "frames_the_frame_did_not_wait_for", 1);
                 return None;
             }
         };

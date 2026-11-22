@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::{Arc, MutexGuard};
-use viewer_foundation::map::gpu_contract::{device_descriptor, select_adapter};
+use viewer_gpu::gpu_contract::{device_descriptor, select_adapter};
 use wgpu::util::DeviceExt as _;
 
 fn context() -> egui::Context {
@@ -46,7 +46,7 @@ fn bgra_readback_swaps_each_pixels_red_and_blue_without_changing_alpha() {
 }
 
 fn state() -> (MutexGuard<'static, ()>, egui_wgpu::RenderState) {
-    let serial = viewer_foundation::map::test_support::serial();
+    let serial = viewer_gpu::test_support::serial();
     let state = pollster::block_on(async {
         let instance = shader_pipeline::gpu::instance();
         let available_adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;

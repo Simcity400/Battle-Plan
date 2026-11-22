@@ -12,10 +12,10 @@ use std::{
     thread,
     time::Duration,
 };
-use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
-use viewer_foundation::map::gpu_contract::is_software;
-use viewer_foundation::map::ui_scale::Setting;
-use viewer_foundation::worker_priority::background_priority;
+use viewer_gpu::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_gpu::gpu_contract::is_software;
+use viewer_gpu::ui_scale::Setting;
+use viewer_runtime::worker_priority::background_priority;
 
 use dashboard_core::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
 use dashboard::Service;
@@ -764,7 +764,7 @@ impl DashboardMaps {
                         if job_alive.load(Ordering::Acquire) {
                             let _ = sender.send(result);
                         }
-                        viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                        viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
                     }) {
                     Ok(_) => {
                         self.opening_source = Some(OpeningSource {
@@ -943,7 +943,7 @@ impl DashboardMaps {
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
             })) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
@@ -1020,7 +1020,7 @@ impl DashboardMaps {
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
             }) {
             Ok(_) => {
                 self.loading = Some(LoadingSource {
@@ -1060,7 +1060,7 @@ impl DashboardMaps {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+        recording: Option<viewer_runtime::frame_writer::Pass<'_>>,
     ) {
         if recording.is_some() {
             self.ui_pass::<true>(ui, frame, recording);
@@ -1073,7 +1073,7 @@ impl DashboardMaps {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+        recording: Option<viewer_runtime::frame_writer::Pass<'_>>,
     ) {
         self.poll(ui.ctx());
         self.apply_visual_fallback(frame);
@@ -1369,7 +1369,7 @@ mod tests {
             done: impl Fn(&MapView) -> bool,
         ) {
             let deadline =
-                std::time::Instant::now() + viewer_foundation::map::test_support::TEST_HANG_GUARD;
+                std::time::Instant::now() + viewer_runtime::test_support::TEST_HANG_GUARD;
             while !done(&maps.views[id]) {
                 assert!(
                     std::time::Instant::now() < deadline,

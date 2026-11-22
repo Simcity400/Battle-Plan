@@ -2,8 +2,8 @@ use super::*;
 use std::cell::RefCell;
 use std::time::Duration;
 use std::time::Instant;
-use viewer_foundation::map::text::GlyphBox;
-use viewer_foundation::map::text::GlyphMetrics;
+use viewer_native_gui::text::GlyphBox;
+use viewer_native_gui::text::GlyphMetrics;
 
 #[test]
 fn each_order_kind_draws_in_the_family_a_viewer_hides_it_with() {

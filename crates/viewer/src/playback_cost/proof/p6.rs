@@ -186,12 +186,12 @@ pub(super) fn vision_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::vision::for_document(document)
 }
 
-fn vision_cold(document: &Document, choice: &viewer_foundation::map::perspective::Choice) -> io::Result<viewer_foundation::map::perspective::Vision> {
-    use viewer_foundation::map::{perspective, tables};
+fn vision_cold(document: &Document, choice: &viewer_foundation::perspective::Choice) -> io::Result<viewer_foundation::perspective::Vision> {
+    use viewer_foundation::{perspective, tables};
     let frame = document.frame()?;
     let links = tables::core::<replay_data::rows::tables::CountryLinks>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
     let tags = tables::core::<replay_data::rows::tables::Countries>(frame)?.iter().map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned())).collect();
-    let fog = viewer_foundation::map::visibility::FogContent::loaded(&document.content.products.fog);
+    let fog = viewer_foundation::visibility::FogContent::loaded(&document.content.products.fog);
     perspective::Vision::read(frame, &links, &tags, choice, fog)
 }
 
@@ -229,9 +229,9 @@ pub(super) fn vision_today(layer: &dyn Layer, document: &Document) -> io::Result
     Ok(compared)
 }
 
-fn dependent_queries(layer: &Vision, today: &viewer_foundation::map::perspective::Vision, document: &Document, compared: &mut Compared) -> io::Result<u64> {
+fn dependent_queries(layer: &Vision, today: &viewer_foundation::perspective::Vision, document: &Document, compared: &mut Compared) -> io::Result<u64> {
     use replay_data::rows::tables;
-    use viewer_foundation::map::tables::core;
+    use viewer_foundation::tables::core;
     let frame = document.frame()?;
     let links: std::collections::BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
     let mut queries = 0;
@@ -325,7 +325,7 @@ pub(super) fn intel_make(document: &Document) -> Box<dyn Layer> {
 
 pub(super) fn intel_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = self::layer::<Intel>(layer);
-    let choice = viewer_foundation::map::perspective::Choice::default();
+    let choice = viewer_foundation::perspective::Choice::default();
     let mut compared = Compared::default();
     if let Some(why) = layer.refused() {
         compared.entries = 1;
@@ -414,7 +414,7 @@ fn radar_against(ours: &viewer_aircraft::radar_symbols::Field, theirs: &viewer_a
 
 pub(super) fn radar_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = self::layer::<Radar>(layer);
-    let ours = document.vision(&viewer_foundation::map::perspective::Choice::default())?.ours();
+    let ours = document.vision(&viewer_foundation::perspective::Choice::default())?.ours();
     let hour = document.hour()?;
     let today = viewer_aircraft::radar_symbols::Field::read(document.frame()?, ours, hour.heights(), &document.content.radar_centers);
     let mut compared = Compared::default();

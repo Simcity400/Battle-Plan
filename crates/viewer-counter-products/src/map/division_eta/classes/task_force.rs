@@ -5,7 +5,7 @@ use content_reader_unit_path::unit_path::Fact;
 use replay_data::{
     rows::FreshTaskForceCounterEta, rows::TaskForceMapMotionRow, rows::TaskForceRow,
 };
-use viewer_foundation::table_access::TokenError;
+use dashboard_text::table_access::TokenError;
 
 const P: i64 = 100_000;
 
@@ -177,7 +177,7 @@ mod tests {
         rows::tables,
     };
     use replay_frame::{frame::DecodedFrame, frame::TableView};
-    use viewer_foundation::map::test_support::movement_timing::terrain;
+    use viewer_foundation::test_support::movement_timing::terrain;
     use viewer_foundation::movement_timing::MovementContent;
 
     fn frame() -> DecodedFrame {
