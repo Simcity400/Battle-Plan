@@ -1,6 +1,7 @@
 use super::*;
 use replay_data::rows::{
-    CountryLinkRow, PoliticalPartyRow, PoliticsRow, Recorded, TableId, TableRows,
+    CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded,
+    TableId, TableRows,
 };
 use replay_frame::frame::TableView;
 use std::sync::Mutex;
@@ -264,8 +265,8 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
                         let frame = frame(step);
                         let a = reference(&frame).unwrap();
                         let b = countries(&frame).unwrap();
-                        assert_eq!(a.tags, b.tags);
-                        assert_eq!(a.flag_tags, b.flag_tags);
+                        assert_eq!(a.tags_map(), b.tags_map());
+                        assert_eq!(a.flag_tags_map(), b.flag_tags_map());
                         assert_eq!(a.groups, b.groups);
                         for slot in [3, 1, 2, 99] {
                             assert_eq!(a.flag_keys(slot), b.flag_keys(slot));
@@ -388,11 +389,126 @@ fn truncated_initial_appearance_keeps_present_country_candidates() {
     };
     let a = reference(&source).unwrap();
     let b = countries(&source).unwrap();
-    assert_eq!(a.flag_tags, b.flag_tags);
+    assert_eq!(a.flag_tags_map(), b.flag_tags_map());
     for slot in [1, 2, 3] {
         assert_eq!(a.flag_keys(slot), b.flag_keys(slot));
         assert_eq!(a.flag_refusal(slot), b.flag_refusal(slot));
     }
     assert!(b.flag_keys(1).is_some());
     assert_eq!(b.flag_keys(2), None);
+}
+
+#[test]
+fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearance() {
+    content_reader_core::test_game::enter();
+    super::super::tests::with_counter_inputs_fixture(
+        super::super::tests::action_gui(false),
+        |_| {},
+        |_| {},
+        |inputs| {
+            let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+            let carry = Carry::default();
+            let need = Need {
+                air_missions: false,
+                by_key: true,
+                shown: Shown::EVERY,
+            };
+            let build = |frame: &DecodedFrame| {
+                hour_tables_profiled(
+                    frame,
+                    inputs.map,
+                    Arc::new(Vision::sharing(1, [])),
+                    inputs.content,
+                    inputs.assets,
+                    inputs.equipment,
+                    inputs.localisation,
+                    &Default::default(),
+                    None,
+                    None,
+                    None,
+                    &type_tint::Memo::new(type_tint::TABLES),
+                    &MissionMemo::new(),
+                    moves.movement_reads(),
+                    Err("unreached synthetic naval topology".into()),
+                    Kinds::default(),
+                    need,
+                    &carry,
+                    None,
+                    &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                )
+            };
+
+            let first_frame = frame(0);
+            let first = build(&first_frame).unwrap();
+            let expected = CountryIndex::read(&first_frame).unwrap();
+            assert_eq!(&**first.country_index(), &expected);
+            assert!(std::ptr::eq(first.country_index().links(), first.links()));
+            assert!(std::ptr::eq(first.country_index().ids(), first.country_ids()));
+            assert!(std::ptr::eq(first.country_index().tags(), first.countries.tags_map()));
+            assert!(std::ptr::eq(
+                first.country_index().flag_tags(),
+                first.countries.flag_tags_map()
+            ));
+            assert_eq!(first.links(), expected.links());
+            assert_eq!(first.country_ids(), expected.ids());
+            assert_eq!(first.countries.tags_map(), expected.tags());
+            assert_eq!(first.countries.flag_tags_map(), expected.flag_tags());
+
+            let mut next_frame = first_frame.clone();
+            next_frame.hour = first_frame.hour + 1;
+            let TableView::Complete(TableRows::Countries(mut next_countries)) =
+                (*next_frame.tables[TableId::Countries.index()]).clone()
+            else {
+                unreachable!()
+            };
+            next_countries[0].command_power_raw = 77;
+            next_frame.tables[TableId::Countries.index()] =
+                TableView::Complete(TableRows::Countries(next_countries)).into();
+            let second = build(&next_frame).unwrap();
+            assert!(
+                Arc::ptr_eq(first.country_index(), second.country_index()),
+                "hourly country values must reuse the settled CountryIndex through hour_tables_profiled"
+            );
+            assert!(std::ptr::eq(first.links(), second.links()));
+            assert!(std::ptr::eq(first.country_ids(), second.country_ids()));
+            assert!(std::ptr::eq(
+                first.countries.tags_map(),
+                second.countries.tags_map()
+            ));
+            assert!(std::ptr::eq(
+                first.countries.flag_tags_map(),
+                second.countries.flag_tags_map()
+            ));
+
+            let mut truncated_frame = first_frame.clone();
+            truncated_frame.hour = first_frame.hour + 2;
+            let available = rows::<tables::CountryAppearance>(&truncated_frame).unwrap();
+            truncated_frame.tables[TableId::CountryAppearance.index()] = TableView::Truncated {
+                rows: TableRows::CountryAppearance(available.rows()[..1].to_vec()),
+                missing: 3,
+            }
+            .into();
+            let partial = build(&truncated_frame).unwrap();
+            assert!(!Arc::ptr_eq(first.country_index(), partial.country_index()));
+            assert_eq!(partial.country_index().links(), expected.links());
+            assert_eq!(partial.country_index().tags(), expected.tags());
+            assert_eq!(partial.country_index().ids(), expected.ids());
+            assert_eq!(partial.country_index().flag_tags().len(), 1);
+            assert!(partial.countries.flag_tags_map().contains_key(&1));
+            assert!(!partial.countries.flag_tags_map().contains_key(&2));
+
+            let mut unavailable_frame = first_frame.clone();
+            unavailable_frame.hour = first_frame.hour + 3;
+            unavailable_frame.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
+                reason: "not recorded".into(),
+            }
+            .into();
+            let without = build(&unavailable_frame).unwrap();
+            assert_eq!(without.country_index().links(), expected.links());
+            assert_eq!(without.country_index().tags(), expected.tags());
+            assert_eq!(without.country_index().ids(), expected.ids());
+            assert!(without.country_index().flag_tags().is_empty());
+            assert!(without.countries.flag_tags_map().is_empty());
+        },
+    );
 }

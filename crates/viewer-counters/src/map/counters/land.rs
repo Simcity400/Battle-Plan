@@ -785,7 +785,7 @@ impl PreparedLand {
         } else {
             &inputs.assets.flags
         };
-        if self.countries.tags.contains_key(&owner)
+        if self.countries.tags_map().contains_key(&owner)
             && self.countries.flag_now(atlas, owner).is_none()
         {
             if let Some(reason) = self.countries.flag_refusal(owner) {

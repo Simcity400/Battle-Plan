@@ -191,7 +191,7 @@ fn an_icon_s_quads_stand_at_its_anchor() {
         viewport: [2048, 1152],
         time: Some(0.),
     };
-    let prepared = prepare(&fixture(Ok(1700.)), Stock::StrategicNavy, 300.);
+    let prepared = prepare(&fixture(Ok(1700.)).with_build("Countenance v1.19.5.0.c184"), Stock::StrategicNavy, 300.);
     let mut batch = Batch::default();
     let mut report = BTreeMap::new();
     let drawn = prepared.draw(
@@ -239,4 +239,49 @@ fn each_mode_draws_at_its_own_tables_adjacency_rule_priority() {
     assert_eq!(priority(&priorities, &mode(Stock::StrategicNavy)), 7);
     assert_eq!(priority(&priorities, &mode(Stock::Supply)), 3);
     assert_eq!(priority(&priorities, &mode(Stock::Resources)), -4);
+}
+
+#[test]
+fn unknown_build_refuses_adjacency_icons_through_presentation() {
+    content_reader_core::test_game::enter();
+    let resources = gui::fixture();
+    let windows = gui::windows(
+        br#"guiTypes = {
+        containerWindowType = { name = adjacency_rule_mapicon size = { width = 40 height = 20 }
+            iconType = { name = icon spriteType = GFX_even } }
+    }"#,
+    );
+    let context = Context {
+        resources: &resources,
+        windows: &windows,
+        viewport: [2048, 1152],
+        time: Some(0.),
+    };
+    for (icons, expected_fragment) in [
+        (fixture(Ok(1700.)), "game build is unverified"),
+        (
+            fixture(Ok(1700.)).with_build("Countenance v1.19.5.0.dead"),
+            "Countenance v1.19.5.0.dead",
+        ),
+    ] {
+        let prepared = prepare(&icons, Stock::StrategicNavy, 300.);
+        let mut batch = Batch::default();
+        let mut report = BTreeMap::new();
+        let drawn = prepared.draw(
+            &context,
+            0,
+            &mut PoolView::default(),
+            &mut batch,
+            &mut report,
+        );
+        assert_eq!(drawn, 0);
+        assert!(batch.quads.is_empty());
+        assert!(
+            report.keys().any(|reason| {
+                reason.contains("adjacency rule map icon pool initial capacity is unknown")
+                    && reason.contains(expected_fragment)
+            }),
+            "{report:?}"
+        );
+    }
 }
