@@ -12,7 +12,7 @@ use std::{
 const OWNED_SLOTS: usize = 64;
 const SHARED_SLOT: usize = OWNED_SLOTS;
 const SLOT_COUNT: usize = OWNED_SLOTS + 1;
-const DEFAULT_PERIOD_LOG2: u32 = 6;
+const DEFAULT_PERIOD_LOG2: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
@@ -883,17 +883,18 @@ mod tests {
     #[test]
     fn war_participation_registers_sampled_detours_with_original_accounting() {
         let family = Family::WarParticipation;
+        let period = 1_u64 << DEFAULT_PERIOD_LOG2;
         assert_eq!(family.name(), "war_participation");
         assert_eq!(family.kind(), Kind::Detour);
-        assert_eq!(family.period(), 64);
+        assert_eq!(family.period(), period);
         let table = table();
         table.claim();
-        for _ in 0..65 {
+        for _ in 0..=period {
             let span = table.enter(0, family, false);
             span.original(|| std::hint::black_box(7));
         }
         let totals = table.totals()[family as usize];
-        assert_eq!((totals.calls, totals.sampled), (65, 2));
+        assert_eq!((totals.calls, totals.sampled), (period + 1, 2));
         assert!(totals.original > 0);
         assert!(totals.detour > 0);
         let status: Value = serde_json::to_value(status()).unwrap();
@@ -910,7 +911,7 @@ mod tests {
         assert_eq!(table.claim(), 0);
         let totals = table.totals()[Family::ExperienceGains as usize];
         assert_eq!(totals.calls, 1000);
-        assert_eq!(totals.sampled, 16);
+        assert_eq!(totals.sampled, 1000_u64.div_ceil(1 << DEFAULT_PERIOD_LOG2));
         assert_eq!(totals.returns, 0);
         let other = table.totals()[Family::PortraitChanges as usize];
         assert_eq!((other.calls, other.sampled), (0, 0));
@@ -1045,7 +1046,10 @@ mod tests {
         });
         let totals = table.totals()[Family::EventFeed as usize];
         assert_eq!(totals.calls, 40_000);
-        assert_eq!(totals.sampled, 625);
+        assert_eq!(
+            totals.sampled,
+            40_000_u64.div_ceil(1 << DEFAULT_PERIOD_LOG2)
+        );
         let status = serde_json::to_value(status_from(
             table.totals(),
             [0; FAMILY_COUNT],
@@ -1086,12 +1090,13 @@ mod tests {
         let totals = table.totals()[Family::PortraitChanges as usize];
         assert_eq!(totals.overhead, empty + per_original);
         assert!(totals.detour >= 50_000 && totals.detour > totals.overhead);
-        for _ in 0..63 {
+        let period = 1_u64 << DEFAULT_PERIOD_LOG2;
+        for _ in 0..(period - 1) {
             drop(table.enter(0, Family::PortraitChanges, false));
         }
         drop(table.enter(0, Family::PortraitChanges, false));
         let after = table.totals()[Family::PortraitChanges as usize];
-        assert_eq!((after.calls, after.sampled), (65, 2));
+        assert_eq!((after.calls, after.sampled), (period + 1, 2));
         let empty_detour = after.detour - totals.detour;
         assert_eq!(after.overhead - totals.overhead, empty.min(empty_detour));
         assert_eq!(
@@ -1150,7 +1155,8 @@ mod tests {
         let status: Value =
             serde_json::to_value(status_from(totals, capture_waits, Some(3_000_000_000), 3))
                 .unwrap();
-        assert_eq!(status["sample_period"], 64);
+        let period = 1_u64 << DEFAULT_PERIOD_LOG2;
+        assert_eq!(status["sample_period"], period);
         assert_eq!(status["tsc_hz"], 3_000_000_000_u64);
         assert_eq!(status["owned_thread_slots"], 3);
         assert_eq!(status["shared_slot_threads"], 0);
@@ -1159,7 +1165,7 @@ mod tests {
         assert_eq!(
             status["families"]["experience_gains"],
             json!({
-                "kind": "tap", "sample_period": 64, "calls": 6400, "capture_waits": 5,
+                "kind": "tap", "sample_period": period, "calls": 6400, "capture_waits": 5,
                 "sampled_calls": 100,
                 "returns": null, "sampled_returns": null,
                 "sampled_detour_ns": 1_000_000, "estimated_detour_ns": 64_000_000,
@@ -1170,7 +1176,7 @@ mod tests {
         assert_eq!(
             status["families"]["portrait_changes"],
             json!({
-                "kind": "detour", "sample_period": 64, "calls": 2, "capture_waits": 0,
+                "kind": "detour", "sample_period": period, "calls": 2, "capture_waits": 0,
                 "sampled_calls": 1,
                 "returns": null, "sampled_returns": null,
                 "sampled_detour_ns": 100, "estimated_detour_ns": 200,

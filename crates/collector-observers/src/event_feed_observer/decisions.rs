@@ -1,10 +1,9 @@
 use super::*;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
-fn access(
+fn access_raw(
     candidate: bool,
     observe: impl FnOnce(
         &mut Store,
-        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
         &engine_native::memory::LiveMemory,
         usize,
         u64,
@@ -21,9 +20,7 @@ fn access(
             return;
         }
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        let result = native::provenance::World::new(&memory, owner.base)
-            .and_then(|world| observe(store, &world, &memory, owner.base, generation));
-        if let Err(reason) = result {
+        if let Err(reason) = observe(store, &memory, owner.base, generation) {
             store.decisions.invalidate();
             store.reject(reason);
         }
@@ -34,6 +31,21 @@ fn access(
     } else {
         owner.observe(Role::DecisionWriter, publish)
     };
+}
+fn access(
+    candidate: bool,
+    observe: impl FnOnce(
+        &mut Store,
+        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
+        &engine_native::memory::LiveMemory,
+        usize,
+        u64,
+    ) -> Result<(), &'static str>,
+) {
+    access_raw(candidate, |store, memory, base, generation| {
+        let world = native::provenance::World::new(memory, base)?;
+        observe(store, &world, memory, base, generation)
+    });
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
     if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
@@ -69,12 +81,13 @@ pub fn instance(status: usize, pointer: usize, container: u8, operation: Operati
     });
 }
 pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -87,12 +100,13 @@ pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
     });
 }
 pub fn cut(pointer: usize) {
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -105,8 +119,13 @@ pub fn cut(pointer: usize) {
     });
 }
 pub fn retire(pointer: usize, swap: bool, visited: bool) {
-    access(false, |store, world, memory, base, generation| {
-        store.decision_retire(world, memory, base, generation, pointer, swap, visited)
+    access_raw(false, |store, memory, base, generation| {
+        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
+        {
+            return Ok(());
+        }
+        let world = native::provenance::World::new(memory, base)?;
+        store.decision_retire(&world, memory, base, generation, pointer, swap, visited)
     });
 }
 pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, flags: u8) {
@@ -237,10 +256,11 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
     let Some((ignored, removed)) = committed_flags(ignored, removed) else {
         return;
     };
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         let flags = if ignored == Some(true) {
             replay_data::event_feed_rows::decisions::IGNORED
         } else {
@@ -251,7 +271,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
             0
         };
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -302,9 +322,14 @@ pub fn write_result(
     source: replay_data::event_feed_rows::EventFeedSource,
 ) -> bool {
     let mut recorded = false;
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
+        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
+        {
+            return Ok(());
+        }
+        let world = native::provenance::World::new(memory, base)?;
         recorded = store.decision_result(
-            world,
+            &world,
             memory,
             base,
             generation,

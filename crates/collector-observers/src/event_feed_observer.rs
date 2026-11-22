@@ -539,6 +539,15 @@ impl Owner {
         retain_overlap: bool,
         candidate: bool,
     ) -> Result<T, &'static str> {
+        let bits = u64::from(role.held()) | if candidate { CANDIDATE } else { 0 };
+        writer_moved();
+        if self
+            .busy
+            .compare_exchange(0, bits, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            return self.held(apply, !retain_overlap, None);
+        }
         let (slot, word) = loop {
             writer_moved();
             let phase = self.join_phase(self.phase.load(Ordering::SeqCst));
@@ -546,9 +555,8 @@ impl Owner {
             let entered = self
                 .busy
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |word| {
-                    (word & HOLDER == 0 && (retain_overlap || word & WORKER_WAITING == 0)).then(
-                        || word | u64::from(role.held()) | if candidate { CANDIDATE } else { 0 },
-                    )
+                    (word & HOLDER == 0 && (retain_overlap || word & WORKER_WAITING == 0))
+                        .then(|| word | bits)
                 });
             let word = match entered {
                 Ok(_) => {
@@ -717,10 +725,11 @@ impl Owner {
         }));
         match result {
             Ok(value) => {
+                let next = self.releases.load(Ordering::Relaxed).wrapping_add(1);
+                self.releases.store(next, Ordering::Release);
                 let held = self
                     .busy
                     .fetch_and(!(HOLDER | CANDIDATE | CANDIDATE_WAITING), Ordering::SeqCst);
-                self.releases.fetch_add(1, Ordering::SeqCst);
                 if held & CANDIDATE_WAITING != 0 {
                     // SAFETY: the ownership qword stays live through every
                     // synchronous callback and any enclosing native Flight.

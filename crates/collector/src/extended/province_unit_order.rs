@@ -2,7 +2,6 @@ use crate::{
     division_census::UnitInputs,
     province_unit_changes::{self, Changes, Counts},
     sampling::qpc,
-    spooling::table,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
 use engine_allocation::{advisory, copy_vec, owned_vec, reserve};
@@ -10,7 +9,6 @@ use engine_native::{
     Memory, carmy, cprovince, cprovince::KnownUnit, cprovince::UnitOrderRow, walk::Outcome,
 };
 use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
-use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
 

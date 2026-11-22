@@ -289,7 +289,9 @@ fn hurry() {
         HURRY_GEN.fetch_add(1, Ordering::Release);
         // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
         unsafe { SetThreadPriority(thread as _, THREAD_PRIORITY_ABOVE_NORMAL) };
-        if CONFINED.swap(false, Ordering::SeqCst) {
+        if crate::frame_priority::physical_cores().is_none_or(|cores| cores < 4)
+            && CONFINED.swap(false, Ordering::SeqCst)
+        {
             crate::frame_priority::select_away(thread as _, None);
         }
     }
@@ -370,10 +372,13 @@ fn beside(
     game: Option<u32>,
 ) -> bool {
     let hurry_gen = HURRY_GEN.load(Ordering::Acquire);
+    let clear_on_hurry = crate::frame_priority::physical_cores().is_none_or(|cores| cores < 4);
     if hurry_gen != *seen_hurry {
         *seen_hurry = hurry_gen;
         *priority = i32::MIN;
-        *away = crate::frame_priority::AwayFromGame::default();
+        if clear_on_hurry {
+            *away = crate::frame_priority::AwayFromGame::default();
+        }
     }
     let own = unsafe { GetCurrentThread() };
     if *priority != THREAD_PRIORITY_NORMAL {
@@ -387,8 +392,10 @@ fn beside(
             unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
             *priority = THREAD_PRIORITY_ABOVE_NORMAL;
         }
-        CONFINED.store(false, Ordering::SeqCst);
-        away.follow(None);
+        if clear_on_hurry {
+            CONFINED.store(false, Ordering::SeqCst);
+            away.follow(None);
+        }
     }
     away.confined()
 }
@@ -456,7 +463,9 @@ fn capture_beside(
     // writers proceed, and the portrait reader validates the live bytes it reads against the
     // pre-images `_images` keeps for this read.
     let admitted = unsafe { read(Placement::Beside(game), full) };
-    if HURRIED.load(Ordering::SeqCst) {
+    if HURRIED.load(Ordering::SeqCst)
+        && crate::frame_priority::physical_cores().is_none_or(|cores| cores < 4)
+    {
         CONFINED.store(false, Ordering::SeqCst);
         away.follow(None);
     }

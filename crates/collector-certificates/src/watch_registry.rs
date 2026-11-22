@@ -241,6 +241,36 @@ impl WatchRegistry {
 
     #[inline]
     fn admit(&self, writer: bool) -> bool {
+        let delta = RUNNING + if writer { REVISION } else { 0 };
+        let current = self.state.0.load(Relaxed);
+        if current & UNTRUSTED == 0
+            && running(current) + 1 < RUNNING_LIMIT / 2
+            && (!writer || revision(current) < LAST_REVISION - (RUNNING_LIMIT / 2))
+        {
+            let before = self.state.0.fetch_add(delta, SeqCst);
+            if before & UNTRUSTED == 0
+                && running(before) + 1 < RUNNING_LIMIT
+                && (!writer || revision(before) < LAST_REVISION)
+            {
+                return true;
+            }
+            return self.admit_overflow(delta);
+        }
+        self.admit_slow(writer)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn admit_overflow(&self, delta: u64) -> bool {
+        self.state.0.fetch_or(UNTRUSTED, SeqCst);
+        self.state.0.fetch_sub(delta, SeqCst);
+        self.poison();
+        false
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn admit_slow(&self, writer: bool) -> bool {
         let mut current = self.state.0.load(Relaxed);
         loop {
             if current & UNTRUSTED != 0 {

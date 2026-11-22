@@ -140,7 +140,7 @@ impl Target {
 const GROUP_PROCESSORS: usize = 64;
 
 const BACKGROUND_CORES_MIN_PHYSICAL: usize = 6;
-const BACKGROUND_CORES_COUNT: usize = 2;
+const BACKGROUND_CORES_COUNT: usize = 1;
 
 struct Cores {
     sets: [(u8, u8, u32); GROUP_PROCESSORS],

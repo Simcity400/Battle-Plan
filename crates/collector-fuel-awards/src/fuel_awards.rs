@@ -874,14 +874,28 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     };
     pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
     let recipient = if kind == 1 {
-        native::air_held(
-            &memory,
-            base,
-            pointer,
-            registers.rdx,
-            pending.started.country,
-            located.as_ref().map(|located| &located.country),
-        )
+        if let Some(located) = located.as_ref() {
+            REGISTRY.with(|registry| {
+                native::air_held_with(
+                    &memory,
+                    base,
+                    pointer,
+                    registers.rdx,
+                    pending.started.country,
+                    Some(&located.country),
+                    Some(&mut registry.borrow_mut()),
+                )
+            })
+        } else {
+            native::air_held(
+                &memory,
+                base,
+                pointer,
+                registers.rdx,
+                pending.started.country,
+                None,
+            )
+        }
     } else if located.is_some() {
         REGISTRY.with(|registry| {
             native::unit_with(&memory, base, pointer, kind, &mut registry.borrow_mut())

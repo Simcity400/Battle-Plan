@@ -405,11 +405,11 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(six.physical_cores, 6);
     assert_eq!(
         background_sets(Some(&six), Some(0)),
-        Some(&[264, 265, 266, 267][..])
+        Some(&[266, 267][..])
     );
     assert_eq!(
         background_sets(Some(&six), Some(10)),
-        Some(&[262, 263, 264, 265][..])
+        Some(&[264, 265][..])
     );
     assert_eq!(
         background_sets(Some(&cores), Some(0)),
