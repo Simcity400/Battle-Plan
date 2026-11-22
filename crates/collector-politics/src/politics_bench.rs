@@ -343,8 +343,10 @@ fn politics_daily_scale() {
                 .map(|_| TableInput::Sampled(unavailable("fixture")))
                 .collect();
             capture.capture();
-            ledger
-                .assemble_owned(
+            // SAFETY: The spool assembles its own frame's interval while the originating observer
+            // is live.
+            unsafe {
+                ledger.assemble_owned(
                     1,
                     -1,
                     &capture,
@@ -352,7 +354,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
             let all = Instant::now();
             let start = Instant::now();
             for (owner, receivers) in world.receivers.chunks_exact(8).enumerate() {
@@ -363,8 +366,10 @@ fn politics_daily_scale() {
             black_box(capture.capture());
             let handed = start.elapsed();
             let start = Instant::now();
-            ledger
-                .assemble_owned(
+            // SAFETY: The spool assembles its own frame's interval while the originating observer
+            // is live.
+            unsafe {
+                ledger.assemble_owned(
                     1,
                     0,
                     &capture,
@@ -372,7 +377,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
 
             let Some(TableRows::CountryPowerChanges(changes)) =
                 rows(&tables[TableId::CountryPowerChanges.index()])
