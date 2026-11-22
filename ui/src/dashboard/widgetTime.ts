@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { PlaybackController } from './playback';
 import { pageClock } from './widgetClock.ts';
-import { axisHour, regionFollows, regionHour, regionKey, regionOutside, regionTrack, SPEC, type AxisHour, OUTSIDE_MESSAGE, type Outside, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
+import { axisHour, coverageAt, coverageSpan, regionFollows, regionHour, regionKey, regionOutside, regionTrack, SPEC, type AxisHour, OUTSIDE_MESSAGE, type Outside, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
 
 export { SETTINGS_DETAIL } from './regionTime.ts';
 
@@ -29,34 +29,102 @@ export class ActiveHeads {
 
 export interface ReadCoverage { outside: boolean; outsideMessage?: string; outsideDetail?: string }
 
-interface Boundary { holds: () => unknown; was: unknown; changed: () => void }
-interface Boundaries { watches: Set<Boundary>; sequence: number; stop: () => void }
-const boundaries = new WeakMap<PlaybackController, Boundaries>();
+export type AxisSpan = readonly [low: number, high: number];
 
-export function watchBoundary(clock: PlaybackController, holds: () => unknown, changed: () => void): () => void {
+interface Watch { span: (axis: number) => AxisSpan; changed: () => void; stamp: number; live: boolean }
+interface Edge { watch: Watch; stamp: number; at: number }
+
+class EdgeHeap {
+  readonly items: Edge[] = [];
+  private readonly before: (a: Edge, b: Edge) => boolean;
+  constructor(before: (a: Edge, b: Edge) => boolean) { this.before = before; }
+  push(edge: Edge): void {
+    const items = this.items;
+    let at = items.push(edge) - 1;
+    while (at > 0) { const up = (at - 1) >> 1; if (!this.before(items[at], items[up])) break; [items[at], items[up]] = [items[up], items[at]]; at = up; }
+  }
+  pop(): void {
+    const items = this.items, last = items.pop();
+    if (!items.length || !last) return;
+    items[0] = last;
+    for (let at = 0;;) {
+      const left = at * 2 + 1, right = left + 1;
+      let best = at;
+      if (left < items.length && this.before(items[left], items[best])) best = left;
+      if (right < items.length && this.before(items[right], items[best])) best = right;
+      if (best === at) return;
+      [items[at], items[best]] = [items[best], items[at]]; at = best;
+    }
+  }
+}
+
+interface Boundaries { highs: EdgeHeap; lows: EdgeHeap; live: number; sequence: number; stop: () => void }
+const boundaries = new WeakMap<PlaybackController, Boundaries>();
+const stale = (edge: Edge) => !edge.watch.live || edge.stamp !== edge.watch.stamp;
+
+function place(shared: Boundaries, watch: Watch, axis: number): void {
+  const [low, high] = watch.span(axis);
+  watch.stamp++;
+  if (high < Infinity) shared.highs.push({ watch, stamp: watch.stamp, at: high });
+  if (low > -Infinity) shared.lows.push({ watch, stamp: watch.stamp, at: low });
+}
+
+function compact(shared: Boundaries): void {
+  for (const heap of [shared.highs, shared.lows]) {
+    if (heap.items.length <= 4 * shared.live + 16) continue;
+    const kept = heap.items.filter(edge => !stale(edge));
+    heap.items.length = 0;
+    for (const edge of kept) heap.push(edge);
+  }
+}
+
+export function watchBoundary(clock: PlaybackController, span: (axis: number) => AxisSpan, changed: () => void): () => void {
   const page = pageClock(clock);
   let shared = boundaries.get(page);
   if (!shared) {
-    const made: Boundaries = { watches: new Set(), sequence: page.getSnapshot().sequence, stop: () => {} };
+    const made: Boundaries = { highs: new EdgeHeap((a, b) => a.at < b.at), lows: new EdgeHeap((a, b) => a.at > b.at), live: 0,
+      sequence: page.getSnapshot().sequence, stop: () => {} };
     const check = () => {
       const { sequence } = page.getSnapshot();
       if (sequence === made.sequence) return;
       made.sequence = sequence;
-      for (const watch of made.watches) {
-        const now = watch.holds();
-        if (!Object.is(now, watch.was)) { watch.was = now; watch.changed(); }
+      const axis = page.getHour(), crossed = new Set<Watch>();
+      for (const [heap, past] of [[made.highs, (at: number) => at <= axis], [made.lows, (at: number) => at > axis]] as const) {
+        for (let top = heap.items[0]; top && (stale(top) || past(top.at)); top = heap.items[0]) {
+          heap.pop();
+          if (!stale(top)) { top.watch.stamp++; crossed.add(top.watch); }
+        }
       }
+      for (const watch of crossed) place(made, watch, axis);
+      compact(made);
+      for (const watch of crossed) if (watch.live) watch.changed();
     };
     const stopFrame = page.subscribeFrame(check), stopAnchor = page.subscribe(check);
     made.stop = () => { stopFrame(); stopAnchor(); };
     boundaries.set(page, shared = made);
   }
-  const watch: Boundary = { holds, was: holds(), changed };
-  const watches = shared.watches;
-  watches.add(watch);
+  const held = shared;
+  const watch: Watch = { span, changed, stamp: 0, live: true };
+  held.live++;
+  place(held, watch, page.getHour());
   return () => {
-    watches.delete(watch);
-    if (!watches.size && boundaries.get(page) === shared) { shared.stop(); boundaries.delete(page); }
+    if (!watch.live) return;
+    watch.live = false;
+    if (--held.live === 0 && boundaries.get(page) === held) { held.stop(); boundaries.delete(page); }
+  };
+}
+
+export function followSpan(track: Pick<BoundTrack, 'axisOffset' | 'branch'>, epochs?: readonly number[]): (axis: number) => AxisSpan {
+  const offset = track.axisOffset;
+  return axis => {
+    const hour = Math.floor(axis) + offset;
+    let [low, high] = coverageSpan(track, hour);
+    if (epochs?.length && coverageAt(track, hour).hour !== null) {
+      const epoch = epochOf(epochs, hour);
+      if (epoch > 0) low = Math.max(low, epochs[epoch - 1]);
+      if (epoch < epochs.length) high = Math.min(high, epochs[epoch] - 1);
+    }
+    return [low - offset, high + 1 - offset];
   };
 }
 
@@ -79,8 +147,9 @@ export function useRegionOutside(runtime: Timed, region: Region, on = true): Out
   const track = regionTrack(region, runtime.tracks);
   const { clock, tracks } = runtime;
   const now = useCallback(() => outsideKey(regionOutside(region, track, tracks, axisHour(clock))), [region, track, tracks, clock]);
-  const watch = useCallback((changed: () => void) => on && track ? watchBoundary(clock, now, changed) : () => {}, [on, track, clock, now]);
-  const key = useSyncExternalStore(on && track ? watch : unwatched, now, now);
+  const moves = on && !!track && regionFollows(region);
+  const watch = useCallback((changed: () => void) => moves && track ? watchBoundary(clock, followSpan(track), changed) : () => {}, [moves, track, clock]);
+  const key = useSyncExternalStore(moves ? watch : unwatched, now, now);
   return useMemo(() => {
     if (!key) return null;
     const [message, detail] = key.split('\u0000');
@@ -106,6 +175,7 @@ export function epochOf(epochs: readonly number[] | undefined, hour: number | nu
 
 export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?: readonly number[]): TrackHour | null {
   const hourAt = useRegionHourAt(runtime, region);
+  const track = regionTrack(region, runtime.tracks);
   const follows = regionFollows(region);
   const clock = runtime.clock;
   const generation = useRef(0);
@@ -114,9 +184,9 @@ export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?
     if (!on || !follows) return () => {};
     const notify = () => { generation.current++; changed(); };
     const stopAnchor = clock.subscribe(notify);
-    const stopBoundary = watchBoundary(clock, () => epochOf(epochs, hourAt(axisHour(clock))), notify);
+    const stopBoundary = track ? watchBoundary(clock, followSpan(track, epochs), notify) : () => {};
     return () => { stopAnchor(); stopBoundary(); };
-  }, [on, follows, clock, hourAt, epochs]);
+  }, [on, follows, clock, track, epochs]);
   const read = () => {
     const now = hourAt(axisHour(clock));
     const epoch = epochOf(epochs, now);

@@ -58,7 +58,7 @@ test('the drill settings are ordinary options, and a pinned breakdown shows it a
   const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main', gatedTime({ mode: 'follow' }));
   assert.notEqual(pinned.id, source.id);
   assert.equal(pinned.title, 'Political power: Daily income');
-  assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
+  assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time.value, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
   assert.deepEqual(pinned.options, { drill: 'popout', show: 'income' });
 });
 

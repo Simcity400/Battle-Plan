@@ -64,6 +64,8 @@ import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/wid
 const NO_WARNINGS: string[] = [];
 const END_LABEL_ROOM = 136;
 
+const HOLDERS = { holders: true };
+
 export default function EquipmentStockpileWidget(props: WidgetProps) {
   return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
     : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
@@ -93,7 +95,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const anchor = useRef<HTMLDivElement | null>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
   const pickOwner = useMemo(() => ({ scope, client: runtime.client }), [scope, runtime.client]);
-  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null);
+  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null, undefined, undefined, HOLDERS);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
@@ -189,7 +191,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
     : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
   const pinTime = drillControl.time();
-  const pinCountry = selectedCountry ? drillControl.bind(selectedCountry.tag) : null;
+  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
   return <div ref={root} className="stockpile-drill-host">
     {saved ? <div className="drill-body">
       {pinnedHeader}
@@ -201,7 +203,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       canFollow onClose={() => act({ type: 'close' })} main={main}
       onPin={picked && selectedCountry && !actor.reason && at !== null && pinTime && pinCountry && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
-        const pinned = pinStockpileDrill(widget, track, selectedCountry.tag, picked, grouping, mode, at, pinTime, pinCountry);
+        const pinned = pinStockpileDrill(widget, track, pinCountry.tag, picked, grouping, mode, at, pinTime, pinCountry.token);
         if (pinned) runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>{identityNotice}{detail}</DrillHost>}
     {menu.menu}

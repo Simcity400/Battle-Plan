@@ -25,7 +25,7 @@ export const leafPart = (key: string) => (BigInt(key) & ((1n << PART_BITS) - 1n)
 
 export interface LossSelection { branchId: string; country: LossesParams['country']; landSource: LossesParams['landSource']; identity?: LossesParams['identity'] }
 
-export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within'>, track: BoundTrack | undefined, selection: LossSelection | null,
+export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within' | 'recorded'>, track: BoundTrack | undefined, selection: LossSelection | null,
   view: LossWindow | null, exact: readonly number[], active: boolean, open: boolean) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, selection, view?.first, view?.end, view?.from]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
@@ -52,7 +52,7 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
     ...(view.from == null ? [] : [view.from - 1]),
     ...(reachedHover === null || reachedHover < view.first || reachedHover > view.end ? [] : [reachedHover])])]
     .filter(hour => Number.isInteger(hour) && hour >= view.first - 1 && hour <= view.end).sort((a, b) => a - b)
-    .flatMap(hour => { const read = gate.within(hour); return read === null ? [] : [read]; }) : [];
+    .flatMap(hour => { const read = gate.recorded(hour); return read === null ? [] : [read]; }) : [];
   const fromAt = gate.within(from), toAt = gate.within(to);
   const request = track && selection && view && fromAt !== null && toAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'equipment-losses', params: { ...selection, from: fromAt, to: toAt, width: Math.max(1, Math.round(geometry?.width ?? 64)), reads } } : null;
@@ -61,7 +61,7 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
     if (!active || !track || !request) return null;
     const controller = new AbortController(); picks.current.add(controller);
     try {
-      const asked = gate.within(hour);
+      const asked = gate.recorded(hour);
       const reply = await loadProduct(client, { ...request, params: { ...request.params,
         reads: [...new Set([...request.params.reads, ...(asked === null ? [] : [asked])])].sort((a, b) => a - b) } }, controller.signal, validateLossesReply, track.source);
       return controller.signal.aborted || alive.current !== owner ? null : reply;

@@ -106,7 +106,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
       onClose={() => dispatch({ type: 'close' })}
       onPin={drill.breakdown && track && drillControl.time() ? () => {
         const time = drillControl.time();
-        const history = time?.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
+        const history = time?.value.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
         const kept = history ? drillControl.time(history) : time;
         if (kept) runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, kept));
       } : undefined}

@@ -459,7 +459,7 @@ test('actual Wars participant hover preserves completed native UI-word and empty
   try {
     const { default: WarsWidget } = await vite.ssrLoadModule('/ui/src/widgets/wars/WarsWidget.tsx');
     host.__warsFixture = { ...reply(), viewpoints: [{ tag: 'Mod: player', firstHour: 0, lastHour: 39 }] };
-    const track = { id: 'track', source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 0, lastHour: 39, gaps: [] }, axisOffset: 0 };
+    const track = { id: 'track', source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } }, branch: { id: 'branch', firstHour: 0, lastHour: 39, gaps: [] }, axisOffset: 0 };
     for (const name of ['Loading…', 'Not recorded', '', 'Named country']) {
       host.__warsName = { name, known: true };
       renderToStaticMarkup(createElement(WarsWidget, { widget: { trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: { view: 'countries' } },

@@ -12,7 +12,7 @@ import { useHeldFailure } from './heldFailures.ts';
 import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
-import type { CoveredBranch, GatedHour, GatedParams, GatedWindow } from './regionTime.ts';
+import type { BoundWindow, CoveredBranch, GatedHour, GatedParams } from './regionTime.ts';
 import type { Gate } from './regionGate';
 
 export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within'>;
@@ -102,7 +102,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
 
   const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
   const headQuery = useMemo(() => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
-    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null,
+    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [following, active, enabled, ownerKey, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const headFollowed = following && followsHead(followed);
@@ -161,7 +161,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
 }
 
 export function useSeriesParts(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
-  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: GatedWindow | null, active: boolean) {
+  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: BoundWindow | null, active: boolean) {
   const request = source && branchId && family && tag && span ? { sourceId: source.id, revision: source.revision, product: 'series-parts',
     params: { branchId, family, countries: [countryFromKey(tag)], from: span.firstHour, to: span.lastHour } } : null;
   const validate = useCallback((value: unknown) => validateSeriesParts(value, tag ?? ''), [tag]);

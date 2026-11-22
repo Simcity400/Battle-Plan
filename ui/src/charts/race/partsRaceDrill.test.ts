@@ -1,4 +1,5 @@
-import { gatedTime } from '../../test-support/gated.ts';
+import { gatedTime, heldCountry } from '../../test-support/gated.ts';
+import { persistedSpec } from '../../dashboard/regionTime.ts';
 import assert from 'node:assert/strict';
 import type { DrillState } from '../drill/drillState';
 import test from 'node:test';
@@ -90,11 +91,11 @@ test('pin keeps the drilled country and chosen moment instead of re-ranking its 
   const track = { id: 'track', branch: { firstHour: 1000 } } as Pick<BoundTrack, 'id' | 'branch'>;
   const held = pinPartsRace(source, track, 'country with , separators', gatedTime({ mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } }), 'Types');
   assert.deepEqual(held.countries, { kind: 'tags', tags: ['country with , separators'] });
-  assert.deepEqual(held.time, { mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } });
+  assert.deepEqual(held.time.value, { mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } });
   assert.deepEqual(held.options, { drill: 'popout', ownership: 'roster', measure: 'planes', show: 'breakdown' });
   assert.equal(held.contentScale, 125);
-  assert.deepEqual(pinPartsRace(source, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time, { mode: 'follow' });
-  assert.deepEqual(pinPartsRace({ ...source, time: { mode: 'campaign' } }, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time, { mode: 'follow' });
+  assert.deepEqual(pinPartsRace(source, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time.value, { mode: 'follow' });
+  assert.deepEqual(pinPartsRace({ ...source, time: { mode: 'campaign' } }, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time.value, { mode: 'follow' });
 });
 
 test('native force binding and restored pins follow aliases, refuse reused tags, gaps and conflicting holders', () => {
@@ -117,10 +118,12 @@ test('native force binding and restored pins follow aliases, refuse reused tags,
   const source: WidgetSpec = { id: 'source', kind: 'parts-drill-test', title: 'Force', configVersion: 1,
     trackIds: ['track'], countries: { kind: 'tags', tags: ['OLD'] }, time: { mode: 'campaign' } };
   const track = { id: 'track', branch: { id: 'branch', firstHour: 0, lastHour: 20 }, source: { metadata: { campaignKey: 'campaign' } } } as BoundTrack;
-  const pin = pinNativeCountryParts(source, track, selected, gatedTime({ mode: 'pin', windows: { track: { firstOffset: 12, lastOffset: 12 } } }), 'Parts');
+  const [slot, countryId] = JSON.parse(selected!.key) as [number, number];
+  const held = heldCountry({ tag: selected!.tag, origin: selected!.hour, slot, countryId });
+  const pin = persistedSpec(pinNativeCountryParts(source, track, held, gatedTime({ mode: 'pin', windows: { track: { firstOffset: 12, lastOffset: 12 } } }), 'Parts'));
   assert.deepEqual(savedCountryPartsSelection(pin, track), selected);
   assert.equal(pin.options?.drillOriginHour, 1);
-  assert.equal(pinNativeCountryParts(source, track, selected, gatedTime({ mode: 'follow' }), 'Parts').time.mode, 'follow');
+  assert.equal(pinNativeCountryParts(source, track, held, gatedTime({ mode: 'follow' }), 'Parts').time.value.mode, 'follow');
   assert.equal(savedCountryPartsSelection({ ...pin, options: { ...pin.options, holder: 'malformed' } }, track), null);
   assert.equal(savedCountryPartsSelection(pin, { ...track, branch: { ...track.branch, id: 'another' } }), null);
   assert.equal(savedCountryPartsSelection({ ...pin, options: { show: 'breakdown' } }, track), undefined);

@@ -1,4 +1,4 @@
-import type { GatedTime } from '../../dashboard/regionTime';
+import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
@@ -194,7 +194,7 @@ export function careerLanes(career: LeaderCareerReply, firstHour: number, lastHo
   ];
 }
 
-export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): WidgetSpec & { time: GatedTime } {
+export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
   const base = createWidget('general-career', track.id);
   const options = resolveOptions([GROW_WITH_PLAYBACK_OPTION], source.options);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,

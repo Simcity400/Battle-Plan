@@ -1,4 +1,4 @@
-import type { GatedHour, GatedParams } from '../../dashboard/regionTime';
+import type { BoundHour, GatedParams } from '../../dashboard/regionTime';
 import type { Failure } from '../../dashboard/queryError';
 import type { FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../generated/dashboard';
 import type { LogPage, LogRow } from './logData';
@@ -67,7 +67,7 @@ export function validateLogPage(value: unknown, firstOrdinal: number, pageSize: 
 }
 
 export function logPageRequest(spec: { product?: string; branchId: string; log: string; facets?: readonly FacetFilter[]; scope?: readonly MembershipRun[];
-  firstHour: GatedHour; lastHour: GatedHour }, cursor: number, pageSize: number): { product: string; params: GatedParams } {
+  firstHour: BoundHour; lastHour: BoundHour }, cursor: number, pageSize: number): { product: string; params: GatedParams } {
   return { product: spec.product ?? 'log-page', params: { branchId: spec.branchId, ...(spec.product ? {} : { log: spec.log }),
     ...(spec.facets ? { facets: spec.facets } : {}), ...(spec.scope ? { scope: spec.scope } : {}), from: spec.firstHour, to: spec.lastHour, cursor: String(cursor), pageSize } };
 }

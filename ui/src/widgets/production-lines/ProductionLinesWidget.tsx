@@ -39,7 +39,7 @@ import { OPTIONS } from './definition';
 import ProductionDrill from './ProductionDrill';
 import {
   bandScale, efficiencyFraction, efficiencyPercent, factoryScale, historyLanes, iconImage, laneStatus, lineKeyAt, lineValues, liveTotalText, organisationOf, organisationText,
-  productionLineKey, productionLineLabel, totalText, validateAtReply, validateBreakdownReply, validateProductionReply, variantName, variantOf, weeklyRaw, weeklyText, windowOf,
+  productionLineKey, productionLineLabel, totalText, validateAtReply, validateBreakdownReply, validateProductionReply, variantName, variantOf, weeklyRaw, weeklyText,
 } from './productionData.ts';
 import './productionLines.css';
 import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
@@ -56,11 +56,11 @@ export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, a
   return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply, track?.source) };
 }
 
-export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, gate: Pick<Gate, 'within'>, tag: string | undefined, key: string | null, group: string, hour: number | null, detailHours: number, active: boolean) {
+export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, gate: Pick<Gate, 'recorded'>, tag: string | undefined, key: string | null, group: string, hour: number | null, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const start = hour == null ? null : gate.within(windowOf(detailHours, hour) * detailHours);
-  const request = track && tag && key && start != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), key, group, hour: start } } : null;
+  const read = gate.recorded(hour);
+  const request = track && tag && key && read !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
+    params: { branchId: track.branch.id, country: countryFromKey(tag), key, group, hour: read } } : null;
   return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
 }
 
@@ -106,7 +106,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
   const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
   const breakdownHour = pinned ? clockHour : regionAt;
-  const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
+  const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, active && (pinned || drill.breakdown !== null));
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
   useDiagnostics(onDiagnostics, warnings);

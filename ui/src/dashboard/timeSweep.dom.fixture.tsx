@@ -8,6 +8,8 @@ import type { WidgetRuntime } from './definitions';
 import { createWidget } from './model';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
 import { PlaybackController } from './playback';
+import type { EngineFrame, FrameEngine } from '../engine/frame';
+import { PHASES } from '../engine/frame';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
 import { MeasuredWidget } from './widgetPerf';
@@ -70,7 +72,18 @@ const source = { id: 'sweep', path: 'sweep.battleplan', revision: '1', metadata:
   playerCountryId: '1', contentVerified: true, partial: null, warnings: [], buildWarnings: [], revision: '1' } };
 const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch: source.metadata.branches[0], axisOffset: OFFSET,
   selectedTag: 'GER', selectedSlot: 1 } as unknown as BoundTrack;
-const clock = new PlaybackController();
+let now = 1000;
+performance.now = () => now;
+const tasks = new Map<string, (frame: EngineFrame) => boolean | void>();
+const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
+  tasks.set(phase, run);
+  return { wake() {}, stop() { tasks.delete(phase); } };
+} } as unknown as FrameEngine;
+const tick = (ms: number) => {
+  now += ms;
+  for (const phase of PHASES) tasks.get(phase)?.({ now, dt: ms, index: 0, phase } as EngineFrame);
+};
+const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: FIRST - OFFSET - 5, lastHour: LAST - OFFSET + 5 });
 const makeRuntime = (replies: Replies, client = makeClient(replies)) => ({ campaignTracks: [track], defaultRoleId: 'primary', tracks: [track], clock,
   maps: new MapViewsStore(client as never, clock), onMapBranch() {}, client, alignment: 'anchors', nativeHidden: false, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false,
@@ -167,11 +180,11 @@ Object.assign(window, { timeSweep: {
     await settle();
     return { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
   },
-  async play(speed: number, ms: number) {
+  async play(speed: number, count: number, ms: number) {
     shown.clear();
     clock.setSpeed(speed);
     clock.setPlaying(true);
-    await new Promise<void>(resolve => setTimeout(resolve, ms));
+    for (let frame = 0; frame < count; frame++) { tick(ms); await settle(); }
     const playing = { hour: clock.getHour(), advancing: clock.getSnapshot().playing, states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
     clock.setPlaying(false);
     await settle();

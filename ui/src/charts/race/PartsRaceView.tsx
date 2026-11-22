@@ -123,6 +123,8 @@ function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<stri
   return { summaries, onSummaryView, error: ranked ? null : tiles.error, unrecorded };
 }
 
+const HOLDERS = { holders: true };
+
 export default function PartsRaceView({ widget, runtime, active, countrySlot = null, onDiagnostics, config }: WidgetProps & { config: PartsRaceViewConfig }) {
   const options = useMemo(() => resolveOptions(config.options, widget.options), [config.options, widget.options]);
   const chartOptions = useMemo(() => config.chartOptions?.(options) ?? options, [config, options]);
@@ -276,7 +278,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const shownEntries = live?.entries();
   const shownTags = view === 'race' ? [...new Set([...(shownEntries ?? ranked).map(entry => entry.tag), ...(followedNow && top != null ? sticky.current?.tags ?? [] : [])])]
     : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
-  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), pinned ? 'breakdown' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), pinned ? 'breakdown' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const drill = drillControl.state, dispatchDrill = drillControl.dispatch;
   const [origin, setOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, config.product, params, options.show, widget.options?.holder, widget.options?.drillOriginHour]);
@@ -328,14 +330,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       }} />
   </div> : breakdown;
   const pinTime = drillControl.time();
+  const pinCountry = drillControl.hold(breakdownTag ? { tag: selection?.tag ?? breakdownTag, origin: selection?.hour ?? originHour } : null);
   return <div className="parts-race" ref={anchor}>
     <DrillHost drill={{ ...drillControl, open: drillOpen }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={partsLabel} day={breakdownFollows && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)}
       canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && breakdownTag && pinTime ? () => runtime.addWidgetBelow(widget.id, selection
-        ? pinNativeCountryParts(widget, track, selection, pinTime, partsLabel)
-        : pinCountryParts(widget, track, breakdownTag, pinTime, originHour, partsLabel)) : undefined}
+      onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, selection
+        ? pinNativeCountryParts(widget, track, pinCountry, pinTime, partsLabel)
+        : pinCountryParts(widget, track, pinCountry, pinTime, partsLabel)) : undefined}
       main={<CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open}
       options={chartOptions} view={view} extent={extent}
       playhead={playhead} moment={moment} slots={slots} ranked={shownEntries ?? entries} liveRanked={live ?? undefined} lines={drawnLines}

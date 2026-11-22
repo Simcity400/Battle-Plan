@@ -61,7 +61,7 @@ function PartFollow({ store, query, root, id, head }: { store: FollowStore | nul
 export function PartFollows({ store, gate, branchId, tags, on, root, head }: { store: FollowStore | null; gate: Pick<Gate, 'follow'>; branchId: string | undefined;
   tags: readonly string[]; on: boolean; root: RefObject<Element | null>; head: PartsHead }) {
   const parts = head.parts;
-  const reads = useMemo(() => tags.map(tag => ({ tag, hour: 0 })), [tags]);
+  const reads = useMemo(() => tags.map(tag => ({ country: countryFromKey(tag) })), [tags]);
   const query = (family: unknown) => on && branchId && reads.length ? gate.follow({ product: 'series-state', params: { branchId, family, reads } }) : null;
   if (parts.kind === 'keyed') return <PartFollow store={store} query={query(parts.family)} root={root} id="keyed" head={head} />;
   return <>{parts.items.map(item => <PartFollow key={item.id} store={store} query={query(item.measure)} root={root} id={item.id} head={head} />)}</>;

@@ -174,7 +174,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const asked = top == null && tags.length > 0;
   const racing = raceView === 'race' || (!!parts && raceView === null && top != null);
   const followQuery = useMemo(() => !arsenal && active && following && track && (top != null || asked) && (racing || asked)
-    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: measure, ...(top != null && racing ? { top } : { reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) }) } }) : null,
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: measure, ...(top != null && racing ? { top } : { reads: tags.map(tag => ({ country: countryFromKey(tag) })) }) } }) : null,
   [active, following, track?.branch.id, measure, top, asked, tags, racing, !!arsenal, gate.follow]);
   const live = useRef<ReturnType<typeof liveRace> | null>(null);
   const sticky = useRef<StickyMembers | null>(null);
@@ -276,7 +276,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     raceView === 'lines' && secondMeasure ? lineTags : [], null, null, active && raceView === 'lines' && !!secondMeasure, false,
     top == null ? membership ?? undefined : undefined, lastHour, following);
   const secondQuery = useMemo(() => active && following && track && secondMeasure && raceView === 'lines' && asked
-    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: secondMeasure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null,
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: secondMeasure, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
   [active, following, track?.branch.id, secondMeasure, raceView, asked, tags, gate.follow]);
   const secondFollowed = useFollow(store, secondQuery, root, () => {}, followedRows);
   const secondEntry = secondMeasure && followsHead(secondFollowed) && secondFollowed.entry !== null ? secondFollowed.entry : null;

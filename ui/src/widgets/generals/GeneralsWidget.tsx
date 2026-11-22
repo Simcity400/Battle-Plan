@@ -144,7 +144,7 @@ export default function GeneralsWidget(props: WidgetProps) {
     onClose={() => { if (currentOwner.current === owner) dispatch({ type: 'close' }); }}
     onPin={drill.breakdown && track && drillControl.time() ? () => {
       const time = drillControl.time();
-      const history = time?.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
+      const history = time?.value.mode === 'pin' ? drillControl.gate.span(track.branch.firstHour, drillControl.hour ?? Number.NaN) : null;
       const kept = history ? drillControl.time(history) : time;
       if (currentOwner.current === owner && kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, kept));
     } : undefined} main={<div ref={head.root} className="generals-main">{body()}</div>}>

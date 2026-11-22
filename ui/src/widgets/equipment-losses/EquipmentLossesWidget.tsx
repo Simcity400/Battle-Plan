@@ -54,6 +54,7 @@ import type { LandSource, LossHeadReply, LossLeaf, LossesReply } from '../../gen
 import './equipmentLosses.css';
 import { useDrill } from '../../charts/drill/useDrill';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
 const rowKey = (row: LossRow) => row.id;
@@ -84,7 +85,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const bindingKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time,
     hasSavedCountry, widget.options?.lossCountry, widget.options?.lossSelection, options.show]);
   const bindingOwner = useMemo(() => ({ client: runtime.client, key: bindingKey }), [runtime.client, bindingKey]);
-  const drillControl = useDrill(runtime, useRegion(widget), options.show === DETAIL.id ? DETAIL.id : null);
+  const drillControl = useDrill(runtime, useRegion(widget), options.show === DETAIL.id ? DETAIL.id : null, undefined, undefined, HOLDERS);
   const drill = drillControl.state;
   useEffect(() => { drillControl.close(); }, [bindingOwner]);
   const speed = usePlaybackMotion(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
@@ -97,7 +98,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const catalogue = useCountryGroups(runtime, track, active);
   const origin = requestedView ? followView ? hourAt(runtime.clock.getSnapshot().position) : requestedView.hour : null;
   const originRef = useRef<{ owner: unknown; hour: number } | null>(null);
-  const recorded = (hour: number) => !!track && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const recorded = (hour: number) => recordedHour(track, hour) !== null;
   if (originRef.current?.owner !== bindingOwner || !recorded(originRef.current.hour)) originRef.current = origin === null ? null : { owner: bindingOwner, hour: origin };
   const originHour = originRef.current?.hour ?? null;
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.lossCountry, track, widget.countries),
@@ -321,16 +322,19 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
         return fitTooltip([{ title: 'Equipment losses', subtitle: `${formatDateTime(pointed)}${exactLossHour(data, pointed) ? '' : ' (to the chart\'s bin)'}`,
           rows: lossRows(withShips(data, pointed), { ...view, hour: pointed }, selected).map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
   </>;
+  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
   return <div ref={rootRef} className="equipment-losses">{countryHeader}{catalogueNotice}
     {saved ? detail : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'}
     title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} canFollow={followView && view.from == null}
-    onPin={detailView && drillControl.time() ? () => {
+    onPin={detailView && pinCountry && drillControl.time() ? () => {
       const span = view.from != null ? drillControl.gate.span(view.from, detailView.hour) : null;
       const time = view.from != null ? span && drillControl.time(span, 'range') : drillControl.time();
-      if (time) runtime.addWidgetBelow(widget.id, pinLosses(widget, track, tag, time, selected ? [...selected] : null, selectedCountry));
+      if (time) runtime.addWidgetBelow(widget.id, pinLosses(widget, track, pinCountry, time, selected ? [...selected] : null));
     } : undefined}
     anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
 }
+
+const HOLDERS = { holders: true };
 
 export default function EquipmentLossesWidget(props: WidgetProps) {
   return <><LossesView {...props} /><CombatLogDetails {...props} view="equipment" /></>;

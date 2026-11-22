@@ -89,11 +89,13 @@ class FollowedRows {
   tags(): readonly string[] { return this.held?.reset === this.scope ? this.held.tags : []; }
 }
 
+const HOLDERS = { holders: true };
+
 export default function ArmySizeWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
   const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
   const pinned = options.view === 'breakdown';
-  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const gate = useGate(runtime, widget, SPEC, active);
   const drill = drillControl.state, dispatchDrill = drillControl.dispatch;
   const drillFollowing = drill.breakdown !== null && drill.follow;
@@ -442,11 +444,12 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
   const pinTime = drillControl.time();
+  const pinCountry = drillControl.hold(pinTag ? { tag: pinTag, origin: originHour } : null);
   return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
     <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
       title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas"
-      onPin={track && pinTag && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinTag, pinTime, originHour, measure)) : undefined}
+      onPin={track && pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(widget, track, pinCountry, pinTime, measure)) : undefined}
       main={main}>
       {choice}
     </DrillHost>

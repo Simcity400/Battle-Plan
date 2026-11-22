@@ -70,6 +70,7 @@ const STRIP_SHARE = 0.28;
 const DAY_HOURS = 24;
 const DETAIL_HOURS = 720;
 const NO_PAINT = () => {};
+const HOLDERS = { holders: true };
 
 function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
   return { ...frame, y: [frame.y[0] * scale, frame.y[1] * scale], toY: value => frame.toY(value / scale), valueAt: py => frame.valueAt(py) * scale };
@@ -77,7 +78,7 @@ function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
 
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const savedShow = BREAKDOWNS.find(item => item.id === widget.options?.show)?.id ?? null;
-  const drillControl = useDrill(runtime, useRegion(widget), savedShow);
+  const drillControl = useDrill(runtime, useRegion(widget), savedShow, undefined, undefined, HOLDERS);
   const storedDrill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object>();
@@ -100,9 +101,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const headTags = following && active && track && !saved ? tags : null;
   const branchId = track?.branch.id;
   const fuelQuery = useMemo(() => headTags?.length ? gate.follow({ product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null, [headTags, branchId, gate.follow]);
+    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [headTags, branchId, gate.follow]);
   const capacityQuery = useMemo(() => headTags?.length && showCapacity ? gate.follow({ product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null, [headTags, branchId, showCapacity, gate.follow]);
+    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [headTags, branchId, showCapacity, gate.follow]);
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
@@ -360,6 +361,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const notices = groupRefreshError ? <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} /> : null;
 
   const pinTime = drillControl.time();
+  const pinCountry = drillControl.hold(selectedCountry && track ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}{notices}
     {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
@@ -371,9 +373,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)}
     canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })}
     main={main}
-    onPin={drillTag && track && !actorState && pinTime ? () => {
-      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? drillTag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id, pinTime);
-      pinned.options = { ...pinned.options, fuelCountry: selectedCountry ? drillControl.bind(selectedCountry.tag) ?? '' : '',
+    onPin={drillTag && track && !actorState && pinTime && pinCountry ? () => {
+      const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [pinCountry.tag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id, pinTime);
+      pinned.options = { ...pinned.options, fuelCountry: pinCountry.token,
         fuelRecipient: heldRecipient ? fuelRecipientToken(heldRecipient) : '', fuelConsumption: heldConsumption ? fuelConsumptionToken(heldConsumption) : '',
         fuelConsumptionLevel: heldLevel ? fuelConsumptionLevelToken(heldLevel) : '', fuelExtent: fuelExtentToken(campaign, track.branch.id, extent) };
       runtime.addWidgetBelow(widget.id, pinned);

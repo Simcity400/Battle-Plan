@@ -15,7 +15,7 @@ export interface DrillControl<S extends DrillState = DrillState, A = DrillAction
   hour: GatedHour | null;
   outside: Outside | null;
   time: Gate['time'];
-  bind: Gate['bind'];
+  hold: Gate['hold'];
   dispatch(action: A | DrillAction): void;
   followsAt(hour: number): boolean;
   show(breakdown: string, hour: number): void;
@@ -44,10 +44,10 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
   const { clock } = runtime;
   return useMemo(() => {
     const playhead = () => track ? recordedHour(track, Math.floor(clock.getHour()) + track.axisOffset) : null;
-    const followsAt = (hour: number) => { const head = playhead(); return head !== null && opensFollowing(parent, hour, clock.getSnapshot().playing, head); };
+    const followsAt = (hour: number) => { const head = playhead(); return head !== null && recordedHour(track, hour) !== null && opensFollowing(parent, hour, clock.getSnapshot().playing, head); };
     return {
       state, open, following: drillFollows(parent, state), parent, region, gate, hour: open ? gate.hour : null, outside: open ? gate.outside : null,
-      time: gate.time, bind: gate.bind, dispatch, followsAt,
+      time: gate.time, hold: gate.hold, dispatch, followsAt,
       show: (breakdown, hour) => dispatch({ type: 'open', breakdown, hour, follow: followsAt(hour) }),
       showAt: (breakdown, hour) => dispatch({ type: 'open', breakdown, hour, follow: false }),
       attach: breakdown => dispatch({ type: 'attach', breakdown }),

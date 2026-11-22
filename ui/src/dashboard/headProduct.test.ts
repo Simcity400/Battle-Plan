@@ -4,6 +4,7 @@ import { headRead, headSource, headSubject, heldPanel, momentHour, retain, watch
 import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
+import { followSpan } from './widgetTime.ts';
 import type { HeadProduct } from './headProduct';
 import { at, SPEC, type TrackHour, axisAt } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
@@ -141,11 +142,11 @@ test('continuous playback across a track’s end tells a following widget once, 
   const read = headRead({ widget: { kind: 'aces', trackIds: ['side'], time: { mode: 'follow' } } as WidgetSpec, action: SPEC }, ending, [ending]);
   const widgets = [new WidgetFrames(page, 'aces'), new WidgetFrames(page, 'aces-2')];
   const told: [number, boolean][] = [];
-  const stops = widgets.map((widget, index) => watchBoundary(widget.clock, () => read.hourAt(axisAt(widget.clock.getHour())) === null, () => told.push([index, read.hourAt(axisAt(page.getHour())) === null])));
+  const stops = widgets.map((widget, index) => watchBoundary(widget.clock, followSpan(ending), () => told.push([index, read.hourAt(axisAt(page.getHour())) === null])));
   const starting = { id: 'late', axisOffset: 0, branch: { id: 'l', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
   const late = headRead({ widget: { kind: 'doctrine-mastery', trackIds: ['late'], time: { mode: 'follow' } } as WidgetSpec, action: SPEC }, starting, [starting]);
   const entered: boolean[] = [];
-  const stopLate = watchBoundary(page, () => late.hourAt(axisAt(page.getHour())) === null, () => entered.push(late.hourAt(axisAt(page.getHour())) === null));
+  const stopLate = watchBoundary(page, followSpan(starting), () => entered.push(late.hourAt(axisAt(page.getHour())) === null));
   page.setBounds({ firstHour: 0, lastHour: 500 });
   page.seek(99);
   page.setSpeed(1440);
@@ -163,4 +164,33 @@ test('continuous playback across a track’s end tells a following widget once, 
   for (const stop of [...stops, stopLate]) stop();
   page.seek(300);
   assert.equal(told.length, 4, 'a stopped watch hears nothing');
+});
+
+test('a frame re-reads only the boundary watches whose span it crossed, however many are registered', t => {
+  const tasks = new Map<string, (frame: EngineFrame) => boolean | void>();
+  const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
+    tasks.set(phase, run);
+    return { wake() {}, stop() { tasks.delete(phase); } };
+  } } as unknown as FrameEngine;
+  const page = new PlaybackController(engine);
+  t.after(() => page.stop());
+  page.setBounds({ firstHour: 0, lastHour: 100_000 });
+  page.seek(0);
+  let reads = 0;
+  const told: number[] = [];
+  const stops = Array.from({ length: 1500 }, (_, index) => watchBoundary(page, axis => {
+    reads++;
+    const width = 10 * (index + 1), low = Math.floor(axis / width) * width;
+    return [low, low + width];
+  }, () => told.push(index)));
+  assert.equal(reads, 1500, 'each watch reads its span once when registered');
+  for (const hour of [1, 5, 9]) page.seek(hour);
+  assert.deepEqual([reads, told], [1500, []], 'moves within every span read nothing');
+  page.seek(15);
+  assert.deepEqual([reads, told], [1501, [0]], 'crossing one boundary re-reads one watch');
+  page.seek(25);
+  assert.deepEqual([reads, told.sort((a, b) => a - b)], [1503, [0, 0, 1]], 'crossing two boundaries re-reads two watches');
+  for (const stop of stops) stop();
+  page.seek(10_000);
+  assert.equal(reads, 1503, 'released watches are never read again');
 });

@@ -40,7 +40,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const total = useTiles(client, lane(DIVISIONS), active, following);
   const store = useMemo(() => source ? followStore(client, source, clock, axisOffset) : null, [client, clock, source, axisOffset]);
   const headQuery = (measure: string) => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId,
-    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
+    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags, gate.follow]);
   const answered = useRef(new Set<() => void>()).current;
   const told = useCallback(() => { for (const listener of [...answered]) listener(); }, [answered]);

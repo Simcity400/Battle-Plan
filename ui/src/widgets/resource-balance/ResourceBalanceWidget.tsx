@@ -34,7 +34,6 @@ import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { readDatedCountry } from '../../dashboard/datedCountry';
-import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -60,6 +59,7 @@ import { regionFollows, SPEC, type GatedHour } from '../../dashboard/regionTime.
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
+const HOLDERS = { holders: true };
 const SUPPLY = { kind: RESOURCE_BALANCE, measure: 'supply' } as const;
 const DEMAND = { kind: RESOURCE_BALANCE, measure: 'demand' } as const;
 
@@ -70,11 +70,10 @@ export default function ResourceBalanceWidget(props: WidgetProps) {
 const isMember = (within: ComparisonProps['within'], hour: number | null) =>
   !within || hour === null || within.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
-function savedCountryOf(widget: WidgetSpec, track: BoundTrack): DatedCountrySelection | null {
-  const options = resolveOptions(OPTIONS, widget.options);
-  return readDatedCountry(options.resourceCountry, track.source.metadata.campaignKey, track.branch.id)
-    ?? (widget.countries.kind === 'tags' && widget.countries.tags.length === 1
-      ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: widget.countries.tags[0], originOffset: 0 } : null);
+function savedCountryValid(widget: WidgetSpec, track: BoundTrack): boolean {
+  const stored = resolveOptions(OPTIONS, widget.options).resourceCountry;
+  return widget.countries.kind === 'tags' && widget.countries.tags.length === 1
+    && (!stored || readDatedCountry(stored, track.source.metadata.campaignKey, track.branch.id, widget.countries) !== null);
 }
 
 function ResourceCountry(props: ComparisonProps) {
@@ -82,12 +81,11 @@ function ResourceCountry(props: ComparisonProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === BREAKDOWN.id;
-  const savedCountry = saved && track ? savedCountryOf(widget, track) : null;
-  const tag = saved ? savedCountry?.tag ?? null : selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see resources." />;
-  if (saved && !savedCountry) return <WidgetState kind="unavailable" message="Saved country selection unavailable. Choose it again." />;
+  if (saved && !savedCountryValid(widget, track)) return <WidgetState kind="unavailable" message="Saved country selection unavailable. Choose it again." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  return <ResourceCountryView {...props} track={track} tag={tag} saved={savedCountry} />;
+  return <ResourceCountryView {...props} track={track} tag={tag} saved={saved} />;
 }
 
 function partColours(tokens: ChartTokens): Map<string, string> {
@@ -98,20 +96,23 @@ function partColours(tokens: ChartTokens): Map<string, string> {
   ]);
 }
 
-function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: string; saved: DatedCountrySelection | null }) {
-  const { widget, runtime, active, countrySlot, track, tag, saved } = props;
+function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: string; saved: boolean }) {
+  const { widget, runtime, active, countrySlot, track, tag, saved, setOption } = props;
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const menu = useContextMenu('Resource actions');
   const anchor = useRef<HTMLDivElement>(null);
-  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null);
+  const needs = useMemo(() => saved ? { country: { stored: options.resourceCountry, key: 'resourceCountry', setOption }, holders: true } : HOLDERS,
+    [saved, options.resourceCountry, setOption]);
+  const drillControl = useDrill(runtime, useRegion(widget), saved ? BREAKDOWN.id : null, undefined, undefined, needs);
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [resourceId, setResourceId] = useState<number>();
   const following = widget.time.mode === 'follow';
   const requestHour = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
   const window = resolveWindow(widget, track, runtime.tracks, requestHour);
-  const savedExtent = saved?.extent ? [track.branch.firstHour + saved.extent[0], track.branch.firstHour + saved.extent[1]] as [number, number] : null;
+  const savedSelection = saved ? readDatedCountry(options.resourceCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
+  const savedExtent = savedSelection?.extent ? [track.branch.firstHour + savedSelection.extent[0], track.branch.firstHour + savedSelection.extent[1]] as [number, number] : null;
   const extent: [number, number] = savedExtent && savedExtent[0] >= track.branch.firstHour && savedExtent[1] <= track.branch.lastHour ? savedExtent
     : widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];
   const playhead = window && (following || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
@@ -120,16 +121,17 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const shown = !!saved || drill.breakdown !== null;
   const drillFollows = regionFollows(drillControl.region);
   const drillAt = drillControl.hour;
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillControl.gate, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
+  const drillTag = saved ? drillControl.gate.country?.tag ?? null : tag;
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillControl.gate, RESOURCE_BALANCE, shown && drillTag ? { country: countryFromKey(drillTag) } : null,
     { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
   const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
     : drillData?.resources.find(resource => resource.id === resourceId) ?? drillData?.resources[0];
   const dayAt = drillFollows ? breakdown.at : drillAt;
-  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && dayAt !== null ? [{ tag, hour: dayAt }] : [], active);
+  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && dayAt !== null && drillTag ? [{ tag: drillTag, hour: dayAt }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={breakdown.error} hour={dayAt} reason={null}
-    label={dayAt !== null ? header.labelAt(dayAt)(tag) : null}
+    label={dayAt !== null && drillTag ? header.labelAt(dayAt)(drillTag) : null}
     live={drillFollows ? { read: () => breakdown.shownAt(), subscribe: changed => breakdown.live.subscribe(changed) } : undefined} />, countrySlot) : null;
   const axisOffset = track.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
@@ -142,12 +144,16 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   };
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
 
+  const stage = drillControl.gate.stage;
   const detail = breakdown.outside ? <WidgetState kind="outside" read={breakdown} />
+    : saved && stage.stage === 'failed' ? <WidgetState kind="error" failure={stage.failure} onRetry={stage.retry} />
+    : saved && stage.stage === 'holders' ? <WidgetState kind="unavailable" message="More than one country held this tag. Choose the country again in settings." />
+    : saved && stage.stage === 'absent' ? <WidgetState kind="unavailable" message={stage.reason ?? 'The chosen country did not exist at this time.'} />
     : breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
       : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
-            : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} tag={tag} resource={picked} data={drillData} live={breakdown.live}
+            : <ResourceBreakdown runtime={runtime} gate={drillControl.gate} track={track} active={active} tag={drillTag ?? tag} resource={picked} data={drillData} live={breakdown.live}
               hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
               hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
@@ -165,7 +171,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
 
   const pinTime = drillControl.time();
   const pinExtent = drillControl.gate.span(extent[0], extent[1]);
-  const country = pinExtent && drillControl.bind(tag, pinExtent);
+  const country = drillControl.hold(drillData && dayAt !== null ? { tag: drillData.tag, origin: dayAt } : null, pinExtent);
   const main = options.view === 'time'
     ? <ResourcesOverTime {...props} extent={extent} playhead={playhead} liveHead={liveHead} onPick={open} />
     : <ResourceBars {...props} onPick={open} />;
@@ -173,10 +179,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} canFollow={following}
       onClose={() => dispatch({ type: 'close' })} main={main}
-      onPin={picked && pinTime && country ? () => {
-        const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id, pinTime);
-        pinned.countries = { kind: 'tags', tags: [tag] };
-        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])), resourceCountry: country };
+      onPin={picked && pinTime && pinExtent && country ? () => {
+        const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [country.tag] } }, { ...BREAKDOWN, label: resourceName(picked) }, track.id, pinTime);
+        pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])), resourceCountry: country.token };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
       <div ref={breakdown.root}>
@@ -336,7 +341,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const sized = gate.span(extent[0], extent[1]);
   const sizes = useProduct(runtime.client, sized ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
     params: { branchId: track.branch.id, country: countryFromKey(tag), from: sized.firstHour, to: sized.lastHour } } : null, active, validateResourceSizes, track.source);
-  const hoverAt = gate.recorded(hoverHour);
+  const hoverAt = gate.recorded(hoverHour, within);
   const hovered = useProduct(runtime.client, hoverAt === null ? null : request(hoverAt), active, validateResourceBalance, track.source);
   useDiagnostics(onDiagnostics, atHead.data ? [...atHead.data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
   const resources = useMemo(() => atHead.data?.resources ?? [], [atHead.data]);

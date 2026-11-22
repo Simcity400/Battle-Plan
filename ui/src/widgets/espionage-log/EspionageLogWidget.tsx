@@ -138,7 +138,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   const [tipRow, setTipRow] = useState<LogRow<OperationItem> | null>(null);
   const [detail, setDetail] = useState<{ key: string; value: OperationDetail } | null>(null);
-  const detailHour = gate.within(tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null);
+  const detailHour = gate.recorded(tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null);
   const detailKey = tipRow?.item.id && detailHour !== null ? JSON.stringify([tipRow.item.id, detailHour]) : null;
   useEffect(() => {
     if (!active || !track || !tipRow?.item.id || detailHour === null || !detailKey) return;

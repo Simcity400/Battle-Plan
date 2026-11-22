@@ -24,7 +24,7 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
     if (mode === 'follow' || mode === 'campaign') onChange({ mode });
     else if (mode === 'pin') {
       const pin = pinNow(effective, runtime.tracks, axisHour(runtime.clock));
-      if (pin) onChange(pin);
+      if (pin) onChange(pin.value);
     }
     else if (reference) onChange({ mode: 'range', firstOffset: 0, lastOffset: reference.branch.lastHour - reference.branch.firstHour });
   };

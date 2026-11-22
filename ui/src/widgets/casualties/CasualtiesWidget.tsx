@@ -126,7 +126,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : tags, [top, ranked.entry, ranked.structure, tags]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
-    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } }) : null;
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, membersKey, gate.follow]);
   const read = useCallback((entry: FollowEntry) => entry, []);
   const measured = [

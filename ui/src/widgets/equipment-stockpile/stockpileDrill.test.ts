@@ -64,7 +64,7 @@ test('Pin keeps one native country and semantic type/design; a different campaig
   const type = stockGroups(reply, 'type', Infinity)[0];
   const pinned = pinStockpileDrill(widget, track, 'AAA', type, 'type', 'balance', 112.9, gatedTime({ mode: 'pin', windows: { track: { firstOffset: 22, lastOffset: 22 } } }), boundCountryToken(boundCountry(country)))!;
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['AAA'] });
-  assert.deepEqual(pinned.time, { mode: 'pin', windows: { track: { firstOffset: 22, lastOffset: 22 } } });
+  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { track: { firstOffset: 22, lastOffset: 22 } } });
   const options = resolveOptions(OPTIONS, pinned.options);
   assert.equal(options.show, 'stockpile');
   assert.deepEqual(readDatedCountry(options.stockpileCountry, 'campaign-a', 'branch', pinned.countries), country);
@@ -72,7 +72,7 @@ test('Pin keeps one native country and semantic type/design; a different campaig
   assert.equal(stockpileDrillGroup(stockGroups(reply, 'type', Infinity), String(options.partGroup))?.key, type.key);
   const variant = stockGroups(reply, 'variant', Infinity)[0];
   const variantPin = pinStockpileDrill(widget, track, 'AAA', variant, 'variant', 'stock', 110, gatedTime({ mode: 'follow' }), boundCountryToken(boundCountry(country)))!;
-  assert.deepEqual(variantPin.time, { mode: 'follow' });
+  assert.deepEqual(variantPin.time.value, { mode: 'follow' });
   const token = String(resolveOptions(OPTIONS, variantPin.options).partGroup);
   assert.ok(stockpileDrillGroup(stockGroups(reply, 'variant', Infinity), token));
   assert.equal(stockpileDrillGroup(stockGroups({ ...reply, campaignKey: 'campaign-b' }, 'variant', Infinity), token), undefined);

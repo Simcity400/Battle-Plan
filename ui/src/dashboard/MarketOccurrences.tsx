@@ -20,7 +20,7 @@ import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerTitle, MARKE
 import type { LedgerItem } from './marketLedger';
 import '../widgets/event-feed/eventFeed.css';
 import './market.css';
-import type { GatedWindow } from './regionTime';
+import type { BoundWindow } from './regionTime';
 
 const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
 const PALETTE: Record<number, number> = { 3: 1, 4: 5, 5: 4, 6: 5, 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34: 1 };
@@ -31,7 +31,7 @@ export interface MarketOccurrencesProps {
   track: BoundTrack;
   kinds: readonly number[];
   tags: readonly string[] | null;
-  span: GatedWindow | null;
+  span: BoundWindow | null;
   cut: LogCut;
   active: boolean;
   label: string;

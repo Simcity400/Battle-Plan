@@ -116,7 +116,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const familiesText = JSON.stringify(families);
   const chosen = useStickyMembers(stickyReset, members, stickyLimit(members.length));
   const named = top != null ? every : chosen;
-  const columnReads = top != null ? 'every' : named.length ? named.map(tag => ({ country: countryFromKey(tag), hour: 0 })) : null;
+  const columnReads = top != null ? 'every' : named.length ? named.map(tag => ({ country: countryFromKey(tag) })) : null;
   const columnReadsText = JSON.stringify(columnReads);
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && columnReads
     ? gate.follow({ product: 'series-state', params: { branchId, family, reads: columnReads } }) : null),

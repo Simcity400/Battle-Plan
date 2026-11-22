@@ -335,11 +335,11 @@ test('campaign drill Follow uses the actual aligned clock; day pick and Pin pres
   assert.equal(at(picked, 3500), 5500);
   assert.equal(at(reduceDrill(picked, { type: 'follow' }), 3600), 4600);
   const pinned = pinContributions(source, track, selection, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } }), [2500, 8000]);
-  assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
+  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
   assert.deepEqual(readSelection(pinned.options?.tradeSelection, tradeContext(track)), selection);
   assert.deepEqual(contributionExtent(pinned.options?.tradeExtent, { firstHour: 20_000 }), [20_500, 26_000]);
   assert.equal(pinned.options?.measure, 'total');
-  assert.deepEqual(pinContributions(source, track, selection, gatedTime({ mode: 'follow' }), [2500, 8000]).time, { mode: 'follow' });
+  assert.deepEqual(pinContributions(source, track, selection, gatedTime({ mode: 'follow' }), [2500, 8000]).time.value, { mode: 'follow' });
 });
 
 test('a country view saves one native holder, selects both its sides and pins for that country', () => {

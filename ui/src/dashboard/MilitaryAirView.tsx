@@ -37,7 +37,7 @@ import { liveAt, sameBy } from '../charts/live';
 import { stickyLimit, stickyMembers } from './follow/stickyMembers.ts';
 import type { StickyMembers } from './follow/stickyMembers';
 import type { LedgerRow } from './militaryAirLedger';
-import { airLossDrillActor, airLossDrillActors, pinAirLossDrill } from './airLossDrill';
+import { airLossDrillActor, airLossDrillActors, heldIdentity, pinAirLossDrill } from './airLossDrill';
 import AirLossDrill from './AirLossDrill.tsx';
 import DatedCountryChip from './DatedCountryChip';
 import BombingDrill from './BombingDrill';
@@ -62,6 +62,8 @@ const rowsKey = (rows: readonly LedgerRow[]) => rows.map(row => row.tag + SEP + 
 const entryKey = (entry: CountryRaceEntry) => [entry.tag, entry.label, entry.value, entry.stretch].join(SEP);
 const itemKey = (item: Item) => [item.id, item.leftText, item.rightText, item.ratioText, item.segment, item.label, item.color].join(SEP);
 
+const HOLDERS = { holders: true };
+
 export default function MilitaryAirView({ widget, runtime, active, countrySlot = null, onDiagnostics, family, fields, title }: WidgetProps & {
   family: MilitaryAirFamily; fields: readonly OptionField[]; title: string;
 }) {
@@ -73,7 +75,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const air = family === 'airLosses', metric = air ? options.measure === 'dealt' ? 'dealt' : 'taken' : 'total';
   const regions = contentSet(options.regions).map(Number), causes = contentSet(options.causes).map(Number);
   const pinnedAir = air && (options.view === 'breakdown' || options.show === 'breakdown' || widget.options?.show === 'breakdown');
-  const airControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), pinnedAir ? 'air' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const airControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), pinnedAir ? 'air' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const airDrill = airControl.state, dispatchAir = airControl.dispatch;
   const bombingControl = useDrill(runtime, useRegion(widget));
   const [drillOwner, setDrillOwner] = useState<unknown>(null);
@@ -301,7 +303,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
           const current = index && ledgerCountryAt(index, airActor.tag, from, airAt, airActor.identity);
           const span = widget.time.mode === 'range' ? airControl.gate.span(from, airAt) : null;
           const time = widget.time.mode === 'range' ? span && airControl.time(span, 'range') : airControl.time();
-          if (time) runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, current?.tag ?? airActor.tag, airActor.identity, time));
+          const held = airControl.hold({ tag: current?.tag ?? airActor.tag, origin: airAt });
+          if (time && held && heldIdentity(held) === airActor.identity) runtime.addWidgetBelow(widget.id, pinAirLossDrill(widget, track, held, time));
         } : undefined} main={main}>
         {airChoices ? <div className="military-air-ledger">
           <p className="drill-empty">Choose a country for this moment.</p>

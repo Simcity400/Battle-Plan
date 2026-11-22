@@ -343,7 +343,8 @@ export class FactRequests<V> {
   }
 }
 
-const labelParams = (params: unknown) => params as GatedParams;
+export type LabelParams = Readonly<Record<string, unknown>>;
+const labelParams = (params: LabelParams) => params as GatedParams;
 
 export interface FactSource { sourceId: string; revision: string; branchId: string; content?: number }
 
@@ -355,7 +356,7 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
   perRequest: number;
   requestOrder?: FactRequestOrder;
   shared?: boolean;
-  params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
+  params: (branchId: string, hour: number, tags: readonly string[]) => LabelParams;
   extract: (data: unknown, params?: unknown, source?: FactSource) => Found;
   held?: HeldLookup<V>;
 }
@@ -364,7 +365,7 @@ export interface BatchFactSpec<V> {
   product: string;
   identity?: string;
   batch: true;
-  params: (branchId: string, plan: FactPlan) => unknown;
+  params: (branchId: string, plan: FactPlan) => LabelParams;
   extract: (data: unknown, plan: FactPlan) => ReadonlyMap<number, ReadonlyMap<string, V>>;
   single?: FactSpec<V, FactsFound<V>>;
   oversize?: string;

@@ -54,9 +54,9 @@ test('every widget, through the real host on a track aligned 900 hours later wit
         found.push(...unrecordedAsks(await act<Asked[]>('asked()'), `${mode} ${replies} sought to ${hour}`));
       }
       steps.push(['stepped past the end', await act<Step>('step(1)'), false]);
-      for (const [label, from, speed, ms] of [['inside', 100, 4, 1000], ['past the end', 105, 8, 900]] as const) {
+      for (const [label, from, speed, count] of [['inside', 100, 4, 10], ['past the end', 105, 8, 9]] as const) {
         await act(`seek(${from})`);
-        const played = await act<{ playing: Step & { advancing: boolean }; paused: Step }>(`play(${speed}, ${ms})`);
+        const played = await act<{ playing: Step & { advancing: boolean }; paused: Step }>(`play(${speed}, ${count}, 100)`);
         assert.ok(played.playing.advancing, `${mode} ${replies}: the clock is still playing when ${label} is sampled, at ${played.playing.hour}`);
         steps.push([`playing ${label}`, played.playing, true], [`paused after playing ${label}`, played.paused, false]);
         found.push(...unrecordedAsks(await act<Asked[]>('asked()'), `${mode} ${replies} played ${label}`));

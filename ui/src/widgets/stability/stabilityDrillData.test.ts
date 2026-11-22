@@ -1,4 +1,5 @@
 import { gatedTime } from '../../test-support/gated.ts';
+import { persistedSpec } from '../../dashboard/regionTime.ts';
 import test from 'node:test';
 import type { DrillState } from '../../charts/drill/drillState';
 import assert from 'node:assert/strict';
@@ -73,13 +74,13 @@ test('Campaign, Pin and Range opens hold the drawn hour even while the global cl
 test('Pin preserves picked actor, measure and branch-relative hour; explicit Follow makes a Follow widget', () => {
   const widget = createWidget('stability', 'track', 'stability-test');
   widget.countries = { kind: 'tags', tags: ['a', 'b'] };
-  const pin = pinStabilityDrill(widget, { id: 'warSupport', label: 'War support parts' }, 'track', 'b', gatedTime({ mode: 'pin', windows: { track: { firstOffset: 20, lastOffset: 20 } } }));
+  const pin = persistedSpec(pinStabilityDrill(widget, { id: 'warSupport', label: 'War support parts' }, 'track', 'b', gatedTime({ mode: 'pin', windows: { track: { firstOffset: 20, lastOffset: 20 } } })));
   assert.deepEqual(pin.countries, { kind: 'tags', tags: ['b'] });
   assert.deepEqual(pin.time, { mode: 'pin', windows: { track: { firstOffset: 20, lastOffset: 20 } } });
   assert.equal(pin.options?.show, 'warSupport');
   const track = { id: 'track', axisOffset: 900, branch: { firstHour: 1000, lastHour: 2000 } } as BoundTrack;
   assert.deepEqual(resolveWindow(pin, track, [track], 500), { firstHour: 1020, lastHour: 1020 });
-  const live = pinStabilityDrill(widget, { id: 'stability', label: 'Stability parts' }, 'track', 'b', gatedTime({ mode: 'follow' }));
+  const live = persistedSpec(pinStabilityDrill(widget, { id: 'stability', label: 'Stability parts' }, 'track', 'b', gatedTime({ mode: 'follow' })));
   assert.equal(live.time.mode, 'follow');
   assert.equal(resolveWindow(live, track, [track], 200)!.lastHour, 1100);
 });

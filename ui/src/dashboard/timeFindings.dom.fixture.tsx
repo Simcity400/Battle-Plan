@@ -1,4 +1,4 @@
-import { createElement, useId, useLayoutEffect } from 'react';
+import { createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import '../widgets';
@@ -12,6 +12,9 @@ import { WidgetBody } from './widgets';
 import { datedToken } from '../test-support/gated.ts';
 import { subjectToken } from './chosen';
 import { dayLabel } from '../charts/draw';
+import { contentKey } from './options';
+import { forgetProducts } from './products';
+import { productionLineToken } from '../widgets/production-lines/productionData';
 
 class OnScreen {
   private readonly heard: IntersectionObserverCallback;
@@ -29,23 +32,19 @@ console.error = (...args: unknown[]) => { errors.push(args.map(item => item inst
 const FIRST = 100, LAST = 109;
 type Reply = (hour: number | null, params: Record<string, unknown>) => unknown;
 interface Ask { product: string; hour: number | null; hours: number[]; params: Record<string, unknown> | null }
-const hoursIn = (params: Record<string, unknown> | null): number[] => !params ? [] : Object.entries(params).flatMap(([key, value]) =>
-  key === 'reads' && Array.isArray(value) ? value.flatMap(read => typeof read === 'number' ? [read] : typeof read?.hour === 'number' ? [read.hour] : [])
-    : (key === 'hour' || key.endsWith('Hour') || key === 'from' || key === 'to') && typeof value === 'number' ? [value] : []);
-const follows = new Map<string, string | null>();
+const DATED = (key: string) => key === 'hour' || key === 'hours' || key === 'reads' || key === 'from' || key === 'to' || key.endsWith('Hour');
+const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? value.flatMap(item => hoursIn(item, key))
+  : value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([name, item]) => hoursIn(item, name))
+  : typeof value === 'number' && DATED(key) ? [value] : [];
+const follows = new Map<number, string>();
+const followLog: string[] = [];
 const state = {
   asks: [] as Ask[], options: [] as [string, unknown][], pins: [] as unknown[], replies: {} as Record<string, Reply>, failures: new Set<string>(),
-  groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>,
+  groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: false, route: 0,
 };
 const capture = (name: string) => (props: Record<string, unknown>) => { state.props[name] = props; return createElement('p', { 'data-stub': name }, String(props.label ?? props.title ?? name)); };
 Object.assign(globalThis, { __finding: {
   capture,
-  useFollow: (_store: unknown, query: unknown) => {
-    const id = useId();
-    useLayoutEffect(() => { follows.set(id, query ? JSON.stringify(query) : null); });
-    useLayoutEffect(() => () => { follows.delete(id); }, [id]);
-    return undefined;
-  },
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
@@ -58,10 +57,18 @@ const pending = new Promise<never>(() => {});
 const answer = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
 const client = {
   available: true,
+  openFollow: async () => {},
   product: async (request: { sourceId: string; revision: string; product: string; params?: Record<string, unknown> }) => {
-    if (request.product === 'follow') return answer(request, { available: false, reason: 'not followed here' });
-    if (request.product === 'follow-clock' || request.product === 'unfollow') return answer(request, null);
+    if (request.product === 'follow-clock') return answer(request, null);
     const params = request.params ?? null;
+    if (request.product === 'unfollow') { follows.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
+    if (request.product === 'follow') {
+      state.asks.push({ product: 'follow', hour: null, hours: hoursIn(params?.query), params });
+      followLog.push(`follow ${params?.id}`);
+      if (!state.accept) return answer(request, { available: false, reason: 'not followed here' });
+      follows.set(params?.id as number, JSON.stringify(params?.query));
+      return answer(request, { available: true, route: ++state.route });
+    }
     const hour = typeof params?.hour === 'number' ? params.hour : null;
     state.asks.push({ product: request.product, hour, hours: hoursIn(params), params });
     if (state.failures.has(request.product)) throw new Error(`${request.product} failed`);
@@ -99,12 +106,13 @@ const read = () => {
   const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-popout:has(.drill-body)');
   return { text: element?.textContent ?? '', drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
     asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
-    follows: [...follows.values()].filter((query): query is string => query !== null),
+    follows: [...follows.values()], followLog: followLog.splice(0),
     buttons: [...element?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label') ?? button.textContent ?? ''), errors: errors.splice(0) };
 };
 
 export interface Scene { kind: string; time: WidgetSpec['time']; options?: Record<string, unknown>; countries?: WidgetSpec['countries']; hour: number;
-  replies?: Record<string, string>; failures?: string[]; groups?: unknown; trade?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[] }
+  replies?: Record<string, string>; failures?: string[]; groups?: unknown; trade?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
+  accept?: boolean }
 
 const replyOf = (body: string): Reply => new Function('hour', 'params', `return (${body});`) as Reply;
 
@@ -112,12 +120,17 @@ Object.assign(window, { findings: {
   subjectToken: (handle: string) => subjectToken('campaign', handle),
   identityToken: (originOffset: number) => datedToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset }),
   day: (hour: number) => dayLabel(hour),
+  content: (token: string) => contentKey(token),
+  lineToken: (tag: string, key: string) => productionLineToken('campaign', '1', tag, key),
   async preload(kinds: string[]) { await Promise.all(kinds.map(kind => loadWidgetRenderer(kind))); },
   async mount(scene: Scene) {
     root?.unmount();
+    await settle();
+    follows.clear(); followLog.length = 0;
+    forgetProducts(client as never, 'findings');
     document.body.replaceChildren();
     Object.assign(state, { asks: [], options: [], pins: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
-      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids });
+      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? false });
     clock.setPlaying(false);
     clock.seek(scene.hour);
     const made = createWidget(scene.kind, 'main', 'finding');
@@ -131,17 +144,15 @@ Object.assign(window, { findings: {
     return read();
   },
   async seek(hour: number) { clock.seek(hour); await settle(); return read(); },
-  async play(speed: number, ms: number) {
-    clock.setSpeed(speed); clock.setPlaying(true);
-    await new Promise<void>(resolve => setTimeout(resolve, ms));
-    const playing = read();
-    clock.setPlaying(false); await settle();
-    return { playing, paused: read() };
-  },
   async press(label: string) {
     const button = [...host()?.querySelectorAll('button') ?? []].find(item => (item.getAttribute('aria-label') ?? item.textContent ?? '').includes(label));
     button?.click(); await settle(); return { pressed: !!button, ...read() };
   },
+  async click(selector: string) {
+    const target = host()?.querySelector<HTMLElement>(selector);
+    target?.click(); await settle(); return { clicked: !!target, ...read() };
+  },
+  has: (selector: string) => !!host()?.querySelector(selector),
   async expand(selector: string) {
     const details = host()?.querySelector<HTMLDetailsElement>(selector);
     if (details) { details.open = true; details.dispatchEvent(new Event('toggle')); }

@@ -1,13 +1,18 @@
 import { boundCountryToken, type BoundCountry, type DatedCountrySelection } from '../dashboard/datedCountry.ts';
-import type { FollowQuery, GatedHour, GatedParams, GatedTime, GatedWindow } from '../dashboard/regionTime';
-import type { Gate } from '../dashboard/regionGate';
-import type { WidgetTime } from '../dashboard/model';
+import { validTime, type FollowQuery, type GatedHour, type GatedParams, type GatedTime, type GatedWindow, type PinTime } from '../dashboard/regionTime.ts';
+import type { Gate, HeldCountry } from '../dashboard/regionGate';
 
 export const gatedHour = (hour: number) => hour as GatedHour;
 export const gatedWindow = (firstHour: number, lastHour: number): GatedWindow => ({ firstHour: gatedHour(firstHour), lastHour: gatedHour(lastHour) });
 export const gatedParams = (params: unknown) => params as GatedParams;
 export const followQuery = (query: Readonly<Record<string, unknown>>) => query as FollowQuery;
-export const gatedTime = (time: Exclude<WidgetTime, { mode: 'campaign' }>) => time as GatedTime;
+const anywhere = (id: string) => ({ id, branch: { firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER, gaps: [] } });
+export function gatedTime(time: PinTime): GatedTime {
+  const made = validTime(time, (time.mode === 'pin' ? Object.keys(time.windows) : ['range']).map(anywhere), 'range');
+  if (!made) throw new Error(`Not a time a gate makes: ${JSON.stringify(time)}`);
+  return made;
+}
+export const heldCountry = (held: { tag: string; origin: number; slot: number; countryId: number; token?: string }) => ({ token: '', ...held }) as HeldCountry;
 export const boundCountry = (selection: DatedCountrySelection) => selection as BoundCountry;
 export const datedToken = (selection: DatedCountrySelection) => boundCountryToken(boundCountry(selection));
 

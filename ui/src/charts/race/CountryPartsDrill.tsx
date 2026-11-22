@@ -29,6 +29,8 @@ import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import { useDrill } from '../drill/useDrill';
 import LiveText, { liveTexts } from '../LiveText';
 
+const HOLDERS = { holders: true };
+
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
   resetKey, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
@@ -45,7 +47,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     widget.countries, options.show, widget.options?.holder, widget.options?.drillOriginHour]);
   const contextOwner = useMemo(() => ({ client: runtime.client, contextKey }), [runtime.client, contextKey]);
   const pinned = options.show === 'breakdown';
-  const drillControl = useDrill<PartsRaceDrillState, NativePartsRaceDrillAction>(runtime, useRegion(widget), pinned ? 'breakdown' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drillControl = useDrill<PartsRaceDrillState, NativePartsRaceDrillAction>(runtime, useRegion(widget), pinned ? 'breakdown' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const drill = drillControl.state, dispatch = drillControl.dispatch;
   const following = drillControl.following;
   const segment = useRef<(at: number) => string>(String);
@@ -176,13 +178,14 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     else dispatch({ type: 'close' });
   };
   const pinTime = drillControl.time();
+  const pinCountry = drillControl.hold(nativeSelection ? { tag: nativeSelection.tag, origin: nativeSelection.hour } : null);
   if (pinned) return <div className="parts-race-drill">{header}{drillControl.outside ? <WidgetState kind="outside" read={coverageOf(drillControl.outside)} /> : selection ?? breakdown}</div>;
   return <div className="parts-race" ref={anchor}>
     <DrillHost drill={{ ...drillControl, follow, pause }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={title} day={following ? <LiveText live={dayLive} at="day" /> : dayLabel(hour)} canFollow={tag != null && liveHour != null}
       returnFocus=".country-race-chart canvas"
-      onPin={track && nativeSelection && !drillOutside && pinTime ? () => { if (current()) runtime.addWidgetBelow(widget.id,
-        pinNativeCountryParts(widget, track, nativeSelection, pinTime, title)); } : undefined}
+      onPin={track && pinCountry && !drillOutside && pinTime ? () => { if (current()) runtime.addWidgetBelow(widget.id,
+        pinNativeCountryParts(widget, track, pinCountry, pinTime, title)); } : undefined}
       main={main(open, !drillOpen || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>
   </div>;
 }

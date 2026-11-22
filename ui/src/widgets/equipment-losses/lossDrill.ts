@@ -1,4 +1,5 @@
 import type { GatedTime } from '../../dashboard/regionTime';
+import type { HeldCountry } from '../../dashboard/regionGate';
 import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import { runAt } from '../../charts/series.ts';
@@ -12,7 +13,7 @@ import { entryAt } from '../../dashboard/reads.ts';
 import type { LossesReply } from '../../generated/dashboard';
 import { causeName, lossDesignName, lossItems, lossKey, pointAt, sourceKey, typeName } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
-import type { DrillCountry } from '../country-measure/drillCountry';
+import { heldDrillCountry } from '../country-measure/drillCountry.ts';
 import { DETAIL } from './definition.ts';
 
 export function lossNumbers(reply: LossesReply): LossesReply {
@@ -79,14 +80,14 @@ export function readLossSelection(value: unknown, campaign: string, branch: stri
   } catch { return undefined; }
 }
 
-export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, time: GatedTime,
-  keys: readonly string[] | null, country?: DrillCountry | null): PinnedSpec {
+export function pinLosses(widget: WidgetSpec, track: BoundTrack, held: HeldCountry, time: GatedTime, keys: readonly string[] | null): PinnedSpec {
+  const country = heldDrillCountry(held, track);
   const pinned = pinnedBreakdown(widget, DETAIL, track.id, time);
   const options = { ...pinned.options };
   delete options.lossSelection;
   delete options.lossCountry;
-  if (country) options.lossCountry = JSON.stringify(country);
-  const pinnedTag = country?.tag ?? tag;
+  options.lossCountry = JSON.stringify(country);
+  const pinnedTag = country.tag;
   if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: pinnedTag, keys });
   return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] }, options };
 }

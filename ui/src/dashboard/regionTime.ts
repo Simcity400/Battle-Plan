@@ -1,27 +1,89 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
+
 import type { RecordingGap } from '../generated/dashboard';
 
 declare const TRACK: unique symbol;
 declare const AXIS: unique symbol;
 export type TrackHour = number & { readonly [TRACK]: 'track' };
 export type AxisHour = number & { readonly [AXIS]: 'axis' };
+declare const BOUND: unique symbol;
+export type BoundHour = TrackHour & { readonly [BOUND]: 'bound' };
 declare const GATED: unique symbol;
-export type GatedHour = TrackHour & { readonly [GATED]: 'gated' };
-export interface GatedWindow { firstHour: GatedHour; lastHour: GatedHour }
-declare const PINNED: unique symbol;
-export type GatedTime = ({ mode: 'follow' } | { mode: 'pin'; windows: Record<string, { firstOffset: number; lastOffset: number }> }
-  | { mode: 'range'; firstOffset: number; lastOffset: number }) & { readonly [PINNED]: 'gated' };
+export type GatedHour = BoundHour & { readonly [GATED]: 'gated' };
+export interface BoundWindow { firstHour: BoundHour; lastHour: BoundHour }
+export interface GatedWindow { firstHour: BoundHour; lastHour: GatedHour }
+type Offsets = { firstOffset: number; lastOffset: number };
+export type PinTime = { mode: 'follow' } | { mode: 'pin'; windows: Record<string, Offsets> } | { mode: 'range' } & Offsets;
+let mintTime: (time: PinTime) => GatedTime;
+export class GatedTime {
+  readonly #time: PinTime;
+  private constructor(time: PinTime) { this.#time = time; }
+  static { mintTime = time => new GatedTime(time); }
+  get value(): PinTime { return this.#time; }
+  toJSON(): PinTime { return this.#time; }
+}
+
+type Timed = Pick<BoundTrack, 'id'> & { branch: CoveredBranch };
+const heldOffsets = (track: Timed | undefined, { firstOffset, lastOffset }: Offsets): Offsets | null =>
+  track && Number.isSafeInteger(firstOffset) && Number.isSafeInteger(lastOffset) && 0 <= firstOffset && firstOffset <= lastOffset
+    && coverageAt(track, track.branch.firstHour + lastOffset).hour !== null ? { firstOffset, lastOffset } : null;
+
+export function validTime(time: PinTime, tracks: readonly Timed[], rangeTrack?: string): GatedTime | null {
+  if (time.mode === 'follow') return mintTime({ mode: 'follow' });
+  if (time.mode === 'range') {
+    const held = heldOffsets(tracks.find(track => track.id === rangeTrack), time);
+    return held && mintTime({ mode: 'range', ...held });
+  }
+  const windows: Record<string, Offsets> = {};
+  for (const [id, offsets] of Object.entries(time.windows)) {
+    const held = heldOffsets(tracks.find(track => track.id === id), offsets);
+    if (!held) return null;
+    windows[id] = held;
+  }
+  return Object.keys(windows).length ? mintTime({ mode: 'pin', windows }) : null;
+}
+
+export type PinnedSpec = Omit<WidgetSpec, 'time'> & { readonly time: GatedTime };
+export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, time: pinned.time.value });
+
 declare const FOLLOWED: unique symbol;
 export type FollowQuery = Readonly<Record<string, unknown>> & { readonly [FOLLOWED]: 'gated' };
 export type GatedParams = {
   readonly [key: string]: unknown;
-  readonly [key: `${string}Hour`]: GatedHour | null | undefined;
+  readonly [key: `${string}Hour`]: BoundHour | null | undefined;
   readonly hour?: GatedHour | null;
-  readonly from?: GatedHour | null;
-  readonly to?: GatedHour | null;
+  readonly from?: BoundHour | null;
+  readonly to?: BoundHour | null;
   readonly reads?: readonly ({ readonly hour: GatedHour } | GatedHour)[];
   readonly hours?: readonly GatedHour[];
 };
+
+export type HourRole = 'exact' | 'bound';
+const roleOf = (key: string): HourRole | null =>
+  key === 'hour' || key === 'hours' || key === 'reads' ? 'exact' : key === 'from' || key === 'to' || key.endsWith('Hour') ? 'bound' : null;
+
+export function hourFields(value: unknown, visit: (role: HourRole, hour: unknown, path: string) => void, path = 'params'): void {
+  if (Array.isArray(value)) { value.forEach((item, index) => { if (item !== null && typeof item === 'object') hourFields(item, visit, `${path}[${index}]`); }); return; }
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    const role = roleOf(key), at = `${path}.${key}`;
+    if (role && Array.isArray(item)) item.forEach((each, index) => { if (each === null || typeof each !== 'object') visit(role, each, `${at}[${index}]`); });
+    else if (role && item !== null && item !== undefined && typeof item !== 'object' && !(key === 'reads' && typeof item === 'string')) visit(role, item, at);
+    hourFields(item, visit, at);
+  }
+}
+
+export function refusedHours(params: unknown, branch: CoveredBranch, followed = false): string | null {
+  let refused: string | null = null;
+  hourFields(params, (role, hour, path) => {
+    if (refused !== null) return;
+    if (role === 'exact' && followed) refused = `${path}: a followed query reads at playback and names no hour`;
+    else if (typeof hour !== 'number' || !Number.isSafeInteger(hour)) refused = `${path} is not a whole hour`;
+    else if (hour < branch.firstHour || hour > branch.lastHour) refused = `${path} names hour ${hour}, outside branch ${branch.firstHour}–${branch.lastHour}`;
+    else if (role === 'exact' && gapAt({ branch }, hour)) refused = `${path} names hour ${hour}, which was not recorded`;
+  });
+  return refused;
+}
 
 export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
 export interface Region { widget: WidgetSpec; action: RegionAction }
@@ -69,6 +131,20 @@ export function coverageAt(track: Branch | undefined, hour: number | null | unde
   if (at < track.branch.firstHour || at > track.branch.lastHour) return { hour: null, outside: { message: OUTSIDE_MESSAGE, detail: undefined } };
   const gap = gapAt(track, at);
   return gap ? { hour: null, outside: { message: UNRECORDED_MESSAGE, detail: gap.reason } } : { hour: at as TrackHour };
+}
+
+export function coverageSpan(track: Branch, hour: number): readonly [number, number] {
+  const at = Math.floor(hour), { firstHour, lastHour } = track.branch;
+  if (at < firstHour) return [-Infinity, firstHour - 1];
+  if (at > lastHour) return [lastHour + 1, Infinity];
+  const gaps = track.branch.gaps;
+  if (!gaps?.length) return [firstHour, lastHour];
+  const gap = gapAt(track, at);
+  if (gap) return [Math.max(firstHour, gap.firstHour), Math.min(lastHour, gap.lastHour)];
+  const { gaps: sorted, reach } = gapIndex(gaps);
+  let low = 0, high = sorted.length;
+  while (low < high) { const middle = (low + high) >> 1; if (sorted[middle].firstHour <= at) low = middle + 1; else high = middle; }
+  return [Math.max(firstHour, low ? reach[low - 1] + 1 : firstHour), Math.min(lastHour, low < sorted.length ? sorted[low].firstHour - 1 : lastHour)];
 }
 
 export function recordedHour(track: Branch | undefined, hour: number | null | undefined): TrackHour | null {
