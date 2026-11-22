@@ -550,7 +550,13 @@ pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     settled_state_carriers(&document, path)?;
     let mut out = Descriptors::default();
-    let _ = collect(&document, path, &mut out);
+    let _ = collect(
+        &document,
+        &read_object_items(bytes),
+        &read_entity_items(bytes),
+        path,
+        &mut out,
+    );
     Ok(out)
 }
 
@@ -597,92 +603,209 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     Ok(())
 }
 
-#[derive(Default)]
-struct FileVars(BTreeMap<Vec<u8>, Vec<u8>>);
-
-impl FileVars {
-    fn define(&mut self, item: &parser::Item) {
-        if item.operator != parser::Operator::Equals {
-            return;
-        }
-        let Some(key) = item.key.as_deref().filter(|key| key.starts_with(b"@")) else {
-            return;
-        };
-        let resolved = match item.value.scalar() {
-            Some(value) => self.resolve_bytes(value, item.quoted()).to_vec(),
-            None => b"{".to_vec(),
-        };
-        self.0.entry(key[1..].to_vec()).or_insert(resolved);
-    }
-
-    fn visit_item(&mut self, item: &parser::Item) {
-        self.define(item);
-        if let Some(items) = item.value.items() {
-            for child in items {
-                self.visit_item(child);
-            }
-        }
-    }
-
-    fn visit_value(&mut self, value: &parser::Value) {
-        if let Some(items) = value.items() {
-            for child in items {
-                self.visit_item(child);
-            }
-        }
-    }
-
-    fn resolve_bytes<'a>(&'a self, value: &'a [u8], quoted: bool) -> &'a [u8] {
-        if quoted || !value.starts_with(b"@") {
-            return value;
-        }
-        self.0
-            .get(&value[1..])
-            .map(Vec::as_slice)
-            .unwrap_or(value)
-    }
-
-    fn resolve_item<'a>(&'a self, item: &'a parser::Item) -> Option<&'a [u8]> {
-        let value = item.value.scalar()?;
-        Some(self.resolve_bytes(value, item.quoted()))
-    }
+#[derive(Clone, Copy)]
+enum ObjectNode {
+    Top,
+    ObjectTypes,
+    Mesh,
+    MeshSettings,
+    MeshAnimation,
+    NamedObject,
 }
 
-fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Vec<String> {
+fn read_object_items(bytes: &[u8]) -> Vec<parser::Item> {
+    use parser::native::{Mode, Shape, Top};
+    parser::native::read(
+        bytes,
+        Mode::SkipMark,
+        Top::File(ObjectNode::Top),
+        None,
+        &mut |node, field| match node {
+            ObjectNode::Top => match field.keyword().as_deref() {
+                Some(b"objecttypes") => Shape::Object(ObjectNode::ObjectTypes),
+                _ => Shape::Skip,
+            },
+            ObjectNode::ObjectTypes => match field.keyword().as_deref() {
+                Some(b"pdxmesh") => Shape::Object(ObjectNode::Mesh),
+                Some(b"arrowtype" | b"animatedmaptext" | b"pdxparticle") => {
+                    Shape::Object(ObjectNode::NamedObject)
+                }
+                _ => Shape::Skip,
+            },
+            ObjectNode::Mesh => match field.keyword().as_deref() {
+                Some(b"meshsettings") => Shape::Object(ObjectNode::MeshSettings),
+                Some(b"animation") => Shape::Object(ObjectNode::MeshAnimation),
+                Some(b"name" | b"file" | b"scale" | b"cull_distance") => Shape::One,
+                _ => Shape::Skip,
+            },
+            ObjectNode::MeshSettings => match field.keyword().as_deref() {
+                Some(
+                    b"name"
+                    | b"index"
+                    | b"texture_diffuse"
+                    | b"texture_normal"
+                    | b"texture_specular"
+                    | b"shader"
+                    | b"shader_file",
+                ) => Shape::One,
+                _ => Shape::Skip,
+            },
+            ObjectNode::MeshAnimation => match field.keyword().as_deref() {
+                Some(b"id" | b"type") => Shape::One,
+                _ => Shape::Skip,
+            },
+            ObjectNode::NamedObject => match field.keyword().as_deref() {
+                Some(b"name") => Shape::One,
+                _ => Shape::Skip,
+            },
+        },
+    )
+    .items
+}
+
+#[derive(Clone, Copy)]
+enum EntityNode {
+    Top,
+    Entity,
+    State,
+    StateEvent,
+    StateEventSound,
+    StatePropagate,
+    StateGameData,
+    HitMissEffect,
+    Attach,
+    Locator,
+    EntityGameData,
+}
+
+fn read_entity_items(bytes: &[u8]) -> Vec<parser::Item> {
+    use parser::native::{Mode, Shape, Top};
+    parser::native::read(
+        bytes,
+        Mode::SkipMark,
+        Top::File(EntityNode::Top),
+        None,
+        &mut |node, field| match node {
+            EntityNode::Top => match field.keyword().as_deref() {
+                Some(b"entity") => Shape::Object(EntityNode::Entity),
+                _ => Shape::Skip,
+            },
+            EntityNode::Entity => match field.keyword().as_deref() {
+                Some(b"state") => Shape::Object(EntityNode::State),
+                Some(b"attach") => Shape::Object(EntityNode::Attach),
+                Some(b"locator") => Shape::Object(EntityNode::Locator),
+                Some(b"game_data") => Shape::Object(EntityNode::EntityGameData),
+                Some(
+                    b"name"
+                    | b"pdxmesh"
+                    | b"clone"
+                    | b"scale"
+                    | b"cull_radius"
+                    | b"default_state"
+                    | b"get_state_from_parent"
+                    | b"version",
+                ) => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::State => match field.keyword().as_deref() {
+                Some(b"event") => Shape::Object(EntityNode::StateEvent),
+                Some(b"propagate_state") => Shape::Object(EntityNode::StatePropagate),
+                Some(b"game_data") => Shape::Object(EntityNode::StateGameData),
+                Some(
+                    b"name"
+                    | b"animation"
+                    | b"looping"
+                    | b"next_state"
+                    | b"chance"
+                    | b"animation_blend_time"
+                    | b"animation_speed"
+                    | b"animation_start_time"
+                    | b"animation_random_start_time",
+                ) => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::StateEvent => match field.keyword().as_deref() {
+                Some(b"sound") => Shape::Object(EntityNode::StateEventSound),
+                Some(
+                    b"id"
+                    | b"time"
+                    | b"node"
+                    | b"light"
+                    | b"particle"
+                    | b"keep_particle"
+                    | b"trigger_once",
+                ) => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::StateEventSound => match field.keyword().as_deref() {
+                Some(b"soundeffect") => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::StatePropagate | EntityNode::Attach => {
+                if field.opens() {
+                    Shape::Skip
+                } else {
+                    Shape::One
+                }
+            }
+            EntityNode::StateGameData => match field.keyword().as_deref() {
+                Some(b"hitmiss_effect") => Shape::Object(EntityNode::HitMissEffect),
+                _ => Shape::Skip,
+            },
+            EntityNode::HitMissEffect => match field.keyword().as_deref() {
+                Some(b"time" | b"type") => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::Locator => match field.keyword().as_deref() {
+                Some(b"position" | b"rotation") => Shape::ByKey,
+                Some(b"name" | b"parent_joint" | b"scale") => Shape::One,
+                _ => Shape::Skip,
+            },
+            EntityNode::EntityGameData => match field.keyword().as_deref() {
+                Some(b"atlas_size") => Shape::ByKey,
+                Some(b"texture_anim_speed") => Shape::One,
+                _ => Shape::Skip,
+            },
+        },
+    )
+    .items
+}
+
+fn collect(
+    document: &parser::Document,
+    object_items: &[parser::Item],
+    entity_items: &[parser::Item],
+    path: &str,
+    out: &mut Descriptors,
+) -> Vec<String> {
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     let mut replaced = Vec::new();
-    let mut vars = FileVars::default();
+    for item in object_items {
+        if item.keyword_is("objectTypes") {
+            for block in item.value.items().unwrap_or(&[]) {
+                if block.keyword_is("pdxmesh")
+                    && let Some(definition) = mesh_definition(&block.value)
+                    && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
+                {
+                    replaced.push(old.name);
+                }
+            }
+        }
+    }
+    for item in entity_items {
+        if item.keyword_is("entity")
+            && let Some(definition) = entity_definition(&item.value)
+            && let Some(old) = out.entities.insert(definition.name.clone(), definition)
+        {
+            replaced.push(old.name);
+        }
+    }
     for item in &document.items {
-        match item.key.as_deref() {
-            Some(b"objectTypes") => {
-                for block in item.value.items().unwrap_or(&[]) {
-                    if block.key.as_deref() == Some(b"pdxmesh") {
-                        if let Some(definition) = mesh_definition(&block.value, &mut vars)
-                            && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
-                        {
-                            replaced.push(old.name);
-                        }
-                    } else {
-                        vars.visit_item(block);
-                    }
-                }
-            }
-            Some(b"entity") => {
-                if let Some(definition) = entity_definition(&item.value, &mut vars)
-                    && let Some(old) = out.entities.insert(definition.name.clone(), definition)
-                {
-                    replaced.push(old.name);
-                }
-            }
-            Some(b"animation") => {
-                vars.visit_item(item);
-                if let Some(definition) = animation_definition(&item.value, directory)
-                    && let Some(old) = out.animations.insert(definition.name.clone(), definition)
-                {
-                    replaced.push(old.name);
-                }
-            }
-            _ => vars.visit_item(item),
+        if item.key.as_deref() == Some(b"animation")
+            && let Some(definition) = animation_definition(&item.value, directory)
+            && let Some(old) = out.animations.insert(definition.name.clone(), definition)
+        {
+            replaced.push(old.name);
         }
     }
     replaced
@@ -748,8 +871,8 @@ impl Roster {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         let mut objects = BTreeMap::new();
         for path in crate::particles::object_file_order(&interface, &gfx) {
-            if let Some(document) = roster.parse(layers, &path, &OBJECTS)? {
-                add_objects(&document, &mut objects);
+            if let Some((_, bytes)) = roster.parse(layers, &path, &OBJECTS)? {
+                add_objects(&read_object_items(&bytes), &mut objects);
             }
         }
         roster.descriptors.meshes = objects
@@ -759,16 +882,15 @@ impl Roster {
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
         for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
-            let Some(document) = roster.parse(layers, &file, &["entity", "animation", "light"])?
+            let Some((document, bytes)) =
+                roster.parse(layers, &file, &["entity", "animation", "light"])?
             else {
                 continue;
             };
             let path = file.text();
             let directory = file.folder_text();
-            let mut vars = FileVars::default();
             for item in &document.items {
                 if item.keyword_is("animation") {
-                    vars.visit_item(item);
                     let Some(animation) =
                         animation_definition(&item.value, directory.unwrap_or_default())
                     else {
@@ -790,12 +912,9 @@ impl Roster {
                         .entry(animation.name.clone())
                         .or_default()
                         .push(animation);
-                } else if item.keyword_is("entity") {
-                    entities.declare_with_vars(&item.value, &file, &mut vars, &mut roster)?;
                 } else if item.keyword_is("light")
                     && let Some(fields) = item.value.items()
                 {
-                    vars.visit_item(item);
                     let name = last_text(fields, "name").unwrap_or_default();
                     if name.len() > ANIMATION_NAME {
                         return Err(invalid(format!(
@@ -803,8 +922,11 @@ impl Roster {
                         )));
                     }
                     roster.lights.insert(name, fields.to_vec());
-                } else {
-                    vars.visit_item(item);
+                }
+            }
+            for item in read_entity_items(&bytes) {
+                if item.keyword_is("entity") {
+                    entities.declare(&item.value, &file, &mut roster)?;
                 }
             }
         }
@@ -825,7 +947,7 @@ impl Roster {
         layers: &ResolvedLayers,
         file: &ScriptPath,
         words: &[&str],
-    ) -> io::Result<Option<parser::Document>> {
+    ) -> io::Result<Option<(parser::Document, content_reader_image::Bytes)>> {
         let text = file.text();
         let path: &str = &text;
         let bytes = match file.read_uncovered(layers) {
@@ -851,7 +973,7 @@ impl Roster {
                 })
         };
         match read(&bytes) {
-            Ok(document) => Ok(Some(document)),
+            Ok(document) => Ok(Some((document, bytes))),
             Err(error) => {
                 if layers.supplied_by_visual_mod(file)
                     && let Some(recorded) = layers.without_overlays()
@@ -867,7 +989,7 @@ impl Roster {
                                 .or_insert_with(|| path.to_owned());
                         }
                     }
-                    return Ok(Some(document));
+                    return Ok(Some((document, recorded_bytes)));
                 }
                 for name in lexical_names(&bytes) {
                     self.unreadable_names
@@ -941,30 +1063,25 @@ impl Roster {
 }
 
 fn add_objects(
-    document: &parser::Document,
+    items: &[parser::Item],
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
 ) {
-    let mut vars = FileVars::default();
-    for item in &document.items {
+    for item in items {
         if !item.keyword_is("objectTypes") {
-            vars.visit_item(item);
             continue;
         }
         for object in item.value.items().unwrap_or(&[]) {
             if object.keyword_is(OBJECTS[0]) {
-                if let Some(mesh) = mesh_definition(&object.value, &mut vars) {
+                if let Some(mesh) = mesh_definition(&object.value) {
                     objects.insert(mesh.name.clone(), Some(mesh));
                 }
-            } else {
-                vars.visit_item(object);
-                if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
-                    && let Some(name) = object
-                        .value
-                        .items()
-                        .and_then(|fields| last_text(fields, "name"))
-                {
-                    objects.insert(name, None);
-                }
+            } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
+                && let Some(name) = object
+                    .value
+                    .items()
+                    .and_then(|fields| last_text(fields, "name"))
+            {
+                objects.insert(name, None);
             }
         }
     }
@@ -997,28 +1114,16 @@ fn loaded_animation(
 struct Entities(BTreeMap<String, (EntityDefinition, i32)>);
 
 impl Entities {
-    #[cfg(test)]
     fn declare(
         &mut self,
         value: &parser::Value,
         path: &ScriptPath,
         roster: &mut Roster,
     ) -> io::Result<()> {
-        self.declare_with_vars(value, path, &mut FileVars::default(), roster)
-    }
-
-    fn declare_with_vars(
-        &mut self,
-        value: &parser::Value,
-        path: &ScriptPath,
-        vars: &mut FileVars,
-        roster: &mut Roster,
-    ) -> io::Result<()> {
         let Some(fields) = value.items() else {
             return Ok(());
         };
         let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) else {
-            vars.visit_value(value);
             return Ok(());
         };
         let clone = last_text(fields, "clone").filter(|parent| !parent.is_empty());
@@ -1036,7 +1141,6 @@ impl Entities {
             .find(|item| item.keyword_is("version"))
             .and_then(|item| item.value.scalar())
             .map_or(0, crate::fixed5::decimal_i32);
-        let definition = entity_definition(value, vars);
         if let Some(file) = clone
             .as_ref()
             .and_then(|parent| roster.unreadable_names.get(parent))
@@ -1061,7 +1165,7 @@ impl Entities {
         if stored.is_some_and(|stored| version < stored) {
             return Ok(());
         }
-        let Some(mut definition) = definition else {
+        let Some(mut definition) = entity_definition(value) else {
             return Ok(());
         };
         roster
@@ -1230,18 +1334,14 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
     })
 }
 
-fn mesh_definition(value: &parser::Value, vars: &mut FileVars) -> Option<MeshDefinition> {
+fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     let items = value.items()?;
-    let mut scale = 1.0;
-    for item in items {
-        if item.keyword_is("scale") {
-            scale = vars
-                .resolve_item(item)
-                .and_then(crt::scan_f32)
-                .unwrap_or(scale);
-        }
-        vars.visit_item(item);
-    }
+    let scale = items
+        .iter()
+        .filter(|item| item.keyword_is("scale"))
+        .fold(1.0, |held, item| {
+            item.value.scalar().and_then(crt::scan_f32).unwrap_or(held)
+        });
     let name = unquote(text(items, b"name")?);
     let file = unquote(text(items, b"file")?)
         .trim_start_matches('/')
@@ -1308,19 +1408,19 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
     Some(setting)
 }
 
-fn entity_definition(value: &parser::Value, vars: &mut FileVars) -> Option<EntityDefinition> {
+fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
     let items = value.items()?;
-    let mut scale = None;
-    for item in items {
-        if item.keyword_is("scale") {
-            scale = Some(
-                vars.resolve_item(item)
+    let scale = items
+        .iter()
+        .filter(|item| item.keyword_is("scale"))
+        .fold(None, |held, item| {
+            Some(
+                item.value
+                    .scalar()
                     .and_then(crt::scan_f32)
-                    .unwrap_or_else(|| scale.unwrap_or(1.0)),
-            );
-        }
-        vars.visit_item(item);
-    }
+                    .unwrap_or_else(|| held.unwrap_or(1.0)),
+            )
+        });
     let name = unquote(text(items, b"name")?);
     if name.is_empty() {
         return None;

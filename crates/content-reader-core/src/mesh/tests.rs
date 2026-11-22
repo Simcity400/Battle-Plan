@@ -2180,15 +2180,34 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
                     entity = { name = "overridden" clone = "base" scale = @override_scale }
                     entity = { name = "forward" clone = "base" scale = @after_clone }
                     @after_clone = 5.0
-                    entity = { name = "nested_state" pdxmesh = "var_mesh" state = { name = "idle" @factor = 3 } scale = @factor }
-                    entity = { name = "before_nested" pdxmesh = "var_mesh" scale = @late_nested state = { name = "idle" @late_nested = 4.0 } }
+                    entity = { name = "nested_state_before_name" pdxmesh = "var_mesh" state = { @factor = 3 name = "idle" } scale = @factor }
+                    entity = { name = "before_nested" pdxmesh = "var_mesh" scale = @late_nested state = { @late_nested = 4.0 name = "idle" } }
                     entity = { name = "after_nested" pdxmesh = "var_mesh" scale = @late_nested }
-                    entity = { name = "orphan" clone = "missing_parent" @from_orphan = 1.2 state = { name = "idle" @from_orphan_state = 2.0 } }
+                    entity = { name = "orphan" clone = "missing_parent" @from_orphan = 1.2 state = { @from_orphan_state = 2.0 name = "idle" } }
                     entity = { name = "uses_orphan" pdxmesh = "var_mesh" scale = @from_orphan }
                     entity = { name = "uses_orphan_state" pdxmesh = "var_mesh" scale = @from_orphan_state }
                     entity = { name = "versioned" pdxmesh = "var_mesh" version = 2 }
-                    entity = { name = "versioned" pdxmesh = "var_mesh" version = 1 @from_older = 0.8 }
+                    entity = { name = "versioned" pdxmesh = "var_mesh" @from_older = 0.8 version = 1 }
                     entity = { name = "uses_older" pdxmesh = "var_mesh" scale = @from_older }"#,
+            ),
+            (
+                "gfx/entities/state_trailing_var.asset",
+                br#"entity = { name = "nested_state_after_name" pdxmesh = "var_mesh" state = { name = "idle" @factor = 3 } scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/skipped_unknown_block.asset",
+                br#"entity = { name = "skipped_unknown" pdxmesh = "var_mesh" unused_options = { @factor = 3 } @factor = 2 scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/skipped_animation_block.asset",
+                br#"animation = { name = "ignored_anim" file = "a.anim" @factor = 3 }
+                    @factor = 2
+                    entity = { name = "after_animation" pdxmesh = "var_mesh" scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/hash_collision.asset",
+                br#"@costarring = 3
+                    entity = { name = "hash_collide" pdxmesh = "var_mesh" scale = @liquid }"#,
             ),
         ],
         &[],
@@ -2201,10 +2220,14 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
     assert!((resolve("inherited") - 1.0).abs() < 1e-6);
     assert!((resolve("overridden") - 4.0).abs() < 1e-6);
     assert!((resolve("forward") - 2.5).abs() < 1e-6);
-    assert!((resolve("nested_state") - 7.5).abs() < 1e-6);
+    assert!((resolve("nested_state_before_name") - 7.5).abs() < 1e-6);
+    assert!((resolve("nested_state_after_name") - 2.5).abs() < 1e-6);
     assert!((resolve("before_nested") - 2.5).abs() < 1e-6);
     assert!((resolve("after_nested") - 10.0).abs() < 1e-6);
     assert!((resolve("uses_orphan") - 3.0).abs() < 1e-6);
     assert!((resolve("uses_orphan_state") - 5.0).abs() < 1e-6);
     assert!((resolve("uses_older") - 2.0).abs() < 1e-6);
+    assert!((resolve("skipped_unknown") - 5.0).abs() < 1e-6);
+    assert!((resolve("after_animation") - 5.0).abs() < 1e-6);
+    assert!((resolve("hash_collide") - 7.5).abs() < 1e-6);
 }
