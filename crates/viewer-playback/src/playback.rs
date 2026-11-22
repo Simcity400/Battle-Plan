@@ -124,7 +124,7 @@ impl Playback {
         };
         let opened = binding
             .columnar()
-            .and_then(|columnar| columnar.open(Arc::clone(&self.replay), 1));
+            .and_then(|columnar| columnar.open(Arc::clone(&self.replay)));
         match opened {
             Ok(map) => self.map = Some(map),
             Err(error) if interrupted(&error) => return Err(error),

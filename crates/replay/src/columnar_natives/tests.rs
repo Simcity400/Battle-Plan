@@ -1,13 +1,15 @@
 use super::*;
 use crate::{
-    campaign::Parallel,
-    columnar_frames::fixtures,
-    format::FormatVersion,
-    frame::{DecodedFrame, SharedView, TableView},
-    rows::TableId,
+    columnar_frames::{
+        Pool, fixtures,
+        synthetic::{Input, Sample, Synthetic},
+    },
+    frame::{DecodedFrame, HourInput, SharedView, TableChanges, TableView},
+    rows::{CountryRow, DivisionRow, DivisionRowAt141, Recorded, StateRow, StateRowAt141, TableId, TableRows},
     scope::CaptureMode,
 };
-use replay_columnar::envelope::UNIT_ORDINALS;
+use replay_columnar::envelope::{self, UNIT_ORDINALS};
+use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
 use std::sync::Arc;
 
 const UNIT: i32 = UNIT_ORDINALS as i32;
@@ -34,14 +36,30 @@ fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
     let natives = alone(bytes.clone());
     let hours = hours(&RUNS);
     assert_eq!(hours.len(), expected.len());
-    let on_worker = || {};
-    let parallel = Parallel { workers: 3, on_worker: &on_worker };
-    for parallel in [None, Some(&parallel)] {
-        let mut cursor = Cursor::new(Arc::clone(&natives), &TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    let pool = Arc::new(
+        Pool::new(3, "cursor worker", || {
+            assert!(
+                std::thread::current().name().is_some_and(|name| name.starts_with("cursor worker ")),
+                "unexpected worker name {:?}",
+                std::thread::current().name()
+            );
+        })
+        .unwrap(),
+    );
+    for use_pool in [false, true] {
+        let mut cursor = Cursor::new(Arc::clone(&natives), &TABLES).unwrap();
+        if use_pool {
+            cursor.set_pool(Some(Arc::clone(&pool)));
+        }
         assert_eq!(cursor.tables(), &TABLES);
+        let before = pool.entered();
+        assert_eq!(cursor.build().unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(pool.entered(), before, "build before any move does not enter the pool");
         let check = |at: usize, cursor: &mut Cursor| {
             let (branch, hour) = hours[at];
-            let frame = cursor.frame(branch, branch, hour, parallel).unwrap().unwrap();
+            let before = pool.entered();
+            let frame = cursor.frame(branch, branch, hour).unwrap().unwrap();
+            assert_eq!(pool.entered() - before, if use_pool { 2 } else { 0 }, "branch {branch} hour {hour}");
             assert!(same(&frame, &expected[at]), "branch {branch} hour {hour}");
             let complete = matches!(&*frame.tables[TableId::WorldTension.index()], TableView::Complete(_));
             assert_eq!(cursor.complete(TableId::WorldTension).unwrap(), complete, "branch {branch} hour {hour}");
@@ -55,12 +73,16 @@ fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
             let at = (seed >> 33) as usize % hours.len();
             if step % 3 == 0 {
                 let (branch, hour) = hours[(at + 1) % hours.len()];
+                let before = pool.entered();
                 assert!(cursor.move_to(branch, branch, hour, &|| false).unwrap());
+                assert_eq!(pool.entered() - before, usize::from(use_pool));
             }
             if step % 5 == 0 {
                 let (branch, hour) = hours[at];
+                let before = pool.entered();
                 let error = cursor.move_to(branch, branch, hour, &|| true).unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+                assert_eq!(pool.entered(), before, "a cancelled move does not enter the pool");
             }
             check(at, &mut cursor);
         }
@@ -68,8 +90,17 @@ fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
             check(at, &mut cursor);
         }
         for (branch, hour) in [(1, 99), (1, 100 + 3 * UNIT), (1, 100 + 4 * UNIT - 1), (1, 100 + 6 * UNIT), (2, 49_999), (3, 100)] {
-            assert!(cursor.frame(branch, branch, hour, parallel).unwrap().is_none(), "branch {branch} hour {hour}");
+            let before = pool.entered();
+            assert!(cursor.frame(branch, branch, hour).unwrap().is_none(), "branch {branch} hour {hour}");
             assert!(!cursor.move_to(branch, branch, hour, &|| false).unwrap(), "branch {branch} hour {hour}");
+            assert_eq!(pool.entered(), before, "missing hour does not enter the pool");
+        }
+        if use_pool {
+            cursor.set_pool(None);
+            let before = pool.entered();
+            let (branch, hour) = hours[0];
+            assert!(same(&cursor.frame(branch, branch, hour).unwrap().unwrap(), &expected[0]));
+            assert_eq!(pool.entered(), before, "clearing the pool stops scheduling on it");
         }
     }
 
@@ -78,11 +109,11 @@ fn frames_read_from_the_recording_are_the_writer_s_at_every_hour() {
     let part = &entry.unit.parts[0].frames[0];
     let mut damaged = bytes;
     damaged[(part.offset + u64::from(part.stored) / 2) as usize] ^= 0x40;
-    let mut cursor = Cursor::new(alone(damaged), &TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    let mut cursor = Cursor::new(alone(damaged), &TABLES).unwrap();
     let first_run = 3 * UNIT_ORDINALS as usize;
     for at in (0..hours.len()).step_by(13).chain([UNIT_ORDINALS as usize - 1, UNIT_ORDINALS as usize, first_run]) {
         let (branch, hour) = hours[at];
-        let frame = cursor.frame(branch, branch, hour, None).unwrap().unwrap();
+        let frame = cursor.frame(branch, branch, hour).unwrap().unwrap();
         let tension = TableId::WorldTension.index();
         assert_eq!(frame.tables[tension], expected[at].0.tables[tension], "hour {hour}'s world tension");
         let countries = &*frame.tables[TableId::Countries.index()];
@@ -101,13 +132,92 @@ fn a_cursor_moved_forward_by_days_builds_what_a_seek_builds() {
     let (bytes, expected) = fixtures::churned(&RUNS);
     let natives = alone(bytes);
     let hours = hours(&RUNS);
-    let mut cursor = Cursor::new(Arc::clone(&natives), &TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    let mut cursor = Cursor::new(Arc::clone(&natives), &TABLES).unwrap();
     for at in (3..hours.len()).step_by(24) {
         let (branch, hour) = hours[at];
-        let frame = cursor.frame(branch, branch, hour, None).unwrap().unwrap();
+        let frame = cursor.frame(branch, branch, hour).unwrap().unwrap();
         assert!(same(&frame, &expected[at]), "branch {branch} hour {hour}");
-        let mut fresh = Cursor::new(Arc::clone(&natives), &TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
-        let sought = fresh.frame(branch, branch, hour, None).unwrap().unwrap();
+        let mut fresh = Cursor::new(Arc::clone(&natives), &TABLES).unwrap();
+        let sought = fresh.frame(branch, branch, hour).unwrap().unwrap();
         assert_eq!(frame.tables, sought.tables, "branch {branch} hour {hour}");
     }
+}
+
+fn mode_recording(capture_mode: u8) -> Vec<u8> {
+    let mut file = fixtures::writer(fixtures::identity(b"cursor mode", capture_mode), |_| {});
+    file.start_run(1, envelope::epoch::START, 100).unwrap();
+    let mut synthetic = Synthetic::new(1, 100).unwrap();
+    for ordinal in 0..2 {
+        let rows = [CountryRow { id: 7, tag: b"GER".to_vec(), stability_raw: 10 + i64::from(ordinal), ..Default::default() }];
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections)).unwrap().unwrap();
+    }
+    file.finish().unwrap().finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner()
+}
+
+#[test]
+fn a_cursor_reads_format_and_capture_mode_from_the_recording_metadata() {
+    let format = CAPTURE_ADDITIONS_FORMAT - 1;
+    let added = [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs];
+    let (bytes, _) = fixtures::written_at(format, b"cursor format 141", &[(1, 100, 1)], &[TableId::States, TableId::Divisions], |synthetic, _, ordinal| {
+        let states = [StateRowAt141 { id: 4, owner: 7 + ordinal, controller: 9, custom_name: b"Bohemia".to_vec(), continent: Some(2).into(), ..Default::default() }];
+        let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, roster_owner: 7, province: 11 + ordinal, hit_points: 500_000, organisation: 250_000, ..Default::default() }];
+        synthetic.table(TableId::States, Input::Snapshot { rows: &states, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::Divisions, Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let mut tables = vec![TableId::States, TableId::Divisions];
+    tables.extend(added);
+    let mut cursor = Cursor::new(alone(bytes), &tables).unwrap().with_change_facts();
+    let first = cursor.frame(1, 1, 100).unwrap().unwrap();
+    let second = cursor.frame(1, 1, 101).unwrap().unwrap();
+    for (ordinal, frame) in [(0_u32, &first), (1_u32, &second)] {
+        assert_eq!(
+            *frame.tables[TableId::States.index()],
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 4,
+                owner: 7 + ordinal,
+                controller: 9,
+                custom_name: b"Bohemia".to_vec(),
+                continent: Some(2).into(),
+                marked_owners: Recorded::NotRecorded,
+                ..Default::default()
+            }]))
+        );
+        assert_eq!(
+            *frame.tables[TableId::Divisions.index()],
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                id: (3_u64 << 32) | 1,
+                roster_owner: 7,
+                province: 11 + ordinal,
+                hit_points: 500_000,
+                organisation: 250_000,
+                theatre: Recorded::NotRecorded,
+                ..Default::default()
+            }]))
+        );
+        for table in added {
+            assert_eq!(*frame.tables[table.index()], TableView::NotRecorded { mode: CaptureMode::Full }, "{table:?}");
+        }
+    }
+    for table in added {
+        assert!(!cursor.complete(table).unwrap(), "{table:?}");
+    }
+    let marked_owners_bit = 1_u64 << TableId::States.last_change().fields(TableId::States, format);
+    assert_eq!(TableId::States.field_name(TableId::States.last_change().fields(TableId::States, format)), Some("marked_owners"));
+    let TableChanges::Rows(facts) = HourInput::new(&second).changes().since(TableId::States, Some(&first.tables[TableId::States.index()].identity()), u64::MAX) else {
+        panic!("stepped earlier-format frame carries change facts");
+    };
+    assert_eq!(facts.changed().len(), 1);
+    assert_ne!(facts.changed()[0].fields & marked_owners_bit, 0, "unrecorded fields after the recording's format are marked");
+
+    let map_natives = alone(mode_recording(CaptureMode::Map.byte()));
+    let mut map_cursor = Cursor::new(map_natives, &TABLES).unwrap();
+    let frame = map_cursor.frame(1, 1, 100).unwrap().unwrap();
+    assert!(matches!(&*frame.tables[TableId::Countries.index()], TableView::Complete(_)));
+    assert_eq!(*frame.tables[TableId::WorldTension.index()], TableView::NotRecorded { mode: CaptureMode::Map });
+    assert!(!map_cursor.complete(TableId::WorldTension).unwrap());
+
+    let bad_mode = alone(mode_recording(99));
+    let error = Cursor::new(bad_mode, &[TableId::Countries]).err().expect("invalid capture mode is refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }

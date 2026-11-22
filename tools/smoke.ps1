@@ -41,10 +41,12 @@ Launch directly into ExpectedSave, writing the game's continuation selection fir
 Existing local .hoi4 filename in the user directory's save games folder.
 Required with ContinueLastSave and for Smoke.
 .PARAMETER UiConfig
-JSON containing width/height, expected_hour/expected_seed and calibrated two-element
+JSON containing width/height, expected_hour/expected_seed, calibrated two-element
 pixel coordinates for menu, speed_up, speed_down, pause, save_menu, save_name,
 save_confirm, save_back, menu_close, exit_game, exit_confirm, map_center and
-capture_cursor. The capture cursor must lie over inert UI chrome without a tooltip.
+capture_cursor, and calibrated reference images and origins for menu_patch,
+save_dialog_patch and exit_confirm_patch. The capture cursor must lie over inert
+UI chrome without a tooltip.
 .PARAMETER WaitForUiReview
 Before saving, pause for a visual review of dynamic informational notifications.
 The guarded driving actions can dismiss them. A ui-review-approved.json file in Out
@@ -270,6 +272,590 @@ function Copy-ShaderCompiler([string]$source, [string]$destination) {
     Join-Path $destination 'dxcompiler.dll'
 }
 
+function Invoke-WithFocusRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Operation,
+        [int]$MaxAttempts = 5,
+        [bool]$AllowFocusLost = $true,
+        [scriptblock]$OnRetry = { Start-Sleep -Milliseconds 250 }
+    )
+    if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+    for ($retryIndex = 1; ; $retryIndex++) {
+        try { return (& $Operation) }
+        catch {
+            $retryMessage = $_.Exception.Message
+            $refused = $retryMessage -like '*Windows refused to focus the game*'
+            $lostBeforeInput = $AllowFocusLost -and $retryMessage -like '*Game focus was lost; input was not sent.*'
+            $isRetryable = ($refused -or $lostBeforeInput) -and ($retryMessage -notlike '*partial input*')
+            if (-not $isRetryable -or $retryIndex -ge $MaxAttempts) { throw }
+            & $OnRetry $retryIndex $retryMessage
+        }
+    }
+}
+
+function Invoke-SequentialFocusInput {
+    param(
+        [Parameter(Mandatory)][object[]]$Items,
+        [Parameter(Mandatory)][scriptblock]$SendItem,
+        [Parameter(Mandatory)][scriptblock]$Reacquire,
+        [int]$MaxAttemptsPerItem = 5,
+        [scriptblock]$Pause = { Start-Sleep -Milliseconds 150 }
+    )
+    if ($MaxAttemptsPerItem -lt 1) { $MaxAttemptsPerItem = 1 }
+    $deliveredCount = 0
+    $totalCount = $Items.Count
+    foreach ($seqItem in $Items) {
+        for ($itemAttempt = 1; ; $itemAttempt++) {
+            try {
+                & $SendItem $seqItem
+                $deliveredCount++
+                break
+            } catch {
+                $itemMessage = $_.Exception.Message
+                $focusError = $itemMessage -like '*Game focus was lost*' -or $itemMessage -like '*Windows refused to focus the game*'
+                if (-not $focusError) { throw }
+                if ($itemAttempt -ge $MaxAttemptsPerItem) {
+                    if ($deliveredCount -gt 0) {
+                        throw "Game focus was lost after delivering partial input ($deliveredCount of $totalCount)."
+                    }
+                    throw
+                }
+                & $Pause $itemAttempt $itemMessage
+                try {
+                    & $Reacquire
+                } catch {
+                    if ($deliveredCount -gt 0) {
+                        throw "Game focus was lost after delivering partial input ($deliveredCount of $totalCount): $($_.Exception.Message)"
+                    }
+                    throw
+                }
+            }
+        }
+    }
+}
+
+function Get-UiRegionBox([int[]]$Point, [int]$Width, [int]$Height, [int]$HalfWidth = 120, [int]$HalfHeight = 60) {
+    $x0 = [Math]::Max(0, [int]$Point[0] - $HalfWidth)
+    $y0 = [Math]::Max(0, [int]$Point[1] - $HalfHeight)
+    $x1 = [Math]::Min($Width, [int]$Point[0] + $HalfWidth)
+    $y1 = [Math]::Min($Height, [int]$Point[1] + $HalfHeight)
+    @($x0, $y0, $x1, $y1)
+}
+
+function Test-UiPatchMatch {
+    param(
+        [Parameter(Mandatory)][string]$ImagePath,
+        [Parameter(Mandatory)][string]$PatchPath,
+        [Parameter(Mandatory)][int[]]$Origin,
+        [double]$Tolerance = 22.0,
+        [switch]$Label
+    )
+    Add-Type -AssemblyName System.Drawing
+    $reference = [Drawing.Bitmap]::FromFile($PatchPath)
+    $image = [Drawing.Bitmap]::FromFile($ImagePath)
+    try {
+        if ($Origin.Count -ne 2 -or $Origin[0] -lt 0 -or $Origin[1] -lt 0 -or
+            $Origin[0] + $reference.Width -gt $image.Width -or $Origin[1] + $reference.Height -gt $image.Height) {
+            throw 'Menu reference lies outside the calibrated window.'
+        }
+        $sum = 0.0; $count = 0; $glyphs = 0; $difference = 0; $union = 0
+        $stride = if ($Label) { 1 } else { 4 }
+        $threshold = 0.0
+        if ($Label) {
+            $minimum = 765; $maximum = 0
+            for ($py = 0; $py -lt $reference.Height; $py++) {
+                for ($px = 0; $px -lt $reference.Width; $px++) {
+                    $pixel = $reference.GetPixel($px, $py)
+                    $brightness = $pixel.R + $pixel.G + $pixel.B
+                    $minimum = [Math]::Min($minimum, $brightness)
+                    $maximum = [Math]::Max($maximum, $brightness)
+                }
+            }
+            if ($minimum -eq $maximum) { return $false }
+            $threshold = ($minimum + $maximum) / 2.0
+        }
+        for ($py = 0; $py -lt $reference.Height; $py += $stride) {
+            for ($px = 0; $px -lt $reference.Width; $px += $stride) {
+                $a = $reference.GetPixel($px, $py)
+                $b = $image.GetPixel($Origin[0] + $px, $Origin[1] + $py)
+                if ($Label) {
+                    $expected = ($a.R + $a.G + $a.B -ge $threshold)
+                    $actual = ($b.R + $b.G + $b.B -ge $threshold)
+                    if ($expected) { $glyphs++ }
+                    if ($expected -or $actual) { $union++ }
+                    if ($expected -ne $actual) { $difference++ }
+                }
+                $sum += [Math]::Abs($a.R - $b.R) + [Math]::Abs($a.G - $b.G) + [Math]::Abs($a.B - $b.B)
+                $count++
+            }
+        }
+        if ($Label) {
+            if ($glyphs -gt $count / 2) { $glyphs = $count - $glyphs; $union = $count - $union + $difference }
+            return ($glyphs -gt 0 -and $union -gt 0 -and 100.0 * $difference / $union -lt $Tolerance)
+        }
+        return ($count -gt 0 -and $sum / (3.0 * $count) -lt $Tolerance)
+    } finally {
+        $reference.Dispose()
+        $image.Dispose()
+    }
+}
+
+function Resolve-UiDialogProbe {
+    param(
+        [Parameter(Mandatory)]$Ui,
+        [Parameter(Mandatory)][string]$PatchProperty,
+        [Parameter(Mandatory)][string]$OriginProperty,
+        [Parameter(Mandatory)][string]$DialogLabel,
+        [double]$Tolerance = 22.0,
+        [switch]$Label,
+        [string]$OverridePatch = '',
+        [int[]]$OverrideOrigin = @()
+    )
+    if ($OverridePatch) {
+        $patch = $OverridePatch
+        $origin = [int[]]@($OverrideOrigin)
+    } else {
+        $patch = if ($Ui.PSObject.Properties[$PatchProperty] -and $Ui.$PatchProperty) { [string]$Ui.$PatchProperty } else { '' }
+        $origin = [int[]]@(if ($Ui.PSObject.Properties[$OriginProperty] -and $null -ne $Ui.$OriginProperty) { $Ui.$OriginProperty })
+    }
+    if (-not $patch -or -not (Test-Path -LiteralPath $patch -PathType Leaf) -or @($origin).Count -ne 2 -or $origin[0] -lt 0 -or $origin[1] -lt 0) {
+        throw "Smoke requires a calibrated $DialogLabel reference image and origin ($PatchProperty / $OriginProperty)."
+    }
+    $patch = (Resolve-Path -LiteralPath $patch).ProviderPath
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = $null
+    try {
+        try {
+            $bitmap = [Drawing.Bitmap]::FromFile($patch)
+        } catch {
+            throw "Smoke requires a readable calibrated $DialogLabel reference image ($PatchProperty): $($_.Exception.Message)"
+        }
+        $patchWidth = [int]$bitmap.Width
+        $patchHeight = [int]$bitmap.Height
+    } finally {
+        if ($null -ne $bitmap) { $bitmap.Dispose() }
+    }
+    $uiWidth = if ($Ui.PSObject.Properties['width'] -and $null -ne $Ui.width) { [int]$Ui.width } else { 0 }
+    $uiHeight = if ($Ui.PSObject.Properties['height'] -and $null -ne $Ui.height) { [int]$Ui.height } else { 0 }
+    if ($patchWidth -le 0 -or $patchHeight -le 0 -or $uiWidth -le 0 -or $uiHeight -le 0 -or
+        ($origin[0] + $patchWidth) -gt $uiWidth -or
+        ($origin[1] + $patchHeight) -gt $uiHeight) {
+        throw "Smoke calibrated $DialogLabel reference image ($PatchProperty / $OriginProperty) exceeds the calibrated window bounds (${uiWidth}x${uiHeight})."
+    }
+    [pscustomobject]@{ Mode = 'Patch'; Patch = $patch; Origin = $origin; Tolerance = $Tolerance; Label = [bool]$Label }
+}
+
+function Resolve-SmokeUiProbes {
+    param(
+        [Parameter(Mandatory)]$Ui,
+        [string]$MenuPatch = '',
+        [int[]]$MenuPatchOrigin = @()
+    )
+    [pscustomobject]@{
+        Menu = Resolve-UiDialogProbe -Ui $Ui -PatchProperty 'menu_patch' -OriginProperty 'menu_patch_origin' -DialogLabel 'pause-menu' -Tolerance 22 -OverridePatch $MenuPatch -OverrideOrigin $MenuPatchOrigin
+        SaveDialog = Resolve-UiDialogProbe -Ui $Ui -PatchProperty 'save_dialog_patch' -OriginProperty 'save_dialog_patch_origin' -DialogLabel 'save-dialog' -Tolerance 22
+        ExitConfirm = Resolve-UiDialogProbe -Ui $Ui -PatchProperty 'exit_confirm_patch' -OriginProperty 'exit_confirm_patch_origin' -DialogLabel 'exit-confirmation' -Tolerance 22
+    }
+}
+
+function Test-UiDialogState {
+    param(
+        [Parameter(Mandatory)][string]$ShotPath,
+        [Parameter(Mandatory)]$Probe
+    )
+    if ($Probe.Mode -ne 'Patch') {
+        throw "Unsupported dialog probe mode: $($Probe.Mode)"
+    }
+    Test-UiPatchMatch -ImagePath $ShotPath -PatchPath $Probe.Patch -Origin $Probe.Origin -Tolerance $Probe.Tolerance -Label:$Probe.Label
+}
+
+function Reset-UiToCleanMap {
+    param(
+        [Parameter(Mandatory)][scriptblock]$IsAnyDialogOpen,
+        [Parameter(Mandatory)][scriptblock]$SendEscape,
+        [int]$MaxEscapes = 2,
+        [scriptblock]$ShouldStop = { $false },
+        [scriptblock]$Pause = { Start-Sleep -Milliseconds 300 }
+    )
+    for ($escapeStep = 0; $escapeStep -lt $MaxEscapes; $escapeStep++) {
+        if (& $ShouldStop) { return $false }
+        if (-not (& $IsAnyDialogOpen)) { return $true }
+        & $SendEscape
+        & $Pause $escapeStep
+    }
+    if (& $ShouldStop) { return $false }
+    return (-not (& $IsAnyDialogOpen))
+}
+
+function Invoke-ObservedUiStep {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Act,
+        [Parameter(Mandatory)][scriptblock]$Observe,
+        [int]$MaxPolls = 20,
+        [scriptblock]$Pause = { Start-Sleep -Milliseconds 250 }
+    )
+    if ($MaxPolls -lt 1) { $MaxPolls = 1 }
+    & $Act
+    for ($pollIndex = 1; $pollIndex -le $MaxPolls; $pollIndex++) {
+        if (& $Observe $pollIndex) { return $true }
+        if ($pollIndex -lt $MaxPolls) { & $Pause $pollIndex }
+    }
+    $false
+}
+
+function Invoke-BoundedUiSequence {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$FailureMessage,
+        [Parameter(Mandatory)][scriptblock]$Attempt,
+        [scriptblock]$Reset = {},
+        [int]$MaxAttempts = 3
+    )
+    if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+    $seqFailures = @()
+    for ($seqTry = 1; $seqTry -le $MaxAttempts; $seqTry++) {
+        if ($seqTry -gt 1) { & $Reset $seqTry }
+        $seqResult = & $Attempt $seqTry
+        if ($seqResult -and $seqResult.Done) {
+            return [pscustomobject]@{ Name = $Name; Done = $true; Attempts = $seqTry; Failures = $seqFailures; Result = $seqResult }
+        }
+        $seqReason = if ($seqResult -and $seqResult.PSObject.Properties['Reason'] -and $seqResult.Reason) { [string]$seqResult.Reason } else { 'effect not observed' }
+        $seqFailures += "attempt ${seqTry}: $seqReason"
+    }
+    throw "$FailureMessage ($($seqFailures -join '; '))"
+}
+
+function Invoke-UiSaveFlow {
+    param(
+        [Parameter(Mandatory)][scriptblock]$IsSaveComplete,
+        [Parameter(Mandatory)][scriptblock]$CheckClock,
+        [Parameter(Mandatory)][scriptblock]$PauseGame,
+        [Parameter(Mandatory)][scriptblock]$Click,
+        [Parameter(Mandatory)][scriptblock]$TypeSaveName,
+        [Parameter(Mandatory)][scriptblock]$SendEscape,
+        [Parameter(Mandatory)][scriptblock]$IsMenuOpen,
+        [Parameter(Mandatory)][scriptblock]$IsSaveDialogOpen,
+        [Parameter(Mandatory)][scriptblock]$WaitForSave,
+        [scriptblock]$OnMenuOpened = {},
+        [int]$MaxAttempts = 3,
+        [int]$MaxPolls = 20,
+        [scriptblock]$Pause = { Start-Sleep -Milliseconds 250 }
+    )
+    $anyOpen = { (& $IsSaveDialogOpen) -or (& $IsMenuOpen) }
+    $ensureClean = {
+        $clean = Reset-UiToCleanMap -IsAnyDialogOpen $anyOpen -SendEscape $SendEscape -MaxEscapes 2 -ShouldStop $IsSaveComplete -Pause $Pause
+        if (& $IsSaveComplete) { return $true }
+        & $CheckClock
+        & $PauseGame
+        $clean
+    }
+    Invoke-BoundedUiSequence -Name 'save' -MaxAttempts $MaxAttempts -FailureMessage 'The UI did not produce a complete text save.' -Reset {
+        if (& $IsSaveComplete) { return }
+        $null = & $ensureClean
+    } -Attempt {
+        param($saveTry)
+        if (& $IsSaveComplete) { return [pscustomobject]@{ Done = $true; Reason = $null } }
+        & $CheckClock
+        if ($saveTry -eq 1 -and (& $anyOpen)) {
+            $null = & $ensureClean
+            if (& $IsSaveComplete) { return [pscustomobject]@{ Done = $true; Reason = $null } }
+        }
+        if (& $anyOpen) {
+            return [pscustomobject]@{ Done = $false; Reason = 'starting UI state was not the clean map' }
+        }
+        $menuOpened = Invoke-ObservedUiStep -MaxPolls $MaxPolls -Pause $Pause -Act { & $Click 'menu' } -Observe { & $IsMenuOpen }
+        if (-not $menuOpened) {
+            return [pscustomobject]@{ Done = $false; Reason = 'menu click did not open the pause menu' }
+        }
+        & $OnMenuOpened
+        $dialogOpened = Invoke-ObservedUiStep -MaxPolls $MaxPolls -Pause $Pause -Act { & $Click 'save_menu' } -Observe { & $IsSaveDialogOpen }
+        if (-not $dialogOpened) {
+            return [pscustomobject]@{ Done = $false; Reason = 'save_menu click did not open the save dialog' }
+        }
+        & $Click 'save_name'
+        & $TypeSaveName
+        & $Click 'save_confirm'
+        & $WaitForSave $saveTry
+    }
+}
+
+function Invoke-UiExitFlow {
+    param(
+        [Parameter(Mandatory)][scriptblock]$HasExited,
+        [Parameter(Mandatory)][scriptblock]$GetExitCode,
+        [Parameter(Mandatory)][scriptblock]$WaitForExit,
+        [Parameter(Mandatory)][scriptblock]$PauseGame,
+        [Parameter(Mandatory)][scriptblock]$Click,
+        [Parameter(Mandatory)][scriptblock]$SendEscape,
+        [Parameter(Mandatory)][scriptblock]$IsMenuOpen,
+        [Parameter(Mandatory)][scriptblock]$IsConfirmOpen,
+        [scriptblock]$OnMenuOpened = {},
+        [scriptblock]$OnConfirmationSent = {},
+        [int]$MaxAttempts = 3,
+        [int]$MaxPolls = 20,
+        [scriptblock]$Pause = { Start-Sleep -Milliseconds 250 }
+    )
+    $exitState = @{ ConfirmationSent = $false }
+    $checkExitState = {
+        if (& $HasExited) {
+            $code = & $GetExitCode
+            if ($exitState.ConfirmationSent) {
+                if ($code -eq 0) {
+                    return [pscustomobject]@{ Done = $true; Reason = $null; ConfirmationSent = $true; ExitCode = 0 }
+                }
+                throw "The game exited with non-zero exit code $code after exit confirmation."
+            }
+            throw "The game exited unexpectedly before exit confirmation was sent (exit code $code)."
+        }
+        $null
+    }
+    $anyOpen = {
+        if (& $HasExited) { return $false }
+        (& $IsConfirmOpen) -or (& $IsMenuOpen)
+    }
+    $null = & $checkExitState
+    $seq = Invoke-BoundedUiSequence -Name 'exit' -MaxAttempts $MaxAttempts -FailureMessage 'The game did not exit through its confirmation dialog.' -Reset {
+        if (& $HasExited) {
+            if (-not $exitState.ConfirmationSent) { $null = & $checkExitState }
+            return
+        }
+        $null = Reset-UiToCleanMap -IsAnyDialogOpen $anyOpen -SendEscape $SendEscape -MaxEscapes 2 -ShouldStop { & $HasExited } -Pause $Pause
+        if (& $HasExited) {
+            if (-not $exitState.ConfirmationSent) { $null = & $checkExitState }
+            return
+        }
+        & $PauseGame
+    } -Attempt {
+        param($exitTry)
+        $exited = & $checkExitState
+        if ($null -ne $exited) { return $exited }
+        & $PauseGame
+        $exited = & $checkExitState
+        if ($null -ne $exited) { return $exited }
+        if ($exitTry -eq 1 -and (& $anyOpen)) {
+            $null = Reset-UiToCleanMap -IsAnyDialogOpen $anyOpen -SendEscape $SendEscape -MaxEscapes 2 -ShouldStop { & $HasExited } -Pause $Pause
+            $exited = & $checkExitState
+            if ($null -ne $exited) { return $exited }
+        }
+        if (& $anyOpen) {
+            return [pscustomobject]@{ Done = $false; Reason = 'starting UI state was not the clean map' }
+        }
+        $menuOpened = Invoke-ObservedUiStep -MaxPolls $MaxPolls -Pause $Pause -Act {
+            if (& $HasExited) { return }
+            & $Click 'menu'
+        } -Observe {
+            if (& $HasExited) { return $true }
+            & $IsMenuOpen
+        }
+        $exited = & $checkExitState
+        if ($null -ne $exited) { return $exited }
+        if (-not $menuOpened) {
+            return [pscustomobject]@{ Done = $false; Reason = 'menu click did not open the pause menu' }
+        }
+        & $OnMenuOpened
+        $confirmOpened = Invoke-ObservedUiStep -MaxPolls $MaxPolls -Pause $Pause -Act {
+            if (& $HasExited) { return }
+            & $Click 'exit_game'
+        } -Observe {
+            if (& $HasExited) { return $true }
+            & $IsConfirmOpen
+        }
+        $exited = & $checkExitState
+        if ($null -ne $exited) { return $exited }
+        if (-not $confirmOpened) {
+            return [pscustomobject]@{ Done = $false; Reason = 'exit_game click did not open the confirmation dialog' }
+        }
+        & $Click 'exit_confirm'
+        $exitState.ConfirmationSent = $true
+        & $OnConfirmationSent
+        foreach ($waitMs in @(20000, 40000)) {
+            if ((& $WaitForExit $waitMs) -or (& $HasExited)) {
+                $code = & $GetExitCode
+                if ($code -ne 0) {
+                    throw "The game exited with non-zero exit code $code after exit confirmation."
+                }
+                return [pscustomobject]@{ Done = $true; Reason = $null; ConfirmationSent = $true; ExitCode = 0 }
+            }
+        }
+        throw 'The game did not exit through its confirmation dialog (game did not exit after exit_confirm).'
+    }
+    [pscustomobject]@{
+        Name = 'exit'
+        Done = $true
+        Attempts = $seq.Attempts
+        Failures = $seq.Failures
+        ConfirmationSent = [bool]$seq.Result.ConfirmationSent
+        ExitCode = [int]$seq.Result.ExitCode
+    }
+}
+
+function Invoke-ExitThenVerify {
+    param(
+        [Parameter(Mandatory)][scriptblock]$ExitGame,
+        [Parameter(Mandatory)][scriptblock]$Verify,
+        [Parameter(Mandatory)]$Report
+    )
+    $exitFailure = $null
+    try {
+        & $ExitGame
+        $Report.normal_game_exit = $true
+    } catch {
+        $exitFailure = $_
+        $Report.normal_game_exit = $false
+        $Report.exit_error = $_.Exception.Message
+    }
+    & $Verify
+    if ($null -ne $exitFailure) { throw $exitFailure }
+}
+
+function Read-SharedUtf8Text([string]$Path) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try { [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
+}
+
+function Start-SmokeTool {
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][string]$OutputDir,
+        [Collections.IList]$Tracker = $null
+    )
+    $stdoutPath = Join-Path $OutputDir ($Name + '.stdout.log')
+    $stderrPath = Join-Path $OutputDir ($Name + '.stderr.log')
+    $logPath = Join-Path $OutputDir ($Name + '.log')
+    $joinedArgs = ($Arguments | ForEach-Object {
+        if ($_ -match '"') { throw 'Native argument contains a quote.' }
+        '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+    }) -join ' '
+    $startParams = @{
+        FilePath = $Exe
+        WorkingDirectory = $WorkingDirectory
+        WindowStyle = 'Hidden'
+        PassThru = $true
+        RedirectStandardOutput = $stdoutPath
+        RedirectStandardError = $stderrPath
+    }
+    if ($joinedArgs.Length -gt 0) { $startParams.ArgumentList = $joinedArgs }
+    $process = Microsoft.PowerShell.Management\Start-Process @startParams
+    $null = $process.Handle
+    $run = [pscustomobject]@{
+        Process = $process
+        StdoutPath = $stdoutPath
+        StderrPath = $stderrPath
+        LogPath = $logPath
+        Name = $Name
+        Started = [DateTime]::UtcNow
+        Command = @($Exe) + $Arguments
+    }
+    if ($null -ne $Tracker) { $null = $Tracker.Add($run) }
+    $run
+}
+
+function Get-ActiveSmokeTools($Tracker) {
+    if ($null -eq $Tracker) { return @() }
+    $active = @()
+    foreach ($entry in $Tracker) {
+        if ($null -eq $entry -or $null -eq $entry.Process) { continue }
+        try { $entry.Process.Refresh() } catch {}
+        if (-not $entry.Process.HasExited) { $active += $entry }
+    }
+    $active
+}
+
+function Invoke-FailureGamePause {
+    param(
+        $Game,
+        $Reader,
+        [bool]$ExitConfirmationSent,
+        [Parameter(Mandatory)]$Report,
+        [Parameter(Mandatory)][scriptblock]$SendEscape,
+        [Parameter(Mandatory)][scriptblock]$PauseGame
+    )
+    if ($null -eq $Game -or $null -eq $Reader -or $ExitConfirmationSent) { return }
+    try { if ($Game.PSObject.Methods['Refresh']) { $Game.Refresh() } } catch {}
+    if ($Game.HasExited) { return }
+    try {
+        & $SendEscape
+        & $PauseGame
+    } catch {
+        $Report.pause_cleanup_error = $_.Exception.Message
+    }
+}
+
+function Invoke-FailureRecorderCleanup {
+    param(
+        $RecorderRun,
+        $ToolTracker,
+        [Parameter(Mandatory)]$Report,
+        [Parameter(Mandatory)][scriptblock]$RunDetach,
+        [Parameter(Mandatory)][scriptblock]$WaitRecorder
+    )
+    if ($null -eq $RecorderRun -or $null -eq $RecorderRun.Process) { return }
+    try { if ($RecorderRun.Process.PSObject.Methods['Refresh']) { $RecorderRun.Process.Refresh() } } catch {}
+    if ($RecorderRun.Process.HasExited) { return }
+    $activeDetach = @(Get-ActiveSmokeTools $ToolTracker | Where-Object { $_.Name -like '*detach*' })
+    if ($activeDetach.Count -gt 0) {
+        $pids = ($activeDetach | ForEach-Object { $_.Process.Id }) -join ', '
+        $Report.recorder_cleanup_error = "Skipped failure-detach because detach process ($pids) is still running."
+        return
+    }
+    try {
+        & $RunDetach
+        & $WaitRecorder
+    } catch {
+        $Report.recorder_cleanup_error = $_.Exception.Message
+    }
+}
+
+function Wait-SmokeTool {
+    param(
+        [Parameter(Mandatory)]$Run,
+        [int]$Seconds = 240,
+        [int]$TimeoutMs = -1,
+        [Parameter(Mandatory)]$Report,
+        [Parameter(Mandatory)][scriptblock]$WriteReport,
+        [Parameter(Mandatory)][Text.Encoding]$Utf8
+    )
+    $waitMs = if ($TimeoutMs -ge 0) { $TimeoutMs } else { $Seconds * 1000 }
+    if (-not $Run.Process.WaitForExit($waitMs)) {
+        $partialOut = Read-SharedUtf8Text $Run.StdoutPath
+        $partialErr = Read-SharedUtf8Text $Run.StderrPath
+        [IO.File]::WriteAllText($Run.LogPath, $partialOut + "`n" + $partialErr, $Utf8)
+        $Report.checks += [pscustomobject]@{
+            name = $Run.Name
+            exit = $null
+            timed_out = $true
+            pid = $Run.Process.Id
+            seconds = ([DateTime]::UtcNow - $Run.Started).TotalSeconds
+            command = $Run.Command
+            stdout_log = $Run.StdoutPath
+            stderr_log = $Run.StderrPath
+            log = $Run.LogPath
+        }
+        & $WriteReport
+        throw "Timed out: $($Run.Name); process $($Run.Process.Id) retained for safe cleanup. Logs: $($Run.StdoutPath), $($Run.StderrPath)"
+    }
+    $Run.Process.WaitForExit()
+    $text = Read-SharedUtf8Text $Run.StdoutPath
+    $errors = Read-SharedUtf8Text $Run.StderrPath
+    [IO.File]::WriteAllText($Run.LogPath, $text + "`n" + $errors, $Utf8)
+    $Report.checks += [pscustomobject]@{
+        name = $Run.Name
+        exit = $Run.Process.ExitCode
+        seconds = ([DateTime]::UtcNow - $Run.Started).TotalSeconds
+        command = $Run.Command
+        stdout_log = $Run.StdoutPath
+        stderr_log = $Run.StderrPath
+        log = $Run.LogPath
+    }
+    & $WriteReport
+    if ($Run.Process.ExitCode -ne 0) { throw "$($Run.Name) failed with exit $($Run.Process.ExitCode). See $($Run.Name).log" }
+    return $text
+}
+
 function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
 
 function Invoke-ShimPointer($shim, $window, [int]$logicalX, [int]$logicalY, [int]$virtualX, [int]$virtualY, [scriptblock]$press) {
@@ -314,13 +900,15 @@ function Invoke-FullSmoke {
     if ($settings -notmatch '(?m)^\s*save_as_binary\s*=\s*no\s*$') { throw 'Smoke requires save_as_binary=no; settings were not changed.' }
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
-    if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
+    $gameProcessName = [IO.Path]::GetFileNameWithoutExtension($gamePath)
+    if (@(Get-Process -Name @($gameProcessName, 'recorder') -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
     $gameBuild = Write-GameBuildWarning $gamePath
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
         $point = $ui.$name
         if ($point.Count -ne 2 -or $point[0] -lt 0 -or $point[1] -lt 0 -or $point[0] -ge $ui.width -or $point[1] -ge $ui.height) { throw "Invalid calibrated point: $name" }
     }
+    $uiProbes = Resolve-SmokeUiProbes -Ui $ui -MenuPatch $MenuPatch -MenuPatchOrigin $MenuPatchOrigin
     $lock = [IO.Path]::GetFullPath($GameLock)
     $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $lock)
     if (Test-Path -LiteralPath $lock) { throw "Shared game lock is held: $lock" }
@@ -340,31 +928,20 @@ function Invoke-FullSmoke {
         Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
         throw
     }
-    $game = $null; $reader = $null; $recorderRun = $null; $previousForeground = [IntPtr]::Zero
+    $game = $null; $reader = $null; $recorderRun = $null; $foregroundState = @{ Handle = [IntPtr]::Zero }; $exitConfirmationState = @{ Sent = $false }
+    $toolTracker = [Collections.Generic.List[object]]::new()
+    $menuProbe = $uiProbes.Menu
+    $saveDialogProbe = $uiProbes.SaveDialog
+    $exitConfirmProbe = $uiProbes.ExitConfirm
     $statusPath = $null; $failure = $null; $cleaned = $false
     $selectionWritten = $false
     function Write-Report { [IO.File]::WriteAllText((Join-Path $output 'smoke-result.json'), ($report | ConvertTo-Json -Depth 14), $utf8) }
     function Stage([string]$name) { $report.phase=$name; Write-Report; Write-Host ("SMOKE {0}: {1:n1}s" -f $name,$started.Elapsed.TotalSeconds) }
     function Launch-Tool([string]$exe, [string[]]$arguments, [string]$name) {
-        $info = New-Object Diagnostics.ProcessStartInfo
-        $info.FileName=$exe; $info.WorkingDirectory=$repo; $info.UseShellExecute=$false; $info.CreateNoWindow=$true
-        $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
-        $info.StandardOutputEncoding=$utf8; $info.StandardErrorEncoding=$utf8
-        $info.Arguments = ($arguments | ForEach-Object {
-            if ($_ -match '"') { throw 'Native argument contains a quote.' }
-            '"' + ($_ -replace '(\\+)$','$1$1') + '"'
-        }) -join ' '
-        $process = New-Object Diagnostics.Process; $process.StartInfo=$info; $null=$process.Start()
-        [pscustomobject]@{ Process=$process; Stdout=$process.StandardOutput.ReadToEndAsync(); Stderr=$process.StandardError.ReadToEndAsync(); Name=$name; Started=[DateTime]::UtcNow; Command=@($exe)+$arguments }
+        Start-SmokeTool -Exe $exe -Arguments $arguments -Name $name -WorkingDirectory $repo -OutputDir $output -Tracker $toolTracker
     }
     function Finish-Tool($run,[int]$seconds=240) {
-        if (-not $run.Process.WaitForExit($seconds*1000)) { throw "Timed out: $($run.Name); process $($run.Process.Id) retained for safe cleanup." }
-        $text=$run.Stdout.GetAwaiter().GetResult(); $errors=$run.Stderr.GetAwaiter().GetResult()
-        [IO.File]::WriteAllText((Join-Path $output ($run.Name+'.log')), $text + "`n" + $errors, $utf8)
-        $report.checks += [pscustomobject]@{name=$run.Name;exit=$run.Process.ExitCode;seconds=([DateTime]::UtcNow-$run.Started).TotalSeconds;command=$run.Command}
-        Write-Report
-        if ($run.Process.ExitCode -ne 0) { throw "$($run.Name) failed with exit $($run.Process.ExitCode). See $($run.Name).log" }
-        return $text
+        Wait-SmokeTool -Run $run -Seconds $seconds -Report $report -WriteReport { Write-Report } -Utf8 $utf8
     }
     function Run-Tool([string]$exe,[string[]]$arguments,[string]$name,[int]$seconds=240) {
         Finish-Tool (Launch-Tool $exe $arguments $name) $seconds
@@ -401,7 +978,12 @@ function Invoke-FullSmoke {
         }
         $binaries
     }
-    function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground) { & $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra }
+    function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground,[scriptblock]$onRetry={ Start-Sleep -Milliseconds 250 }) {
+        $driverAction = $action
+        Invoke-WithFocusRetry -OnRetry $onRetry -Operation {
+            & $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action $driverAction -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra
+        }
+    }
     function Click-Point([string]$name) {
         $point=$ui.$name
         $foregroundInput=$Foreground -or $name -in @('menu','save_menu','save_name','save_confirm','exit_game','exit_confirm')
@@ -492,11 +1074,40 @@ function Invoke-FullSmoke {
         Remove-Item -LiteralPath $shots
         $report.cursor_parks += @{index=$index;strip=$box;strip_changed=$changed}
     }
+    function Test-SmokeDialog([object]$probe) {
+        $probeShot = Join-Path $output ('ui-probe-' + [Guid]::NewGuid().ToString('N') + '.png')
+        try {
+            $null = Drive 'Screenshot' @{Out=$probeShot}
+            return Test-UiDialogState -ShotPath $probeShot -Probe $probe
+        } finally {
+            Remove-Item -LiteralPath $probeShot -Force -ErrorAction SilentlyContinue
+        }
+    }
+    function Test-CompleteTextSave([string]$path) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+        try {
+            $stream = [IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+            try {
+                $header = New-Object byte[] 8
+                $n = $stream.Read($header,0,8)
+                return $n -eq 8 -and [Text.Encoding]::ASCII.GetString($header).StartsWith('HOI4txt') -and $stream.Length -gt 10000
+            } finally { $stream.Dispose() }
+        } catch { return $false }
+    }
     function Stop-OwnedGame {
-        $game.Refresh(); if ($game.HasExited) { return }
-        Pause-Game $true
-        Click-Point 'menu'; Click-Point 'exit_game'; Click-Point 'exit_confirm'
-        if (-not $game.WaitForExit(60000)) { throw 'The game did not exit through its confirmation dialog.' }
+        $result = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 20 `
+            -HasExited { $game.Refresh(); $game.HasExited } `
+            -GetExitCode { $game.Refresh(); $game.ExitCode } `
+            -WaitForExit { param($waitMs) $game.WaitForExit($waitMs) } `
+            -PauseGame { Pause-Game $true } `
+            -Click { param($pointName) Click-Point $pointName } `
+            -SendEscape { $null = Drive 'Key' @{Key='Escape'} $true } `
+            -IsMenuOpen { Test-SmokeDialog $menuProbe } `
+            -IsConfirmOpen { Test-SmokeDialog $exitConfirmProbe } `
+            -OnConfirmationSent { $exitConfirmationState.Sent = $true }
+        $report.exit_attempts = $result.Attempts
+        $report.exit_confirmed = $result.ConfirmationSent
+        $report.exit_code = $result.ExitCode
     }
     try {
         Stage 'static-checks'
@@ -565,6 +1176,7 @@ function Invoke-FullSmoke {
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
         $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory $bin -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
         $game=Get-Process -Id $launch.GameId
+        $null=$game.Handle
         $limit=[DateTime]::UtcNow.AddSeconds(300)
         do {
             $game.Refresh(); if ($game.HasExited) { throw 'Game exited before loading.' }
@@ -580,7 +1192,7 @@ function Invoke-FullSmoke {
         } while ($true)
         $shot=Drive 'Screenshot' @{Out=(Join-Path $output 'loaded.png')}
         if ($shot.Width -ne $ui.width -or $shot.Height -ne $ui.height) { throw 'Window dimensions differ from calibrated UI.' }
-        if ($Foreground) { $previousForeground=[Hoi4ProbeInput]::AcquireTargetFocus($game.MainWindowHandle,[uint32]$game.Id) }
+        if ($Foreground) { $foregroundState.Handle=Invoke-WithFocusRetry -Operation { [Hoi4ProbeInput]::AcquireTargetFocus($game.MainWindowHandle,[uint32]$game.Id) } }
         Pause-Game $true
         $null=Drive 'Move' @{X=[int]$ui.map_center[0];Y=[int]$ui.map_center[1]}
         $limit=[DateTime]::UtcNow.AddSeconds(120)
@@ -655,19 +1267,39 @@ function Invoke-FullSmoke {
         $saveName='SMOKE_'+[DateTime]::Now.ToString('yyyyMMdd_HHmmss')+'_H'+$target
         $save=Join-Path (Join-Path $userPath 'save games') ($saveName+'.hoi4')
         if (Test-Path -LiteralPath $save) { throw 'Smoke save already exists; refusing to overwrite.' }
-        Click-Point 'menu'; Click-Point 'save_menu'; Click-Point 'save_name'
-        $null=Drive 'Key' @{Key='CtrlA'} $true; $null=Drive 'Text' @{Text=$saveName} $true; Click-Point 'save_confirm'
-        $limit=[DateTime]::UtcNow.AddSeconds(120); $saved=$false
-        do {
-            if (Test-Path -LiteralPath $save) {
-                try {
-                    $stream=[IO.File]::Open($save,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
-                    try { $header=New-Object byte[] 8; $n=$stream.Read($header,0,8); $saved=$n -eq 8 -and [Text.Encoding]::ASCII.GetString($header).StartsWith('HOI4txt') -and $stream.Length -gt 10000 } finally { $stream.Dispose() }
-                } catch { $saved=$false }
+        $saveResult = Invoke-UiSaveFlow -MaxAttempts 3 -MaxPolls 20 `
+            -IsSaveComplete { Test-CompleteTextSave $save } `
+            -CheckClock {
+                $nowClock = Clock
+                if ($nowClock.hour -ne $target) { throw 'Game advanced during the save.' }
+                if ($nowClock.paused -ne 1) { throw 'Pause did not hold before save.' }
+            } `
+            -PauseGame { Pause-Game $true } `
+            -Click { param($pointName) Click-Point $pointName } `
+            -TypeSaveName {
+                $null = Drive 'Key' @{Key='CtrlA'} $true
+                $null = Drive 'Text' @{Text=$saveName} $true
+            } `
+            -SendEscape { $null = Drive 'Key' @{Key='Escape'} $true } `
+            -IsMenuOpen { Test-SmokeDialog $menuProbe } `
+            -IsSaveDialogOpen { Test-SmokeDialog $saveDialogProbe } `
+            -WaitForSave {
+                $appearLimit = [DateTime]::UtcNow.AddSeconds(40)
+                $completeLimit = [DateTime]::UtcNow.AddSeconds(120)
+                do {
+                    if (Test-CompleteTextSave $save) { return [pscustomobject]@{ Done=$true; Reason=$null } }
+                    $writing = Test-Path -LiteralPath $save
+                    $now = [DateTime]::UtcNow
+                    if (-not $writing -and $now -gt $appearLimit) {
+                        return [pscustomobject]@{ Done=$false; Reason='save file did not appear after save_confirm' }
+                    }
+                    if ($now -gt $completeLimit) {
+                        return [pscustomobject]@{ Done=$false; Reason='save file did not finish writing in time' }
+                    }
+                    Start-Sleep -Milliseconds 250
+                } while ($true)
             }
-            if (-not $saved) { Start-Sleep -Milliseconds 250 }
-            if ([DateTime]::UtcNow -gt $limit) { throw 'The UI did not produce a complete text save.' }
-        } until ($saved)
+        $report.save_attempts = $saveResult.Attempts
         Start-Sleep -Seconds 2
         if ((Clock).hour -ne $target) { throw 'Game advanced during the save.' }
         $report.save=$save; $report.save_sha256=(Get-FileHash $save -Algorithm SHA256).Hash
@@ -714,74 +1346,85 @@ function Invoke-FullSmoke {
         $completed=[IO.File]::ReadAllText($completionFiles[0].FullName) | ConvertFrom-Json
         if (-not $completed.detached -or -not $completed.drain_complete -or $completed.partial -or $completed.issues.Count -ne 0 -or $completed.warnings.Count -ne 0) { throw 'Recording did not finalize cleanly.' }
         $report.completion=$completed; $report.collector_absence_confirmed=$true
-        Stage 'normal-game-exit'
-        Stop-OwnedGame
-        $replays=@(Get-ChildItem -LiteralPath $recordRoot -File | Where-Object { $_.Extension -in '.battleplan' })
-        if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
-        $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
-        $stream=[IO.File]::OpenRead($replay)
-        try { $header=New-Object byte[] 6; $n=$stream.Read($header,0,6); if ($n -ne 6 -or [Text.Encoding]::ASCII.GetString($header,0,4) -cne 'H4RP' -or [BitConverter]::ToUInt16($header,4) -ne $format) { throw "Smoke did not produce the expected format-$format replay." } } finally { $stream.Dispose() }
-        Stage 'fresh-save-oracle'
-        $inspection=Run-Tool $recorder @('inspect',$replay) 'inspect' 180
-        if ($inspection -notmatch 'content_verified=true sessions=1 branches=1 blocks=\d+') { throw 'Replay identity/session/branch inspection failed.' }
-        $oracle=Run-Tool $recorder @('oracle',$replay,$save,'--hour',[string]$target,'--branch','1','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath) 'oracle' 240
-        if ($oracle -notmatch '(?m)^Differences: 0\s*$' -or $oracle -notmatch 'coverage: complete; 0 table availability issues; 0 failed or skipped comparison groups') { throw 'Fresh-save oracle did not establish complete matching coverage.' }
-        $report.oracle_comparisons=[int]([regex]::Match($oracle,'(\d+) exact field comparisons').Groups[1].Value)
-        $report.oracle_differences=0; $report.recorded_format=$format
-        Copy-Item -LiteralPath $save -Destination (Join-Path $output 'boundary-save.hoi4')
-        Stage 'render-and-score-five-reference-pairs'
-        $culture=[Globalization.CultureInfo]::InvariantCulture
-        foreach ($reference in $references) {
-            $cameraText=($reference.camera | ForEach-Object { ([double]$_).ToString('R',$culture) }) -join ','
-            $common=@($replay,'--hour',[string]$target,'--branch','1','--camera',$cameraText,'--width',[string]$reference.width,'--height',[string]$reference.height,'--perspective',$Perspective,'--fog','on','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath)
-            $image=Join-Path $output ("reference-{0}-viewer.png" -f $reference.index)
-            $null=Run-Tool $viewer (@('--dump')+$common+@('--out',$image)) ("render-{0}" -f $reference.index) 240
-            $score=Join-Path $output ("reference-{0}-score.json" -f $reference.index)
-            $scale=([double]$ui.width/$reference.width).ToString('R',$culture)
-            $null=Run-Tool $viewer @('--compare',$reference.game_image,$image,'--upscale',$scale,'--exclude-game-ui','--json',$score) ("compare-{0}" -f $reference.index) 120
-            $reference.viewer_image=$image; $reference.scores=[IO.File]::ReadAllText($score) | ConvertFrom-Json
-            if ($reference.index -eq 0) {
-                $windowImage=Join-Path $output 'window-parity.png'
-                Add-Type -AssemblyName System.Windows.Forms
-                $screen=[Windows.Forms.SystemInformation]::VirtualScreen
-                [Windows.Forms.Cursor]::Position=New-Object Drawing.Point ($screen.Right-1),($screen.Bottom-1)
-                $null=Run-Tool $viewer (@('--window-dump')+$common+@('--out',$windowImage)) 'window-render' 240
-                $headlessHash=(Get-FileHash $image -Algorithm SHA256).Hash
-                $windowHash=(Get-FileHash $windowImage -Algorithm SHA256).Hash
-                $report.window_headless_identical=$headlessHash -eq $windowHash
-                $report.window_headless_sha256=$headlessHash
-                if (-not $report.window_headless_identical) { throw 'Headless and window render outputs differ.' }
+        Invoke-ExitThenVerify -Report $report -ExitGame {
+            Stage 'normal-game-exit'
+            try { Stop-OwnedGame }
+            finally {
+                if ($foregroundState.Handle -ne [IntPtr]::Zero -and ('Hoi4ProbeInput' -as [type])) {
+                    try { [Hoi4ProbeInput]::RestoreForeground($foregroundState.Handle,[IntPtr]::Zero); $foregroundState.Handle=[IntPtr]::Zero }
+                    catch { $report.foreground_cleanup_error=$_.Exception.Message }
+                }
             }
-            Write-Report
+        } -Verify {
+            $replays=@(Get-ChildItem -LiteralPath $recordRoot -File | Where-Object { $_.Extension -in '.battleplan' })
+            if ($replays.Count -ne 1) { throw 'Expected exactly one finalized replay.' }
+            $replay=$replays[0].FullName; $report.replay=$replay; $report.replay_bytes=$replays[0].Length
+            $stream=[IO.File]::OpenRead($replay)
+            try { $header=New-Object byte[] 6; $n=$stream.Read($header,0,6); if ($n -ne 6 -or [Text.Encoding]::ASCII.GetString($header,0,4) -cne 'H4RP' -or [BitConverter]::ToUInt16($header,4) -ne $format) { throw "Smoke did not produce the expected format-$format replay." } } finally { $stream.Dispose() }
+            Stage 'fresh-save-oracle'
+            $inspection=Run-Tool $recorder @('inspect',$replay) 'inspect' 180
+            if ($inspection -notmatch 'content_verified=true sessions=1 branches=1 blocks=\d+') { throw 'Replay identity/session/branch inspection failed.' }
+            $oracle=Run-Tool $recorder @('oracle',$replay,$save,'--hour',[string]$target,'--branch','1','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath) 'oracle' 240
+            if ($oracle -notmatch '(?m)^Differences: 0\s*$' -or $oracle -notmatch 'coverage: complete; 0 table availability issues; 0 failed or skipped comparison groups') { throw 'Fresh-save oracle did not establish complete matching coverage.' }
+            $report.oracle_comparisons=[int]([regex]::Match($oracle,'(\d+) exact field comparisons').Groups[1].Value)
+            $report.oracle_differences=0; $report.recorded_format=$format
+            Copy-Item -LiteralPath $save -Destination (Join-Path $output 'boundary-save.hoi4')
+            Stage 'render-and-score-five-reference-pairs'
+            $culture=[Globalization.CultureInfo]::InvariantCulture
+            foreach ($reference in $references) {
+                $cameraText=($reference.camera | ForEach-Object { ([double]$_).ToString('R',$culture) }) -join ','
+                $common=@($replay,'--hour',[string]$target,'--branch','1','--camera',$cameraText,'--width',[string]$reference.width,'--height',[string]$reference.height,'--perspective',$Perspective,'--fog','on','--game-dir',(Split-Path -Parent $gamePath),'--user-dir',$userPath)
+                $image=Join-Path $output ("reference-{0}-viewer.png" -f $reference.index)
+                $null=Run-Tool $viewer (@('--dump')+$common+@('--out',$image)) ("render-{0}" -f $reference.index) 240
+                $score=Join-Path $output ("reference-{0}-score.json" -f $reference.index)
+                $scale=([double]$ui.width/$reference.width).ToString('R',$culture)
+                $null=Run-Tool $viewer @('--compare',$reference.game_image,$image,'--upscale',$scale,'--exclude-game-ui','--json',$score) ("compare-{0}" -f $reference.index) 120
+                $reference.viewer_image=$image; $reference.scores=[IO.File]::ReadAllText($score) | ConvertFrom-Json
+                if ($reference.index -eq 0) {
+                    $windowImage=Join-Path $output 'window-parity.png'
+                    Add-Type -AssemblyName System.Windows.Forms
+                    $screen=[Windows.Forms.SystemInformation]::VirtualScreen
+                    [Windows.Forms.Cursor]::Position=New-Object Drawing.Point ($screen.Right-1),($screen.Bottom-1)
+                    $null=Run-Tool $viewer (@('--window-dump')+$common+@('--out',$windowImage)) 'window-render' 240
+                    $headlessHash=(Get-FileHash $image -Algorithm SHA256).Hash
+                    $windowHash=(Get-FileHash $windowImage -Algorithm SHA256).Hash
+                    $report.window_headless_identical=$headlessHash -eq $windowHash
+                    $report.window_headless_sha256=$headlessHash
+                    if (-not $report.window_headless_identical) { throw 'Headless and window render outputs differ.' }
+                }
+                Write-Report
+            }
+            $finalStatus=Status
+            [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
+            if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
+            $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$advanced;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=$advanced/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke at top speed. Not a paired baseline or performance acceptance.'}
+            if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
+            $report.source_save_unchanged=$true
         }
-        $finalStatus=Status
-        [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
-        if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
-        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$advanced;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=$advanced/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke at top speed. Not a paired baseline or performance acceptance.'}
-        if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
-        $report.source_save_unchanged=$true
         $report.passed=$true; Stage 'validations-passed'
     } catch {
         $failure=$_; $report.passed=$false; $report.error=$_.Exception.Message
         Stage 'failed'
-        if ($game -and -not $game.HasExited -and $reader) {
-            try { $null=Drive 'Key' @{Key='Escape'}; Pause-Game $true } catch { $report.pause_cleanup_error=$_.Exception.Message }
-        }
-        if ($recorderRun -and -not $recorderRun.Process.HasExited) {
-            try { $null=Run-Tool $recorder @('detach','--out',$recordRoot) 'failure-detach' 120; $null=Finish-Tool $recorderRun 180 } catch { $report.recorder_cleanup_error=$_.Exception.Message }
-        }
+        Invoke-FailureGamePause -Game $game -Reader $reader -ExitConfirmationSent $exitConfirmationState.Sent -Report $report `
+            -SendEscape { $null = Drive 'Key' @{Key='Escape'} } `
+            -PauseGame { Pause-Game $true }
+        Invoke-FailureRecorderCleanup -RecorderRun $recorderRun -ToolTracker $toolTracker -Report $report `
+            -RunDetach { $null = Run-Tool $recorder @('detach','--out',$recordRoot) 'failure-detach' 120 } `
+            -WaitRecorder { $null = Finish-Tool $recorderRun 180 }
     } finally {
         if ($reader) { $reader.Dispose() }
         if ($game) {
             $game.Refresh()
-            if ($previousForeground -ne [IntPtr]::Zero -and ('Hoi4ProbeInput' -as [type])) {
-                try { [Hoi4ProbeInput]::RestoreForeground($previousForeground,[IntPtr]::Zero) }
+            if ($foregroundState.Handle -ne [IntPtr]::Zero -and ('Hoi4ProbeInput' -as [type])) {
+                try { [Hoi4ProbeInput]::RestoreForeground($foregroundState.Handle,[IntPtr]::Zero) }
                 catch { $report.foreground_cleanup_error=$_.Exception.Message }
             }
         }
         $ownedGameStopped=$null -eq $game -or $game.HasExited
         $ownedRecorderStopped=$null -eq $recorderRun -or $recorderRun.Process.HasExited
-        if ($ownedGameStopped -and $ownedRecorderStopped) {
+        $activeTools=@(if (Get-Variable -Name toolTracker -ErrorAction SilentlyContinue) { Get-ActiveSmokeTools $toolTracker })
+        $ownedToolsStopped=$activeTools.Count -eq 0
+        if ($ownedGameStopped -and $ownedRecorderStopped -and $ownedToolsStopped) {
             try {
                 if ($null -ne $selection) { [IO.File]::WriteAllBytes($selectionPath,$selection) }
                 elseif ($selectionWritten) { [IO.File]::Delete($selectionPath) }
@@ -791,6 +1434,9 @@ function Invoke-FullSmoke {
             } catch { $report.passed=$false; $report.cleanup_complete=$false; $report.cleanup_error=$_.Exception.Message; if (-not $failure) { $failure=$_ } }
         } else {
             $report.cleanup_complete=$false; $report.retained_game_pid=if ($game) { $game.Id } else { $null }; $report.retained_lock=$lock
+            if ($activeTools.Count -gt 0) {
+                $report.retained_tool_pids=@($activeTools | ForEach-Object { [pscustomobject]@{ name = $_.Name; pid = $_.Process.Id } })
+            }
         }
         $report.elapsed_seconds=$started.Elapsed.TotalSeconds; $report.finished_utc=[DateTime]::UtcNow.ToString('o'); Write-Report
     }
@@ -813,7 +1459,8 @@ $gamePath = (Resolve-Path -LiteralPath $GameExe).ProviderPath
 if ([IO.Path]::GetFileName($gamePath) -ine 'hoi4.exe') {
     throw 'GameExe must identify hoi4.exe.'
 }
-$gameProcesses = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
+$gameProcessName = [IO.Path]::GetFileNameWithoutExtension($gamePath)
+$gameProcesses = @(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue)
 if ($gameProcesses.Count -gt 1) {
     throw 'Two game processes are unsupported. Close the extra game before driving the test.'
 }
@@ -955,38 +1602,7 @@ if ($Action -eq 'Reload') {
         $captureName=[IO.Path]::GetFileNameWithoutExtension($name)+'-'+[Guid]::NewGuid().ToString('N')+'.png'
         $shot=Reload-Drive 'Screenshot' @{Out=(Join-Path $Out $captureName)}
         if ($shot.Width -ne $ui.width -or $shot.Height -ne $ui.height) { throw 'Window dimensions differ from calibrated UI.' }
-        Add-Type -AssemblyName System.Drawing
-        $reference=[Drawing.Bitmap]::FromFile($patch); $image=[Drawing.Bitmap]::FromFile($shot.Path)
-        try {
-            if ($origin[0] -lt 0 -or $origin[1] -lt 0 -or $origin[0]+$reference.Width -gt $image.Width -or $origin[1]+$reference.Height -gt $image.Height) { throw 'Menu reference lies outside the calibrated window.' }
-            $sum=0.0; $count=0; $glyphs=0; $difference=0; $union=0
-            $stride=if ($Label) {1} else {4}
-            $threshold=0.0
-            if ($Label) {
-                $minimum=765; $maximum=0
-                for ($py=0;$py -lt $reference.Height;$py++) { for ($px=0;$px -lt $reference.Width;$px++) {
-                    $pixel=$reference.GetPixel($px,$py); $brightness=$pixel.R+$pixel.G+$pixel.B
-                    $minimum=[math]::Min($minimum,$brightness); $maximum=[math]::Max($maximum,$brightness)
-                } }
-                if ($minimum -eq $maximum) { return $false }
-                $threshold=($minimum+$maximum)/2.0
-            }
-            for ($py=0;$py -lt $reference.Height;$py+=$stride) { for ($px=0;$px -lt $reference.Width;$px+=$stride) {
-                $a=$reference.GetPixel($px,$py); $b=$image.GetPixel($origin[0]+$px,$origin[1]+$py)
-                if ($Label) {
-                    $expected=($a.R+$a.G+$a.B -ge $threshold); $actual=($b.R+$b.G+$b.B -ge $threshold)
-                    if ($expected) { $glyphs++ }
-                    if ($expected -or $actual) { $union++ }
-                    if ($expected -ne $actual) { $difference++ }
-                }
-                $sum += [math]::Abs($a.R-$b.R)+[math]::Abs($a.G-$b.G)+[math]::Abs($a.B-$b.B); $count++
-            } }
-            if ($Label) {
-                if ($glyphs -gt $count/2) { $glyphs=$count-$glyphs; $union=$count-$union+$difference }
-                return ($glyphs -gt 0 -and $union -gt 0 -and 100.0*$difference/$union -lt $tolerance)
-            }
-            return ($sum/(3.0*$count) -lt $tolerance)
-        } finally { $reference.Dispose(); $image.Dispose() }
+        Test-UiPatchMatch -ImagePath $shot.Path -PatchPath $patch -Origin $origin -Tolerance $tolerance -Label:$Label
     }
     function Wait-ReloadMenu([string]$name,[string]$patch,[int[]]$origin,[double]$tolerance,[switch]$Label) {
         $deadline=[DateTime]::UtcNow.AddSeconds(15)
@@ -1134,7 +1750,7 @@ if ($Action -eq 'Baseline') {
                 clock = $clock; unavailable_reason = $reason } | ConvertTo-Json -Compress -Depth 4))
             if (($qpc - $lastFlush) / [double]$reader.Frequency -ge 5) { $stream.Flush($true); $lastFlush = $qpc }
             if (($qpc - $lastProcessCheck) / [double]$reader.Frequency -ge 2) {
-                if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -gt 1) {
+                if (@(Get-Process -Name $gameProcessName -ErrorAction SilentlyContinue).Count -gt 1) {
                     $stopReason = 'second hoi4.exe process detected'
                     break
                 }
@@ -1283,13 +1899,22 @@ public static class Hoi4ProbeInput {
         }
     }
     public static IntPtr AcquireTargetFocus(IntPtr window, uint process) {
-        uint actual;
-        if (!IsWindow(window) || GetWindowThreadProcessId(window, out actual) == 0 || actual != process)
-            throw new InvalidOperationException("The game window no longer belongs to the selected process.");
-        IntPtr previous = GetForegroundWindow();
-        if (!FocusWindow(window))
-            throw new InvalidOperationException("Windows refused to focus the game; input was not sent.");
-        return previous;
+        return AcquireTargetFocus(window, process, 5, 150);
+    }
+    public static IntPtr AcquireTargetFocus(IntPtr window, uint process, int attempts, int delayMs) {
+        if (attempts < 1) attempts = 1;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            uint actual;
+            if (!IsWindow(window) || GetWindowThreadProcessId(window, out actual) == 0 || actual != process)
+                throw new InvalidOperationException("The game window no longer belongs to the selected process.");
+            if (IsIconic(window)) ShowWindow(window, 9);
+            IntPtr previous = GetForegroundWindow();
+            if (FocusWindow(window))
+                return previous;
+            if (attempt < attempts && delayMs > 0)
+                System.Threading.Thread.Sleep(delayMs);
+        }
+        throw new InvalidOperationException("Windows refused to focus the game; input was not sent.");
     }
     public static void RestoreForeground(IntPtr previous, IntPtr gameWindow) {
         if (previous == IntPtr.Zero || previous == gameWindow || !IsWindow(previous)) return;
@@ -1347,17 +1972,40 @@ public static class Hoi4ProbeInput {
         System.Threading.Thread.Sleep(100);
         CheckTarget(window, process);
     }
+    public static void WheelNotch(IntPtr window, uint process, int x, int y, int step) {
+        CheckTarget(window, process);
+        if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var turn = new Input[1];
+        turn[0].Data.Mouse.Flags = 0x0800;
+        turn[0].Data.Mouse.Data = unchecked((uint)(step * 120));
+        Send(window, process, turn);
+        System.Threading.Thread.Sleep(60);
+    }
     public static void Wheel(IntPtr window, uint process, int x, int y, int notches) {
         CheckTarget(window, process);
         if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error());
         System.Threading.Thread.Sleep(100);
         int step = notches < 0 ? -1 : 1;
+        int total = Math.Abs(notches);
+        int delivered = 0;
         for (int sent = 0; sent != notches; sent += step) {
-            var turn = new Input[1];
-            turn[0].Data.Mouse.Flags = 0x0800;
-            turn[0].Data.Mouse.Data = unchecked((uint)(step * 120));
-            Send(window, process, turn);
-            System.Threading.Thread.Sleep(60);
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    WheelNotch(window, process, x, y, step);
+                    delivered++;
+                    break;
+                } catch (InvalidOperationException error) {
+                    if (!error.Message.Contains("focus was lost")) throw;
+                    if (attempt >= 5) {
+                        if (delivered > 0)
+                            throw new InvalidOperationException("Game focus was lost after delivering partial input (" + delivered + " of " + total + ").");
+                        throw;
+                    }
+                    System.Threading.Thread.Sleep(150);
+                    AcquireTargetFocus(window, process);
+                    System.Threading.Thread.Sleep(100);
+                }
+            }
         }
     }
     public static void Click(IntPtr window, uint process, int x, int y) {
@@ -1389,7 +2037,13 @@ if ($Foreground) {
 }
 try {
     Start-Sleep -Milliseconds 200
-    if ($Foreground) { [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id) }
+    if ($Foreground) {
+        Invoke-WithFocusRetry -OnRetry {
+            Start-Sleep -Milliseconds 150
+            $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+            Start-Sleep -Milliseconds 100
+        } -Operation { [Hoi4ProbeInput]::CheckTarget($window, [uint32]$game.Id) }
+    }
     if (-not [Hoi4ProbeInput]::IsWindowVisible($window)) { throw 'The game window is not visible.' }
     $rect = New-Object Hoi4ProbeInput+Rect
     if (-not [Hoi4ProbeInput]::GetWindowRect($window, [ref]$rect)) { throw 'Cannot read the game window rectangle.' }
@@ -1471,8 +2125,19 @@ try {
         if ($Action -eq 'Wheel' -and $Delta -eq 0) { throw 'Wheel requires a nonzero -Delta.' }
         if ($Foreground) {
             if ($Action -eq 'Move') { [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY) }
-            elseif ($Action -eq 'Wheel') { [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta) }
-            else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
+            elseif ($Action -eq 'Wheel') {
+                $wheelStep = if ($Delta -lt 0) { -1 } else { 1 }
+                $wheelSteps = @(1..([Math]::Abs($Delta)) | ForEach-Object { $wheelStep })
+                Invoke-WithFocusRetry -OnRetry {
+                    Start-Sleep -Milliseconds 150
+                    $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                    Start-Sleep -Milliseconds 100
+                } -Operation { [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY) }
+                Invoke-SequentialFocusInput -Items $wheelSteps -MaxAttemptsPerItem 5 -Pause { Start-Sleep -Milliseconds 150 } -Reacquire {
+                    $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                    Start-Sleep -Milliseconds 100
+                } -SendItem { param($notchStep) [Hoi4ProbeInput]::WheelNotch($window, [uint32]$game.Id, $screenX, $screenY, [int]$notchStep) }
+            } else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
         } elseif ($Posted -or $Action -eq 'Move') {
             $logical = [Hoi4ProbeInput]::LogicalPoint($window, $screenX - $origin.X, $screenY - $origin.Y)
             if ($Action -eq 'Move') { [Hoi4ProbeInput]::PostMove($window, [int]$logical[0], [int]$logical[1]) }
@@ -1501,8 +2166,19 @@ try {
                 $flash = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
                 try {
                     Start-Sleep -Milliseconds 120
-                    if ($Action -eq 'Wheel') { [Hoi4ProbeInput]::Wheel($window, [uint32]$game.Id, $screenX, $screenY, $Delta) }
-                    else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
+                    if ($Action -eq 'Wheel') {
+                        $wheelStep = if ($Delta -lt 0) { -1 } else { 1 }
+                        $wheelSteps = @(1..([Math]::Abs($Delta)) | ForEach-Object { $wheelStep })
+                        Invoke-WithFocusRetry -OnRetry {
+                            Start-Sleep -Milliseconds 150
+                            $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                            Start-Sleep -Milliseconds 100
+                        } -Operation { [Hoi4ProbeInput]::Move($window, [uint32]$game.Id, $screenX, $screenY) }
+                        Invoke-SequentialFocusInput -Items $wheelSteps -MaxAttemptsPerItem 5 -Pause { Start-Sleep -Milliseconds 150 } -Reacquire {
+                            $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                            Start-Sleep -Milliseconds 100
+                        } -SendItem { param($notchStep) [Hoi4ProbeInput]::WheelNotch($window, [uint32]$game.Id, $screenX, $screenY, [int]$notchStep) }
+                    } else { [Hoi4ProbeInput]::Click($window, [uint32]$game.Id, $screenX, $screenY) }
                 } finally {
                     [Hoi4ProbeInput]::RestoreForeground($flash, $window)
                     [void][Hoi4ProbeInput]::PushBehind($window, $flash)
@@ -1540,24 +2216,21 @@ try {
     { $_ -eq 'Text' -or $_ -eq 'Console' } {
         if (-not $Text -or $Text -match '[\r\n\x00-\x1F]') { throw 'Text and Console require one nonempty line without control characters.' }
         if ($Foreground) {
-            $step = {
-                param([scriptblock]$send)
-                for ($attempt = 1; ; $attempt++) {
-                    try { & $send; return }
-                    catch {
-                        if ($attempt -ge 5 -or $_.Exception.Message -notmatch 'focus was lost') { throw }
-                        Start-Sleep -Milliseconds 400
-                        $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
-                        Start-Sleep -Milliseconds 150
-                    }
-                }
-            }
-            if ($Action -eq 'Console') { & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey) }; Start-Sleep -Milliseconds 200 }
-            foreach ($character in $Text.ToCharArray()) { & $step { [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, [string]$character) } }
+            $events = [Collections.Generic.List[object]]::new()
+            if ($Action -eq 'Console') { $events.Add([pscustomobject]@{ Kind = 'key'; Value = [uint16]$ConsoleKey; Delay = 200 }) }
+            foreach ($character in $Text.ToCharArray()) { $events.Add([pscustomobject]@{ Kind = 'char'; Value = [string]$character; Delay = 0 }) }
             if ($Action -eq 'Console') {
-                & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, 0x0D) }
-                Start-Sleep -Milliseconds 200
-                & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey) }
+                $events.Add([pscustomobject]@{ Kind = 'key'; Value = [uint16]0x0D; Delay = 200 })
+                $events.Add([pscustomobject]@{ Kind = 'key'; Value = [uint16]$ConsoleKey; Delay = 0 })
+            }
+            Invoke-SequentialFocusInput -Items $events.ToArray() -MaxAttemptsPerItem 5 -Pause { Start-Sleep -Milliseconds 400 } -Reacquire {
+                $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                Start-Sleep -Milliseconds 150
+            } -SendItem {
+                param($ev)
+                if ($ev.Kind -eq 'key') { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ev.Value) }
+                else { [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, [string]$ev.Value) }
+                if ($ev.Delay -gt 0) { Start-Sleep -Milliseconds $ev.Delay }
             }
         } else {
             if ($Action -eq 'Console') { [Hoi4ProbeInput]::PostKey($window, [uint16]$ConsoleKey); Start-Sleep -Milliseconds 200 }
