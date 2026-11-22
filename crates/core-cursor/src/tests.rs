@@ -237,6 +237,96 @@ fn splits_in_one_hour_restore_the_value_before_all_splits() {
     assert!(cursor.rewind(0).unwrap().applied);
     assert_eq!(value(cursor.values(), 0).value, ValueRef::Number(0.0));
     assert_eq!(value(cursor.values(), 1).value, ValueRef::Number(0.0));
+
+    struct SplitEntry {
+        info: PageInfo,
+        coverage: Vec<Coverage>,
+        runs: usize,
+    }
+    impl crate::window::Entry for SplitEntry {
+        fn info(&self) -> PageInfo {
+            self.info
+        }
+        fn bytes(&self) -> usize {
+            0
+        }
+        fn coverage(&self) -> &[Coverage] {
+            &self.coverage
+        }
+        fn coverage_runs(&self) -> usize {
+            self.runs
+        }
+    }
+    let split_memory = Memory::new(16_000_000).unwrap();
+    let missing_hour_2 = Coverage {
+        hours: Hours { first: 2, last: 2 },
+        missing: Some(Missing {
+            kind: MissingKind::NotRecorded,
+            reason: Text::copy_from(&split_memory, Owner::State, "missing").unwrap(),
+            hours: Hours { first: 2, last: 2 },
+        }),
+        accepted_before: 2,
+    };
+    let left_cov = vec![prepared(0, 1)];
+    let right_cov = vec![prepared(1, 1), missing_hour_2.clone()];
+    for order in [[0u64, 1], [1, 0]] {
+        let mut tree = crate::window::Tree::default();
+        for id in order {
+            let (hours, coverage) = if id == 0 {
+                (Hours { first: 0, last: 1 }, left_cov.clone())
+            } else {
+                (Hours { first: 1, last: 2 }, right_cov.clone())
+            };
+            let runs = crate::window::coverage_runs(&coverage);
+            tree.insert(
+                Arc::new(SplitEntry {
+                    info: PageInfo {
+                        id,
+                        hours,
+                        records: 0,
+                        coverage: coverage.len(),
+                        resident_bytes: 0,
+                    },
+                    coverage,
+                    runs,
+                }),
+                &split_memory,
+            )
+            .unwrap();
+        }
+        assert_eq!(tree.coverage_runs_for(Hours { first: 0, last: 2 }), 2);
+        assert_eq!(tree.coverage_runs_for(Hours { first: 1, last: 2 }), 2);
+    }
+    let split_source = Arc::new(
+        InMemory::new(
+            &split_memory,
+            -1,
+            vec![],
+            vec![
+                page(0, 0, 1, vec![], left_cov),
+                page(1, 1, 2, vec![], right_cov),
+            ],
+        )
+        .unwrap(),
+    );
+    for origin in [0, 1] {
+        let mut split_cursor = Cursor::open_with(
+            &split_source,
+            KeyFilter::All,
+            origin,
+            options(&split_memory, 1.0, 1.0),
+        )
+        .unwrap();
+        split_cursor.wait_read_ahead().unwrap();
+        let delta = split_cursor.advance(2).unwrap();
+        assert!(delta.applied);
+        assert_eq!(delta.coverage().len(), 2);
+        split_cursor.wait_read_ahead().unwrap();
+        assert_eq!(
+            split_memory.owner_used(Owner::Delta),
+            2 * std::mem::size_of::<Coverage>()
+        );
+    }
 }
 #[test]
 fn filter_selection_and_shared_pages_do_not_read_or_expand_a_second_copy() {
