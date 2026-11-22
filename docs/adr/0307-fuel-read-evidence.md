@@ -8,4 +8,4 @@ Keep a forward pass per run for detail history. Seed each stretch with the last 
 
 The military-branch view reads consumer rows keyed by raw country id and native index, with fixed5 amounts and native priority. The series uses the same consumer index as its part.
 
-[Fuel products](../../crates/dashboard/src/products/economy/fuel.rs) · [Awards](../../crates/dashboard/src/products/economy/fuel/awards.rs) · [Demand](../../crates/dashboard/src/products/economy/fuel/demand.rs) · [Military-branch fuel](../../crates/dashboard/src/products/economy/fuel_branches.rs)
+[Fuel products](../../crates/dashboard-economy/src/products/economy/fuel.rs) · [Awards](../../crates/dashboard-economy/src/products/economy/fuel/awards.rs) · [Demand](../../crates/dashboard-economy/src/products/economy/fuel/demand.rs) · [Military-branch fuel](../../crates/dashboard-economy/src/products/economy/fuel_branches.rs)

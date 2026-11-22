@@ -6,4 +6,4 @@ For history, the default membership policy sums each country only during its rec
 
 The recorder's own per-hour faction rows give exact bin extrema for the default membership policy. Other policies read each member's chart once. Their member extrema sum to bounds for a multi-hour bin, since the members' peaks or lows may occur at different times.
 
-[Faction rosters and history](../../crates/dashboard/src/products/factions.rs)
+[Faction rosters and history](../../crates/dashboard-wars/src/products/factions.rs)

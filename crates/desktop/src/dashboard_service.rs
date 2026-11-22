@@ -1,9 +1,5 @@
 
-use dashboard::{
-    QueryError,
-    protocol::replay_revision,
-    transport::{DataCommand, DataEvent, MapSettingsTarget, ProductRequest, ReplyAssembler},
-};
+use dashboard_core::{QueryError, protocol::replay_revision, transport::{DataCommand, DataEvent, MapSettingsTarget, ProductRequest, ReplyAssembler}};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
@@ -13,7 +9,7 @@ use tokio::sync::oneshot;
 
 use crate::native::NativeHost;
 
-const MAX_PENDING: usize = dashboard::transport::MAX_PENDING_REQUESTS;
+const MAX_PENDING: usize = dashboard_core::transport::MAX_PENDING_REQUESTS;
 const CANCELLED: &str = "Dashboard request cancelled";
 
 struct PendingReply {
@@ -55,7 +51,7 @@ impl Requests {
         if self.pending.len() >= MAX_PENDING {
             return Err(format!(
                 "{}. Retry this view.",
-                dashboard::transport::CAPACITY_REACHED
+                dashboard_core::transport::CAPACITY_REACHED
             )
             .into());
         }
@@ -197,8 +193,8 @@ impl DashboardService {
     }
 }
 
-pub(crate) fn host_config() -> Result<(dashboard::Config, bool), String> {
-    let mut config = dashboard::Config::load().map_err(|error| error.to_string())?;
+pub(crate) fn host_config() -> Result<(dashboard_core::config::Config, bool), String> {
+    let mut config = dashboard_core::config::Config::load().map_err(|error| error.to_string())?;
     let mut allow_unverified = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(argument) = args.next() {
@@ -222,7 +218,7 @@ pub struct ContentFolders {
 }
 
 impl ContentFolders {
-    fn of(config: &dashboard::Config) -> Self {
+    fn of(config: &dashboard_core::config::Config) -> Self {
         Self {
             game: config.game_dir.to_string_lossy().into_owned(),
             user: config.user_dir.to_string_lossy().into_owned(),
@@ -254,7 +250,7 @@ pub async fn set_content_folders(
         }
     }
     let config = tauri::async_runtime::spawn_blocking(move || {
-        let mut config = dashboard::Config::load().map_err(|error| error.to_string())?;
+        let mut config = dashboard_core::config::Config::load().map_err(|error| error.to_string())?;
         config.game_dir = game.trim().into();
         config.user_dir = user.trim().into();
         config.save().map_err(|error| error.to_string())?;
@@ -456,8 +452,8 @@ pub async fn dashboard_map_settings(
     target: Option<MapSettingsTarget>,
     source_id: String,
     revision: String,
-    settings: Option<dashboard::protocol::CampaignMapSettings>,
-    flip: Option<dashboard::protocol::MapSetting>,
+    settings: Option<dashboard_core::protocol::CampaignMapSettings>,
+    flip: Option<dashboard_core::protocol::MapSetting>,
     request_id: String,
 ) -> Result<Response, QueryError> {
     let saving = settings.is_some() || flip.is_some();
@@ -480,7 +476,7 @@ pub async fn dashboard_map_settings(
         host.map_settings_saved();
         window
             .state::<crate::popout::PopOuts>()
-            .mirror(&dashboard::protocol::MapAction::MapSettingsSaved);
+            .mirror(&dashboard_core::protocol::MapAction::MapSettingsSaved);
     }
     response
 }
@@ -528,10 +524,10 @@ mod tests {
         assert!(
             refusal
                 .to_string()
-                .starts_with(dashboard::transport::CAPACITY_REACHED)
+                .starts_with(dashboard_core::transport::CAPACITY_REACHED)
         );
-        assert!(dashboard::transport::transient_error(&refusal));
-        assert!(!dashboard::transport::transient_error(CANCELLED));
+        assert!(dashboard_core::transport::transient_error(&refusal));
+        assert!(!dashboard_core::transport::transient_error(CANCELLED));
         drop(receivers);
         requests.pending.remove("read-0");
         assert!(requests.begin("late").is_ok());

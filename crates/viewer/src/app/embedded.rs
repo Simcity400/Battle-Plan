@@ -261,9 +261,9 @@ impl Viewer {
         if let Some(source) = self.source.clone() {
             let replay = source.replay();
             let preferences =
-                self.follow_map_settings(service, dashboard::map_settings::campaign_key(&replay));
+                self.follow_map_settings(service, dashboard_core::map_settings::campaign_key(&replay));
             let selection = (
-                dashboard::map_settings::campaign_key(&replay),
+                dashboard_core::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),
                 preferences.graphics.samples,
                 preferences.graphics.texture_quality,
@@ -348,9 +348,9 @@ impl Viewer {
         }
     }
 
-    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
+    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard_core::protocol::MapAction>, why: &str) {
         for action in actions {
-            if let dashboard::protocol::MapAction::Export { request, .. } = action {
+            if let dashboard_core::protocol::MapAction::Export { request, .. } = action {
                 self.export_results.push((request, Err(why.to_owned())));
             }
         }
@@ -358,11 +358,11 @@ impl Viewer {
 
     pub(crate) fn host_map_action(
         &mut self,
-        action: dashboard::protocol::MapAction,
+        action: dashboard_core::protocol::MapAction,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         match action {
             MapAction::Unload { path } => {
                 if self.unload_recording(Path::new(&path)) {
@@ -475,7 +475,7 @@ impl Viewer {
 
     fn reload_campaign_map(
         &mut self,
-        source: std::sync::Arc<dashboard::Source>,
+        source: std::sync::Arc<dashboard_base::Source>,
         ctx: &egui::Context,
     ) {
         if let Some((branch, hour)) = self.document.as_ref().map(|document| self.hour_on_screen(document)) {
@@ -656,7 +656,7 @@ impl Viewer {
         messages.extend(self.visual_check_note.iter().cloned());
         let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
-        embedded.report_details(dashboard::protocol::MapDetails {
+        embedded.report_details(dashboard_core::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),
             error: self.error.clone(),
             game: self.config.game_dir.to_string_lossy().into_owned(),
@@ -677,7 +677,7 @@ impl Viewer {
             return;
         };
         embedded.report(
-            dashboard::protocol::ViewerState {
+            dashboard_core::protocol::ViewerState {
                 path: self
                     .document
                     .as_ref()

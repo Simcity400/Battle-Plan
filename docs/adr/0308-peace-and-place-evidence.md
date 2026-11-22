@@ -6,4 +6,4 @@ Peace countries use event-hour identity. A changed government reads the dated pa
 
 Place names resolve from recorded rows and the recording's content stack. A province first uses its nonempty stored rename, which can localize to empty text. Otherwise it looks for a victory-point name under its state owner's original or current tag, then the state's own name. A province with no state can use its strategic region except on the Land naming path. Two regions claiming a province produce a named ambiguity. State names use a recorded custom or owner-specific name before the authored template. Requests read the necessary province and state rows in two steps and reuse forward readers over the requested hours.
 
-[Peace deals](../../crates/dashboard/src/products/peace.rs) · [Place names](../../crates/dashboard/src/products/place_names.rs)
+[Peace deals](../../crates/dashboard-wars/src/products/peace.rs) · [Place names](../../crates/dashboard-world/src/products/place_names.rs)
