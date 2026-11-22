@@ -615,10 +615,10 @@ fn a_value_without_a_key_consumes_the_next_token() {
 #[test]
 fn definitions_follow_the_readers_consumption() {
     let read = test_read(
-        b"@x = 1 a = { n = @x @x = 2 n = \"@x\" trigger = { @y = 3 z = 1 } n = @y } b = { n = @y @z = 4 } c = { n = 5 }",
+        b"@x = 1 a = { n = @x @x = 2 n = \"@x\" obj = { @y = 3 z = 1 } n = @y } b = { n = @y @z = 4 } c = { n = 5 }",
     );
     let a = block(&read.items, "a");
-    assert_eq!(keys(a), ["n", "=", "n", "trigger", "n"]);
+    assert_eq!(keys(a), ["n", "=", "n", "obj", "n"]);
     assert_eq!(a[0].value, Value::Scalar(b"1".to_vec()));
     assert_eq!(a[2].value, Value::Scalar(b"@x".to_vec()));
     assert!(a[2].quoted());
@@ -1129,4 +1129,56 @@ fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
         .items()
         .unwrap();
     assert_eq!(priority[0].value.items(), Some(modifier));
+}
+
+#[test]
+fn keyed_definitions_under_unknown_dispatch_refuse_dependent_suffix() {
+    let direct = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = 1 } } c = { n = @y } d = { n = 4 }",
+    );
+    let unsettled = direct.unsettled.as_ref().expect("dependent suffix refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&direct.items), ["a", "b", "c"]);
+    assert_eq!(block(&direct.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+    assert!(block(&direct.items, "c").is_empty());
+
+    let nested = test_read(
+        b"a = { n = 1 } b = { trigger = { nested = { @y = 3 z = 1 } } } c = { n = @y }",
+    );
+    let unsettled = nested.unsettled.as_ref().expect("nested dependent suffix refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("nested"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&nested.items), ["a", "b", "c"]);
+    assert!(block(&nested.items, "c").is_empty());
+
+    let redefined = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = 1 } } @y = 5 c = { n = @y }",
+    );
+    let unsettled = redefined.unsettled.as_ref().expect("redefinition refused");
+    assert!(
+        unsettled.what.contains("@y") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&redefined.items), ["a", "b"]);
+
+    let local_only = test_read(
+        b"a = { n = 1 } b = { trigger = { @y = 3 z = @y } } c = { n = 2 }",
+    );
+    assert!(local_only.unsettled.is_none(), "{local_only:?}");
+    assert_eq!(keys(&local_only.items), ["a", "b", "c"]);
+    let trigger = block(block(&local_only.items, "b"), "trigger");
+    assert_eq!(trigger[0].value, Value::Scalar(b"3".to_vec()));
+    assert_eq!(block(&local_only.items, "c")[0].value, Value::Scalar(b"2".to_vec()));
+
+    let observed = test_read(
+        b"a = { obj = { @y = 3 z = 1 } skipped = { @z = 9 } n = @y } b = { n = @z }",
+    );
+    assert!(observed.unsettled.is_none(), "{observed:?}");
+    assert_eq!(block(&observed.items, "a")[2].value, Value::Scalar(b"3".to_vec()));
+    assert_eq!(block(&observed.items, "b")[0].value, Value::Scalar(b"@z".to_vec()));
 }

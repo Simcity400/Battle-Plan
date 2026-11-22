@@ -4,7 +4,11 @@ use std::io;
 use crate::{
     ResolvedLayers, crt,
     fields::{self, block, boolean, invalid},
-    parser::{self, Item, Value},
+    key_names::KeyNames,
+    parser::{
+        Item, Kind, Value,
+        native::{self, Shape},
+    },
     terrain::DefaultMap,
     triggers::{self, Triggers},
 };
@@ -220,98 +224,172 @@ fn disabled_reason(items: &[Item], what: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-fn variable(items: &[Item]) -> Option<&[u8]> {
-    items.iter().find_map(|item| {
-        if let Some(key) = item.key.as_deref()
-            && !item.key_quoted
-            && key.starts_with(b"@")
-        {
-            return Some(key);
-        }
-        match &item.value {
-            Value::Scalar(text) if !item.quoted() && text.starts_with(b"@") => {
-                Some(text.as_slice())
-            }
-            value => variable(value.items().unwrap_or_default()),
-        }
-    })
+fn shape_mismatch(key: &[u8]) -> String {
+    format!(
+        "field {} has another shape than its reader takes, so the game reads the rest of the file out of step with this reader",
+        key.escape_ascii()
+    )
 }
 
-fn out_of_step(items: &[Item]) -> Option<String> {
-    items.iter().find_map(|item| {
-        let Some(key) = item.key.as_deref() else {
-            return Some("an entry without a key".to_owned());
-        };
-        let entries = match &item.value {
-            Value::Block(entries) => Some(entries.as_slice()),
-            _ => None,
-        };
-        let fits = match item.keyword().map(|key| key.folded()).as_deref() {
-            Some(b"name" | b"icon") => item.value.scalar().is_some(),
-            Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
-                entries.is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .all(|entry| entry.key.is_some() && entry.value.scalar().is_some())
-                })
-            }
-            Some(b"required_provinces" | b"offset") => entries
-                .is_some_and(|entries| entries.iter().all(|entry| entry.value.scalar().is_some())),
-            Some(b"is_disabled" | b"is_enemy" | b"is_friend" | b"is_neutral") => {
-                entries.is_some()
-            }
-            _ => true,
-        };
-        (!fits).then(|| {
-            format!(
-                "field {} has another shape than its reader takes",
-                key.escape_ascii()
-            )
-        })
-    })
+#[derive(Clone, Copy)]
+enum Node {
+    File,
+    Rule,
+    Permissions,
+    DisabledTrigger,
+    BoundLocalization,
+    Trigger(crate::combat_tactics::Node),
 }
 
-fn read_loop(items: &[Item], rules: &mut Vec<AdjacencyRule>) -> io::Result<()> {
-    for item in items {
-        if item.key.is_none() || matches!(item.value, Value::Tagged { .. }) {
+fn parse_inner(input: &[u8], names: Option<&KeyNames>) -> io::Result<Vec<AdjacencyRule>> {
+    let mut shaper = names.map(|names| crate::combat_tactics::Shaper::new(Some(names)));
+    let document = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::Persistent(Node::File),
+        names,
+        &mut |node, field| match node {
+            Node::File => {
+                if !field.fresh {
+                    return Shape::Unsettled(
+                        "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader".into(),
+                    );
+                }
+                if field.keyword_is("adjacency_rule") {
+                    if field.opens() {
+                        Shape::Object(Node::Rule)
+                    } else {
+                        Shape::Unsettled(
+                            "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow".into(),
+                        )
+                    }
+                } else {
+                    Shape::One
+                }
+            }
+            Node::Rule => {
+                if !field.fresh {
+                    return Shape::Unsettled(
+                        "an entry without a key, so the game reads the rest of the file out of step with this reader".into(),
+                    );
+                }
+                match field.keyword().as_deref() {
+                    Some(b"name" | b"icon") => {
+                        if field.opens() {
+                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                        } else {
+                            Shape::One
+                        }
+                    }
+                    Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
+                        if field.opens() {
+                            Shape::Object(Node::Permissions)
+                        } else {
+                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                        }
+                    }
+                    Some(b"required_provinces" | b"offset") => {
+                        if field.opens() {
+                            Shape::List
+                        } else {
+                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                        }
+                    }
+                    Some(b"is_disabled") => {
+                        if field.opens() {
+                            Shape::Object(Node::DisabledTrigger)
+                        } else {
+                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                        }
+                    }
+                    Some(b"is_enemy" | b"is_friend" | b"is_neutral") => {
+                        if !field.opens() {
+                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                        } else if shaper.is_some() {
+                            Shape::Trigger
+                        } else {
+                            Shape::ByKey
+                        }
+                    }
+                    _ => Shape::Skip,
+                }
+            }
+            Node::Permissions => {
+                if !field.fresh || field.opens() {
+                    Shape::Unsettled(shape_mismatch(&field.key.text))
+                } else {
+                    Shape::One
+                }
+            }
+            Node::DisabledTrigger => {
+                if matches!(
+                    field.keyword().as_deref(),
+                    Some(b"tooltip" | b"not_tooltip")
+                ) {
+                    Shape::ObjectIfOpen(Node::BoundLocalization)
+                } else if let Some(shaper) = &mut shaper {
+                    shaper
+                        .shape(crate::combat_tactics::Node::Trigger, field)
+                        .map(Node::Trigger)
+                } else {
+                    native::untraced(field)
+                }
+            }
+            Node::BoundLocalization => {
+                if field.keyword_is("localization_key") {
+                    Shape::One
+                } else {
+                    Shape::ObjectIfOpen(Node::BoundLocalization)
+                }
+            }
+            Node::Trigger(node) => shaper
+                .as_mut()
+                .expect("trigger shaper")
+                .shape(node, field)
+                .map(Node::Trigger),
+        },
+    );
+    if let Some(cause) = document.unsettled {
+        return Err(invalid(cause.to_string()));
+    }
+    let mut rules = Vec::new();
+    for item in &document.items {
+        if !item.keyword_is("adjacency_rule") {
+            continue;
+        }
+        let Some(fields) = item.value.items() else {
             return Err(invalid(
-                "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader",
+                "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow",
             ));
-        }
-        if item.keyword_is("adjacency_rule") {
-            let Some(fields) = item.value.items() else {
-                return Err(invalid(
-                    "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow",
-                ));
-            };
-            if let Some(why) = out_of_step(fields) {
+        };
+        for field in fields {
+            if (field.keyword_is("required_provinces") || field.keyword_is("offset"))
+                && field
+                    .value
+                    .items()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry.kind == Kind::Open))
+            {
                 return Err(invalid(format!(
-                    "adjacency_rule {}: {why}, so the game reads the rest of the file out of step with this reader",
+                    "adjacency_rule {}: {}",
                     last(fields, "name")
                         .and_then(Value::scalar)
                         .unwrap_or_default()
-                        .escape_ascii()
+                        .escape_ascii(),
+                    shape_mismatch(field.key.as_deref().unwrap_or_default())
                 )));
             }
-            rules.push(rule(fields));
-        } else if let Some(fields) = item.value.items() {
-            return read_loop(fields, rules);
         }
+        rules.push(rule(fields));
     }
-    Ok(())
+    Ok(rules)
 }
 
 pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
-    let document = parser::parse(input).map_err(|error| invalid(error.to_string()))?;
-    if let Some(variable) = variable(&document.items) {
-        return Err(invalid(format!(
-            "the adjacency rules use the script variable {}, which this reader does not replay",
-            variable.escape_ascii()
-        )));
-    }
-    let mut rules = Vec::new();
-    read_loop(&document.items, &mut rules)?;
-    Ok(rules)
+    parse_inner(input, None)
+}
+
+pub fn parse_with_names(input: &[u8], names: &KeyNames) -> io::Result<Vec<AdjacencyRule>> {
+    parse_inner(input, Some(names))
 }
 
 pub fn map_file(map: &DefaultMap, key: &str) -> io::Result<String> {
@@ -328,11 +406,11 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AdjacencyRule>> {
 
 pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<AdjacencyRule>> {
     let path = map_file(map, "adjacency_rules")?;
-    parse(
-        &layers
-            .read(&path)
-            .map_err(|error| invalid(format!("{path}: {error}")))?,
-    )
+    let bytes = layers
+        .read(&path)
+        .map_err(|error| invalid(format!("{path}: {error}")))?;
+    let names = layers.key_names()?;
+    parse_with_names(&bytes, &names).map_err(|error| invalid(format!("{path}: {error}")))
 }
 
 pub fn find<'a>(rules: &'a [AdjacencyRule], name: &str) -> Option<&'a AdjacencyRule> {
@@ -467,10 +545,14 @@ mod tests {
 
     #[test]
     fn readings_the_tree_cannot_follow_refuse_the_file() {
+        let replayed =
+            parse(b"@army = no adjacency_rule = { name = A enemy = { army = @army } }").unwrap();
+        assert_eq!(replayed[0].unsupported, None);
+        assert_eq!(replayed[0].permissions[Verdict::Enemy as usize], 0x0e);
         for (text, why) in [
             (
-                &b"@army = no adjacency_rule = { name = A enemy = { army = @army } }"[..],
-                "script variable @army",
+                &b"@open = { adjacency_rule = { name = A icon = @open } }"[..],
+                "field icon has another shape",
             ),
             (
                 b"adjacency_rule = { name = A enemy = no } adjacency_rule = { name = B }",
@@ -483,6 +565,14 @@ mod tests {
             (
                 b"adjacency_rule = { name = { A } }",
                 "field name has another shape",
+            ),
+            (
+                b"adjacency_rule = { name = A required_provinces = { { 1 } } }",
+                "field required_provinces has another shape",
+            ),
+            (
+                b"adjacency_rule = { name = A is_enemy = { @x = 1 always = yes } icon = @x }",
+                "@x",
             ),
             (b"adjacency_rule = A", "not a block"),
         ] {
@@ -503,5 +593,102 @@ mod tests {
         );
         let error = map_file(&map, "adjacency_rules").unwrap_err().to_string();
         assert!(error.contains("names no adjacency_rules"), "{error}");
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn variable_backed_modded_strait_reads_through_native_stream() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("adjacency_rules_variables");
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.addon(),
+            "map/adjacency_rules.txt",
+            r#"@strait_name = "MOD_STRAIT"
+@blocked = no
+@allowed = yes
+@prov_a = 101
+@prov_b = 102
+@icon_prov = 101
+@ox = -12.5
+@oy = 0.0
+@oz = 4.25
+@flag = MOD_STRAIT_CLOSED
+@tt = MOD_STRAIT_CLOSED_TT
+adjacency_rule = {
+    name = @strait_name
+    contested = { army = @blocked navy = @blocked }
+    enemy = { army = @blocked navy = @blocked submarine = @blocked trade = @blocked }
+    friend = { army = @allowed navy = @allowed submarine = @allowed trade = @allowed }
+    neutral = { army = @allowed navy = @blocked }
+    required_provinces = { @prov_a @prov_b }
+    is_disabled = { has_country_flag = @flag tooltip = @tt }
+    is_friend = { always = @allowed }
+    icon = @icon_prov
+    offset = { @ox @oy @oz }
+}
+adjacency_rule = {
+    name = "BAD_MOD_STRAIT"
+    enemy = { tanks = @blocked }
+    icon = @icon_prov
+    offset = { @ox @oy @oz }
+}
+adjacency_rule = {
+    name = "MISSING_VAR_STRAIT"
+    enemy = { army = @missing_perm }
+    icon = @icon_prov
+}"#,
+        );
+        let rules = read(&stack.layers(&[])).unwrap();
+        let strait = find(&rules, "MOD_STRAIT").unwrap();
+        assert_eq!(strait.unsupported, None);
+        assert_eq!(strait.permissions, [0x0c, 0x00, 0x0f, 0x0d]);
+        assert_eq!(strait.required_provinces, [101, 102]);
+        assert_eq!(strait.is_disabled.len(), 1);
+        assert_eq!(
+            strait.is_disabled[0].value.scalar(),
+            Some(&b"MOD_STRAIT_CLOSED"[..])
+        );
+        assert_eq!(
+            strait.disabled_reason.as_deref(),
+            Ok(&b"MOD_STRAIT_CLOSED_TT_NOT"[..])
+        );
+        assert_eq!(strait.is_friend.len(), 1);
+        assert_eq!(strait.is_friend[0].value.scalar(), Some(&b"yes"[..]));
+        assert_eq!(
+            strait.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [-12.5, 0.0, 4.25]
+            }))
+        );
+        let bad = find(&rules, "BAD_MOD_STRAIT").unwrap();
+        assert!(bad.unsupported.as_deref().unwrap().contains("tanks"));
+        assert_eq!(
+            bad.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [-12.5, 0.0, 4.25]
+            }))
+        );
+        let missing = find(&rules, "MISSING_VAR_STRAIT").unwrap();
+        assert!(
+            missing
+                .unsupported
+                .as_deref()
+                .unwrap()
+                .contains("@missing_perm")
+        );
+        assert_eq!(
+            missing.icon,
+            Ok(Some(IconPlacement {
+                province: 101,
+                offset: [0.0; 3]
+            }))
+        );
     }
 }

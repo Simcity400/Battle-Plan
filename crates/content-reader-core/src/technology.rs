@@ -30,6 +30,7 @@ pub struct Template {
     pub parent: Result<Option<String>, String>,
     pub equipment: Option<String>,
     pub folders: Vec<String>,
+    enablers: Vec<EquipmentName>,
 }
 
 fn equipment_links(definitions: &[Template]) -> EquipmentLinks {
@@ -226,7 +227,7 @@ fn parse_with_tokens(
                 };
                 PresentationName {
                     template: template_key,
-                    equipment: candidates,
+                    equipment: candidates.clone(),
                     force_small,
                 }
             });
@@ -238,6 +239,7 @@ fn parse_with_tokens(
                 parent,
                 equipment,
                 folders: placed,
+                enablers: candidates,
             });
         }
     }
@@ -858,20 +860,22 @@ pub struct Enables {
 }
 
 impl Enables {
-    fn read_natively(&mut self, native: &Template) {
-        self.parent.clone_from(&native.parent);
-        let Ok(presentation) = &native.presentation else {
-            return;
-        };
-        self.equipment.clear();
-        self.scripted = None;
-        self.limited.clear();
-        for candidate in &presentation.equipment {
+    fn from_template(native: Template) -> Self {
+        let mut equipment = Vec::new();
+        let mut limited = Vec::new();
+        for candidate in native.enablers {
             if candidate.limits.is_empty() {
-                self.equipment.push(candidate.name.clone());
+                equipment.push(candidate.name);
             } else {
-                self.limited.push(candidate.clone());
+                limited.push(candidate);
             }
+        }
+        Self {
+            id: native.token,
+            equipment,
+            parent: native.parent,
+            scripted: None,
+            limited,
         }
     }
 }
@@ -965,6 +969,7 @@ pub struct Enablers {
     pub uncertain: BTreeMap<String, BTreeSet<String>>,
     pub any: Vec<(String, BTreeSet<String>)>,
     pub refused: Vec<String>,
+    pub unverified: Vec<String>,
 }
 
 impl Enablers {
@@ -973,6 +978,12 @@ impl Enablers {
         let plain = self.plain.get(&key).map(Vec::as_slice).unwrap_or_default();
         if plain.len() > 1 {
             return Ok(None);
+        }
+        if !self.unverified.is_empty() {
+            return Err(format!(
+                "technology enablers for {key} are withheld because native technology reading failed: {}",
+                self.unverified.join("; ")
+            ));
         }
         let uncertain: Vec<&str> = self
             .uncertain
@@ -1055,34 +1066,41 @@ pub fn read_enablers(
     mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
 ) -> io::Result<Enablers> {
     let paths = layers.directory_files("common/technologies", ".txt")?;
-    let native = units::Registry::read(layers)
-        .ok()
-        .zip(layers.key_names().ok());
-    let mut technologies: Vec<(String, Enables)> = Vec::new();
+    let mut result = Enablers::default();
+    if paths.is_empty() {
+        return Ok(result);
+    }
+    let registry = match units::Registry::read(layers) {
+        Ok(registry) => registry,
+        Err(error) => {
+            result
+                .unverified
+                .push(format!("native technology unit registry unavailable: {error}"));
+            return Ok(result);
+        }
+    };
+    let names = match layers.key_names() {
+        Ok(names) => names,
+        Err(error) => {
+            result
+                .unverified
+                .push(format!("native technology key names unavailable: {error}"));
+            return Ok(result);
+        }
+    };
     for path in paths {
         let bytes = path.read(layers)?;
-        let mut parsed = parse_enablers(&bytes)
-            .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
-        let read = native
-            .as_ref()
-            .and_then(|(registry, names)| parse_with_registry(&bytes, registry, names).ok())
-            .map(|(definitions, _)| definitions)
-            .unwrap_or_default();
-        if read.len() == parsed.len()
-            && read
-                .iter()
-                .zip(&parsed)
-                .all(|(native, enables)| native.token == enables.id)
-        {
-            for (native, enables) in read.iter().zip(&mut parsed) {
-                enables.read_natively(native);
+        match parse_with_registry(&bytes, &registry, &names) {
+            Ok((definitions, _)) => {
+                let source = path.to_string();
+                for definition in definitions {
+                    result.add(&source, Enables::from_template(definition), &mut evaluate);
+                }
+            }
+            Err((_, error, _)) => {
+                result.unverified.push(format!("{path}: {error}"));
             }
         }
-        technologies.extend(parsed.into_iter().map(|enables| (path.to_string(), enables)));
-    }
-    let mut result = Enablers::default();
-    for (path, enables) in technologies {
-        result.add(&path, enables, &mut evaluate);
     }
     Ok(result)
 }
@@ -2006,6 +2024,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let (vanilla, modded) = (root.join("game"), root.join("mod"));
+        let terrain = vanilla.join("common/terrain/fixture.txt");
+        std::fs::create_dir_all(terrain.parent().unwrap()).unwrap();
+        std::fs::write(terrain, "categories = { fixture = {} }").unwrap();
         for (folder, text) in [
             (
                 &vanilla,
@@ -2047,6 +2068,9 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&root);
+        let terrain = root.join("common/terrain/fixture.txt");
+        std::fs::create_dir_all(terrain.parent().unwrap()).unwrap();
+        std::fs::write(terrain, "categories = { fixture = {} }").unwrap();
         for (file, text) in [
             (
                 "00_a.txt",
@@ -2081,5 +2105,71 @@ mod tests {
             ]
         );
         assert_eq!(enablers.single("tank_1"), Ok(None));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unverified_native_parse_retains_reason_and_withholds_effect_consumed_enablers() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("technology_enablers_unverified");
+        stack.write(
+            &stack.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        stack.write(
+            &stack.base(),
+            "common/technologies/a.txt",
+            "technologies = { first = { enable_equipments = { dual_tank } } second = { enable_equipments = { dual_tank } } solo = { enable_equipments = { solo_tank } } }",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/b.txt",
+            "technologies = { broken = { on_research_complete = no { ignored = 1 enable_equipments = { one } } } consumed = { on_research_complete = no limit = {} enable_equipments = { lost } } plain = { enable_equipments = { safe_looking } } }",
+        );
+        let enablers =
+            read_enablers(&stack.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert!(!enablers.plain.contains_key("lost"), "{:?}", enablers.plain);
+        assert!(!enablers.plain.contains_key("one"), "{:?}", enablers.plain);
+        assert!(
+            !enablers.plain.contains_key("safe_looking"),
+            "{:?}",
+            enablers.plain
+        );
+        assert_eq!(enablers.single("dual_tank"), Ok(None));
+        for key in ["lost", "one", "safe_looking", "solo_tank"] {
+            let reason = enablers.single(key).unwrap_err();
+            assert!(
+                reason.contains("common/technologies/b.txt")
+                    && reason.contains("on_research_complete"),
+                "{key}: {reason}"
+            );
+        }
+
+        let no_terrain = crate::test_support::Stack::new("technology_enablers_no_terrain");
+        no_terrain.write(
+            &no_terrain.base(),
+            "common/technologies/a.txt",
+            "technologies = { consumed = { on_research_complete = no limit = {} enable_equipments = { lost } } }",
+        );
+        let fallback =
+            read_enablers(&no_terrain.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert!(fallback.plain.is_empty(), "{:?}", fallback.plain);
+        let reason = fallback.single("lost").unwrap_err();
+        assert!(reason.contains("common/terrain"), "{reason}");
+
+        let verified = crate::test_support::Stack::new("technology_enablers_consumed_ok");
+        verified.write(
+            &verified.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        verified.write(
+            &verified.base(),
+            "common/technologies/a.txt",
+            "technologies = { consumed = { on_research_complete = no limit = {} enable_equipments = { lost } } }",
+        );
+        let ok = read_enablers(&verified.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert_eq!(ok.single("lost"), Ok(None));
     }
 }
