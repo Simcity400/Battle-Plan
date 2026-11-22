@@ -501,7 +501,14 @@ mod tests {
                     assert_eq!(hooks.set_enabled(enabled), Ok(true));
                     assert_eq!(hooks.executable_ranges().count(), 0);
                 }
-                let command_hooks = hooks.inner.as_mut().unwrap();
+                // SAFETY: the fixture has no executable sites and never enables or publishes taps.
+                let mut command_hooks = unsafe {
+                    collector_player_commands::player_commands::Hooks::new(
+                        &memory,
+                        0,
+                        collector_capture::sampling::sample_command_roster,
+                    )
+                };
                 let mut drain = command_hooks.take_drain().unwrap();
                 assert!(command_hooks.take_drain().is_none());
                 for final_drain in [false, true] {
