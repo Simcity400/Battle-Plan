@@ -545,6 +545,13 @@ impl CountTriggerNames {
             Some(CountKind::Ideology)
         } else {
             EQUIPMENT_CATEGORIES
+                .get()
+                .map_err(|withheld| {
+                    format!(
+                        "whether {} names an equipment category is unknown: {withheld}",
+                        String::from_utf8_lossy(text)
+                    )
+                })?
                 .iter()
                 .find(|(token, _, name)| {
                     name.as_bytes() == folded

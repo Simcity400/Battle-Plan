@@ -1090,10 +1090,10 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
     }
     let mut items = Vec::new();
     let mut component = 0usize;
-    loop {
+    while !reader.is_unsettled() {
         let ends = reader.peek().ends_block();
         let token = take(reader);
-        if ends {
+        if ends || reader.is_unsettled() {
             break;
         }
         if token.is_number() {
@@ -1126,6 +1126,9 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
             continue;
         }
         let equals = take(reader);
+        if reader.is_unsettled() {
+            break;
+        }
         if equals.kind != Kind::Equals {
             error(
                 reader,
@@ -1137,6 +1140,9 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
             continue;
         }
         let number = take(reader);
+        if reader.is_unsettled() {
+            break;
+        }
         if !number.is_number() {
             error(
                 reader,

@@ -1513,6 +1513,17 @@ impl MapMembership {
         Ok(Self { provinces })
     }
 
+    pub fn from_definitions(
+        definitions: &BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
+    ) -> io::Result<Self> {
+        if definitions.is_empty() {
+            return Err(invalid("definition.csv contains no provinces"));
+        }
+        Ok(Self {
+            provinces: definitions.keys().map(|&id| (id, None)).collect(),
+        })
+    }
+
     pub fn add_state_history(
         &mut self,
         state: &content_reader_states::states::StateDefinition,
@@ -1596,8 +1607,8 @@ impl PartialMapMembership {
 }
 
 pub fn read_partial_map_membership(layers: &ResolvedLayers) -> io::Result<PartialMapMembership> {
-    let (states, notes) = content_state_history(layers)?;
-    partial_map_membership(layers, &states, notes)
+    let (provinces, states, notes) = content_state_history(layers)?;
+    partial_map_membership(&provinces, &states, notes)
 }
 
 pub fn read_partial_state_history(
@@ -1606,19 +1617,18 @@ pub fn read_partial_state_history(
     PartialMapMembership,
     io::Result<construction::PartialBaseResources>,
 )> {
-    let (states, notes) = content_state_history(layers)?;
-    let membership = partial_map_membership(layers, &states, notes)?;
+    let (provinces, states, notes) = content_state_history(layers)?;
+    let membership = partial_map_membership(&provinces, &states, notes)?;
     let resources = construction::PartialBaseResources::from_states(&states, &membership);
     Ok((membership, resources))
 }
 
 fn partial_map_membership(
-    layers: &ResolvedLayers,
+    provinces: &BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
     states: &content_reader_states::states::States,
     notes: Vec<content_reader_core::Diagnostic>,
 ) -> io::Result<PartialMapMembership> {
-    let definitions = content_reader_core::terrain::read_default_map(layers)?.file("definitions")?;
-    let mut known = MapMembership::from_definition(&layers.read(&definitions)?)?;
+    let mut known = MapMembership::from_definitions(provinces)?;
     let mut excluded_states = BTreeMap::new();
     let mut unknown_provinces: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     for (&id, state) in states.definitions() {
@@ -1669,18 +1679,17 @@ fn partial_map_membership(
 fn content_state_history(
     layers: &ResolvedLayers,
 ) -> io::Result<(
+    BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
     content_reader_states::states::States,
     Vec<content_reader_core::Diagnostic>,
 )> {
-    let map = content_reader_core::terrain::read_default_map(layers)?;
-    let provinces =
-        content_reader_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let provinces = content_reader_core::map::load_definitions(layers)?;
     let defines = content_reader_core::defines::read(layers)?;
     let (states, notes) = content_reader_states::states::read(layers, &defines, &provinces)?;
     if states.definitions().is_empty() {
         return Err(invalid("verified content contains no state history"));
     }
-    Ok((states, notes))
+    Ok((provinces, states, notes))
 }
 
 #[cfg(test)]
