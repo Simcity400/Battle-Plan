@@ -948,8 +948,8 @@ impl UnitModelAssets {
                     .capital_continent
                     .as_ref()
                     .map(Option::as_deref)
-                    .map_err(Clone::clone)?,
-                None => None,
+                    .map_err(String::as_str),
+                None => Ok(None),
             };
             self.graphics.aircraft_override(
                 &equipment_graphics::Context {
@@ -2244,8 +2244,8 @@ fn graphics_model_for_country(
                 .capital_continent
                 .as_ref()
                 .map(Option::as_deref)
-                .map_err(Clone::clone)?,
-            None => None,
+                .map_err(String::as_str),
+            None => Ok(None),
         };
         let graphical = hour.selection.measure(Stage::GraphicsRules, || {
             assets.graphics.lookup_with_limits(

@@ -532,6 +532,7 @@ pub struct Equipment {
     pub module_slots: Vec<Vec<u8>>,
     pub module_slot_rules: Vec<ModuleSlot>,
     pub module_count_limits: Vec<ModuleCountLimit>,
+    pub upgrades: Vec<Vec<u8>>,
     pub sprite: Vec<u8>,
     pub model: Vec<u8>,
     pub variant_name: Vec<u8>,
@@ -567,6 +568,7 @@ impl Equipment {
             module_slots: Vec::new(),
             module_slot_rules: Vec::new(),
             module_count_limits: Vec::new(),
+            upgrades: Vec::new(),
             sprite: Vec::new(),
             model: Vec::new(),
             variant_name: Vec::new(),
@@ -899,6 +901,7 @@ impl Database {
                 equipment.module_slots.clear();
                 equipment.module_slot_rules.clear();
                 equipment.module_count_limits.clear();
+                equipment.upgrades.clear();
                 equipment.sprite.clear();
                 equipment.air_map_icon_frame = 0;
                 equipment.carrier_capable = false;
@@ -947,12 +950,14 @@ impl Database {
                             module_add_stats_multiplier,
                             module_multiply_stats_multiplier,
                             scaled_by_reliability,
+                            upgrades,
                             sprite,
                         ) = (
                             archetype.stats,
                             archetype.module_add_stats_multiplier.clone(),
                             archetype.module_multiply_stats_multiplier.clone(),
                             archetype.scaled_by_reliability.clone(),
+                            archetype.upgrades.clone(),
                             archetype.sprite.clone(),
                         );
                         let equipment = &mut self.equipment[at];
@@ -962,6 +967,7 @@ impl Database {
                         equipment.module_multiply_stats_multiplier =
                             module_multiply_stats_multiplier;
                         equipment.scaled_by_reliability = scaled_by_reliability;
+                        equipment.upgrades = upgrades;
                         if equipment.sprite.is_empty() {
                             equipment.sprite = sprite;
                         }
@@ -1049,6 +1055,16 @@ impl Database {
                     );
                 }
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
+                b"upgrades" => {
+                    for upgrade in field.value.items().unwrap_or_default() {
+                        if let Some(value) = upgrade.value.scalar() {
+                            let name = c_string(value).to_ascii_lowercase();
+                            if !name.is_empty() && !self.equipment[at].upgrades.contains(&name) {
+                                self.equipment[at].upgrades.push(name);
+                            }
+                        }
+                    }
+                }
                 b"module_count_limit" => {
                     if let Some(limit) = ModuleCountLimit::read(field.value.items().unwrap_or_default()) {
                         let limits = &mut self.equipment[at].module_count_limits;

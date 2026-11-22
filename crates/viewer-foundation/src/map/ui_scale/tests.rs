@@ -23,9 +23,9 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
 fn matching_the_game_multiplies_its_scale_by_its_stretch() {
     let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Ok(MONITOR)]));
     assert_eq!((scale, note), (1.25, None));
-    let unscaled = Desktop { dpi: 96, ..MONITOR };
+    let unscaled = Desktop { dpi: Ok(96), ..MONITOR };
     assert_eq!(
-        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Ok(unscaled)])),
+        Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[Ok(unscaled.clone())])),
         (1.0, None)
     );
     let (scale, _) =
@@ -33,17 +33,23 @@ fn matching_the_game_multiplies_its_scale_by_its_stretch() {
     assert_eq!(scale, 2560.0 / 2133.0);
     let tv = Desktop {
         physical: [3840, 2160],
-        dpi: 192,
+        dpi: Ok(192),
     };
     let dpi_err = || {
         Err("Could not read the display scale of monitor DISPLAY2 (0x80070057)".into())
+    };
+    let dpi_failed_tv = Desktop {
+        physical: [3840, 2160],
+        dpi: dpi_err(),
     };
     let on_unavailable = Display {
         display_index: 1,
         ..borderless()
     };
-    let (scale, note) =
-        Setting::MatchGame.resolve(Ok(&on_unavailable), Ok(&[Ok(MONITOR), dpi_err(), Ok(tv)]));
+    let (scale, note) = Setting::MatchGame.resolve(
+        Ok(&on_unavailable),
+        Ok(&[Ok(MONITOR), Ok(dpi_failed_tv.clone()), Ok(tv.clone())]),
+    );
     assert_eq!(scale, 1.0);
     assert!(
         note.as_deref()
@@ -55,7 +61,10 @@ fn matching_the_game_multiplies_its_scale_by_its_stretch() {
         ..borderless()
     };
     assert_eq!(
-        Setting::MatchGame.resolve(Ok(&on_third), Ok(&[Ok(MONITOR), dpi_err(), Ok(tv)])),
+        Setting::MatchGame.resolve(
+            Ok(&on_third),
+            Ok(&[Ok(MONITOR), Ok(dpi_failed_tv.clone()), Ok(tv.clone())]),
+        ),
         (2.0, None)
     );
     let on_secondary_without_primary = Display {
@@ -65,7 +74,24 @@ fn matching_the_game_multiplies_its_scale_by_its_stretch() {
     };
     let (raster, note) = Setting::MatchGame.resolve_raster(
         Ok(&on_secondary_without_primary),
-        Ok(&[dpi_err(), Ok(tv)]),
+        Ok(&[Err("primary DPI failed".into()), Ok(tv)]),
+    );
+    assert_eq!(note, None);
+    assert_eq!(raster.screen_scale(), 2.0);
+    let fullscreen_dpi_failed = Display {
+        clamps: vec![content_reader_settings::settings::Clamp {
+            gui_scale: Some(1.0),
+            size: Some([1920, 1080]),
+            borderless: false,
+        }],
+        size: Some([1920, 1080]),
+        mode: content_reader_settings::settings::DisplayMode::Fullscreen,
+        display_index: 1,
+        ..borderless()
+    };
+    let (raster, note) = Setting::MatchGame.resolve_raster(
+        Ok(&fullscreen_dpi_failed),
+        Ok(&[Ok(MONITOR), Ok(dpi_failed_tv)]),
     );
     assert_eq!(note, None);
     assert_eq!(raster.screen_scale(), 2.0);

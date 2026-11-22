@@ -52,7 +52,7 @@ pub struct Context<'a> {
     pub culture: Option<&'a str>,
     pub country: Option<&'a str>,
     pub faction_tags: &'a [String],
-    pub capital_continent: Option<&'a str>,
+    pub capital_continent: Result<Option<&'a str>, &'a str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -556,19 +556,51 @@ impl Content {
         wanted: impl Fn(&Pool) -> bool,
     ) -> Result<Vec<&Pool>, String> {
         let mut buckets = Vec::new();
-        if let Some(country) = context.country {
-            buckets.push(Bucket::Country(country.to_owned()));
-            buckets.extend(context.faction_tags.iter().cloned().map(Bucket::Faction));
-            if let Some(continent) = context.capital_continent {
-                buckets.push(Bucket::Continent(continent.to_ascii_lowercase()));
+        let unknown_continent = match (context.country, context.capital_continent) {
+            (Some(country), Ok(continent)) => {
+                buckets.push(Bucket::Country(country.to_owned()));
+                buckets.extend(context.faction_tags.iter().cloned().map(Bucket::Faction));
+                if let Some(continent) = continent {
+                    buckets.push(Bucket::Continent(continent.to_ascii_lowercase()));
+                }
+                None
             }
-        }
+            (Some(country), Err(why)) => {
+                buckets.push(Bucket::Country(country.to_owned()));
+                buckets.extend(context.faction_tags.iter().cloned().map(Bucket::Faction));
+                Some(why)
+            }
+            (None, _) => None,
+        };
         buckets.push(Bucket::Default);
         let mut contexts = vec![(context.equipment, context.archetype)];
         if let Some(family) = context.family
             && family.0 != context.equipment
         {
             contexts.push(family);
+        }
+        if let Some(why) = unknown_continent {
+            let continent_could_match = self
+                .buckets
+                .iter()
+                .filter_map(|(bucket, definitions)| match bucket {
+                    Bucket::Continent(_) => Some(definitions),
+                    _ => None,
+                })
+                .any(|definitions| {
+                    contexts.iter().any(|&(equipment, archetype)| {
+                        [Some(equipment), archetype]
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|name| definitions.get(&name.to_ascii_lowercase()))
+                            .flat_map(|pools| pools.iter())
+                            .filter(|pool| wanted(pool) && pool.matches(context))
+                            .any(|pool| !matches!(limits.holds(pool.id, &pool.limit), Ok(false)))
+                    })
+                });
+            if continent_could_match {
+                return Err(why.to_owned());
+            }
         }
         let mut matches = Vec::new();
         for (equipment, archetype) in contexts {
@@ -710,7 +742,7 @@ mod tests {
             culture: Some("western_european_gfx"),
             country,
             faction_tags: factions,
-            capital_continent: Some("Europe"),
+            capital_continent: Ok(Some("Europe")),
         }
     }
 
@@ -754,7 +786,7 @@ mod tests {
             culture: None,
             country: Some("AAA"),
             faction_tags: &factions,
-            capital_continent: Some("Europe"),
+            capital_continent: Ok(Some("Europe")),
         };
         let visited = std::cell::RefCell::new(Vec::new());
         assert_eq!(
@@ -813,6 +845,42 @@ mod tests {
                 name == "declared"
             }),
             Ok(Some("declared".to_owned()))
+        );
+        let unknown_continent = Context {
+            capital_continent: Err("continent capture unavailable"),
+            ..context(Some("GER"), &[])
+        };
+        assert_eq!(
+            pools.aircraft_override(&unknown_continent, &|_: &str| Some(false), |name| {
+                name == "declared"
+            }),
+            Ok(Some("declared".to_owned()))
+        );
+        assert_eq!(
+            pools
+                .lookup_with_limits(&unknown_continent, &|_: &str| Some(false), |name| {
+                    name == "declared"
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+        let with_continent = content(
+            br#"default = { tank = { pool = { models = { declared } } } }
+            europe = { tank = { pool = { models = { european } } } }"#,
+        )
+        .unwrap();
+        assert!(
+            with_continent
+                .aircraft_override(&unknown_continent, &|_: &str| Some(true), |_| true)
+                .unwrap_err()
+                .contains("continent capture unavailable")
+        );
+        assert!(
+            with_continent
+                .lookup_with_limits(&unknown_continent, &|_: &str| Some(true), |_| true)
+                .unwrap_err()
+                .contains("continent capture unavailable")
         );
     }
 

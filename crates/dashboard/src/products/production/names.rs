@@ -21,6 +21,7 @@ pub const TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
     TableId::PoliticalParties,
     TableId::Factions,
     TableId::FactionMembers,
@@ -37,6 +38,7 @@ pub const WHOLE: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
     TableId::PoliticalParties,
     TableId::Factions,
     TableId::FactionMembers,
@@ -49,13 +51,23 @@ pub fn variant_tokens(held: &DecodedFrame) -> impl Iterator<Item = u32> + '_ {
     held.complete::<tables::VariantDefinitions>().ok().into_iter().flatten().map(|row| row.equipment_token)
 }
 
-pub fn spelling_reads(held: &DecodedFrame, tokens: BTreeSet<u32>, pictured: bool) -> Vec<Read> {
-    let mut reads = vec![Read::these(TableId::LexicalTokens, tokens.into_iter().map(u128::from))];
+pub fn capital_state_read(held: &DecodedFrame) -> Read {
+    let capitals = held.complete::<tables::Politics>().ok().into_iter().flatten().flat_map(|row| [row.capital, row.original_capital]);
+    Read::these(TableId::States, capitals.filter_map(|state| u32::try_from(state).ok().filter(|&state| state > 0)).map(u128::from))
+}
+
+pub fn state_continent_tokens(held: &DecodedFrame) -> impl Iterator<Item = u32> + '_ {
+    held.complete::<tables::States>().ok().into_iter().flatten().filter_map(|row| match row.continent {
+        replay_data::rows::Recorded::Value(Some(token)) if token != 0 => Some(token),
+        _ => None,
+    })
+}
+
+pub fn spelling_reads(held: &DecodedFrame, mut tokens: BTreeSet<u32>, pictured: bool) -> Vec<Read> {
     if pictured {
-        let capitals = held.complete::<tables::Politics>().ok().into_iter().flatten().flat_map(|row| [row.capital, row.original_capital]);
-        reads.push(Read::these(TableId::States, capitals.filter_map(|state| u32::try_from(state).ok().filter(|&state| state > 0)).map(u128::from)));
+        tokens.extend(state_continent_tokens(held));
     }
-    reads
+    vec![Read::these(TableId::LexicalTokens, tokens.into_iter().map(u128::from))]
 }
 
 fn read_into(recording: &Recording, run: u32, hour: i32, frame: &mut DecodedFrame, reads: &[Read]) -> io::Result<()> {
@@ -345,6 +357,10 @@ pub fn name_at(recording: &Recording, run: u32, hour: i32, variants: &[u64], org
     reads.push(Read::these(TableId::VariantDefinitions, wanted_variants.iter().map(|&id| u128::from(id))));
     reads.push(Read::these(TableId::IndustrialOrganisations, wanted_organisations.iter().map(|&id| u128::from(id))));
     read_into(recording, run, hour, &mut frame, &reads)?;
+    if !wanted_variants.is_empty() {
+        let capitals = [capital_state_read(&frame)];
+        read_into(recording, run, hour, &mut frame, &capitals)?;
+    }
     let mut tokens: BTreeSet<u32> = variant_tokens(&frame).collect();
     tokens.extend(frame.complete::<tables::IndustrialOrganisations>().ok().into_iter().flatten().map(|row| row.token));
     let spelling = spelling_reads(&frame, tokens, !wanted_variants.is_empty());

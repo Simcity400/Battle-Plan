@@ -1913,7 +1913,7 @@ impl Document {
                         let scale =
                             display.effective_gui_scale(content_reader_settings::settings::Desktop {
                                 physical: CONSTRUCTED,
-                                dpi: 96,
+                                dpi: Ok(96),
                             });
                         (frame, display.interface_to_frame(frame, scale))
                     }

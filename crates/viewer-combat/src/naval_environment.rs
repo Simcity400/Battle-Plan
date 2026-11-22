@@ -354,7 +354,7 @@ fn convoy_weapon_bound(layers: &content_reader_core::ResolvedLayers) -> io::Resu
 pub(super) fn convoy_weapon_bound_from_database(
     database: &content_reader_core::equipment::Database,
 ) -> ConvoyBound {
-    use content_reader_core::equipment::{StatComponents, StatGroup};
+    use content_reader_core::equipment::{StatGroup, StatValue};
     let misreads = database.misreads.clone();
     if let Some(lost) = &database.lost {
         return (Err(lost.clone()), misreads);
@@ -371,12 +371,41 @@ pub(super) fn convoy_weapon_bound_from_database(
             .chain(&group.multiply)
             .any(|term| stats.contains(&term.index))
     };
+    let stat_term = |values: &[StatValue], index: usize| {
+        values
+            .iter()
+            .find(|entry| entry.index == index)
+            .map_or(0_i64, |entry| entry.value)
+    };
     let mut range = [0_i64; 2];
     for equipment in database
         .equipment
         .iter()
         .filter(|equipment| database.category(equipment) & 1 != 0)
     {
+        let upgrade_touches_weapons = equipment
+            .upgrades
+            .iter()
+            .chain(
+                equipment
+                    .archetype
+                    .into_iter()
+                    .flat_map(|at| database.equipment[at].upgrades.iter()),
+            )
+            .any(|upgrade| {
+                database
+                    .upgrade_stats(upgrade)
+                    .is_some_and(group_touches_weapons)
+            });
+        if upgrade_touches_weapons {
+            return (
+                Err(format!(
+                    "convoy equipment {} admits weapon-modifying upgrades, so convoy weapon bounds cannot be determined from equipment types alone",
+                    String::from_utf8_lossy(&equipment.name)
+                )),
+                misreads,
+            );
+        }
         let has_dynamic_terms = !equipment.module_add_stats_multiplier.is_empty()
             || !equipment.module_multiply_stats_multiplier.is_empty()
             || !equipment.scaled_by_reliability.is_empty();
@@ -386,15 +415,56 @@ pub(super) fn convoy_weapon_bound_from_database(
             .filter_map(|(_, module)| database.module_stats(module))
             .filter(|group| group_touches_weapons(group))
             .collect();
-        let slot_allows_weapon_module = !equipment.module_slots.is_empty()
-            && database.all_module_designs().any(|(_, design, group)| {
-                group.is_some_and(group_touches_weapons)
-                    && equipment.module_slot_rules.iter().any(|slot| {
-                        slot.categories
-                            .iter()
-                            .any(|category| category == &design.category)
-                    })
-            });
+        let mut slot_allows_weapon_module = false;
+        if !equipment.module_slots.is_empty() {
+            let mut slot_categories: BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> = BTreeMap::new();
+            for (slot_name, rule) in equipment
+                .module_slots
+                .iter()
+                .zip(&equipment.module_slot_rules)
+            {
+                slot_categories
+                    .entry(slot_name.to_ascii_lowercase())
+                    .or_default()
+                    .extend(rule.categories.iter().cloned());
+            }
+            let mut reachable: BTreeSet<Vec<u8>> = equipment
+                .default_modules
+                .iter()
+                .filter_map(|(_, module)| {
+                    database.module(module).map(|name| name.to_ascii_lowercase())
+                })
+                .collect();
+            loop {
+                let mut changed = false;
+                for (name, design, group) in database.all_module_designs() {
+                    let allowed = reachable.contains(name)
+                        || slot_categories
+                            .values()
+                            .any(|categories| categories.contains(&design.category));
+                    if !allowed {
+                        continue;
+                    }
+                    if group.is_some_and(group_touches_weapons) {
+                        slot_allows_weapon_module = true;
+                        break;
+                    }
+                    if reachable.insert(name.to_vec()) {
+                        changed = true;
+                    }
+                    for (slot, category) in &design.allowed_module_categories {
+                        if let Some(categories) = slot_categories.get_mut(slot)
+                            && categories.insert(category.clone())
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+                if slot_allows_weapon_module || !changed {
+                    break;
+                }
+            }
+        }
         if !equipment.module_slots.is_empty()
             && (has_dynamic_terms || !default_weapon_modules.is_empty() || slot_allows_weapon_module)
         {
@@ -406,42 +476,87 @@ pub(super) fn convoy_weapon_bound_from_database(
                 misreads,
             );
         }
-        if default_weapon_modules.len() > 8 {
-            return (
-                Err(format!(
-                    "convoy equipment {} defines {} weapon-modifying default modules, so convoy weapon bounds cannot be enumerated from equipment types alone",
-                    String::from_utf8_lossy(&equipment.name),
-                    default_weapon_modules.len()
-                )),
-                misreads,
-            );
-        }
-        for mask in 0..(1_usize << default_weapon_modules.len()) {
-            let mut components = StatComponents::base(&equipment.stats);
-            for (bit, group) in default_weapon_modules.iter().enumerate() {
-                if mask & (1_usize << bit) != 0
-                    && let Err(reason) = components.apply_module(group, equipment)
+        for &stat in &stats {
+            let stat_range = (|| -> Option<[i64; 2]> {
+                let add_factor =
+                    100_000_i64.checked_add(stat_term(&equipment.module_add_stats_multiplier, stat))?;
+                let mul_factor = 100_000_i64
+                    .checked_add(stat_term(&equipment.module_multiply_stats_multiplier, stat))?;
+                let mut add_range = [equipment.stats[stat], equipment.stats[stat]];
+                let mut mul_range = [0_i64, 0_i64];
+                let mut avg_range = [0_i64, 0_i64];
+                let mut avg_pos_sum = 0_i64;
+                let mut avg_neg_sum = 0_i64;
+                for (_, module) in &equipment.default_modules {
+                    let Some(group) = database.module_stats(module) else {
+                        continue;
+                    };
+                    for term in group.add.iter().filter(|term| term.index == stat) {
+                        let delta = add_factor.checked_mul(term.value)? / 100_000;
+                        add_range = [
+                            add_range[0].checked_add(delta.min(0))?,
+                            add_range[1].checked_add(delta.max(0))?,
+                        ];
+                    }
+                    for term in group.multiply.iter().filter(|term| term.index == stat) {
+                        let delta = mul_factor.checked_mul(term.value)? / 100_000;
+                        mul_range = [
+                            mul_range[0].checked_add(delta.min(0))?,
+                            mul_range[1].checked_add(delta.max(0))?,
+                        ];
+                    }
+                    for term in group.average.iter().filter(|term| term.index == stat) {
+                        let delta = add_factor.checked_mul(term.value)? / 100_000;
+                        if delta > 0 {
+                            avg_pos_sum = avg_pos_sum.checked_add(delta)?;
+                            avg_pos_sum.checked_mul(100_000)?;
+                        } else if delta < 0 {
+                            avg_neg_sum = avg_neg_sum.checked_add(delta)?;
+                            avg_neg_sum.checked_mul(100_000)?;
+                        }
+                        avg_range = [avg_range[0].min(delta), avg_range[1].max(delta)];
+                    }
+                }
+                for term in equipment
+                    .scaled_by_reliability
+                    .iter()
+                    .filter(|term| term.index == stat)
                 {
-                    return (Err(reason.to_owned()), misreads);
+                    term.value.checked_mul(100_000)?;
+                    add_range = [
+                        add_range[0].checked_add(term.value.min(0))?,
+                        add_range[1].checked_add(term.value.max(0))?,
+                    ];
                 }
-            }
-            let projected = match components.finish_for(equipment) {
-                Ok(values) => values,
-                Err(reason) => return (Err(reason.to_owned()), misreads),
+                let value_range = [
+                    add_range[0].checked_add(avg_range[0])?,
+                    add_range[1].checked_add(avg_range[1])?,
+                ];
+                let factor_range = [
+                    mul_range[0].checked_add(100_000)?,
+                    mul_range[1].checked_add(100_000)?,
+                ];
+                let corners = [
+                    value_range[0].checked_mul(factor_range[0])? / 100_000,
+                    value_range[0].checked_mul(factor_range[1])? / 100_000,
+                    value_range[1].checked_mul(factor_range[0])? / 100_000,
+                    value_range[1].checked_mul(factor_range[1])? / 100_000,
+                ];
+                Some([
+                    *corners.iter().min().unwrap(),
+                    *corners.iter().max().unwrap(),
+                ])
+            })();
+            let Some([low, high]) = stat_range else {
+                return (
+                    Err(format!(
+                        "convoy equipment {} overflows fixed-point weapon stat bounds, so convoy weapon bounds cannot be determined safely",
+                        String::from_utf8_lossy(&equipment.name)
+                    )),
+                    misreads,
+                );
             };
-            let at_zero_rel = components.finish();
-            let mut full_rel = components.clone();
-            for term in &equipment.scaled_by_reliability {
-                if let Some(target) = full_rel.values.get_mut(term.index) {
-                    target.additive = target.additive.wrapping_add(term.value);
-                }
-            }
-            let at_full_rel = full_rel.finish();
-            for &stat in &stats {
-                for value in [projected[stat], at_zero_rel[stat], at_full_rel[stat]] {
-                    range = [range[0].min(value), range[1].max(value)];
-                }
-            }
+            range = [range[0].min(low), range[1].max(high)];
         }
     }
     (Ok(range), misreads)

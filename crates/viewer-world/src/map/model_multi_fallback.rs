@@ -439,8 +439,8 @@ fn pair_candidates<'a>(
             .capital_continent
             .as_ref()
             .map(Option::as_deref)
-            .map_err(Clone::clone)?,
-        None => None,
+            .map_err(String::as_str),
+        None => Ok(None),
     };
     let graphical = inputs.graphics.lookup_with_limits(
         &equipment_graphics::Context {

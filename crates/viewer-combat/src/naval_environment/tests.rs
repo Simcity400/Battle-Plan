@@ -772,4 +772,59 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
     );
     assert!(misreads.is_empty(), "{misreads:?}");
     assert_eq!(bound, Ok([0, 200_000]));
+    let (bound, _) = bound_of(
+        "equipment_modules = {
+            basic = { category = turret }
+            advanced = { category = turret allowed_module_categories = { gun_slot = { heavy } } }
+            light = { category = light }
+            heavy = { category = heavy add_stats = { lg_attack = 2 } }
+         }
+         equipments = {
+            transitive_convoy = { type = convoy
+                module_slots = {
+                    turret_slot = { required = yes allowed_module_categories = { turret } }
+                    gun_slot = { required = yes allowed_module_categories = { light } }
+                }
+                default_modules = { turret_slot = basic gun_slot = light } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("transitive_convoy")),
+        "convoy with transitively unlocked weapon module must be refused by name"
+    );
+    let (bound, _) = bound_of(
+        "upgrades = { convoy_gun = { lg_attack = 1 } }
+         equipments = {
+            upgraded_convoy = { type = convoy upgrades = { convoy_gun } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("upgraded_convoy")),
+        "slotless convoy with weapon-modifying upgrade must be refused by name"
+    );
+    let (bound, _) = bound_of(
+        "equipment_modules = { tuning = { add_stats = { reliability = -0.75 } } }
+         equipments = {
+            wrapping_convoy = { type = convoy reliability = 1.0
+                scaled_by_reliability = { lg_attack = 1844674407.37095 }
+                default_modules = { engine = tuning } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("wrapping_convoy")),
+        "convoy whose scaled_by_reliability can wrap fixed-point arithmetic must be refused by name"
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { tiny = { add_stats = { lg_attack = 0.01 } } }
+         equipments = {
+            nine_defaults = { type = convoy
+                default_modules = {
+                    s1 = tiny s2 = tiny s3 = tiny s4 = tiny s5 = tiny
+                    s6 = tiny s7 = tiny s8 = tiny s9 = tiny
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 9_000]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 9_000])), Some(0));
 }

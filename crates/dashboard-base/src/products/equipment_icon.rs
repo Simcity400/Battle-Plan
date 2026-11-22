@@ -526,7 +526,9 @@ impl IconContent {
 pub struct IconHour {
     links: BTreeMap<u32, u32>,
     countries: BTreeMap<u32, ModelCountry>,
+    slot_own_handles: BTreeMap<u32, u32>,
     handle_tags: BTreeMap<u32, String>,
+    dynamic_tag_boundary: Result<i32, String>,
     original_refs: Result<BTreeMap<u32, (Recorded<Option<i32>>, Recorded<Option<Vec<u8>>>)>, String>,
     culture_2d: Result<BTreeMap<u32, String>, String>,
     prepared: Result<Prepared, String>,
@@ -559,7 +561,12 @@ impl IconHour {
                             .map_or(0, String::len)
                 })
                 .sum::<usize>()
+            + self.slot_own_handles.len() * 2 * std::mem::size_of::<u32>()
             + self.handle_tags.values().map(text).sum::<usize>()
+            + match &self.dynamic_tag_boundary {
+                Ok(_) => 0,
+                Err(why) => why.len(),
+            }
             + match &self.original_refs {
                 Ok(refs) => refs
                     .values()
@@ -589,12 +596,15 @@ impl IconHour {
             .map(|row: &CountryLinkRow| (row.id, row.canonical_slot))
             .collect();
         let countries = equipment_graphics::countries::read(frame).map_err(failed)?;
-        let mut handle_tags: BTreeMap<u32, String> = frame
-            .complete::<tables::Countries>()
-            .map_err(failed)?
-            .iter()
-            .filter_map(|row| Some((row.id, std::str::from_utf8(&row.tag).ok()?.to_owned())))
-            .collect();
+        let country_rows = frame.complete::<tables::Countries>().map_err(failed)?;
+        let mut slot_own_handles: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut handle_tags: BTreeMap<u32, String> = BTreeMap::new();
+        for row in country_rows {
+            slot_own_handles.insert(row.canonical_slot, row.id);
+            if let Ok(text) = std::str::from_utf8(&row.tag) {
+                handle_tags.insert(row.id, text.to_owned());
+            }
+        }
         let appearance = frame.complete::<tables::CountryAppearance>();
         if let Ok(rows) = &appearance {
             for row in *rows {
@@ -609,19 +619,39 @@ impl IconHour {
                 }
             }
         }
-        if let Ok(rows) = frame.complete::<tables::ReservedCountryNaming>() {
-            for row in rows {
-                if let (Recorded::Value(Some(orig)), Recorded::Value(Some(bytes))) =
-                    (row.original_tag_reference, &row.original_tag)
-                    && orig > 0
-                    && let Ok(text) = std::str::from_utf8(bytes)
-                {
-                    handle_tags
-                        .entry(orig as u32)
-                        .or_insert_with(|| text.to_owned());
+        let reserved = frame.complete::<tables::ReservedCountryNaming>();
+        let dynamic_tag_boundary = match &reserved {
+            Ok(rows) => {
+                for row in *rows {
+                    if let (Recorded::Value(Some(orig)), Recorded::Value(Some(bytes))) =
+                        (row.original_tag_reference, &row.original_tag)
+                        && orig > 0
+                        && let Ok(text) = std::str::from_utf8(bytes)
+                    {
+                        handle_tags
+                            .entry(orig as u32)
+                            .or_insert_with(|| text.to_owned());
+                    }
+                }
+                match rows.first().map(|row| row.dynamic_tag_boundary) {
+                    Some(Recorded::Value(Some(boundary))) => Ok(boundary),
+                    Some(Recorded::Value(None)) => Err(
+                        "the country database's dynamic-tag boundary capture refused".to_owned(),
+                    ),
+                    Some(Recorded::NotRecorded) => Err(
+                        "the country database's dynamic-tag boundary is not recorded".to_owned(),
+                    ),
+                    None => Err(
+                        "reserved country naming has no row, so the dynamic-tag boundary is unknown"
+                            .to_owned(),
+                    ),
                 }
             }
-        }
+            Err(error) => Err(format!(
+                "reserved country naming is unavailable, so the dynamic-tag boundary is unknown: {}",
+                undated(frame, error)
+            )),
+        };
         let original_refs = appearance
             .as_ref()
             .map(|rows| {
@@ -662,10 +692,19 @@ impl IconHour {
             prepared: Prepared::read(frame, &content.geography).map_err(|why| undated(frame, why)),
             links,
             countries,
+            slot_own_handles,
             handle_tags,
+            dynamic_tag_boundary,
             original_refs,
             culture_2d,
         })
+    }
+
+    fn is_dynamic_slot(&self, slot: u32) -> Result<bool, String> {
+        self.dynamic_tag_boundary
+            .as_ref()
+            .map(|&boundary| i64::from(slot) >= i64::from(boundary))
+            .map_err(Clone::clone)
     }
 
     fn witnessed_tag(&self, raw: u32) -> Result<&str, String> {
@@ -824,14 +863,23 @@ fn rule(
                 variant.creator_link
             )
         })?;
-        match hour.original_reference_of(creator_slot)? {
-            Some(original) => {
-                let slot = *hour.links.get(&original).ok_or_else(|| {
-                    format!("original country reference {original} has no country link")
-                })?;
-                (Some(original), Some(slot))
+        if hour.is_dynamic_slot(creator_slot)? {
+            match hour.original_reference_of(creator_slot)? {
+                Some(original) => {
+                    let slot = *hour.links.get(&original).ok_or_else(|| {
+                        format!("original country reference {original} has no country link")
+                    })?;
+                    (Some(original), Some(slot))
+                }
+                None => {
+                    let own = *hour.slot_own_handles.get(&creator_slot).ok_or_else(|| {
+                        format!("country slot {creator_slot} has no Countries row")
+                    })?;
+                    (Some(own), Some(creator_slot))
+                }
             }
-            None => (Some(variant.creator_link), Some(creator_slot)),
+        } else {
+            (Some(variant.creator_link), Some(creator_slot))
         }
     } else {
         (None, None)
@@ -993,12 +1041,12 @@ fn pool(
                     .capital_continent
                     .as_ref()
                     .map(Option::as_deref)
-                    .map_err(Clone::clone)?,
-                None => None,
+                    .map_err(String::as_str),
+                None => Ok(None),
             };
             (place, country_tag, capital_continent)
         }
-        None => (None, None, None),
+        None => (None, None, Ok(None)),
     };
     let failed = std::cell::RefCell::new(None::<String>);
     let shown = std::cell::RefCell::new(None::<Icon>);
