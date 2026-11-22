@@ -8,4 +8,4 @@ Copy-only work is already measured on workers. Add worker times to their supplyi
 
 A skipped table exports no walk time. CountryIntel is exceptional because its loan can delay a scheduled walk. That later walk is a real read, and the oracle uses its measured cost to identify the hour of observation. A delayed table that still did not run has no cost.
 
-[Hourly metrics](../../crates/collector/src/sampling.rs) · [Slow-hour diagnostics](0106-capture-diagnostics.md)
+[Hourly metrics](../../crates/collector-capture/src/sampling.rs) · [Slow-hour diagnostics](0106-capture-diagnostics.md)

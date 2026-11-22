@@ -9,7 +9,10 @@ use std::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
-use std::{os::windows::io::{AsHandle, AsRawHandle}, thread::JoinHandle};
+use std::{
+    os::windows::io::{AsHandle, AsRawHandle},
+    thread::JoinHandle,
+};
 
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
@@ -370,8 +373,7 @@ impl State {
         let slot = self.slots.get(ticket.slot)?;
         if slot.generation != ticket.generation
             || slot.phase != Phase::Queued
-            || shared.words[ticket.slot].load(Ordering::Acquire)
-                != word(ticket.generation, PENDING)
+            || shared.words[ticket.slot].load(Ordering::Acquire) != word(ticket.generation, PENDING)
         {
             return None;
         }
@@ -547,7 +549,7 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "executor_join_help")]
         self.body_begin[index].store(runner_begin_qpc.max(0) as u64, Ordering::Release);
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_begin = crate::callback_profile::thread_cycles();
+        let runner_cycles_begin = crate::callback_profile_state::thread_cycles();
         let mut report = if collector_memory::terminal::failed() {
             Err(Failure::Stopped)
         } else {
@@ -579,7 +581,7 @@ impl<J, R> Shared<J, R> {
             }
         };
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_end = crate::callback_profile::thread_cycles();
+        let runner_cycles_end = crate::callback_profile_state::thread_cycles();
         #[cfg(any(feature = "callback_profile", feature = "executor_join_help"))]
         let runner_end_qpc = collector_primitives::clock::qpc();
         drop(borrowed_context);
@@ -1319,7 +1321,11 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub fn run_unclaimed_child(&self, ticket: Ticket) -> bool {
         if ticket.pool != self.shared.id
-            || self.shared.words.get(ticket.slot).map(|value| value.load(Ordering::Acquire))
+            || self
+                .shared
+                .words
+                .get(ticket.slot)
+                .map(|value| value.load(Ordering::Acquire))
                 != Some(word(ticket.generation, PENDING))
         {
             return false;
@@ -1465,7 +1471,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             if self.help_callback() {
                 continue;
             }
-            self.shared.awaited.store(ticket.generation, Ordering::SeqCst);
+            self.shared
+                .awaited
+                .store(ticket.generation, Ordering::SeqCst);
             let observed = value.load(Ordering::SeqCst);
             if observed == word(ticket.generation, PENDING)
                 || observed == word(ticket.generation, RUNNING)
@@ -1547,7 +1555,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let begin = collector_primitives::clock::qpc();
         let value = self.park_until_ready(&mut ready);
         #[cfg(feature = "callback_profile")]
-        crate::callback_profile::record_readiness(collector_primitives::clock::qpc() - begin);
+        crate::callback_profile_state::record_readiness(collector_primitives::clock::qpc() - begin);
         value
     }
 
@@ -1718,7 +1726,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub fn shutdown(&self) -> Result<(), &'static str> {
         #[cfg(feature = "worker_sampler")]
-        crate::worker_sampler::stop_before_thread_exit();
+        crate::worker_sampler_state::stop_before_thread_exit();
         self.shared.stop();
         let mut threads = self
             .threads
@@ -1750,7 +1758,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
 ) {
     collector_timing::capture_gate::reader();
     #[cfg(feature = "worker_sampler")]
-    let _sampler_registration = crate::worker_sampler::register_worker();
+    let _sampler_registration = crate::worker_sampler_state::register_worker();
     {
         if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
@@ -2121,8 +2129,7 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst)
-                        == ticket.generation
+                    pool.shared.awaited.load(Ordering::SeqCst) == ticket.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
                 release.open();
@@ -2182,8 +2189,7 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst)
-                        == queued.generation
+                    pool.shared.awaited.load(Ordering::SeqCst) == queued.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
                 pool.stop_for_contained_panic();
@@ -2388,8 +2394,7 @@ mod tests {
                         .is_ok_and(|thread| thread == caller)
                 } else {
                     progressed(|| {
-                        pool_ref.shared.awaited.load(Ordering::SeqCst)
-                            == awaited.generation
+                        pool_ref.shared.awaited.load(Ordering::SeqCst) == awaited.generation
                     })
                 };
                 release_ref.open();

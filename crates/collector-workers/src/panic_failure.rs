@@ -196,3 +196,7 @@ pub fn reset() {
 pub fn fail_at(stage: &'static str) {
     FAIL_AT.set(Some(stage));
 }
+
+pub fn owned_failed() -> bool {
+    collector_memory::terminal::failed() || first().is_some()
+}
