@@ -402,6 +402,44 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
     ],
   );
 
+  const intOverrideWithExplicitPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-tx86_64-pc-windows-msvc', '--', '--config', '"build".target="x86_64-pc-windows-msvc"'],
+    root: path.join(root, 'int-workspace'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(intOverrideWithExplicitPlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(intOverrideWithExplicitPlan.tauriEnv, { CARGO_BUILD_TARGET: 'x86_64-pc-windows-msvc' });
+  assert.deepEqual(intOverrideWithExplicitPlan.tauriArgs, [
+    '--target', 'x86_64-pc-windows-msvc',
+    '--',
+    '--profile', 'release-lto',
+    '--config', '"build".target="x86_64-pc-windows-msvc"',
+  ]);
+
+  const multiWithUnrelatedConfigAndExplicitPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-tx86_64-pc-windows-msvc', '--', '--config', 'build.jobs=2'],
+    root: path.join(root, 'multi'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(multiWithUnrelatedConfigAndExplicitPlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(multiWithUnrelatedConfigAndExplicitPlan.tauriEnv, {});
+
+  const groupedShortPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-dtx86_64-pc-windows-msvc'],
+    root: path.join(root, 'multi'),
+    env,
+    hostTarget,
+  });
+  assert.equal(groupedShortPlan.profile, 'dev');
+  assert.deepEqual(groupedShortPlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(groupedShortPlan.tauriArgs, ['-d', '--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(groupedShortPlan.tauriEnv, {});
+
   const relHomePlan = await planDesktopInvocation({
     mode: 'dev',
     argv: [],

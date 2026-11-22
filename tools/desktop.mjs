@@ -8,15 +8,82 @@ import { thirdPartyNotices } from "./third-party-notices.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const STAGE = "stage";
 const CARGO_VALUE_FLAGS = new Set(["--config", "--profile", "--target", "-t", "--target-dir"]);
-const CLI_VALUE_FLAGS = new Set(["--config", "-c", "--runner", "-r", "--profile", "--target", "-t", "--target-dir", "--port"]);
+const CLI_SHORT_BOOL_FLAGS = new Set(["d", "v", "e"]);
+const CLI_SHORT_VALUE_FLAGS = new Set(["c", "r"]);
+const CLI_SHORT_OPTIONAL_VALUE_FLAGS = new Set(["f", "b"]);
+const CLI_LONG_VALUE_FLAGS = new Set(["--config", "--runner", "--profile", "--target", "--target-dir", "--port"]);
 
-function attachedShortFlagValue(arg, names) {
-  for (const name of names) {
-    if (name.length === 2 && name.startsWith("-") && arg.startsWith(name) && arg.length > 2) {
-      return arg[2] === "=" ? arg.slice(3) : arg.slice(2);
+function parseCliArgs(cliArgs) {
+  const targets = [];
+  const items = [];
+  let hasDebug = false;
+  let hasRelease = false;
+  for (let index = 0; index < cliArgs.length; index++) {
+    const arg = cliArgs[index];
+    if (arg === "--debug") {
+      hasDebug = true;
+      items.push({ kind: "raw", args: [arg] });
+    } else if (arg === "--release") {
+      hasRelease = true;
+      items.push({ kind: "raw", args: [arg] });
+    } else if (arg === "--target") {
+      if (index + 1 >= cliArgs.length) throw Object.assign(new Error("--target needs a value."), { exitCode: 2 });
+      targets.push(cliArgs[++index]);
+      items.push({ kind: "target", prefix: "" });
+    } else if (arg.startsWith("--target=")) {
+      targets.push(arg.slice("--target=".length));
+      items.push({ kind: "target", prefix: "" });
+    } else if (CLI_LONG_VALUE_FLAGS.has(arg) && index + 1 < cliArgs.length) {
+      items.push({ kind: "raw", args: [arg, cliArgs[++index]] });
+    } else if (arg.startsWith("-") && !arg.startsWith("--") && arg.length > 1) {
+      let prefix = "";
+      let handled = false;
+      for (let pos = 1; pos < arg.length; pos++) {
+        const ch = arg[pos];
+        if (CLI_SHORT_BOOL_FLAGS.has(ch)) {
+          if (ch === "d") hasDebug = true;
+          prefix += ch;
+          continue;
+        }
+        if (ch === "t") {
+          let value;
+          if (pos + 1 < arg.length) {
+            value = arg[pos + 1] === "=" ? arg.slice(pos + 2) : arg.slice(pos + 1);
+          } else {
+            if (index + 1 >= cliArgs.length) throw Object.assign(new Error("-t needs a value."), { exitCode: 2 });
+            value = cliArgs[++index];
+          }
+          targets.push(value);
+          items.push({ kind: "target", prefix });
+          handled = true;
+          break;
+        }
+        if (CLI_SHORT_VALUE_FLAGS.has(ch)) {
+          if (pos + 1 === arg.length && index + 1 < cliArgs.length) {
+            items.push({ kind: "raw", args: [arg, cliArgs[++index]] });
+          } else {
+            items.push({ kind: "raw", args: [arg] });
+          }
+          handled = true;
+          break;
+        }
+        if (CLI_SHORT_OPTIONAL_VALUE_FLAGS.has(ch)) {
+          if (pos + 1 === arg.length && index + 1 < cliArgs.length && !cliArgs[index + 1].startsWith("-")) {
+            items.push({ kind: "raw", args: [arg, cliArgs[++index]] });
+          } else {
+            items.push({ kind: "raw", args: [arg] });
+          }
+          handled = true;
+          break;
+        }
+        break;
+      }
+      if (!handled) items.push({ kind: "raw", args: [arg] });
+    } else {
+      items.push({ kind: "raw", args: [arg] });
     }
   }
-  return undefined;
+  return { targets, items, hasDebug, hasRelease };
 }
 
 function flagValues(args, valueFlags, ...names) {
@@ -36,13 +103,6 @@ function flagValues(args, valueFlags, ...names) {
         values.push(arg.slice(name.length + 1));
         matched = true;
         break;
-      }
-    }
-    if (!matched) {
-      const attached = attachedShortFlagValue(arg, names);
-      if (attached !== undefined) {
-        values.push(attached);
-        matched = true;
       }
     }
     if (!matched && valueFlags.has(arg) && index + 1 < args.length) index++;
@@ -83,11 +143,12 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   const runnerArgs = separator < 0 ? [] : argv.slice(separator + 1);
   const appSeparator = runnerArgs.indexOf("--");
   const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator);
+  const parsedCli = parseCliArgs(cliArgs);
   const explicitProfiles = flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--profile");
   const explicitProfile = explicitProfiles.length > 0 ? explicitProfiles[explicitProfiles.length - 1] : undefined;
   const release = mode === "build"
-    ? !(cliArgs.includes("--debug") || cliArgs.includes("-d"))
-    : cliArgs.includes("--release") || cargoArgs.includes("--release") || cargoArgs.includes("-r");
+    ? !parsedCli.hasDebug
+    : parsedCli.hasRelease || cargoArgs.includes("--release") || cargoArgs.includes("-r");
   const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
 
   const configArgs = [];
@@ -105,7 +166,7 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   }
 
   const desktopDir = path.join(workspaceRoot, "crates", "desktop");
-  const explicitTargets = [...flagValues(cliArgs, CLI_VALUE_FLAGS, "--target", "-t"), ...flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--target")];
+  const explicitTargets = [...parsedCli.targets, ...flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--target")];
   if (explicitTargets.length > 1) {
     throw new Error("--target names multiple build targets this command cannot place; pass a single --target.");
   }
@@ -113,9 +174,20 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   const home = env.CARGO_HOME
     ? path.resolve(desktopDir, env.CARGO_HOME)
     : homeRoot ? path.join(homeRoot, ".cargo") : undefined;
-  const configured = explicitTargets.length === 1
-    ? { target: explicitTargets[0], source: "--target", fromCliConfig: false }
-    : await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
+  let configured;
+  if (explicitTargets.length === 1) {
+    let fromCliConfig = false;
+    if (configArgs.length > 0) {
+      try {
+        fromCliConfig = (await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home }))?.fromCliConfig === true;
+      } catch {
+        fromCliConfig = false;
+      }
+    }
+    configured = { target: explicitTargets[0], source: "--target", fromCliConfig };
+  } else {
+    configured = await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
+  }
   const placement = configured === undefined
     ? undefined
     : await resolveTargetPlacement({ ...configured, hostTarget: hostTarget ?? (() => readHostTuple(env)) });
@@ -136,19 +208,13 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
 
   const tauriCliArgs = [];
   let cliHadTarget = false;
-  for (let index = 0; index < cliArgs.length; index++) {
-    const arg = cliArgs[index];
-    if (placement !== undefined && (arg === "--target" || arg === "-t")) {
+  for (const item of parsedCli.items) {
+    if (item.kind === "target" && placement !== undefined) {
+      if (item.prefix) tauriCliArgs.push(`-${item.prefix}`);
       tauriCliArgs.push("--target", placement.targetArg);
       cliHadTarget = true;
-      index++;
-    } else if (placement !== undefined && (arg.startsWith("--target=") || (arg.startsWith("-t") && arg.length > 2))) {
-      tauriCliArgs.push("--target", placement.targetArg);
-      cliHadTarget = true;
-    } else if (CLI_VALUE_FLAGS.has(arg) && index + 1 < cliArgs.length) {
-      tauriCliArgs.push(arg, cliArgs[++index]);
     } else {
-      tauriCliArgs.push(arg);
+      tauriCliArgs.push(...item.args);
     }
   }
   if (placement !== undefined && !cliHadTarget) {
