@@ -224,6 +224,29 @@ pub enum HitMode {
     NativeGeometry,
 }
 
+fn background_slots(
+    background: &native::Element,
+    resources: &dyn native_gui::Resources,
+) -> (bool, bool) {
+    let Some(button) = background.button() else {
+        return (false, false);
+    };
+    let Some((_, sprite)) =
+        native_gui::drawn_sprite(&button.sprite, |name| resources.sprite_info(name))
+    else {
+        return (false, false);
+    };
+    match sprite.kind {
+        native_gui::SpriteKind::Resizeable | native_gui::SpriteKind::CircularProgress { .. } => {
+            (false, false)
+        }
+        native_gui::SpriteKind::PieChart { .. } | native_gui::SpriteKind::LineChart { .. } => {
+            (true, false)
+        }
+        _ => (true, true),
+    }
+}
+
 pub fn observer_hit_rectangles(
     control: &native::Element,
     layout: &Layout,
@@ -243,13 +266,47 @@ pub fn observer_hit_rectangles(
                 .into_iter()
                 .collect();
         }
-        return container
-            .backgrounds
-            .iter()
-            .filter_map(|background| {
-                observer_hit_rectangle(background, layout, origin, resources, notes, mode)
-            })
-            .collect();
+        let mut region_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut part_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut out = Vec::new();
+        for background in &container.backgrounds {
+            let duplicate = container
+                .backgrounds
+                .iter()
+                .filter(|other| other.path == background.path)
+                .count()
+                > 1;
+            let (region_occurrence, part_occurrence) = if duplicate {
+                let (has_region, has_part) = background_slots(background, resources);
+                let region_occurrence = *region_counts.get(background.path.as_str()).unwrap_or(&0);
+                let part_occurrence = *part_counts.get(background.path.as_str()).unwrap_or(&0);
+                if has_region {
+                    *region_counts.entry(background.path.as_str()).or_default() += 1;
+                }
+                if has_part {
+                    *part_counts.entry(background.path.as_str()).or_default() += 1;
+                }
+                if !has_region && !has_part {
+                    continue;
+                }
+                (region_occurrence, part_occurrence)
+            } else {
+                (0, 0)
+            };
+            if let Some(hit) = observer_hit_rectangle_at(
+                background,
+                layout,
+                origin,
+                resources,
+                notes,
+                mode,
+                region_occurrence,
+                part_occurrence,
+            ) {
+                out.push(hit);
+            }
+        }
+        return out;
     }
     observer_hit_rectangle(control, layout, origin, resources, notes, mode)
         .into_iter()
@@ -263,6 +320,23 @@ pub fn observer_hit_rectangle(
     resources: &dyn native_gui::Resources,
     notes: &mut BTreeMap<String, usize>,
     mode: HitMode,
+) -> Option<HitRectangle> {
+    observer_hit_rectangle_at(control, layout, origin, resources, notes, mode, 0, 0)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Matches repeated unnamed background elements to their own region and part occurrence"
+)]
+fn observer_hit_rectangle_at(
+    control: &native::Element,
+    layout: &Layout,
+    origin: [i32; 2],
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+    mode: HitMode,
+    region_occurrence: usize,
+    part_occurrence: usize,
 ) -> Option<HitRectangle> {
     if control
         .button()
@@ -279,7 +353,8 @@ pub fn observer_hit_rectangle(
         .regions
         .iter()
         .enumerate()
-        .find(|(_, region)| region.path == control.path);
+        .filter(|(_, region)| region.path == control.path)
+        .nth(region_occurrence);
     if let Some((order, region)) = region.filter(|_| mode == HitMode::NativeGeometry)
         && let Some(geometry) = &region.hit
     {
@@ -299,7 +374,8 @@ pub fn observer_hit_rectangle(
         let mut rect = layout
             .parts
             .iter()
-            .find(|part| part.path == control.path)
+            .filter(|part| part.path == control.path && native_gui::part_rect(&part.kind).is_some())
+            .nth(part_occurrence)
             .and_then(|part| native_gui::part_rect(&part.kind))
             .unwrap_or(region.rect);
         if let Some([left, top, right, bottom]) = region.clip {
@@ -327,9 +403,14 @@ pub fn observer_hit_rectangle(
             geometry: Some(geometry),
         });
     }
-    let (order, part) = layout.parts.iter().enumerate().find(|(_, part)| {
-        part.path == control.path && native_gui::part_rect(&part.kind).is_some()
-    })?;
+    let (order, part) = layout
+        .parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| {
+            part.path == control.path && native_gui::part_rect(&part.kind).is_some()
+        })
+        .nth(part_occurrence)?;
     let sprite = match &part.kind {
         native_gui::PartKind::Sprite { sprite, .. }
         | native_gui::PartKind::Tiles { sprite, .. }
@@ -411,5 +492,62 @@ mod tests {
         assert!(blocked([20.0, 10.0]));
         assert!(blocked([60.0, 10.0]));
         assert!(!blocked([40.0, 10.0]));
+    }
+
+    #[test]
+    fn unnamed_separated_container_backgrounds_hit_independently() {
+        content_reader_core::test_game::enter();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = split_unnamed size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_even }
+                background = { position = { x = 20 y = 0 } spriteType = GFX_even alwaystransparent = yes }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_missing size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_missing }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } } }"#,
+        );
+        let resources = gui::fixture();
+        let root = windows.gui_type(b"split_unnamed").unwrap();
+        let mut instance = Instance::construct(root, [200, 100], &resources).unwrap();
+        instance.gui_show(root, root).unwrap();
+        let layout = instance.layout(root, &resources, None).unwrap().unwrap();
+        let mut notes = BTreeMap::new();
+        let hits = hit_rectangles(root, &layout, [10, 5], &resources, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        let rects: Vec<[f32; 4]> = hits.iter().map(|hit| hit.rect).collect();
+        assert_eq!(rects, [[10.0, 5.0, 20.0, 10.0], [50.0, 5.0, 20.0, 10.0]]);
+        let blocked = |point: [f32; 2]| rects.iter().any(|rect| contains(*rect, point));
+        assert!(blocked([20.0, 10.0]));
+        assert!(blocked([60.0, 10.0]));
+        assert!(!blocked([40.0, 10.0]));
+
+        let missing = windows.gui_type(b"split_missing").unwrap();
+        let mut instance = Instance::construct(missing, [200, 100], &resources).unwrap();
+        instance.gui_show(missing, missing).unwrap();
+        let layout = instance.layout(missing, &resources, None).unwrap().unwrap();
+        let hits = hit_rectangles(missing, &layout, [10, 5], &resources, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            hits.iter().map(|hit| hit.rect).collect::<Vec<_>>(),
+            [[10.0, 5.0, 8.0, 8.0], [50.0, 5.0, 20.0, 10.0]]
+        );
+
+        let mut no_fallback = gui::fixture();
+        no_fallback
+            .sprites
+            .remove(std::str::from_utf8(native_gui::FALLBACK_SPRITE).unwrap());
+        let mut instance = Instance::construct(missing, [200, 100], &no_fallback).unwrap();
+        instance.gui_show(missing, missing).unwrap();
+        let layout = instance
+            .layout(missing, &no_fallback, None)
+            .unwrap()
+            .unwrap();
+        let hits = hit_rectangles(missing, &layout, [10, 5], &no_fallback, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            hits.iter().map(|hit| hit.rect).collect::<Vec<_>>(),
+            [[50.0, 5.0, 20.0, 10.0]]
+        );
     }
 }

@@ -290,7 +290,13 @@ fn new_assignment_trigger_descriptions_use_native_arguments_and_inversion() {
 
 #[test]
 fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings() {
-    content_reader_core::test_game::enter_viewer();
+    content_reader_core::test_game::with(|game| {
+        use content_reader_core::trigger_keys::Reader;
+        game.trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
+            .trigger("set_temp_variable", 0, Reader::Body, 0)
+            .trigger("add_to_temp_variable", 0, Reader::Body, 0)
+            .trigger("check_variable", 0, Reader::Body, 0)
+    });
     struct Folder(std::path::PathBuf);
     impl Drop for Folder {
         fn drop(&mut self) {
@@ -371,6 +377,20 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     assert_eq!(
         run_synthetic(
             "hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=7}} always=no}"
+        )
+        .unwrap(),
+        "[no]Never\n"
+    );
+    assert_eq!(
+        run_synthetic(
+            "hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=8}} always=no}"
+        )
+        .unwrap(),
+        ""
+    );
+    assert_eq!(
+        run_synthetic(
+            "ROOT={hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=1}} always=no}"
         )
         .unwrap(),
         "[no]Never\n"

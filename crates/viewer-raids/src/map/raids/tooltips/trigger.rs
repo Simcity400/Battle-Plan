@@ -1,13 +1,16 @@
 use super::super::rules::Lines;
 use super::*;
-use content_reader_core::parser::Item;
+use content_reader_core::{parser::Item, scope::Scope as Parsed};
 use dashboard_text::triggers::{
     Evaluator,
     description::{self, Host},
 };
+use std::cell::RefCell;
 
 struct RaidHost<'c, 'a, 'w> {
     context: &'c Context<'a, 'w>,
+    graph: RefCell<EventScopes>,
+    stack: RefCell<Vec<usize>>,
 }
 
 impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
@@ -35,6 +38,21 @@ impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
         self.context.leader_name(reference)
     }
 
+    fn enter_scope(&self, parsed: &Parsed, entered: Scopes) {
+        let caller = *self.stack.borrow().last().unwrap_or(&0);
+        let mut graph = self.graph.borrow_mut();
+        let next = description::step_event_scope(&mut graph, caller, parsed, entered.this)
+            .unwrap_or(caller);
+        self.stack.borrow_mut().push(next);
+    }
+
+    fn leave_scope(&self) {
+        let mut stack = self.stack.borrow_mut();
+        if stack.len() > 1 {
+            stack.pop();
+        }
+    }
+
     fn scripted_text(&self) -> Result<&dashboard_text::scripted_text::ScriptedText<'a>> {
         self.context.scripted_text()
     }
@@ -42,12 +60,12 @@ impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
     fn expand(
         &self,
         text: &str,
-        scopes: Scopes,
+        _scopes: Scopes,
         evaluator: &Evaluator<'_, 'a>,
     ) -> Result<String> {
         let scripted = self.context.scripted_text()?;
-        let graph = event_scopes(scopes);
-        scripted.expand_in_session(text, &graph, 0, evaluator)
+        let at = *self.stack.borrow().last().unwrap_or(&0);
+        scripted.expand_in_session(text, &self.graph.borrow(), at, evaluator)
     }
 
     fn project_name(&self, name: &str, country: u32) -> Result<String> {
@@ -57,17 +75,13 @@ impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
 
 impl Context<'_, '_> {
     pub(super) fn trigger_text(&self, triggers: &[Item], scopes: Scopes, name: &str) -> Lines {
-        let graph = std::rc::Rc::new(std::cell::RefCell::new(event_scopes(scopes)));
-        let evaluator = Evaluator::new(self.world, None).with_event_scopes(graph);
-        let start = match evaluator.event_scopes(0) {
-            Ok(projected) => Scopes {
-                bare: scopes.bare,
-                ..projected
-            },
-            Err(_) => scopes,
+        let evaluator = Evaluator::new(self.world, None);
+        let host = RaidHost {
+            context: self,
+            graph: RefCell::new(event_scopes(scopes)),
+            stack: RefCell::new(vec![0]),
         };
-        let host = RaidHost { context: self };
-        description::describe_lines(triggers, &evaluator, &host, self.loc, start, 0, 1)
+        description::describe_lines(triggers, &evaluator, &host, self.loc, scopes, 0, 1)
             .into_iter()
             .map(|(key, text)| (format!("{name}: {key}"), text))
             .collect()

@@ -969,12 +969,22 @@ mod tests {
         );
     }
 
+    fn enter_trigger_test_game() {
+        content_reader_core::test_game::with(|game| {
+            use content_reader_core::trigger_keys::Reader;
+            game.trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
+                .trigger("set_temp_variable", 0, Reader::Body, 0)
+                .trigger("add_to_temp_variable", 0, Reader::Body, 0)
+                .trigger("check_variable", 0, Reader::Body, 0)
+        });
+    }
+
     #[test]
     fn shared_trigger_descriptions_handle_leaders_nested_refusals_hidden_temps_and_malformed_logic()
     {
-        content_reader_core::test_game::enter_viewer();
         use replay_data::rows::UnitLeaderRow;
         let assets = assets();
+        enter_trigger_test_game();
         let loc: Localisation = [
             ("GER", "Viewer country"),
             ("ENG", "Source country"),
@@ -1085,6 +1095,13 @@ mod tests {
                 ("raid_tooltip_trigger_title".into(), Ok("Viewer country".into())),
                 ("raid launchable: always".into(), Ok("-never\n".into())),
             ]
+        );
+        kind.launchable = parse(
+            "hidden_trigger = { set_temp_variable = { x = 7 } } if = { limit = { check_variable = { temp_var:x = 8 } } always = no }",
+        );
+        assert_eq!(
+            named_context.conditions(&kind, &RaidScope::default(), scopes, true, None),
+            (Eval::True, vec![])
         );
 
         let malformed = named_context.trigger_text(
@@ -1201,6 +1218,153 @@ mod tests {
         assert_eq!(
             nested_lines[2],
             ("raid launchable: always".into(), Ok("-never\n".into()))
+        );
+    }
+
+    #[test]
+    fn absent_prev_and_from_links_refuse_instead_of_entering_self() {
+        content_reader_core::test_game::enter_viewer();
+        let assets = assets();
+        let frame = frame();
+        let loc: Localisation = [
+            ("GER", "Viewer country"),
+            ("ENG", "Source country"),
+            ("raid_tooltip_trigger_title", "$TITLE$"),
+            ("TRIGGER_FULLFILLED_PREFIX", "+"),
+            ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
+            ("TRIGGER_ALWAYS_TRUE", "always"),
+            ("TRIGGER_ALWAYS_FALSE", "never"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let scripted_content = Err("no scripted content in this test".into());
+        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
+        let context = Context {
+            assets: &assets,
+            world: &world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        let mut kind = assets.catalog.types[0].clone();
+        kind.show_target = Vec::new();
+        let bare = Scopes::of(Scope::Country(2));
+        for (source, expected_key) in [
+            ("PREV = { always = yes }", "raid launchable: PREV"),
+            ("FROM = { always = yes }", "raid launchable: FROM"),
+            ("ENG = { FROM = { always = yes } }", "raid launchable: FROM"),
+        ] {
+            kind.launchable = parse(source);
+            let (result, lines) =
+                context.conditions(&kind, &RaidScope::default(), bare, true, None);
+            assert_eq!(result, Eval::False, "{source}");
+            assert_eq!(lines.len(), 2, "{source}: {lines:?}");
+            assert_eq!(lines[1].0, expected_key, "{source}: {lines:?}");
+            assert!(
+                lines[1]
+                    .1
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("resolves no target"),
+                "{source}: {lines:?}"
+            );
+        }
+        let raid = Scopes {
+            from: Some(Scope::Country(1)),
+            ..bare
+        };
+        kind.launchable = parse("PREV = { always = yes }");
+        let (result, lines) = context.conditions(&kind, &RaidScope::default(), raid, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[1].0, "raid launchable: PREV");
+        assert!(
+            lines[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("resolves no target"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn composite_prefix_evaluation_does_not_double_apply_hidden_temp_writes() {
+        let assets = assets();
+        enter_trigger_test_game();
+        let frame = frame();
+        let loc: Localisation = [
+            ("GER", "Viewer country"),
+            ("ENG", "Source country"),
+            ("raid_tooltip_trigger_title", "$TITLE$"),
+            ("TRIGGER_FULLFILLED_PREFIX", "+"),
+            ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
+            ("TRIGGER_OR_STARTS", "either"),
+            ("TRIGGER_ALWAYS_FALSE", "never"),
+            ("custom", "custom text"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let scripted_content = Err("no scripted content in this test".into());
+        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
+        let context = Context {
+            assets: &assets,
+            world: &world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        let scopes = Scopes {
+            from: Some(Scope::Country(1)),
+            ..Scopes::of(Scope::Country(2))
+        };
+        let mut kind = assets.catalog.types[0].clone();
+        kind.show_target = Vec::new();
+        kind.launchable = parse(
+            "FROM = { hidden_trigger = { add_to_temp_variable = { x = 1 } } } if = { limit = { check_variable = { temp_var:x = 1 } } always = no }",
+        );
+        let (result, lines) = context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            lines,
+            vec![
+                ("raid_tooltip_trigger_title".into(), Ok("Viewer country".into())),
+                ("raid launchable: always".into(), Ok("-never\n".into())),
+            ]
+        );
+        kind.launchable = parse(
+            "OR = { hidden_trigger = { add_to_temp_variable = { x = 1 } } always = no } if = { limit = { check_variable = { temp_var:x = 1 } } always = no }",
+        );
+        let (result, or_lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            or_lines.last(),
+            Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+            "{or_lines:?}"
+        );
+        kind.launchable = parse(
+            "FROM = { custom_trigger_tooltip = { tooltip = custom hidden_trigger = { add_to_temp_variable = { x = 1 } } always = yes } } if = { limit = { check_variable = { temp_var:x = 1 } } always = no }",
+        );
+        let (result, custom_lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            custom_lines.last(),
+            Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+            "{custom_lines:?}"
         );
     }
 }

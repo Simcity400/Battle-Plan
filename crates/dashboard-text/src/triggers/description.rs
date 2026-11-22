@@ -10,6 +10,7 @@ use super::{
     load::Unit,
     trigger_boolean,
 };
+pub use super::event_scopes::step_event_scope;
 use crate::scripted_text::{EventScope, EventScopes, Link, ScriptedText};
 
 pub type TacticName<'a> = dyn Fn(&[u8]) -> Result<Vec<u8>, String> + 'a;
@@ -21,6 +22,8 @@ pub trait Host<'a> {
     fn leader_name(&self, reference: u64) -> Result<String, String> {
         Err(format!("unit leader {reference:#x} name is not reproduced"))
     }
+    fn enter_scope(&self, _parsed: &Parsed, _entered: Scopes) {}
+    fn leave_scope(&self) {}
     fn scripted_text(&self) -> Result<&ScriptedText<'a>, String>;
     fn expand(
         &self,
@@ -301,6 +304,10 @@ impl<'a> Formatter<'_, '_, 'a> {
         sink.push_err(key, why);
     }
 
+    fn checks_prefix(indent: usize, mode: u8) -> bool {
+        (indent == 0 || mode == 1) && mode != 2
+    }
+
     fn prefix(
         &self,
         unit: &Unit<'_, 'a>,
@@ -310,7 +317,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         mode: u8,
     ) -> Result<String, String> {
         let mut text = "   ".repeat(indent);
-        if (indent == 0 || mode == 1) && mode != 2 {
+        if Self::checks_prefix(indent, mode) {
             let fulfilled = self.evaluator.unit(unit, scopes).decided()? != inverted;
             text.push_str(&self.localised(
                 if fulfilled {
@@ -322,6 +329,20 @@ impl<'a> Formatter<'_, '_, 'a> {
             )?);
         }
         Ok(text)
+    }
+
+    fn isolated_prefix(
+        &self,
+        unit: &Unit<'_, 'a>,
+        scopes: Scopes,
+        inverted: bool,
+        indent: usize,
+        mode: u8,
+    ) -> Result<String, String> {
+        let session = self.evaluator.variable_session();
+        let result = self.prefix(unit, scopes, inverted, indent, mode);
+        self.evaluator.restore_variable_session(&session);
+        result
     }
 
     #[allow(
@@ -495,7 +516,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                         return Err("logical trigger requires block".into());
                     };
                     let label = key_text(item);
-                    let prefix = self.prefix(
+                    let prefix = self.isolated_prefix(
                         unit,
                         scopes,
                         inverted,
@@ -534,17 +555,34 @@ impl<'a> Formatter<'_, '_, 'a> {
                 }
                 _ => {
                     let own = self.own(item, child, scopes, inverted)?;
+                    let custom = item.keyword_is("custom_trigger_tooltip")
+                        || item.keyword_is("custom_override_tooltip");
+                    let has_children = !custom && !children(item).is_empty();
+                    let mut evaluated = false;
                     if !own.is_empty() {
-                        let mut line = self.prefix(unit, scopes, inverted, indent, mode)?;
+                        let mut line = if has_children {
+                            self.isolated_prefix(unit, scopes, inverted, indent, mode)?
+                        } else {
+                            evaluated = Self::checks_prefix(indent, mode);
+                            self.prefix(unit, scopes, inverted, indent, mode)?
+                        };
                         line.push_str(&own);
                         if !own.ends_with('\n') {
                             line.push('\n');
                         }
                         sink.push_ok(key_text(item), line);
                     }
-                    if !item.keyword_is("custom_trigger_tooltip")
-                        && !item.keyword_is("custom_override_tooltip")
-                    {
+                    if custom {
+                        if !evaluated
+                            && let Err(why) = self.evaluator.unit(unit, scopes).decided()
+                        {
+                            self.evaluator.taint_temps(
+                                crate::triggers::Failure::from(why).context(|why| {
+                                    format!("trigger tooltip session is uncertain: {why}")
+                                }),
+                            );
+                        }
+                    } else {
                         self.body(
                             &self.evaluator.units(children(item)),
                             scopes,
@@ -615,7 +653,7 @@ impl<'a> Formatter<'_, '_, 'a> {
             }
             .map(|name| format!("\u{11}Y{name}\u{11}!")),
         };
-        let prefix = self.prefix(
+        let prefix = self.isolated_prefix(
             unit,
             scopes,
             inverted,
@@ -628,6 +666,7 @@ impl<'a> Formatter<'_, '_, 'a> {
             (Ok(prefix), Ok(heading)) => {
                 let mut inner = Vec::new();
                 let mut child_sink = Sink::Lines(&mut inner);
+                self.host.enter_scope(parsed, entered);
                 if units.len() < 2 {
                     self.body(&units, entered, inverted, 0, 2, &mut child_sink);
                 } else {
@@ -640,6 +679,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                         &mut child_sink,
                     );
                 }
+                self.host.leave_scope();
                 if units.len() < 2 {
                     if let Some(first_ok) = inner.iter().position(|(_, entry)| entry.is_ok()) {
                         for (index, (child_key, entry)) in inner.into_iter().enumerate() {
@@ -676,6 +716,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 if let Err(why) = heading {
                     sink.push_err(label, why);
                 }
+                self.host.enter_scope(parsed, entered);
                 self.body(
                     &units,
                     entered,
@@ -684,6 +725,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     if mode == 2 { 2 } else { 0 },
                     sink,
                 );
+                self.host.leave_scope();
             }
         }
         Ok(())
