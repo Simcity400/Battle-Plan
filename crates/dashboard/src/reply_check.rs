@@ -69,6 +69,15 @@ fn label(product: &str, params: &Value) -> String {
     }
 }
 
+pub fn warm_catalogue(
+    source: &dashboard_base::Source,
+    content: &dashboard_core::config::ContentOptions,
+) -> io::Result<f64> {
+    let started = Instant::now();
+    source.in_scope(|| dashboard_base::content::warm_checked(source, content))?;
+    Ok(started.elapsed().as_secs_f64() * 1e3)
+}
+
 pub fn check(
     transcript: &mut dyn BufRead,
     asked: &dyn Fn(&str, &Value) -> bool,
@@ -622,5 +631,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn warm_catalogue_surfaces_content_load_failure_instead_of_timing() {
+        let root = std::env::temp_dir().join(format!("reply-check-warm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, context) = dashboard_base::test_fixtures::source_with_content(
+            vec![dashboard_base::test_fixtures::source(1, 0, Some(1))],
+            &root,
+        );
+        let mut bad = context.content.unwrap();
+        bad.allow_unverified = false;
+        let err = warm_catalogue(&source, &bad).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unverified content"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

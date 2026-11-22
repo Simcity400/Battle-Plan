@@ -145,12 +145,18 @@ fn seek(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
     };
     phase("seek: each opened");
     let purge_requested = options.get("purge").is_some();
-    let mut cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
+    let mut cache = replay::cold_cache::probe_file(
+        std::path::Path::new(path),
+        replay::cold_cache::ResetScope::FreshRecordingPerSample,
+    )?;
     let mut cold = Vec::new();
     let mut details = Vec::new();
     for &(run, ordinal) in &hours {
         if purge_requested {
-            cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
+            cache = replay::cold_cache::probe_file(
+                std::path::Path::new(path),
+                replay::cold_cache::ResetScope::FreshRecordingPerSample,
+            )?;
         }
         let recording = open(path)?;
         let (spent, mut detail) = one(&recording, run, ordinal)?;
@@ -229,9 +235,15 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
     let (start, ordinals) = (i64::from(held.first_hour), held.ordinals);
     let eight = eight_keys(&recording, table)?;
     drop(recording);
-    let cache = replay::cold_cache::probe_file(std::path::Path::new(path))?;
+    let cache = replay::cold_cache::probe_file(
+        std::path::Path::new(path),
+        replay::cold_cache::ResetScope::FreshRecordingPerSample,
+    )?;
     let time = |keys: Option<&[u128]>, from: i32, to: i32, level: u8, bin_hours: i64| -> io::Result<Value> {
-        let probe = replay::cold_cache::probe_file(std::path::Path::new(path))?;
+        let probe = replay::cold_cache::probe_file(
+            std::path::Path::new(path),
+            replay::cold_cache::ResetScope::FreshRecordingPerSample,
+        )?;
         let cold = open(path)?;
         let meter = Meter::start();
         let chart = lanes::chart_at(&cold, 0, table, source, keys, from, to, level, bin_hours)?;
@@ -242,10 +254,13 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
             lanes::chart_at(&cold, 0, table, source, keys, from, to, level, bin_hours)?;
             warm.push(meter.stop().wall_ms);
         }
-        Ok(json!({ "keys": chart.keys.len(), "pieces": chart.pieces, "walked": chart.walked, "bins": chart.bins, "cache_state": probe.label, "process_cold": first.json(), "warm_ms": spread(&mut warm) }))
+        Ok(json!({ "keys": chart.keys.len(), "pieces": chart.pieces, "walked": chart.walked, "bins": chart.bins, "cache_state": probe.label, "fresh_open": first.json(), "warm_ms": spread(&mut warm) }))
     };
     let top = |from: i32, to: i32| -> io::Result<Value> {
-        let probe = replay::cold_cache::probe_file(std::path::Path::new(path))?;
+        let probe = replay::cold_cache::probe_file(
+            std::path::Path::new(path),
+            replay::cold_cache::ResetScope::FreshRecordingPerSample,
+        )?;
         let cold = open(path)?;
         let meter = Meter::start();
         let got = lanes::top(&cold, 0, table, source, from, to, width as u32, 10, lanes::By::Last)?;
@@ -256,7 +271,7 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
             lanes::top(&cold, 0, table, source, from, to, width as u32, 10, lanes::By::Last)?;
             warm.push(meter.stop().wall_ms);
         }
-        Ok(json!({ "bins": got.len(), "cache_state": probe.label, "process_cold": first.json(), "warm_ms": spread(&mut warm) }))
+        Ok(json!({ "bins": got.len(), "cache_state": probe.label, "fresh_open": first.json(), "warm_ms": spread(&mut warm) }))
     };
     let mut shown = Vec::new();
     for (name, from, to) in views(start, ordinals) {
@@ -281,7 +296,10 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
 }
 
 pub fn purge(path: &str) -> io::Result<Value> {
-    replay::cold_cache::probe_file(std::path::Path::new(path))?;
+    replay::cold_cache::probe_file(
+        std::path::Path::new(path),
+        replay::cold_cache::ResetScope::FreshRecordingPerSample,
+    )?;
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "direct-read purge cannot evict or verify the Windows system file cache: opening a handle with FILE_FLAG_NO_BUFFERING only selects unbuffered I/O for that handle and does not evict cached pages for later opens",

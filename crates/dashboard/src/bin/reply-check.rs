@@ -74,7 +74,14 @@ fn run() -> io::Result<bool> {
     if cold && no_index {
         return Err(invalid(USAGE));
     }
-    let cold_cache = cold.then(|| replay::cold_cache::probe_file(&recording)).transpose()?;
+    let cold_cache = cold
+        .then(|| {
+            replay::cold_cache::probe_file(
+                &recording,
+                replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+            )
+        })
+        .transpose()?;
     std::fs::create_dir_all(&report)?;
     let cancelled = AtomicBool::new(false);
     let opened = Instant::now();
@@ -100,12 +107,13 @@ fn run() -> io::Result<bool> {
         (None, None, None) => None,
         _ => return Err(invalid(USAGE)),
     };
-    let catalogue_ms = content.as_ref().map(|content| {
-        let started = Instant::now();
-        let source = source.borrow();
-        source.in_scope(|| dashboard_base::content::warm(&source, content));
-        started.elapsed().as_secs_f64() * 1e3
-    });
+    let catalogue_ms = content
+        .as_ref()
+        .map(|content| {
+            let source = source.borrow();
+            reply_check::warm_catalogue(&source, content)
+        })
+        .transpose()?;
     let context = LoadContext { content };
     let mut names: Vec<String> = std::fs::read_dir(&transcripts)?
         .filter_map(|entry| entry.ok())
@@ -150,7 +158,10 @@ fn run() -> io::Result<bool> {
                 if !cold {
                     return Ok(0.0);
                 }
-                replay::cold_cache::probe_file(&recording)?;
+                replay::cold_cache::probe_file(
+                    &recording,
+                    replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                )?;
                 let fresh = open()?;
                 *source.borrow_mut() = fresh;
                 let started = Instant::now();
@@ -171,7 +182,7 @@ fn run() -> io::Result<bool> {
         }
     }
     let mode = if cold {
-        "process-cold"
+        "fresh-source-pre-indexed"
     } else if no_index {
         "no-index"
     } else {

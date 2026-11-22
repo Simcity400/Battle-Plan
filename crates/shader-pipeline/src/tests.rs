@@ -31,13 +31,11 @@ fn the_compiler_is_the_named_dll_and_nothing_else() {
 fn the_pinned_dll_beside_the_program_reports_the_pinned_version() {
     let exe = std::env::current_exe().unwrap();
     let dll = exe.with_file_name("dxcompiler.dll");
-    if !dll.is_file() {
-        eprintln!(
-            "skipping the_pinned_dll_beside_the_program_reports_the_pinned_version: {} is not beside the test program",
-            dll.display()
-        );
-        return;
-    }
+    assert!(
+        dll.is_file(),
+        "the_pinned_dll_beside_the_program_reports_the_pinned_version requires the pinned dxcompiler.dll beside the test program (missing: {}; run tools/install-shader-compiler.ps1)",
+        dll.display()
+    );
     assert_eq!(dxc::product_version(&dll).unwrap(), DXC_VERSION);
     Compiler::discover().unwrap();
 }

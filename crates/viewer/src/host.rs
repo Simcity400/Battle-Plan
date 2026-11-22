@@ -348,16 +348,11 @@ mod tests {
     #[test]
     fn a_map_started_after_another_ended_builds_on_a_device_of_its_own() {
         let _gpu = viewer_foundation::map::test_support::serial();
-        let available = pollster::block_on(
-            shader_pipeline::gpu::instance().enumerate_adapters(wgpu::Backends::all()),
-        );
-        if let Err(reason) = viewer_foundation::map::gpu_contract::select_adapter(&available, None) {
-            eprintln!(
-                "skipping a_map_started_after_another_ended_builds_on_a_device_of_its_own: {reason}"
-            );
-            return;
-        }
-        let (first, _) = driver::map_device(None).unwrap();
+        let (first, _) = driver::map_device(None).unwrap_or_else(|reason| {
+            panic!(
+                "a_map_started_after_another_ended_builds_on_a_device_of_its_own requires a usable GPU or WARP adapter: {reason}"
+            )
+        });
         let kept = first.device.clone();
         let made = viewer_foundation::map::device_shared::shared(&first.device, "restart probe", || 1_u32);
         drop(first);
@@ -391,16 +386,12 @@ mod tests {
                         .await
                 }
             }
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic requires a GPU or WARP adapter: {error}"
+            )
         });
-        let adapter = match adapter {
-            Ok(adapter) => adapter,
-            Err(error) => {
-                eprintln!(
-                    "skipping a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic: {error}"
-                );
-                return;
-            }
-        };
         let (device, _queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let lost = Lost::default();
         let (woke, woken) = mpsc::channel();
