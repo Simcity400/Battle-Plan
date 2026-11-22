@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
+    pub color: [f32; 4],
 }
 
 fn refuse(pass: &str, reason: impl Into<String>) -> io::Error {
@@ -93,10 +94,17 @@ impl Names {
             .retain(|slot, _| *slot == binding(0, Stage::Pixel));
         let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
         let mut attributes = Vec::new();
+        let mut has_color = false;
+        let mut next_location = 0u32;
         for input in &compiled.vertex.inputs {
+            next_location = next_location.max(input.location + 1);
             let (offset, format, width) = match input.semantic.as_str() {
                 "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Float32x3, 3),
                 "TEXCOORD" | "TEXCOORD0" => (12, wgpu::VertexFormat::Float32x2, 2),
+                "COLOR" | "COLOR0" => {
+                    has_color = true;
+                    (20, wgpu::VertexFormat::Float32x4, 4)
+                }
                 _ => return Err(refuse(format!("native glyph cannot supply {input:?}"))),
             };
             if input.kind != ScalarKind::Float || input.components > width {
@@ -108,10 +116,24 @@ impl Names {
                 shader_location: input.location,
             });
         }
+        let retained_attributes = attributes.clone();
+        if !has_color {
+            attributes.push(wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 20,
+                shader_location: next_location,
+            });
+            pass.vertex_color_tint = Some(next_location);
+        }
         pass.vertices = vec![gpu::VertexLayout {
-            stride: 20,
+            stride: size_of::<Vertex>() as u64,
             step: wgpu::VertexStepMode::Vertex,
             attributes,
+        }];
+        let retained_vertices = vec![gpu::VertexLayout {
+            stride: size_of::<Vertex>() as u64,
+            step: wgpu::VertexStepMode::Vertex,
+            attributes: retained_attributes,
         }];
         let raster = RasterizerState {
             cull_mode: if arrow_technique.is_some() {
@@ -135,7 +157,7 @@ impl Names {
         super::shader_constants::scene(&pipeline).map_err(|error| refuse(error.to_string()))?;
         let retained = super::shader_scene::Program::new(
             &selection,
-            &pass.vertices,
+            &retained_vertices,
             &state,
             &raster,
             &effect.source.depth_stencil(technique),
@@ -194,7 +216,9 @@ impl Names {
             ]),
             &BTreeMap::from([(binding(0, Stage::Pixel), page.clone())]),
         );
-        retained.stream.bind_vertex_stride(0, 20);
+        retained
+            .stream
+            .bind_vertex_stride(0, size_of::<Vertex>() as u64);
     }
 
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
