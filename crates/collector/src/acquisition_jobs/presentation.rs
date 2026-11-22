@@ -1,5 +1,5 @@
 use super::*;
-use acquisition::lock_unpoisoned;
+use collector_workers::acquisition::lock_unpoisoned;
 use std::sync::Weak;
 mod final_inputs;
 mod inputs;
@@ -13,7 +13,7 @@ pub(crate) struct RangeTicket {
     pub parked: bool,
 }
 pub(crate) struct PresentationDispatch {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Option<Arc<SharedCalibration>>,
     parts: [Option<RangeTicket>; division_presentation::MAX_STATUS_PARTS],
     dispatched: bool,
@@ -87,7 +87,9 @@ impl PresentationDispatch {
         captured: &mut division_presentation::Captured,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
         context: division_presentation::CaptureContext,
-        inputs: &Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+        inputs: &Option<
+            engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>,
+        >,
     ) {
         let Some(executor) = self.executor.upgrade() else {
             return;
@@ -147,7 +149,7 @@ impl PresentationDispatch {
 pub(super) fn completed(
     job: &mut Job,
     report: &Result<Report, Failure>,
-) -> Option<Arc<dyn acquisition::Publication>> {
+) -> Option<Arc<dyn collector_workers::acquisition::Publication>> {
     match job {
         Job::ShipModels(request) => {
             let dispatch = request.details.as_ref()?;
@@ -187,7 +189,7 @@ pub(super) fn completed(
 }
 
 fn submit(
-    executor: &acquisition::Pool<Job, Report>,
+    executor: &collector_workers::acquisition::Pool<Job, Report>,
     calibration: &SharedCalibration,
     job: Job,
 ) -> RangeTicket {
@@ -195,7 +197,7 @@ fn submit(
 }
 
 fn submit_retained(
-    executor: &acquisition::Pool<Job, Report>,
+    executor: &collector_workers::acquisition::Pool<Job, Report>,
     calibration: &SharedCalibration,
     job: &mut Option<Job>,
 ) -> RangeTicket {
@@ -219,7 +221,7 @@ fn submit_retained(
 }
 
 pub(super) fn drain(
-    executor: &Weak<acquisition::Pool<Job, Report>>,
+    executor: &Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: &SharedCalibration,
     pending: Option<RangeTicket>,
 ) {

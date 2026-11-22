@@ -107,7 +107,7 @@ impl StatusWriter {
         let thread = std::thread::Builder::new()
             .name("collector-status".into())
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 crate::runtime::OwnPriority::new().follow(false);
                 run(&worker, &write)
             })?;
@@ -128,7 +128,7 @@ impl StatusWriter {
             return;
         };
         #[cfg(feature = "worker_sampler")]
-        crate::worker_sampler::stop_before_thread_exit();
+        collector_workers::worker_sampler::stop_before_thread_exit();
         self.handle.inner.lock().stop = true;
         self.handle.inner.wake.notify_one();
         let _ = thread.join();
@@ -273,7 +273,7 @@ impl AllocationProbe {
         std::fs::write(directory.join("spool.0001"), [0; 23])?;
         let status = directory.join("status.json");
         Ok(Self {
-            writer: StatusWriter::start(crate::runtime::write_status_bytes)?,
+            writer: StatusWriter::start(crate::status_file::write_status_bytes)?,
             status,
             directory,
         })
@@ -352,7 +352,7 @@ mod tests {
         let handle = writer.handle();
         handle.publish(status, json!({ "hour": 0 })).unwrap();
         entered
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the first write stalls");
         let (done_tx, done) = mpsc::channel();
         let publisher = handle.clone();
@@ -363,7 +363,7 @@ mod tests {
             }
             let _ = done_tx.send(());
         });
-        done.recv_timeout(crate::TEST_HANG_GUARD)
+        done.recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("hand-overs finish while the write is stuck");
         assert_eq!(
             handle.inner.lock().pending.len(),
@@ -396,7 +396,7 @@ mod tests {
             .publish(Path::new("status.json"), json!({ "hour": 1 }))
             .unwrap();
         entered
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the write stalls");
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
@@ -406,7 +406,7 @@ mod tests {
             drop(spool);
             let _ = done_tx.send(());
         });
-        done.recv_timeout(crate::TEST_HANG_GUARD)
+        done.recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the spool side returned while the write is stuck");
         drop(release);
         writer.finish();
@@ -434,7 +434,7 @@ mod tests {
             .publish(Path::new("status.json"), json!({ "hour": 1 }))
             .unwrap();
         wrote
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the retry succeeds");
         writer.finish();
         assert_eq!(*attempts.lock().unwrap(), 3);
@@ -460,7 +460,10 @@ mod tests {
                 .push(serde_json::from_slice(value).unwrap());
             if first {
                 let _ = entered_tx.lock().unwrap().send(());
-                let _ = proceed.lock().unwrap().recv_timeout(crate::TEST_HANG_GUARD);
+                let _ = proceed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 return Err(io::Error::from_raw_os_error(32));
             }
             let _ = wrote_tx.lock().unwrap().send(());
@@ -472,12 +475,12 @@ mod tests {
         let path = Path::new("status.json");
         handle.publish(path, json!({ "hour": 1 })).unwrap();
         entered
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the first write is in flight");
         handle.publish(path, json!({ "hour": 2 })).unwrap();
         drop(release);
         wrote
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .expect("the newer snapshot is written");
         writer.finish();
         assert_eq!(

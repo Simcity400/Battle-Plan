@@ -1,4 +1,3 @@
-
 use crate::read_accounting::{
     fixtures::{copies, read},
     *,
@@ -11,23 +10,30 @@ fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {
 
     for workers in [0, 2] {
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = crate::acquisition::Pool::start(workers, 4, move |job: &mut (usize, bool)| {
-            entered_tx.send(std::thread::current().id()).unwrap();
-            with_table(TableId::States, || read(job.0));
-            with_table(TableId::StateFlags, || read(job.0 + 1));
-            if job.1 {
-                panic!("synthetic owned-job failure");
-            }
-            job.0
-        })
+        let pool = collector_workers::acquisition::Pool::start(
+            workers,
+            4,
+            move |job: &mut (usize, bool)| {
+                entered_tx.send(std::thread::current().id()).unwrap();
+                with_table(TableId::States, || read(job.0));
+                with_table(TableId::StateFlags, || read(job.0 + 1));
+                if job.1 {
+                    panic!("synthetic owned-job failure");
+                }
+                job.0
+            },
+        )
         .unwrap();
         for fail in [false, true] {
             let frame = Capture::new();
             read(2);
             let mut request = Some((3, fail));
             let ticket = unsafe { pool.submit(&mut request) }.unwrap();
-            let worker_thread =
-                (workers != 0).then(|| entered_rx.recv_timeout(crate::TEST_HANG_GUARD).unwrap());
+            let worker_thread = (workers != 0).then(|| {
+                entered_rx
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap()
+            });
             let completed = pool.finish(ticket).unwrap();
             let executing_thread = worker_thread.unwrap_or_else(|| entered_rx.try_recv().unwrap());
             assert_eq!(

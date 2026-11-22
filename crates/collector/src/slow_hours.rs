@@ -1,4 +1,3 @@
-
 use crate::sampling::HourPhases;
 
 const HISTOGRAM_FLOOR_MS: [u64; 12] = [0, 2, 4, 8, 16, 32, 50, 64, 100, 128, 256, 1000];
@@ -89,7 +88,6 @@ impl SpoolWatch {
 }
 
 impl SpoolFrame {
-
     fn status(&self) -> impl serde::Serialize + '_ {
         fn steps<'a>(steps: &'a [(&'static str, u64); 4]) -> impl serde::Serialize + 'a {
             crate::status::map(steps.iter().filter(|(_, ns)| *ns != 0).copied())
@@ -190,7 +188,7 @@ impl Slow {
             "residual_ns": phases.residual_ns,
             "segments_ns": phases.segments_ns.as_slice(),
             "slowest_join": phases.slowest_join.map(|(role, wait_ns)| crate::status::status!({
-                "role": crate::status::DebugValue(crate::acquisition_jobs::ROLES[role]),
+                "role": crate::status::DebugValue(collector_workers::roles::ROLES[role]),
                 "wait_ns": wait_ns,
             })),
             "slowest_ready": phases.slowest_ready.map(|(step, ns)| crate::status::status!({

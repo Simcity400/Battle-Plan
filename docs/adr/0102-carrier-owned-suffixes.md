@@ -10,4 +10,4 @@ The carrier job and optional decoded rows have separate retained capacities. Bor
 
 An empty registered pool still identifies its definition, owner and base and has known-zero observed passive sums. A missing pool has no observation. Optional carrier failures leave predecessor rows intact. The fixed gather regression checks each original field span and records repeated observations individually, including faults. A counted null in a pointer prefix refuses the typed walk before it gathers fields from that prefix.
 
-[Carrier storage and memo](../../crates/collector/src/extended/air/carrier.rs) · [Carrier acquisition log](../../crates/collector/src/extended/air/carrier_memory.rs) · [Fixed gather parity](../../crates/collector/src/extended/air/fixed_mirror_gather_tests.rs)
+[Carrier storage and memo](../../crates/collector-air/src/extended/air/carrier.rs) · [Carrier acquisition log](../../crates/collector-air/src/extended/air/carrier_memory.rs) · [Fixed gather parity](../../crates/collector-air/src/extended/air/fixed_mirror_gather_tests.rs)

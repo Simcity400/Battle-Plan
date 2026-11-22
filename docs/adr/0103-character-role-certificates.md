@@ -8,4 +8,4 @@ Operative links use a separate unit-leader witness. An unobserved domain cannot 
 
 The role-store test compares retained and fresh frames at 13,200 characters. Run its `role_traits_hour_costs_at_late_war_scale` benchmark in a release test build with `--ignored --nocapture`.
 
-[Role-store tests](../../crates/collector/src/extended/character_inputs/role_store_tests.rs) · [Operative fixtures](../../crates/collector/src/extended/character_inputs_scale_tests.rs)
+[Role-store tests](../../crates/collector-characters/src/extended/character_inputs/role_store_tests.rs) · [Operative fixtures](../../crates/collector-characters/src/extended/character_inputs_scale_tests.rs)

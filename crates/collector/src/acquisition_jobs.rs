@@ -1,17 +1,22 @@
+use collector_workers::roles::{MAX_JOBS, ROLE_COUNT, ROLES, Role};
 
 pub(crate) use crate::acquisition_countries::{
     Report as CountriesReport, Request as CountriesRequest, TemplatesReport, TemplatesRequest,
 };
-pub(crate) use crate::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use crate::extended::{
-    air, character_portraits, characters, construction, division_presentation, economy, fog,
-    governance, intel, lexical, naval_history, production, projects, province_unit_order, session,
-    ship_models, supply_trains, weather,
+    construction, economy, governance, intel, lexical, production, projects, session, ship_models,
+    supply_trains, weather,
 };
-use crate::{
-    acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
+use crate::{acquisition_factions, map_capture, sampling};
+use collector_air::extended::{air, fog};
+use collector_characters::extended::{character_portraits, characters};
+use collector_divisions::extended::{division_presentation, province_unit_order};
+use collector_naval_history::extended::naval_history;
+pub(crate) use collector_states::acquisition_gather::{
+    Report as GatherReport, Request as GatherRequest,
 };
-pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
+use collector_states::{acquisition_states, acquisition_wars};
+pub(crate) use collector_workers::acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
 pub(crate) mod ship_details;
 pub(crate) mod variant_workers;
@@ -40,7 +45,7 @@ pub(crate) struct RawRequest<J, C> {
 
 pub(crate) struct OrderRootsRequest {
     pub base: usize,
-    pub orders: crate::map_capture::Orders,
+    pub orders: collector_divisions::orders::Orders,
     pub naval: naval_history::NavalJob,
 }
 
@@ -250,9 +255,9 @@ pub(crate) struct AirMissionsRequest {
     pub base: usize,
     pub game_state: usize,
     pub parent: engine_native::walk::Outcome,
-    pub pack: Box<crate::extended::air::Captured>,
+    pub pack: Box<collector_air::extended::air::Captured>,
     pub histories: Vec<crate::extended::air_histories::Staging>,
-    pub mission_store: Option<Box<crate::extended::air::MissionStore>>,
+    pub mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
 }
 impl AirMissionsRequest {
     pub(crate) fn refuse(&mut self) {
@@ -367,13 +372,14 @@ pub(crate) struct RaidTargetsReport;
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::LatePacks>,
-    pub plans: crate::extended::plans::Captured,
+    pub plans: collector_plans::extended::plans::Captured,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LateReport;
@@ -391,7 +397,7 @@ pub(crate) struct AirSupplyReport;
 pub(crate) struct OrdersPartRequest {
     pub base: usize,
     pub index: usize,
-    pub part: Box<crate::orders_parts::Part>,
+    pub part: Box<collector_divisions::orders_parts::Part>,
     pub rejected: bool,
 }
 impl OrdersPartRequest {
@@ -407,13 +413,14 @@ impl OrdersPartRequest {
 }
 pub(crate) struct FrontsRequest {
     pub base: usize,
-    pub fronts: crate::extended::plans::Fronts,
+    pub fronts: collector_plans::extended::plans::Fronts,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FrontsReport;
 pub(crate) struct ArmyIconsRequest {
     pub base: usize,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub divisions: crate::extended::Divisions,
     pub icons: crate::extended::army_icon_inputs::Captured,
     pub ticks: [u64; 1],
@@ -421,8 +428,9 @@ pub(crate) struct ArmyIconsRequest {
 pub(crate) struct DivisionModelInputsRequest {
     pub base: usize,
     pub game_state: usize,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
-    pub captured: crate::extended::division_model_inputs::Captured,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
+    pub captured: collector_divisions::extended::division_model_inputs::Captured,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DivisionModelInputsReport;
@@ -441,8 +449,8 @@ pub(crate) struct OrdersRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
-    pub orders: crate::map_capture::Orders,
-    pub plans: crate::extended::plans::Captured,
+    pub orders: collector_divisions::orders::Orders,
+    pub plans: collector_plans::extended::plans::Captured,
     pub group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
@@ -570,7 +578,7 @@ impl GatedProjectsRequest {
                 variant_workers::Work::ProjectsRest(Box::new(rest)),
                 memory,
                 base,
-                crate::hour_stages::Part::ProjectsRestWait,
+                collector_workers::hour_stages::Part::ProjectsRestWait,
                 &mut || {
                     let mut acquire = |parts| workers.projects(parts, roster, base, game_state);
                     *ticks = captured.acquire_selected_partitioned(
@@ -604,7 +612,7 @@ impl GatedProjectsRequest {
             self.captured.fail_gated_capture(
                 self.hour,
                 self.force_full,
-                crate::extended::NOT_RECORDED,
+                collector_extended_support::outcomes::NOT_RECORDED,
             );
         }
     }
@@ -614,7 +622,8 @@ pub(crate) struct GatedReport;
 pub(crate) struct ProvinceUnitOrderRequest {
     pub context: province_unit_order::CaptureContext,
     pub captured: province_unit_order::Captured,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub store: Option<Box<province_unit_order::ProvinceUnitStore>>,
 }
 pub(crate) type ProvincesRequest = GatherRequest<engine_native::cprovince::Capture>;
@@ -638,7 +647,8 @@ pub(crate) struct PresentationRequest {
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub dispatch: PresentationDispatch,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub army_stats: Option<division_presentation::held_store::Loan>,
 }
 impl PresentationRequest {
@@ -691,7 +701,8 @@ impl PresentationRequest {
 pub(crate) struct PresentationStatusRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub part: Option<division_presentation::StatusWork>,
     pub preparation: bool,
     pub stitch: Option<(Arc<PresentationFanIn>, usize)>,
@@ -700,7 +711,8 @@ pub(crate) struct PresentationStatusRequest {
 pub(crate) struct PresentationSpeedTermsRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub pass: division_presentation::SpeedTermsPass,
 }
 impl PresentationSpeedTermsRequest {
@@ -713,14 +725,16 @@ impl PresentationSpeedTermsRequest {
 pub(crate) struct PresentationMovementRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
 }
 pub(crate) struct IntelRequest {
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
-    pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
+    pub inputs:
+        Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub input_failure: Option<&'static str>,
 }
 pub(crate) struct CharactersRequest {
@@ -754,7 +768,7 @@ pub(crate) struct DivisionPartRequest {
     pub base: usize,
     pub game_state: usize,
     pub slots: (u32, u32),
-    pub census: Box<crate::division_census::Census>,
+    pub census: Box<collector_divisions::division_census::Census>,
     pub presentation: Option<(Arc<PresentationInputs>, usize)>,
 }
 
@@ -906,7 +920,7 @@ pub(crate) enum Report {
     ChildFronts(OrdersReport),
     Gated(GatedReport),
     GatedProjects(()),
-    CharacterInputs([u64; crate::extended::character_inputs::N]),
+    CharacterInputs([u64; collector_characters::extended::character_inputs::N]),
     ShipModels,
     ShipModelDetails(ship_models::CaptureReport),
     Provinces(ProvincesReport),
@@ -916,399 +930,9 @@ pub(crate) enum Report {
     States(acquisition_states::Report),
     Templates(TemplatesReport),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-#[repr(usize)]
-pub(crate) enum Role {
-    Characters,
-    CountryLeaderRoles,
-    AdvisorRoles,
-    CharacterTraits,
-    Relations,
-    AirWing,
-    AirStats,
-    AirBases,
-    Naval,
-    Supremacy,
-    Sunk,
-    Capitulation,
-    Players,
-    Projects,
-    Lexical,
-    Session,
-    Weather,
-    Radar,
-    MapCombats,
-    ObserverBoundary,
-    Divisions,
-    DivisionInputParts,
-    World,
-    Economy,
-    Governance,
-    Variants,
-    Research,
-    Intel,
-    Presentation,
-    FinalInputs,
-    IntelResidual,
-    SupplyTrains,
-    CharacterPortraits,
-    ProvinceUnitOrder,
-    Ordinary,
-    OrdinaryCombat,
-    OrdinaryNaval,
-    OrdinaryMap,
-    OrdinaryTaskForces,
-    OrdinaryNavies,
-    Slow,
-    Stability,
-    WarOverview,
-    IndustrialOrganisations,
-    ProductionDaily,
-    ProductionModifierParts,
-    RaidState,
-    RaidLaunch,
-    RaidTargets,
-    AirRelations,
-    AirMissions,
-    AirHistories,
-    Late,
-    ScoresRails,
-    ArmyIcons,
-    Orders,
-    OrdersPart,
-    OrdersStitch,
-    ChildFronts,
-    Fronts,
-    Gated,
-    ShipModels,
-    ShipModelDetails,
-    Provinces,
-    Factions,
-    Countries,
-    Wars,
-    States,
-    Templates,
-    CharacterInputs,
-    PresentationMovement,
-    DivisionInputs,
-    OrderRoots,
-    PresentationSpeedTerms,
-    PresentationPrepare,
-    PresentationStatus,
-    PresentationPreparation,
-    PresentationSettle,
-    DivisionModelInputs,
-    GatedProjects,
-    AirSupply,
-    ScriptVariables,
-}
-
-impl Role {
-    pub(crate) const fn worker_only(self) -> bool {
-        true
-    }
-    const fn callback_help(self) -> bool {
-        matches!(
-            self,
-            Role::Characters
-                | Role::CountryLeaderRoles
-                | Role::AdvisorRoles
-                | Role::CharacterTraits
-                | Role::Relations
-                | Role::AirWing
-                | Role::AirStats
-                | Role::AirBases
-                | Role::Capitulation
-                | Role::Players
-                | Role::Projects
-                | Role::Session
-                | Role::Weather
-                | Role::Radar
-                | Role::OrderRoots
-                | Role::DivisionInputs
-                | Role::DivisionInputParts
-                | Role::Divisions
-                | Role::PresentationPreparation
-                | Role::PresentationStatus
-                | Role::World
-                | Role::Economy
-                | Role::CharacterPortraits
-                | Role::ProvinceUnitOrder
-                | Role::AirRelations
-                | Role::AirHistories
-                | Role::ArmyIcons
-                | Role::Orders
-                | Role::OrdersPart
-                | Role::Fronts
-                | Role::ShipModels
-                | Role::Countries
-                | Role::Wars
-                | Role::States
-                | Role::AirSupply
-        )
-    }
-
-    fn read_anchor(self) -> replay_data::rows::TableId {
-        use replay_data::rows::TableId as T;
-        match self {
-            Self::Characters => T::Characters,
-            Self::CountryLeaderRoles => T::CountryLeaderRoles,
-            Self::AdvisorRoles => T::AdvisorRoles,
-            Self::CharacterTraits => T::UnitLeaderTraits,
-            Self::Relations => T::RelationTuples,
-            Self::AirWing => T::AirWings,
-            Self::AirStats => T::AirStatistics,
-            Self::AirBases => T::AirBases,
-            Self::Naval => T::OrdersGroups,
-            Self::Supremacy => T::NavalSupremacy,
-            Self::Sunk => T::SunkShips,
-            Self::Capitulation => T::Capitulation,
-            Self::Players => T::Players,
-            Self::Projects => T::ProjectPrograms,
-            Self::Lexical => T::LexicalTokens,
-            Self::Session => T::WorldTension,
-            Self::Weather => T::WeatherRegions,
-            Self::Radar => T::RadarCoverage,
-            Self::MapCombats => T::LandCombats,
-            Self::ObserverBoundary => T::LandEventCoverage,
-            Self::Divisions | Self::DivisionInputs | Self::DivisionInputParts => T::Divisions,
-            Self::World | Self::Economy => T::ProvinceSupply,
-            Self::Governance => T::Politics,
-            Self::Variants => T::VariantDefinitions,
-            Self::Research => T::ResearchInputs,
-            Self::Intel => T::UnitIntel,
-            Self::Presentation
-            | Self::PresentationPrepare
-            | Self::PresentationSettle
-            | Self::PresentationStatus
-            | Self::PresentationPreparation
-            | Self::FinalInputs => T::DivisionStatus,
-            Self::IntelResidual => intel::TABLES[0],
-            Self::ScriptVariables => intel::TABLES[8],
-            Self::SupplyTrains => supply_trains::TABLES[0],
-            Self::CharacterPortraits => character_portraits::TABLES[0],
-            Self::ProvinceUnitOrder => province_unit_order::TABLES[0],
-            Self::Ordinary
-            | Self::OrdinaryCombat
-            | Self::OrdinaryNaval
-            | Self::OrdinaryMap
-            | Self::OrdinaryTaskForces
-            | Self::OrdinaryNavies => T::LandCombatDetails,
-            Self::Slow => T::ProvinceNames,
-            Self::Stability => T::CountryStabilityInputs,
-            Self::WarOverview => T::WarOwnedRelations,
-            Self::IndustrialOrganisations => T::IndustrialOrganisations,
-            Self::ProductionDaily | Self::ProductionModifierParts => T::CountryProductionModifiers,
-            Self::RaidState => T::StateResourceInputs,
-            Self::RaidLaunch => T::RaidCountryInputs,
-            Self::RaidTargets => T::RaidTargetStatuses,
-            Self::AirRelations => T::AirCountryRelations,
-            Self::AirMissions => T::AirRegionalMissions,
-            Self::AirHistories => T::AirNavalPatrolHistories,
-            Self::Late => T::WingEquipment,
-            Self::ScoresRails => T::RaidAirScores,
-            Self::AirSupply => T::AirGroundCrews,
-            Self::ArmyIcons => T::ArmyIconInputs,
-            Self::Orders | Self::OrderRoots => T::ArmyOrders,
-            Self::OrdersPart => T::ArmyOrders,
-            Self::OrdersStitch => T::ArmyOrderPlans,
-            Self::ChildFronts => T::ArmyOrderPlans,
-            Self::Fronts => T::Fronts,
-            Self::Gated => T::VolunteerHosts,
-            Self::GatedProjects => T::Projects,
-            Self::ShipModels => T::Ships,
-            Self::ShipModelDetails => T::ShipModels,
-            Self::Provinces => T::Provinces,
-            Self::Factions => T::Factions,
-            Self::Countries => T::Countries,
-            Self::Wars => T::WarRelations,
-            Self::States => T::States,
-            Self::Templates => T::DivisionTemplateIcons,
-            Self::CharacterInputs => T::CharacterRoleTraits,
-            Self::PresentationMovement => T::DivisionMovement,
-            Self::PresentationSpeedTerms => T::MovementStateTerms,
-            Self::DivisionModelInputs => T::DivisionModelInputs,
-        }
-    }
-}
-
-impl Role {
-    pub(crate) fn priority(self) -> u8 {
-        match self {
-            Self::Variants
-            | Self::RaidState
-            | Self::PresentationPrepare
-            | Self::PresentationPreparation
-            | Self::PresentationSettle
-            | Self::PresentationStatus
-            | Self::Presentation => 0,
-            Self::ObserverBoundary
-            | Self::Countries
-            | Self::Orders
-            | Self::OrderRoots
-            | Self::OrdersPart
-            | Self::OrdersStitch
-            | Self::ChildFronts
-            | Self::AirWing
-            | Self::Naval
-            | Self::AirMissions
-            | Self::Late
-            | Self::Characters
-            | Self::Divisions
-            | Self::DivisionInputs
-            | Self::DivisionInputParts
-            | Self::ShipModels
-            | Self::AirBases
-            | Self::Radar
-            | Self::Intel
-            | Self::Players
-            | Self::MapCombats
-            | Self::AirStats
-            | Self::Supremacy
-            | Self::Sunk
-            | Self::World
-            | Self::Economy
-            | Self::PresentationSpeedTerms
-            | Self::FinalInputs
-            | Self::ScoresRails
-            | Self::AirSupply
-            | Self::IntelResidual
-            | Self::ScriptVariables
-            | Self::Templates
-            | Self::Slow
-            | Self::Stability
-            | Self::WarOverview
-            | Self::IndustrialOrganisations
-            | Self::ProductionDaily
-            | Self::ProductionModifierParts => 1,
-            Self::Governance
-            | Self::Gated
-            | Self::GatedProjects
-            | Self::Projects
-            | Self::CharacterInputs
-            | Self::AdvisorRoles
-            | Self::PresentationMovement
-            | Self::Ordinary
-            | Self::OrdinaryNavies
-            | Self::OrdinaryCombat
-            | Self::OrdinaryNaval
-            | Self::Provinces
-            | Self::Research
-            | Self::ShipModelDetails
-            | Self::DivisionModelInputs => 2,
-            Self::States
-            | Self::Capitulation
-            | Self::Wars
-            | Self::OrdinaryTaskForces
-            | Self::OrdinaryMap
-            | Self::ProvinceUnitOrder
-            | Self::CharacterPortraits
-            | Self::CountryLeaderRoles
-            | Self::CharacterTraits
-            | Self::SupplyTrains
-            | Self::ArmyIcons
-            | Self::Fronts
-            | Self::Weather => 3,
-            Self::Session | Self::Relations => 2,
-            Self::Factions
-            | Self::Lexical
-            | Self::RaidLaunch
-            | Self::RaidTargets
-            | Self::AirRelations
-            | Self::AirHistories => 4,
-        }
-    }
-}
-
-pub(crate) const ROLE_COUNT: usize = 82;
 pub(crate) static VARIANT_DRAIN_TICKS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-pub(crate) const ROLES: [Role; ROLE_COUNT] = [
-    Role::Characters,
-    Role::CountryLeaderRoles,
-    Role::AdvisorRoles,
-    Role::CharacterTraits,
-    Role::Relations,
-    Role::AirWing,
-    Role::AirStats,
-    Role::AirBases,
-    Role::Naval,
-    Role::Supremacy,
-    Role::Sunk,
-    Role::Capitulation,
-    Role::Players,
-    Role::Projects,
-    Role::Lexical,
-    Role::Session,
-    Role::Weather,
-    Role::Radar,
-    Role::MapCombats,
-    Role::ObserverBoundary,
-    Role::Divisions,
-    Role::DivisionInputParts,
-    Role::World,
-    Role::Economy,
-    Role::Governance,
-    Role::Variants,
-    Role::Research,
-    Role::Intel,
-    Role::Presentation,
-    Role::FinalInputs,
-    Role::IntelResidual,
-    Role::SupplyTrains,
-    Role::CharacterPortraits,
-    Role::ProvinceUnitOrder,
-    Role::Ordinary,
-    Role::OrdinaryCombat,
-    Role::OrdinaryNaval,
-    Role::OrdinaryMap,
-    Role::OrdinaryTaskForces,
-    Role::OrdinaryNavies,
-    Role::Slow,
-    Role::Stability,
-    Role::WarOverview,
-    Role::IndustrialOrganisations,
-    Role::ProductionDaily,
-    Role::ProductionModifierParts,
-    Role::RaidState,
-    Role::RaidLaunch,
-    Role::RaidTargets,
-    Role::AirRelations,
-    Role::AirMissions,
-    Role::AirHistories,
-    Role::Late,
-    Role::ScoresRails,
-    Role::ArmyIcons,
-    Role::Orders,
-    Role::OrdersPart,
-    Role::OrdersStitch,
-    Role::ChildFronts,
-    Role::Fronts,
-    Role::Gated,
-    Role::ShipModels,
-    Role::ShipModelDetails,
-    Role::Provinces,
-    Role::Factions,
-    Role::Countries,
-    Role::Wars,
-    Role::States,
-    Role::Templates,
-    Role::CharacterInputs,
-    Role::PresentationMovement,
-    Role::DivisionInputs,
-    Role::OrderRoots,
-    Role::PresentationSpeedTerms,
-    Role::PresentationPrepare,
-    Role::PresentationStatus,
-    Role::PresentationPreparation,
-    Role::PresentationSettle,
-    Role::DivisionModelInputs,
-    Role::GatedProjects,
-    Role::AirSupply,
-    Role::ScriptVariables,
-];
 impl Job {
     fn callback_help(&self) -> bool {
         self.role().callback_help()
@@ -1443,7 +1067,7 @@ pub(crate) struct RoleCalibration {
 }
 #[derive(Serialize)]
 pub(crate) struct Calibration {
-    pub executor: acquisition::Calibration,
+    pub executor: collector_workers::acquisition::Calibration,
     #[serde(serialize_with = "serialize_roles")]
     pub roles: [RoleCalibration; ROLE_COUNT],
 }
@@ -1560,11 +1184,7 @@ pub(crate) fn run_world(
         .construction
         .as_mut()
         .map_or_else(Default::default, |part| {
-            construction::copy_construction_rest_refresh(
-                memory,
-                part.context,
-                &mut part.payload,
-            )
+            construction::copy_construction_rest_refresh(memory, part.context, &mut part.payload)
         });
     WorldReport {
         construction,
@@ -1573,7 +1193,10 @@ pub(crate) fn run_world(
     }
 }
 
-fn run_world_shared(request: &mut WorldRequest, memory: &impl engine_native::Memory) -> WorldReport {
+fn run_world_shared(
+    request: &mut WorldRequest,
+    memory: &impl engine_native::Memory,
+) -> WorldReport {
     let started = crate::sampling::qpc();
     let snapshot = engine_allocation::SharedBox::clone(&request.countries);
     let cached = snapshot.view(memory);
@@ -1650,13 +1273,11 @@ fn run_with_memory(
                 &mut request.payload,
             ))
         }
-        Job::Supremacy(request) => {
-            Report::Supremacy(naval_history::copy_supremacy_refresh(
-                memory,
-                request.context,
-                &mut request.payload,
-            ))
-        }
+        Job::Supremacy(request) => Report::Supremacy(naval_history::copy_supremacy_refresh(
+            memory,
+            request.context,
+            &mut request.payload,
+        )),
         Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh(
             memory,
             request.context,
@@ -1749,9 +1370,7 @@ fn run_with_memory(
         }
 
         Job::World(request) => Report::World(run_world_shared(request, memory)),
-        Job::Economy(request) => {
-            Report::Economy(run_economy_shared(request, memory))
-        }
+        Job::Economy(request) => Report::Economy(run_economy_shared(request, memory)),
         Job::Governance(request) => {
             let context = request.context;
             let part = BuildingsPart {
@@ -1781,7 +1400,7 @@ fn run_with_memory(
                 variant_workers::Work::Buildings(Box::new(part)),
                 memory,
                 context.base,
-                crate::hour_stages::Part::GovernanceBuildingsWait,
+                collector_workers::hour_stages::Part::GovernanceBuildingsWait,
                 &mut || {
                     let cached = countries.roster_view(memory);
                     let mut acquire = |parts| workers.technologies(parts, &cached, context.base);
@@ -1863,7 +1482,7 @@ fn run_with_memory(
                     workers.storage_during(part, memory, context.base, run)
                 }),
                 &mut |phase, begin, end| {
-                    use crate::hour_stages::Part;
+                    use collector_workers::hour_stages::Part;
                     use production::VariantPhase;
                     let part = match phase {
                         VariantPhase::Lanes => Part::VariantsLanes,
@@ -1872,7 +1491,7 @@ fn run_with_memory(
                         VariantPhase::Context => Part::VariantsContext,
                         VariantPhase::Setup => Part::VariantsSetup,
                     };
-                    crate::hour_stages::record_part(part, begin, end);
+                    collector_workers::hour_stages::record_part(part, begin, end);
                 },
             );
             variants[3] = variants[3].saturating_add(registry_ticks);
@@ -2057,7 +1676,7 @@ fn run_with_memory(
                         .as_deref_mut()
                         .map(|store| air::MissionCarry {
                             store,
-                            changes: &crate::mission_changes::Observer,
+                            changes: &collector_missions::mission_changes::Observer,
                         }),
                 },
             );
@@ -2183,7 +1802,7 @@ fn run_with_memory(
                 request
                     .inputs
                     .as_deref()
-                    .map(crate::division_census::UnitInputs::seeds),
+                    .map(collector_divisions::division_census::UnitInputs::seeds),
             );
             Report::ArmyIcons(ScoresRailsReport)
         }
@@ -2276,9 +1895,7 @@ fn run_with_memory(
                 }),
             )
         }
-        Job::Factions(request) => {
-            Report::Factions(acquisition_factions::run(request, memory))
-        }
+        Job::Factions(request) => Report::Factions(acquisition_factions::run(request, memory)),
         Job::Countries(request) => Report::Countries(request.run(memory)),
         Job::Templates(request) => Report::Templates(request.run(memory)),
         Job::Wars(request) => Report::Wars(request.run(memory)),
@@ -2418,33 +2035,31 @@ fn run_with_memory(
         }
     };
     let ended = sampling::qpc();
-    calibration.roles[role as usize]
-        .ticks
-        .fetch_add(ended.saturating_sub(started).max(0) as u64, Ordering::Relaxed);
-    crate::hour_stages::record(role as usize, started, ended);
+    calibration.roles[role as usize].ticks.fetch_add(
+        ended.saturating_sub(started).max(0) as u64,
+        Ordering::Relaxed,
+    );
+    collector_workers::hour_stages::record(role as usize, started, ended);
     report
 }
 
-impl Role {
-    const fn jobs_per_hour(self) -> usize {
-        match self {
-            Self::Variants => 2 * acquisition::MAX_WORKERS,
-            Self::Governance | Self::GatedProjects | Self::Templates => acquisition::MAX_WORKERS,
-            Self::AirWing => air::WING_PARTS,
-            Self::AirRelations => crate::extended::air_relations::PARTS,
-            Self::AirHistories => crate::extended::air_histories::PARTS,
-            Self::ShipModelDetails => ship_models::MAX_PARTS,
-            Self::CharacterPortraits => character_portraits::PARTS,
-            Self::SupplyTrains => supply_trains::PARTS,
-            Self::DivisionInputParts => crate::division_census::MAX_PARTS - 1,
-            Self::PresentationStatus | Self::PresentationPreparation => {
-                division_presentation::MAX_STATUS_PARTS
-            }
-            Self::PresentationPrepare | Self::PresentationSettle => 1,
-            Self::ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
-            Self::OrdersPart => crate::orders_parts::MAX_PARTS - 1,
-            _ => 1,
-        }
+const fn jobs_per_hour(role: Role) -> usize {
+    use Role::*;
+    match role {
+        Variants => 2 * collector_workers::acquisition::MAX_WORKERS,
+        Governance | GatedProjects | Templates => collector_workers::acquisition::MAX_WORKERS,
+        AirWing => air::WING_PARTS,
+        AirRelations => crate::extended::air_relations::PARTS,
+        AirHistories => crate::extended::air_histories::PARTS,
+        ShipModelDetails => ship_models::MAX_PARTS,
+        CharacterPortraits => character_portraits::PARTS,
+        SupplyTrains => supply_trains::PARTS,
+        DivisionInputParts => collector_divisions::division_census::MAX_PARTS - 1,
+        PresentationStatus | PresentationPreparation => division_presentation::MAX_STATUS_PARTS,
+        PresentationPrepare | PresentationSettle => 1,
+        ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
+        OrdersPart => collector_divisions::orders_parts::MAX_PARTS - 1,
+        _ => 1,
     }
 }
 
@@ -2453,7 +2068,7 @@ const WORKER_ONLY_JOBS: usize = {
     let mut index = 0;
     while index < ROLE_COUNT {
         if ROLES[index].worker_only() {
-            jobs += ROLES[index].jobs_per_hour();
+            jobs += jobs_per_hour(ROLES[index]);
         }
         index += 1;
     }
@@ -2462,7 +2077,7 @@ const WORKER_ONLY_JOBS: usize = {
 const _: () = assert!(WORKER_ONLY_JOBS < MAX_JOBS);
 
 pub(crate) struct Pool {
-    executor: Arc<acquisition::Pool<Job, Report>>,
+    executor: Arc<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     worker_count: usize,
     presentation_inputs: Arc<PresentationInputs>,
@@ -2479,7 +2094,7 @@ impl Pool {
         workers: usize,
         run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
     ) -> Self {
-        let executor = acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
+        let executor = collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
@@ -2499,7 +2114,7 @@ impl Pool {
     pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor = acquisition::Pool::start_with_class(
+        let executor = collector_workers::acquisition::Pool::start_with_class(
             worker_count.max(1),
             capacity,
             Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
@@ -2539,14 +2154,14 @@ impl Pool {
         &self,
         request: &mut Option<Job>,
         wake: bool,
-    ) -> Result<Ticket, acquisition::SubmitError> {
+    ) -> Result<Ticket, collector_workers::acquisition::SubmitError> {
         match request.as_mut() {
             Some(Job::Variants(request)) => request.workers.arm_at(self, VARIANT_LANES),
             Some(Job::Governance(request)) => request.workers.arm(self),
             Some(Job::GatedProjects(request)) => request.workers.arm(self),
-            Some(Job::Templates(request)) => request
-                .workers
-                .arm_at(self, Role::Templates.priority()),
+            Some(Job::Templates(request)) => {
+                request.workers.arm_at(self, Role::Templates.priority())
+            }
             _ => {}
         }
         let role = request.as_ref().map(Job::role);
@@ -2609,15 +2224,15 @@ impl Pool {
         if report.is_err() {
             counters.inline_panicked.fetch_add(1, Ordering::Relaxed);
         }
-        Completion {
-            request,
-            report,
-            #[cfg(test)]
+        let completed = Completion::inline(request, report);
+        #[cfg(test)]
+        let completed = Completion {
             table_reads,
-            #[cfg(feature = "callback_profile")]
-            profile: Default::default(),
-        }
+            ..completed
+        };
+        completed
     }
+
     pub(crate) fn worker_count(&self) -> usize {
         self.worker_count
     }
@@ -2633,7 +2248,9 @@ impl Pool {
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.executor
             .allocated_bytes()
-            .saturating_add(std::mem::size_of::<acquisition::Pool<Job, Report>>())
+            .saturating_add(std::mem::size_of::<
+                collector_workers::acquisition::Pool<Job, Report>,
+            >())
             .saturating_add(2 * std::mem::size_of::<usize>())
             .saturating_add(std::mem::size_of::<SharedCalibration>())
             .saturating_add(2 * std::mem::size_of::<usize>())
@@ -2666,14 +2283,14 @@ impl Pool {
     }
 }
 
-pub(crate) const MAX_JOBS: usize = {
+const _: () = {
     let mut count = 1;
     let mut index = 0;
     while index < ROLE_COUNT {
-        count += ROLES[index].jobs_per_hour();
+        count += jobs_per_hour(ROLES[index]);
         index += 1;
     }
-    count
+    assert!(count == MAX_JOBS);
 };
 pub(crate) struct Batch<'a> {
     pool: &'a Pool,
@@ -3055,7 +2672,7 @@ mod tests {
                 .iter()
                 .copied()
                 .filter(|role| role.worker_only())
-                .map(Role::jobs_per_hour)
+                .map(jobs_per_hour)
                 .sum::<usize>()
         );
         assert!(
@@ -3066,12 +2683,12 @@ mod tests {
                 .all(Role::worker_only)
         );
         assert_eq!(
-            Role::PresentationPrepare.jobs_per_hour()
-                + Role::PresentationPreparation.jobs_per_hour()
-                + Role::PresentationSettle.jobs_per_hour()
-                + Role::PresentationStatus.jobs_per_hour()
-                + Role::Presentation.jobs_per_hour()
-                + Role::FinalInputs.jobs_per_hour(),
+            jobs_per_hour(Role::PresentationPrepare)
+                + jobs_per_hour(Role::PresentationPreparation)
+                + jobs_per_hour(Role::PresentationSettle)
+                + jobs_per_hour(Role::PresentationStatus)
+                + jobs_per_hour(Role::Presentation)
+                + jobs_per_hour(Role::FinalInputs),
             2 * division_presentation::MAX_STATUS_PARTS + 4
         );
     }
@@ -3149,17 +2766,17 @@ mod tests {
             assert!(role.priority() < Role::Countries.priority());
             assert_eq!(role.read_anchor(), Role::Presentation.read_anchor());
         }
-        assert_eq!(Role::PresentationPrepare.jobs_per_hour(), 1);
+        assert_eq!(jobs_per_hour(Role::PresentationPrepare), 1);
         assert_eq!(
-            Role::PresentationPreparation.jobs_per_hour(),
+            jobs_per_hour(Role::PresentationPreparation),
             division_presentation::MAX_STATUS_PARTS
         );
-        assert_eq!(Role::PresentationSettle.jobs_per_hour(), 1);
+        assert_eq!(jobs_per_hour(Role::PresentationSettle), 1);
         assert_eq!(
-            Role::PresentationStatus.jobs_per_hour(),
+            jobs_per_hour(Role::PresentationStatus),
             division_presentation::MAX_STATUS_PARTS
         );
-        assert_eq!(Role::Presentation.jobs_per_hour(), 1);
+        assert_eq!(jobs_per_hour(Role::Presentation), 1);
 
         let pool = synthetic_pool(|job| {
             assert_eq!(job.role(), Role::PresentationPreparation);
@@ -3235,7 +2852,7 @@ mod tests {
             assert_eq!(*role as usize, index, "{role:?}");
         }
         assert!(Role::PresentationSpeedTerms.worker_only());
-        assert_eq!(Role::PresentationSpeedTerms.jobs_per_hour(), 1);
+        assert_eq!(jobs_per_hour(Role::PresentationSpeedTerms), 1);
         assert_eq!(
             Role::PresentationSpeedTerms.priority(),
             Role::Countries.priority()
@@ -3447,7 +3064,9 @@ mod tests {
 
     #[test]
     fn the_air_bases_census_takes_the_hours_country_snapshot() {
-        use crate::extended::air::{AirBasesCopyContext, AirBasesJob, air_bases_test_kit as kit};
+        use collector_air::extended::air::{
+            AirBasesCopyContext, AirBasesJob, air_bases_test_kit as kit,
+        };
         let bytes = kit::fixture();
         let run = |cells| {
             let countries = snapshot_at(&kit::memory(&bytes), cells, kit::BASE, kit::GAME_STATE);
@@ -3708,14 +3327,17 @@ mod tests {
 
             for shared in [false, true] {
                 let inputs = shared.then(|| {
-                    engine_allocation::shared(crate::division_census::UnitInputs::fixture(
-                        vec![engine_native::carmy::DivisionSeed {
-                            pointer: kit::DIVISION,
-                            roster_owner: Some(1),
-                            ..Default::default()
-                        }],
-                        Outcome::Rows { len: 1 },
-                    )).unwrap()
+                    engine_allocation::shared(
+                        collector_divisions::division_census::UnitInputs::fixture(
+                            vec![engine_native::carmy::DivisionSeed {
+                                pointer: kit::DIVISION,
+                                roster_owner: Some(1),
+                                ..Default::default()
+                            }],
+                            Outcome::Rows { len: 1 },
+                        ),
+                    )
+                    .unwrap()
                 });
                 for faults in [
                     &[][..],
@@ -3842,20 +3464,18 @@ mod tests {
             bytes: &bytes,
         };
         let mut direct = world_request();
-        let expected = run_world_shared(
-            &mut direct,
-            &memory,
-        );
-        let pool = acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
-            run_world_shared(
-                request,
-                &engine_native::memory::SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                },
-            )
-        })
-        .unwrap();
+        let expected = run_world_shared(&mut direct, &memory);
+        let pool =
+            collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
+                run_world_shared(
+                    request,
+                    &engine_native::memory::SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    },
+                )
+            })
+            .unwrap();
         let request = world_request();
         let pointers = [
             request
@@ -3912,15 +3532,19 @@ mod tests {
                 &mut direct.payload,
             );
             let expected_reads = reads.finish();
-            let pool = acquisition::Pool::start(workers, 1, move |request: &mut EconomyRequest| {
-                run_economy_shared(
-                    request,
-                    &CountedMemory::new(engine_native::memory::SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    }),
-                )
-            })
+            let pool = collector_workers::acquisition::Pool::start(
+                workers,
+                1,
+                move |request: &mut EconomyRequest| {
+                    run_economy_shared(
+                        request,
+                        &CountedMemory::new(engine_native::memory::SliceMemory {
+                            base: 0,
+                            bytes: &bytes,
+                        }),
+                    )
+                },
+            )
             .unwrap();
             let request = economy_request();
             let pointer = request.payload.log.bytes.as_ptr();
@@ -3944,15 +3568,19 @@ mod tests {
     fn absent_world_parts_read_nothing_and_keep_no_economy_attempt() {
         for workers in [0, 1] {
             let bytes = empty_memory();
-            let pool = acquisition::Pool::start(workers, 1, move |request: &mut WorldRequest| {
-                run_world_shared(
-                    request,
-                    &CountedMemory::new(engine_native::memory::SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    }),
-                )
-            })
+            let pool = collector_workers::acquisition::Pool::start(
+                workers,
+                1,
+                move |request: &mut WorldRequest| {
+                    run_world_shared(
+                        request,
+                        &CountedMemory::new(engine_native::memory::SliceMemory {
+                            base: 0,
+                            bytes: &bytes,
+                        }),
+                    )
+                },
+            )
             .unwrap();
             let mut request = world_request();
             request.production = None;
@@ -4001,7 +3629,7 @@ mod tests {
                 force_full: false,
                 base: 0,
                 game_state: 0x1000,
-                active: [true; crate::extended::characters::N],
+                active: [true; collector_characters::extended::characters::N],
             },
             payload: Default::default(),
             roles: characters::Roles::Independent,
@@ -4282,10 +3910,12 @@ mod tests {
         let table = TableId::DivisionModelInputs.index();
         let mut captured =
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
-        let empty = engine_allocation::shared(crate::division_census::UnitInputs::fixture(
-            Vec::new(),
-            Outcome::Rows { len: 0 },
-        )).unwrap();
+        let empty =
+            engine_allocation::shared(collector_divisions::division_census::UnitInputs::fixture(
+                Vec::new(),
+                Outcome::Rows { len: 0 },
+            ))
+            .unwrap();
         for (inputs, completed, outcome, training) in [
             (Some(&empty), true, Outcome::Rows { len: 0 }, Some(0)),
             (
