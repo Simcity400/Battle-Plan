@@ -149,8 +149,8 @@ pub fn warm(source: &Source, branch: u64) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn kept(source: &Source) -> Vec<u32> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn kept(source: &Source) -> Vec<u32> {
     let index = source.state::<Index>();
     let index = index.lock().unwrap_or_else(PoisonError::into_inner);
     let mut runs: Vec<u32> = index.0.iter().filter(|(_, slot)| slot.lock().unwrap_or_else(PoisonError::into_inner).is_some()).map(|(run, _)| *run).collect();

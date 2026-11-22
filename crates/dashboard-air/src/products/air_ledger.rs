@@ -879,8 +879,8 @@ pub fn warm_observed(source: &Source, branch: u64) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32, i32)>)> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32, i32)>)> {
     let index = source.state::<Observed>();
     let index = index.lock().unwrap_or_else(PoisonError::into_inner);
     let mut kept: Vec<(u32, &'static str, Vec<(i32, i32)>)> =

@@ -70,9 +70,13 @@ content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
 content-reader-wargoals = { workspace = true, features = ["test-support"] }
 dashboard = { workspace = true, features = ["export-types"] }
+dashboard-air = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-land = { workspace = true, features = ["test-support"] }
+dashboard-politics = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
+dashboard-wars = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 playhead = { path = "../playhead", features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }

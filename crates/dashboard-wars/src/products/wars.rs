@@ -510,6 +510,11 @@ fn forget_walks(source: &Source) {
     source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
 }
 
+#[cfg(feature = "test-support")]
+pub fn has_cached_walks(source: &Source) -> bool {
+    !source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.is_empty()
+}
+
 fn catalogue_of(source: &Source, context: &LoadContext) -> io::Result<Option<Arc<Catalogue>>> {
     context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose()
 }

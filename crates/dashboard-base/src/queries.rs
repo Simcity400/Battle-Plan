@@ -107,6 +107,11 @@ pub fn query(source: &Source, branch: u64) -> io::Result<dashboard_query::Query<
     index(source).query(source.replay_ref(), branch)
 }
 
+#[cfg(feature = "test-support")]
+pub fn has_cached_spellings(source: &Source) -> bool {
+    !source.state::<Spellings>().lock().unwrap_or_else(PoisonError::into_inner).0.is_empty()
+}
+
 pub struct RunCache<K, V>(HashMap<u32, Arc<V>>, std::marker::PhantomData<fn() -> K>);
 
 impl<K, V> Default for RunCache<K, V> {

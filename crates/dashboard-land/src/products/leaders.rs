@@ -520,6 +520,16 @@ impl LeadersContext {
     pub fn tally(&self, query: &Query<'_>, hour: i32, asked: Asked) -> io::Result<Tally> {
         Tally::read(query, hour, asked)
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn keep_test_verdict(&self, run: u32, hour: i32) {
+        self.keep(run, hour, [(1, Ok(true))].into());
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn has_cached_verdicts(&self, run: u32, hour: i32) -> bool {
+        !self.verdicts_at(run, hour).is_empty()
+    }
 }
 
 pub struct UnitLeaders;

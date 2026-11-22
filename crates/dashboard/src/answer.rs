@@ -194,4 +194,91 @@ mod tests {
         assert_eq!(build_all(failing).unwrap_err().to_string(), "a history could not be read");
         build_all(Vec::new()).unwrap();
     }
+
+    #[test]
+    fn forgetting_the_dashboard_clears_every_cache() {
+        use dashboard_air::products::air_ledger;
+        use dashboard_base::{SourceKey, queries, test_fixtures::{replay, source}};
+        use dashboard_economy::products::convoys;
+        use dashboard_land::products::{army, division_log, leaders::LeadersContext};
+        use dashboard_politics::products::feed::scope;
+        use dashboard_production::products::{construction, production};
+        use dashboard_wars::products::{casualties, diplomacy, wars};
+        use dashboard_world::products::{groups, land_owners, styles, subjects};
+        use replay_data::rows::{TableId, TableRows};
+        use replay_frame::frame::TableView;
+
+        fn warm<'a, T: 'a>(name: impl std::fmt::Display + 'a, read: impl Fn() -> Arc<T> + 'a) -> Box<dyn FnOnce() + 'a> {
+            let first = read();
+            assert!(Arc::ptr_eq(&first, &read()), "{name} should be warm");
+            Box::new(move || assert!(!Arc::ptr_eq(&first, &read()), "{name} should be cold"))
+        }
+
+        let hour = 100;
+        let branch = 1;
+        let frames = [hour, hour + 1].map(|hour| {
+            let mut frame = source(branch, hour, None);
+            for table in TableId::ALL {
+                let view = &mut frame.tables[table.index()];
+                if matches!(view.held(), TableView::Unavailable { .. }) {
+                    *view = TableView::Complete(TableRows::empty(table));
+                }
+            }
+            frame
+        });
+        let replay = replay(frames.into()).into_timelines(&Default::default()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(
+            SourceKey { source_id: "forget".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &cancelled,
+        ).unwrap();
+        let run = query(&source, branch).unwrap().timeline.stretches[0].run;
+        let load = LoadContext { content: None };
+        let leaders = LeadersContext::load(&source, &load).unwrap();
+        leaders.keep_test_verdict(run, hour);
+        answer(&source, "wars", &serde_json::json!({ "branchId": branch.to_string() }), &load, &cancelled).unwrap();
+        queries::spellings(&source, run, hour, &std::collections::BTreeSet::from([7])).unwrap();
+        scope::warm(&source, branch).unwrap();
+        air_ledger::warm_observed(&source, branch).unwrap();
+
+        let caches = [
+            warm("query index", || queries::index(&source)),
+            warm("links", || links(&source, run).unwrap()),
+            warm("lexicon", || queries::lexicon(&source, run).unwrap()),
+            warm("country looks", || styles::cached_looks(&source, run).unwrap()),
+            warm("country groups", || groups::cached_groups(&source, run).unwrap()),
+            warm("territory", || land_owners::cached_territory(&source, run).unwrap()),
+            warm("subjects", || subjects::cached_subjects(&source, run).unwrap()),
+            warm("army mix", || army::cached_army_mix(&source, run).unwrap()),
+            warm("division templates", || division_log::cached_division_templates(&source, run).unwrap()),
+            warm("wars", || wars::cached_wars(&source, run).unwrap()),
+            warm("diplomatic pacts", || diplomacy::cached_pacts(&source, run).unwrap()),
+            warm("casualty endings", || casualties::cached_casualty_ends(&source, run).unwrap()),
+            warm("production lines", || production::cached_production_lines(&source, run).unwrap()),
+            warm("construction", || construction::cached_construction(&source, run).unwrap()),
+            warm("convoys", || convoys::cached_convoys(&source, run).unwrap()),
+        ];
+        let histories = KEPT_LIFETIMES.map(|table| {
+            let source = &source;
+            warm(format!("{table:?}"), move || lifetimes(source, run, table).unwrap())
+        });
+        assert!(queries::has_cached_spellings(&source), "spellings should be warm");
+        assert!(leaders.has_cached_verdicts(run, hour), "leader verdicts should be warm");
+        assert!(wars::has_cached_walks(&source), "war walks should be warm");
+        assert_eq!(scope::kept(&source), [run], "feed scope should be warm");
+        assert_eq!(air_ledger::kept_observed(&source).len(), 2, "both air ledgers should be warm");
+
+        forget(&source);
+
+        assert!(!queries::has_cached_spellings(&source), "spellings should be cold");
+        assert!(!leaders.has_cached_verdicts(run, hour), "leader verdicts should be cold");
+        assert!(!wars::has_cached_walks(&source), "war walks should be cold");
+        assert!(scope::kept(&source).is_empty(), "feed scope should be cold");
+        assert!(air_ledger::kept_observed(&source).is_empty(), "air ledgers should be cold");
+        for check in caches.into_iter().chain(histories) {
+            check();
+        }
+    }
 }
