@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(windows)]
+use crate::test_support::{change_directory_with_new_stamp, rewrite_preserving_modified_time};
 
 type Answer = Result<Vec<u8>, (io::ErrorKind, String)>;
 fn answer(result: io::Result<Bytes>) -> Answer {
@@ -314,26 +316,21 @@ fn preserved_mtime_edits_and_added_art_invalidate_a_live_generation() {
     fs::create_dir_all(root.join("gfx/world")).unwrap();
     let file = root.join("gfx/world/asset.mesh");
     fs::write(&file, b"old").unwrap();
-    let modified = fs::metadata(&file).unwrap().modified().unwrap();
     let _generation = Generation::enter();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     assert_eq!(
         layers.read_uncovered("gfx/world/asset.mesh").unwrap(),
         b"old"
     );
-    fs::write(&file, b"new").unwrap();
-    File::options()
-        .write(true)
-        .open(&file)
-        .unwrap()
-        .set_modified(modified)
-        .unwrap();
-    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+    rewrite_preserving_modified_time(&file, b"new");
     assert!(layers.validate_generation().is_err());
     let _fresh = Generation::enter();
     let fresh = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     assert_eq!(fresh.descriptor_paths(b"gfx", &[".mesh"]).unwrap().len(), 1);
-    fs::write(root.join("gfx/world/added.mesh"), b"added").unwrap();
+    let directory = root.join("gfx/world");
+    change_directory_with_new_stamp(&directory, || {
+        fs::write(directory.join("added.mesh"), b"added").unwrap();
+    });
     assert!(fresh.validate_generation().is_err());
     fs::remove_dir_all(root).unwrap();
 }
@@ -345,20 +342,13 @@ fn pinned_generations_refresh_changed_settings_snapshots() {
     fs::create_dir_all(&root).unwrap();
     let file = root.join("settings.txt");
     fs::write(&file, b"old").unwrap();
-    let modified = fs::metadata(&file).unwrap().modified().unwrap();
     let layers = ResolvedLayers::default();
     let _generation = layers.enter_generation();
     let first = layers.with_file_witness(&file, || Generation::parse_snapshot(&file, "synthetic settings", 1, &[], |path| fs::read(path), |bytes| {
         Ok(bytes.to_vec())
     }))
     .unwrap();
-    fs::write(&file, b"new").unwrap();
-    File::options()
-        .write(true)
-        .open(&file)
-        .unwrap()
-        .set_modified(modified)
-        .unwrap();
+    rewrite_preserving_modified_time(&file, b"new");
     let second = Generation::parse_snapshot(&file, "synthetic settings", 1, &[], |path| fs::read(path), |bytes| {
         Ok(bytes.to_vec())
     })
