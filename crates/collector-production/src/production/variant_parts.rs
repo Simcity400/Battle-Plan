@@ -46,8 +46,16 @@ impl VariantPart {
             held: &mut self.leaves.organisation_holds,
             fresh: self.fresh,
         };
+        let mut witness = design_changes::StatLaneWitness;
         capture_source(&mut self.leaves.stats, Ok(source), |source, rows| {
-            cequipment_variant::walk_stats_carried(memory, source, rows, &mut carry)
+            cequipment_variant::walk_stats_carried(
+                memory,
+                base,
+                source,
+                rows,
+                &mut carry,
+                &mut witness,
+            )
         });
         self.leaves.organisations_complete =
             matches!(self.leaves.stats.outcome, Outcome::Rows { .. });

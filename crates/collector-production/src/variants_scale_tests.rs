@@ -269,22 +269,8 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             variant + cequipment_variant::OBSOLETE,
             &[(seed >> 16) as u8 & 1],
         );
-        for (slot, offset) in [
-            cequipment_variant::MAP_RANGE_STAT,
-            cequipment_variant::STAT_2F,
-            cequipment_variant::AIR_ATTACK_CACHE_CANDIDATE,
-            cequipment_variant::AGILITY_CACHE_CANDIDATE,
-            cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE,
-            cequipment_variant::RELIABILITY_CACHE_CANDIDATE,
-            cequipment_variant::AIR_DEFENSE_CACHE_CANDIDATE,
-            cequipment_variant::THRUST_CACHE_CANDIDATE,
-            cequipment_variant::FUEL_CONSUMPTION_CACHE_CANDIDATE,
-            cequipment_variant::BUILD_COST_CACHE_CANDIDATE,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            writer.u64(variant + offset, mix(seed ^ slot as u64));
+        for (slot, lane) in cequipment_variant::STAT_LANES.into_iter().enumerate() {
+            writer.u64(variant + lane.offset, mix(seed ^ slot as u64));
         }
         let entries = writer.alloc(module_count * equipment_module_entry::STRIDE);
         writer.array(
@@ -413,7 +399,7 @@ fn digest(views: &[TableView; 4]) -> u64 {
 
 #[test]
 fn scaled_variant_rows_match_the_recorded_digests() {
-    for (countries, golden) in [(2, 0xa55e_52ae_5273_9aa1), (440, 0xea38_fc2c_9476_520c)] {
+    for (countries, golden) in [(2, 0x2c7f_d34e_f94a_b028), (440, 0xbf2c_c7f7_2f11_b253)] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);
         assert!(

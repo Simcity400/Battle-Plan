@@ -75,7 +75,7 @@ fn rocket_signed_input_needs_no_handle_census_or_cost_read() {
     let mut world = World::new();
     world.blocked = Some(ROCKET + LINE_HANDLE);
     assert_eq!(world.tick().failure, RocketFailure::None);
-    world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_CACHE_CANDIDATE);
+    world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_IC_STAT);
     for speed in [i64::MIN, -175_003, 0, 175_003, i64::MAX] {
         world.word(ROCKET + ROCKET_SPEED, speed as u64);
         assert_eq!(
@@ -99,7 +99,7 @@ fn rocket_instant_input_is_the_native_signed_maximum() {
         world.word(ROCKET + ROCKET_SPEED, speed as u64);
         for cost in [i64::MIN, -950_009, 0, 950_009, i64::MAX] {
             world.word(
-                VARIANT + cequipment_variant::BUILD_COST_CACHE_CANDIDATE,
+                VARIANT + cequipment_variant::BUILD_COST_IC_STAT,
                 cost as u64,
             );
             assert_eq!(
@@ -157,7 +157,7 @@ fn rocket_short_reads_keep_independent_scope_and_never_zero_the_input() {
     world.instant = None;
     assert_eq!(world.tick().failure, RocketFailure::Instant);
     world.instant = Some(1);
-    world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_CACHE_CANDIDATE);
+    world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_IC_STAT);
     assert_eq!(
         world.tick(),
         RocketTick {

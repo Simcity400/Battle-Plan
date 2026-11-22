@@ -523,7 +523,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .flat_map(|slot| {
                 (0..4).map(move |index| VariantStatsRow {
                     variant: variant(slot, index),
-                    values: [1500 * 100_000; 10],
+                    values: [Some(1500 * 100_000); 10],
                     ..Default::default()
                 })
             })

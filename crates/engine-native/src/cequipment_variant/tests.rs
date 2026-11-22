@@ -728,47 +728,39 @@ fn mismatched_definition_and_corrupt_strings_are_unavailable() {
 #[test]
 fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
     let mut bytes = fixture();
-    let offsets = [
-        MAP_RANGE_STAT,
-        STAT_2F,
-        AIR_ATTACK_CACHE_CANDIDATE,
-        AGILITY_CACHE_CANDIDATE,
-        MAXIMUM_SPEED_CACHE_CANDIDATE,
-        RELIABILITY_CACHE_CANDIDATE,
-        AIR_DEFENSE_CACHE_CANDIDATE,
-        THRUST_CACHE_CANDIDATE,
-        FUEL_CONSUMPTION_CACHE_CANDIDATE,
-        BUILD_COST_CACHE_CANDIDATE,
-    ];
     let values = [
         i64::MIN,
         i64::MAX,
         -1,
         0,
         1_i64 << 40,
-        -50,
+        50,
         100_001,
         123,
         9,
         42,
     ];
-    for (offset, value) in offsets.into_iter().zip(values) {
-        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(values) {
+        bytes[lane.offset..lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+        let base_offset = 0x500 + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[base_offset..base_offset + 8].copy_from_slice(&value.to_le_bytes());
     }
+    bytes[BUILD_COST..BUILD_COST + 8].copy_from_slice(&42_i64.to_le_bytes());
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
     let mut rows = vec![StatsRow::default(); 1];
     assert_eq!(
-        walk_stats(&memory, &[source(&bytes), source(&bytes)], &mut rows),
+        walk_stats(&memory, 0, &[source(&bytes), source(&bytes)], &mut rows),
         Outcome::Rows { len: 2 }
     );
-    assert_eq!(rows[0].values, values);
-    assert_eq!(rows[1].values, values);
+    assert_eq!(rows[0].values, values.map(Some));
+    assert_eq!(rows[1].values, values.map(Some));
     assert_eq!(
         walk_stats(
             &memory,
+            0,
             &[
                 source(&bytes),
                 RegistryRow {
@@ -786,8 +778,9 @@ fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
         walk_stats(
             &SliceMemory {
                 base: 0x1000,
-                bytes: &bytes[..BUILD_COST_CACHE_CANDIDATE + 7]
+                bytes: &bytes[..BUILD_COST_IC_STAT + 7]
             },
+            0,
             &[source(&bytes)],
             &mut rows
         ),
@@ -817,10 +810,10 @@ fn copied_inline_names_and_registry_identity_need_only_three_definition_guards()
     assert_eq!(memory.guards.get(), 3);
     memory.guards.set(0);
     assert_eq!(
-        walk_stats(&memory, &variants, &mut vec![StatsRow::default(); 1]),
+        walk_stats(&memory, 0, &variants, &mut vec![StatsRow::default(); 1]),
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(memory.guards.get(), 2);
+    assert_eq!(memory.guards.get(), 3);
 }
 
 #[test]
@@ -856,12 +849,12 @@ fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_e
     memory.guards.set(0);
     let mut stats = Vec::new();
     assert_eq!(
-        walk_stats(&memory, &variants, &mut stats),
+        walk_stats(&memory, 0, &variants, &mut stats),
         Outcome::Rows { len: COUNT }
     );
-    assert_eq!(memory.guards.get(), 2 + COUNT);
+    assert_eq!(memory.guards.get(), 4 + COUNT);
     let memory = CountedFields {
-        blocked: Some(variants[32].pointer() + CLASSIFIER_FLAGS),
+        blocked: Some(variants[32].pointer() + MISSION_MASK),
         ..memory
     };
     assert_eq!(
@@ -871,7 +864,7 @@ fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_e
         }
     );
     assert_eq!(
-        walk_stats(&memory, &variants, &mut stats),
+        walk_stats(&memory, 0, &variants, &mut stats),
         Outcome::Rows { len: COUNT }
     );
     bytes[0x500] ^= 1;
@@ -928,7 +921,7 @@ fn heap_copy_checks_terminator_in_same_guard_and_name_fault_does_not_poison_stat
         Outcome::Unavailable { .. }
     ));
     assert_eq!(
-        walk_stats(&memory, &variants, &mut vec![StatsRow::default(); 1]),
+        walk_stats(&memory, 0, &variants, &mut vec![StatsRow::default(); 1]),
         Outcome::Rows { len: 1 }
     );
 }
@@ -963,6 +956,7 @@ fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
                 base: 0x1000,
                 bytes: &bytes
             },
+            0,
             &[source],
             &mut rows
         ),
@@ -992,9 +986,11 @@ fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
                 base: 0x1000,
                 bytes: &bytes
             },
+            0,
             &[source],
             &mut rows,
-            &mut Quiet
+            &mut Quiet,
+            &mut (),
         ),
         Outcome::Rows { len: 1 }
     );
@@ -1005,6 +1001,7 @@ fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
                 base: 0x1000,
                 bytes: &bytes
             },
+            0,
             &[source],
             &mut rows
         ),
@@ -1114,4 +1111,197 @@ fn applied_sources_authenticate_plain_and_trait_layout_before_following_the_exte
         )
         .is_err()
     );
+}
+
+#[test]
+fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
+    assert_eq!(AIR_RANGE_STAT, STATS + 46 * 8);
+    assert_eq!(AIR_DEFENCE_STAT, STATS + 47 * 8);
+    assert_eq!(AIR_ATTACK_STAT, STATS + 48 * 8);
+    assert_eq!(AIR_AGILITY_STAT, STATS + 49 * 8);
+    assert_eq!(MAXIMUM_SPEED_STAT, STATS + 62 * 8);
+    assert_eq!(RELIABILITY_STAT, STATS + 65 * 8);
+    assert_eq!(WEIGHT_STAT, STATS + 67 * 8);
+    assert_eq!(THRUST_STAT, STATS + 68 * 8);
+    assert_eq!(FUEL_CONSUMPTION_STAT, STATS + 69 * 8);
+    assert_eq!(BUILD_COST_IC_STAT, STATS + 77 * 8);
+
+    struct PlaneMemory<'a> {
+        bytes: &'a [u8],
+        thrust_factor: Option<i64>,
+    }
+    impl Memory for PlaneMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == THRUST_WEIGHT_AGILITY_FACTOR_RVA.0 && output.len() == 8 {
+                let Some(factor) = self.thrust_factor else {
+                    return false;
+                };
+                output.copy_from_slice(&factor.to_le_bytes());
+                return true;
+            }
+            SliceMemory {
+                base: 0x1000,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+
+    struct RecordingWitness {
+        tokens: [Result<Option<(u64, u64)>, &'static str>; 2],
+        calls: Cell<usize>,
+        withheld: Vec<(&'static str, &'static str)>,
+    }
+    impl RecordingWitness {
+        fn new(
+            before: Result<Option<(u64, u64)>, &'static str>,
+            after: Result<Option<(u64, u64)>, &'static str>,
+        ) -> Self {
+            Self {
+                tokens: [before, after],
+                calls: Cell::new(0),
+                withheld: Vec::new(),
+            }
+        }
+    }
+    impl StatWitness for RecordingWitness {
+        fn quiet(&self) -> Result<Option<(u64, u64)>, &'static str> {
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            self.tokens[call.min(1)]
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.withheld.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = fixture();
+    let author = (912_u64 << 32) | 79;
+    bytes[INDUSTRIAL_ORGANISATION..INDUSTRIAL_ORGANISATION + 8]
+        .copy_from_slice(&author.to_le_bytes());
+    bytes[CLASSIFIER_FLAGS..CLASSIFIER_FLAGS + 8].copy_from_slice(&(1_u64 << 20).to_le_bytes());
+    let base_values = [
+        100_000_000_i64,
+        1_200_000,
+        1_800_000,
+        4_500_000,
+        42_000_000,
+        80_000,
+        1_000_000,
+        1_500_000,
+        21_000,
+        2_400_000,
+    ];
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let base_offset = 0x500 + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[base_offset..base_offset + 8].copy_from_slice(&value.to_le_bytes());
+        let cached = if lane.offset == AIR_AGILITY_STAT {
+            value + ((1_500_000_i64 - 1_000_000) * 50_000) / 100_000
+        } else {
+            value
+        };
+        bytes[lane.offset..lane.offset + 8].copy_from_slice(&cached.to_le_bytes());
+    }
+    bytes[BUILD_COST..BUILD_COST + 8].copy_from_slice(&2_400_000_i64.to_le_bytes());
+    let variant = source(&bytes);
+
+    let mut rows = Vec::new();
+    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    let memory = PlaneMemory {
+        bytes: &bytes,
+        thrust_factor: Some(50_000),
+    };
+    assert_eq!(
+        walk_stats_carried(&memory, 0, &[variant], &mut rows, &mut (), &mut witness),
+        Outcome::Rows { len: 1 }
+    );
+    assert!(witness.withheld.is_empty(), "{:?}", witness.withheld);
+    assert_eq!(rows[0].values[1], Some(1_200_000));
+    assert_eq!(rows[0].values[3], Some(4_750_000));
+    assert_eq!(rows[0].values[6], Some(1_000_000));
+    assert_eq!(rows[0].values[9], Some(2_400_000));
+
+    let mut stale = bytes.clone();
+    stale[WEIGHT_STAT..WEIGHT_STAT + 8].copy_from_slice(&1_234_567_i64.to_le_bytes());
+    stale[BUILD_COST..BUILD_COST + 8].copy_from_slice(&9_999_999_i64.to_le_bytes());
+    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    assert_eq!(
+        walk_stats_carried(
+            &PlaneMemory {
+                bytes: &stale,
+                thrust_factor: Some(50_000),
+            },
+            0,
+            &[variant],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[0], Some(100_000_000));
+    assert_eq!(rows[0].values[6], None);
+    assert_eq!(rows[0].values[9], None);
+    assert!(witness.withheld.iter().any(|(lane, _)| *lane == "weight"));
+    assert!(witness.withheld.iter().any(|(lane, _)| *lane == "build_cost_ic"));
+
+    let mut modified = bytes.clone();
+    modified[MODULES + 8 + 12..MODULES + 8 + 16].copy_from_slice(&1_u32.to_le_bytes());
+    modified[AIR_DEFENCE_STAT..AIR_DEFENCE_STAT + 8].copy_from_slice(&50_000_i64.to_le_bytes());
+    modified[MAXIMUM_SPEED_STAT..MAXIMUM_SPEED_STAT + 8].copy_from_slice(&(-1_i64).to_le_bytes());
+    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    assert_eq!(
+        walk_stats_carried(
+            &PlaneMemory {
+                bytes: &modified,
+                thrust_factor: Some(50_000),
+            },
+            0,
+            &[variant],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[0], Some(100_000_000));
+    assert_eq!(rows[0].values[1], None);
+    assert_eq!(rows[0].values[4], None);
+    assert!(witness.withheld.iter().any(|(lane, _)| *lane == "air_defence"));
+    assert!(witness.withheld.iter().any(|(lane, _)| *lane == "maximum_speed"));
+
+    let mut bad_def = bytes.clone();
+    bad_def[0x500] ^= 1;
+    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    assert_eq!(
+        walk_stats_carried(
+            &PlaneMemory {
+                bytes: &bad_def,
+                thrust_factor: Some(50_000),
+            },
+            0,
+            &[variant],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert_eq!(rows[0].organisation.author, author);
+    assert_eq!(witness.withheld.len(), STAT_LANE_COUNT);
+
+    for (before, after) in [
+        (Err("variant stat writer active"), Ok(Some((1, 7)))),
+        (Ok(Some((1, 7))), Ok(Some((1, 8)))),
+    ] {
+        let mut witness = RecordingWitness::new(before, after);
+        assert_eq!(
+            walk_stats_carried(&memory, 0, &[variant], &mut rows, &mut (), &mut witness),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+        assert_eq!(rows[0].organisation.author, author);
+        assert_eq!(witness.withheld.len(), STAT_LANE_COUNT);
+    }
 }

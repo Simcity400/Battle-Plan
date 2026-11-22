@@ -249,7 +249,7 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     captured.variants.stats.outcome = Outcome::Rows { len: 1 };
     captured.variants.stats.rows[0] = cequipment_variant::StatsRow {
         variant,
-        values: std::array::from_fn(|i| if i == 0 { i64::MIN } else { i as i64 }),
+        values: std::array::from_fn(|i| Some(if i == 0 { i64::MIN } else { i as i64 })),
         ..Default::default()
     };
     let views = captured.tables();

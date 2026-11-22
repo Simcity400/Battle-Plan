@@ -491,7 +491,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
                 ..Default::default()
             }
             .into(),
-            stats: vec![0; 10],
+            stats: vec![Some(0); 10],
             ..Default::default()
         }),
         ..Default::default()
@@ -1183,7 +1183,7 @@ fn membership_burst_preserves_terminal_definitions_and_every_history_row_in_fram
         variant: id,
         snapshot: Some(rows::VariantSnapshot {
             definition: burst_definition(id, name).into(),
-            stats: vec![0; 10],
+            stats: vec![Some(0); 10],
             ..Default::default()
         }),
         ..Default::default()
@@ -1319,7 +1319,7 @@ fn a_flags_row_naming_flags_its_design_holds_stays_out_of_the_table() {
             variant: 2,
             snapshot: Some(rows::VariantSnapshot {
                 definition: burst_definition(2, b"new").into(),
-                stats: vec![0; 10],
+                stats: vec![Some(0); 10],
                 ..Default::default()
             }),
             ..Default::default()
@@ -1358,7 +1358,7 @@ fn membership_projection_refuses_intermediate_unknown_and_incomplete_occurrences
         variant: id,
         snapshot: Some(rows::VariantSnapshot {
             definition: burst_definition(id, b"new").into(),
-            stats: vec![0; 10],
+            stats: vec![Some(0); 10],
             ..Default::default()
         }),
         ..Default::default()

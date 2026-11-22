@@ -17,7 +17,7 @@ pub const END_PRESENT: usize = 0x1b0;
 pub const ARMY_REFERENCE: usize = craid_instance::UNIT;
 pub const WING_REFERENCE: usize = craid_instance::UNIT + 8;
 pub const AIR_TRANSPORT: u64 = 0x10_0000;
-pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE;
+pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_STAT;
 pub const ACE_TYPE_ACCUMULATOR: usize = 0x38 + 0x10;
 pub const WING_POOL_OWNER: usize = 0x40;
 pub const POOL_OWNER_COUNTRY: usize = 0x90;
@@ -117,6 +117,9 @@ fn transports(
             continue;
         }
         let speed: i64 = field(memory, variant, TRANSPORT_SPEED_STAT)?;
+        if speed < 0 {
+            return Err("raid transport speed stat negative");
+        }
         *required = required
             .checked_add(1)
             .ok_or("raid transport count overflow")?;

@@ -278,6 +278,31 @@ struct Store {
 }
 static RECOVER: AtomicBool = AtomicBool::new(true);
 static RECOVERY_READ: AtomicBool = AtomicBool::new(true);
+pub(super) fn stat_timing_quiet() -> Result<Option<(u64, u64)>, &'static str> {
+    if native::mutations::WRITER_AUDIT_REFUSAL.is_some() {
+        return Err("variant stat writer audit failed");
+    }
+    if ACTIVE.load(Ordering::SeqCst) != 0 {
+        return Err("variant stat writer active");
+    }
+    if enabled() {
+        Ok(Some((
+            EPOCH.load(Ordering::Acquire),
+            REVISION.load(Ordering::Acquire),
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) struct StatLaneWitness;
+
+impl native::StatWitness for StatLaneWitness {
+    fn quiet(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        stat_timing_quiet()
+    }
+}
+
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
@@ -2688,7 +2713,8 @@ fn walk_snapshot(
         engine_equipment::equipment_module_container::walk(memory, base, source, rows)
     });
     super::capture_source(&mut walk.stats, Ok(&source[..]), |source, rows| {
-        native::walk_stats_carried(memory, source, rows, &mut ())
+        let mut witness = StatLaneWitness;
+        native::walk_stats_carried(memory, base, source, rows, &mut (), &mut witness)
     });
     super::capture_source(&mut walk.upgrades, Ok(&source[..]), |source, rows| {
         engine_equipment::cequipment_upgrades_instance::walk(memory, base, source, rows)

@@ -25,22 +25,100 @@ pub const APPEND_VARIANT_NAME: usize = 0x24;
 pub const DISPLAY_NAME: usize = 0x28;
 pub const VARIANT_NAME: usize = 0x48;
 pub const UPGRADES: usize = 0x68;
+pub const UPGRADES_COUNT: usize = 0x7c;
 pub const MODULES: usize = 0xb0;
-pub const MAP_RANGE_STAT: usize = 0x270;
-#[cfg(any(test, feature = "test-support"))]
-pub const STAT_2F: usize = 0x278;
-#[cfg(any(test, feature = "test-support"))]
-pub const AIR_ATTACK_CACHE_CANDIDATE: usize = 0x280;
-#[cfg(any(test, feature = "test-support"))]
-pub const AGILITY_CACHE_CANDIDATE: usize = 0x288;
-pub const MAXIMUM_SPEED_CACHE_CANDIDATE: usize = 0x2f0;
-pub const RELIABILITY_CACHE_CANDIDATE: usize = 0x308;
-pub const AIR_DEFENSE_CACHE_CANDIDATE: usize = 0x318;
-#[cfg(any(test, feature = "test-support"))]
-pub const THRUST_CACHE_CANDIDATE: usize = 0x320;
-#[cfg(any(test, feature = "test-support"))]
-pub const FUEL_CONSUMPTION_CACHE_CANDIDATE: usize = 0x328;
-pub const BUILD_COST_CACHE_CANDIDATE: usize = 0x368;
+pub const MODULES_COUNT: usize = 0xc4;
+pub const AIR_RANGE_STAT: usize = 0x270;
+pub const AIR_DEFENCE_STAT: usize = 0x278;
+pub const AIR_ATTACK_STAT: usize = 0x280;
+pub const AIR_AGILITY_STAT: usize = 0x288;
+pub const MAXIMUM_SPEED_STAT: usize = 0x2f0;
+pub const RELIABILITY_STAT: usize = 0x308;
+pub const WEIGHT_STAT: usize = 0x318;
+pub const THRUST_STAT: usize = 0x320;
+pub const FUEL_CONSUMPTION_STAT: usize = 0x328;
+pub const BUILD_COST_IC_STAT: usize = 0x368;
+pub const THRUST_WEIGHT_AGILITY_FACTOR_RVA: Rva = Rva(0x033e_59f8);
+pub const STAT_LANE_COUNT: usize = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatLane {
+    pub stat_index: usize,
+    pub offset: usize,
+    pub name: &'static str,
+    pub mismatch_reason: &'static str,
+}
+
+pub const STAT_LANES: [StatLane; STAT_LANE_COUNT] = [
+    StatLane {
+        stat_index: 46,
+        offset: AIR_RANGE_STAT,
+        name: "air_range",
+        mismatch_reason: "variant stat air_range disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 47,
+        offset: AIR_DEFENCE_STAT,
+        name: "air_defence",
+        mismatch_reason: "variant stat air_defence disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 48,
+        offset: AIR_ATTACK_STAT,
+        name: "air_attack",
+        mismatch_reason: "variant stat air_attack disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 49,
+        offset: AIR_AGILITY_STAT,
+        name: "air_agility",
+        mismatch_reason: "variant stat air_agility disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 62,
+        offset: MAXIMUM_SPEED_STAT,
+        name: "maximum_speed",
+        mismatch_reason: "variant stat maximum_speed disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 65,
+        offset: RELIABILITY_STAT,
+        name: "reliability",
+        mismatch_reason: "variant stat reliability disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 67,
+        offset: WEIGHT_STAT,
+        name: "weight",
+        mismatch_reason: "variant stat weight disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 68,
+        offset: THRUST_STAT,
+        name: "thrust",
+        mismatch_reason: "variant stat thrust disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 69,
+        offset: FUEL_CONSUMPTION_STAT,
+        name: "fuel_consumption",
+        mismatch_reason: "variant stat fuel_consumption disagrees with base definition",
+    },
+    StatLane {
+        stat_index: 77,
+        offset: BUILD_COST_IC_STAT,
+        name: "build_cost_ic",
+        mismatch_reason: "variant stat build_cost_ic disagrees with base definition",
+    },
+];
+
+const _: () = {
+    let mut i = 0;
+    while i < STAT_LANE_COUNT {
+        assert!(STAT_LANES[i].offset == STATS + STAT_LANES[i].stat_index * 8);
+        i += 1;
+    }
+};
 pub const MISSION_GROUP_DATA: usize = 0x370;
 pub const DEFINITION: usize = 0x3f0;
 pub const CLASSIFIER_FLAGS: usize = 0x408;
@@ -567,7 +645,7 @@ pub const STATS: usize = 0x100;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StatsRow {
     pub variant: u64,
-    pub values: [i64; 10],
+    pub values: [Option<i64>; STAT_LANE_COUNT],
     pub organisation: Organisation,
 }
 
@@ -581,7 +659,19 @@ pub use game_model::equipment::OrganisationBonus;
 
 pub const INDUSTRIAL_ORGANISATION: usize = 0x488;
 pub const ORGANISATION_BONUSES: usize = 0x498;
+pub const ORGANISATION_BONUSES_COUNT: usize = 0x4a4;
 pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
+pub const STAT_FIXED_ONE: i64 = 100_000;
+
+pub trait StatWitness {
+    fn quiet(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        Ok(None)
+    }
+    fn record_withheld(&mut self, _lane: usize, _reason: &'static str) {}
+}
+
+impl StatWitness for () {}
+
 pub trait OrganisationCarry {
     fn fresh(&mut self, index: usize, source: &RegistryRow) -> Result<bool, &'static str>;
     fn read(&mut self, _index: usize, _source: &RegistryRow) {}
@@ -629,17 +719,21 @@ fn read_organisation(
 #[cfg(test)]
 pub fn walk_stats(
     memory: &impl Memory,
+    base: usize,
     variants: &[RegistryRow],
     output: &mut Vec<StatsRow>,
 ) -> Outcome {
-    walk_stats_carried(memory, variants, output, &mut ())
+    walk_stats_carried(memory, base, variants, output, &mut (), &mut ())
 }
 
+#[allow(clippy::too_many_arguments, reason = "Variant stat capture keeps preallocated output, organisation carry and live stat witness explicit.")]
 pub fn walk_stats_carried(
     memory: &impl Memory,
+    base: usize,
     variants: &[RegistryRow],
     output: &mut Vec<StatsRow>,
     carry: &mut impl OrganisationCarry,
+    witness: &mut impl StatWitness,
 ) -> Outcome {
     let result = (|| {
         if variants.len() > output.len() {
@@ -647,43 +741,131 @@ pub fn walk_stats_carried(
                 .map_err(|_| "variant stat allocation failed")?;
             output.resize(variants.len(), StatsRow::default());
         }
+        let rebuild_located = engine_sites::at(base, mutations::REBUILD_STATS_RVA).is_some();
+        let def_vtable = engine_sites::at(base, cequipment_type::VTABLE_RVA);
+        let null_def_vtable = engine_sites::at(base, cequipment_type::NULL_VTABLE_RVA);
+        let mut thrust_factor: Option<Option<i64>> = None;
         let mut len = 0;
         const BATCH: usize = 64;
-        const FIELDS: [RecordField; 5] = [
+        const FIELDS: [RecordField; 13] = [
             RecordField {
-                source_offset: MAP_RANGE_STAT,
+                source_offset: AIR_RANGE_STAT,
                 destination_offset: 0,
                 len: 32,
             },
             RecordField {
-                source_offset: MAXIMUM_SPEED_CACHE_CANDIDATE,
+                source_offset: MAXIMUM_SPEED_STAT,
                 destination_offset: 32,
                 len: 8,
             },
             RecordField {
-                source_offset: RELIABILITY_CACHE_CANDIDATE,
+                source_offset: RELIABILITY_STAT,
                 destination_offset: 40,
                 len: 8,
             },
             RecordField {
-                source_offset: AIR_DEFENSE_CACHE_CANDIDATE,
+                source_offset: WEIGHT_STAT,
                 destination_offset: 48,
                 len: 24,
             },
             RecordField {
-                source_offset: BUILD_COST_CACHE_CANDIDATE,
+                source_offset: BUILD_COST_IC_STAT,
                 destination_offset: 72,
                 len: 8,
             },
+            RecordField {
+                source_offset: UPGRADES_COUNT,
+                destination_offset: 80,
+                len: 4,
+            },
+            RecordField {
+                source_offset: MODULES_COUNT,
+                destination_offset: 84,
+                len: 4,
+            },
+            RecordField {
+                source_offset: BONUS_SOURCES + 0x0c,
+                destination_offset: 88,
+                len: 4,
+            },
+            RecordField {
+                source_offset: NAMED_BONUSES + 0x0c,
+                destination_offset: 92,
+                len: 4,
+            },
+            RecordField {
+                source_offset: ORGANISATION_BONUSES_COUNT,
+                destination_offset: 96,
+                len: 4,
+            },
+            RecordField {
+                source_offset: BUILD_COST,
+                destination_offset: 100,
+                len: 8,
+            },
+            RecordField {
+                source_offset: DEFINITION,
+                destination_offset: 108,
+                len: 8,
+            },
+            RecordField {
+                source_offset: CLASSIFIER_FLAGS,
+                destination_offset: 116,
+                len: 8,
+            },
         ];
-        let mut pointers = [0; BATCH];
-        let mut fields = [0; BATCH * 80];
+        const STRIDE: usize = 124;
+        const DEF_FIELDS: [RecordField; 7] = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 8,
+            },
+            RecordField {
+                source_offset: cequipment_type::STATS_BASE + 46 * 8,
+                destination_offset: 8,
+                len: 32,
+            },
+            RecordField {
+                source_offset: cequipment_type::STATS_BASE + 62 * 8,
+                destination_offset: 40,
+                len: 8,
+            },
+            RecordField {
+                source_offset: cequipment_type::STATS_BASE + 65 * 8,
+                destination_offset: 48,
+                len: 8,
+            },
+            RecordField {
+                source_offset: cequipment_type::STATS_BASE + 67 * 8,
+                destination_offset: 56,
+                len: 24,
+            },
+            RecordField {
+                source_offset: cequipment_type::STATS_BASE + 77 * 8,
+                destination_offset: 80,
+                len: 8,
+            },
+            RecordField {
+                source_offset: cequipment_type::RELIABILITY_BONUS_COUNT,
+                destination_offset: 88,
+                len: 4,
+            },
+        ];
+        const DEF_STRIDE: usize = 92;
         const LAYOUT: RecordLayout<'static> =
-            RecordLayout::new(&FIELDS, 80).expect("valid record layout");
+            RecordLayout::new(&FIELDS, STRIDE).expect("valid record layout");
+        const DEF_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&DEF_FIELDS, DEF_STRIDE).expect("valid definition stat layout");
+        let mut pointers = [0; BATCH];
+        let mut fields = [0; BATCH * STRIDE];
+        let mut definitions = [0; BATCH];
+        let mut def_bytes = [0; BATCH * DEF_STRIDE];
         for sources in variants.chunks(BATCH) {
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
+            let before = witness.quiet();
             if memory.copy_records(
                 RecordSources::Pointers(&pointers[..sources.len()]),
                 &LAYOUT,
@@ -692,10 +874,164 @@ pub fn walk_stats_carried(
             {
                 return Err("variant stat cache unreadable");
             }
-            for (source, field) in sources.iter().zip(fields.chunks_exact(80)) {
-                let mut values = [0_i64; 10];
-                for (value, bytes) in values.iter_mut().zip(field.chunks_exact(8)) {
+            for (pointer, field) in definitions
+                .iter_mut()
+                .zip(fields.chunks_exact(STRIDE))
+                .take(sources.len())
+            {
+                *pointer = usize::try_from(u64::from_le_bytes(field[108..116].try_into().unwrap()))
+                    .unwrap_or(0);
+            }
+            let mut def_valid = [false; BATCH];
+            if rebuild_located && def_vtable.is_some() && null_def_vtable.is_some() {
+                let batch_copied = memory.copy_records(
+                    RecordSources::Pointers(&definitions[..sources.len()]),
+                    &DEF_LAYOUT,
+                    &mut def_bytes,
+                );
+                let ready = batch_copied / DEF_FIELDS.len();
+                for index in 0..ready {
+                    def_valid[index] = definitions[index] != 0;
+                }
+                for index in ready..sources.len() {
+                    if definitions[index] == 0 {
+                        continue;
+                    }
+                    let slice = &mut def_bytes[index * DEF_STRIDE..(index + 1) * DEF_STRIDE];
+                    def_valid[index] = memory.copy_records(
+                        RecordSources::Pointers(&definitions[index..index + 1]),
+                        &DEF_LAYOUT,
+                        slice,
+                    ) == DEF_FIELDS.len();
+                }
+            }
+            let after = witness.quiet();
+            let batch_refusal: Option<&'static str> = if !rebuild_located {
+                Some("variant stat rebuild site unlocated")
+            } else {
+                match (before, after) {
+                    (Err(reason), _) | (_, Err(reason)) => Some(reason),
+                    (Ok(b), Ok(a)) if b != a => Some("variant stat writer crossed read"),
+                    (Ok(_), Ok(_)) => None,
+                }
+            };
+            for (slot, (source, field)) in
+                sources.iter().zip(fields.chunks_exact(STRIDE)).enumerate()
+            {
+                let mut raw = [0_i64; STAT_LANE_COUNT];
+                for (value, bytes) in raw.iter_mut().zip(field[..80].chunks_exact(8)) {
                     *value = i64::from_le_bytes(bytes.try_into().unwrap());
+                }
+                let mut values = [None; STAT_LANE_COUNT];
+                if let Some(reason) = batch_refusal {
+                    for lane in 0..STAT_LANE_COUNT {
+                        witness.record_withheld(lane, reason);
+                    }
+                } else {
+                    let def_slice = &def_bytes[slot * DEF_STRIDE..(slot + 1) * DEF_STRIDE];
+                    let def_vtable_ok = def_valid[slot]
+                        && def_vtable.zip(null_def_vtable).is_some_and(|(expected, null)| {
+                            let vtable = u64::from_le_bytes(def_slice[..8].try_into().unwrap());
+                            vtable == expected as u64 || vtable == null as u64
+                        });
+                    if !def_vtable_ok {
+                        for lane in 0..STAT_LANE_COUNT {
+                            witness.record_withheld(lane, "variant definition unverified for stat cache");
+                        }
+                    } else {
+                        let upgrades = u32::from_le_bytes(field[80..84].try_into().unwrap());
+                        let modules = u32::from_le_bytes(field[84..88].try_into().unwrap());
+                        let bonus_sources = u32::from_le_bytes(field[88..92].try_into().unwrap());
+                        let named_bonuses = u32::from_le_bytes(field[92..96].try_into().unwrap());
+                        let org_bonuses = u32::from_le_bytes(field[96..100].try_into().unwrap());
+                        let build_cost_3d0 =
+                            i64::from_le_bytes(field[100..108].try_into().unwrap());
+                        let classifier_flags =
+                            u64::from_le_bytes(field[116..124].try_into().unwrap());
+                        let is_plane = (classifier_flags & cequipment_type::PLANE_MASK) != 0;
+                        let type_rel_bonuses =
+                            i32::from_le_bytes(def_slice[88..92].try_into().unwrap());
+                        let mut base_stats = [0_i64; STAT_LANE_COUNT];
+                        for (dst, bytes) in base_stats.iter_mut().zip(def_slice[8..88].chunks_exact(8))
+                        {
+                            *dst = i64::from_le_bytes(bytes.try_into().unwrap());
+                        }
+                        let unmodified = upgrades == 0
+                            && modules == 0
+                            && bonus_sources == 0
+                            && named_bonuses == 0
+                            && org_bonuses == 0
+                            && type_rel_bonuses == 0;
+                        let no_design_parts =
+                            upgrades == 0 && modules == 0 && type_rel_bonuses == 0;
+                        for lane in 0..STAT_LANE_COUNT {
+                            let val = raw[lane];
+                            let refusal: Option<&'static str> = match lane {
+                                1 if is_plane && val < STAT_FIXED_ONE => {
+                                    Some("variant stat air_defence below plane minimum")
+                                }
+                                3 if is_plane && val < STAT_FIXED_ONE => {
+                                    Some("variant stat air_agility below plane minimum")
+                                }
+                                4 if val < 0 => Some("variant stat maximum_speed is negative"),
+                                5 if val < 0 => Some("variant stat reliability is negative"),
+                                _ => None,
+                            };
+                            if let Some(reason) = refusal {
+                                witness.record_withheld(lane, reason);
+                                continue;
+                            }
+                            if lane == 9 && no_design_parts && val != build_cost_3d0 {
+                                witness.record_withheld(
+                                    lane,
+                                    "variant stat build_cost_ic disagrees with resource build cost",
+                                );
+                                continue;
+                            }
+                            if unmodified {
+                                let base_val = base_stats[lane];
+                                let matches = match lane {
+                                    1 => val == if is_plane { base_val.max(STAT_FIXED_ONE) } else { base_val },
+                                    3 => {
+                                        let no_thrust = if is_plane {
+                                            base_val.max(STAT_FIXED_ONE)
+                                        } else {
+                                            base_val
+                                        };
+                                        if val == no_thrust {
+                                            true
+                                        } else if is_plane && raw[6] < raw[7] {
+                                            let factor = *thrust_factor.get_or_insert_with(|| {
+                                                engine_sites::at(base, THRUST_WEIGHT_AGILITY_FACTOR_RVA)
+                                                    .and_then(|at| read::<i64>(memory, at))
+                                            });
+                                            factor.and_then(|factor| {
+                                                raw[7]
+                                                    .checked_sub(raw[6])?
+                                                    .checked_mul(factor)?
+                                                    .checked_div(STAT_FIXED_ONE)?
+                                                    .checked_add(base_val)
+                                                    .map(|v| v.max(STAT_FIXED_ONE))
+                                            }) == Some(val)
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                    4 => val == base_val.max(0),
+                                    5 => {
+                                        val == base_val.clamp(0, STAT_FIXED_ONE)
+                                            || val == base_val.max(0)
+                                    }
+                                    _ => val == base_val,
+                                };
+                                if !matches {
+                                    witness.record_withheld(lane, STAT_LANES[lane].mismatch_reason);
+                                    continue;
+                                }
+                            }
+                            values[lane] = Some(val);
+                        }
+                    }
                 }
                 if carry.fresh(len, source)? {
                     read_organisation(memory, source.pointer(), &mut output[len].organisation)?;

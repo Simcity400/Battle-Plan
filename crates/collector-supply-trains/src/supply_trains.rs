@@ -323,6 +323,7 @@ pub struct Trains {
     access: Arena<u8>,
     access_runs: Arena<[u32; 2]>,
     vehicle_failures: [u32; 3],
+    required_trucks_withheld: Option<&'static str>,
 }
 impl Trains {
     fn new(c: &Capacities) -> Self {
@@ -332,6 +333,7 @@ impl Trains {
             access: Arena::new(c.access),
             access_runs: Arena::new(c.access_runs),
             vehicle_failures: [0; 3],
+            required_trucks_withheld: None,
         }
     }
     pub fn vacant() -> Self {
@@ -341,6 +343,7 @@ impl Trains {
             access: Arena::new(0),
             access_runs: Arena::new(0),
             vehicle_failures: [0; 3],
+            required_trucks_withheld: None,
         }
     }
     fn reset(&mut self) {
@@ -349,6 +352,7 @@ impl Trains {
         self.access.reset();
         self.access_runs.reset();
         self.vehicle_failures = [0; 3];
+        self.required_trucks_withheld = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.countries.allocated_bytes()
@@ -389,6 +393,7 @@ impl Trains {
         self.access_runs.len = trains.runs;
         self.access_runs.required = trains.required_runs;
         self.vehicle_failures = trains.vehicle_failures;
+        self.required_trucks_withheld = trains.required_trucks_withheld;
         qpc().saturating_sub(begin).max(0) as u64
     }
 }
@@ -1224,5 +1229,26 @@ mod tests {
             (11, 2, 9, true, 200)
         );
         assert_eq!(observations.total(), 3);
+    }
+
+    #[test]
+    fn train_inventory_withholds_unverified_required_trucks_while_preserving_other_fields() {
+        let mut capture = read_fixture();
+        capture.trains.countries.rows[0].required_trucks_raw = None;
+        capture.trains.required_trucks_withheld = Some("supply required trucks witness mismatch");
+        let [_, trains] = capture.table_inputs();
+        let TableInput::Sampled(TableView::Complete(replay_data::rows::TableRows::TrainInventory(
+            rows,
+        ))) = trains
+        else {
+            panic!("train inventory stays complete when only required_trucks_raw is withheld");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].required_trucks_raw, Recorded::Value(None));
+        assert_eq!(rows[0].allocated_trucks, Recorded::Value(Some(i32::MIN)));
+        assert_eq!(rows[0].required_trains, Recorded::Value(Some(i32::MAX)));
+        assert_eq!(rows[0].node_count, u32::MAX);
+        assert_eq!(rows[0].allocations.len(), 3);
+        assert_eq!(rows[0].controller_access.len, 3);
     }
 }
