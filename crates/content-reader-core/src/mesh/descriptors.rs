@@ -597,15 +597,52 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     Ok(())
 }
 
+#[derive(Default)]
+struct FileVars(BTreeMap<Vec<u8>, Vec<u8>>);
+
+impl FileVars {
+    fn define(&mut self, item: &parser::Item) {
+        if item.key_quoted {
+            return;
+        }
+        let Some(key) = item.key.as_deref().filter(|key| key.starts_with(b"@")) else {
+            return;
+        };
+        let Some(value) = item.value.scalar() else {
+            return;
+        };
+        let resolved = self.resolve_bytes(value, item.quoted()).to_vec();
+        self.0.entry(key[1..].to_vec()).or_insert(resolved);
+    }
+
+    fn resolve_bytes<'a>(&'a self, value: &'a [u8], quoted: bool) -> &'a [u8] {
+        if quoted || !value.starts_with(b"@") {
+            return value;
+        }
+        self.0
+            .get(&value[1..])
+            .map(Vec::as_slice)
+            .unwrap_or(value)
+    }
+
+    fn resolve_item<'a>(&'a self, item: &'a parser::Item) -> Option<&'a [u8]> {
+        let value = item.value.scalar()?;
+        Some(self.resolve_bytes(value, item.quoted()))
+    }
+}
+
 fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Vec<String> {
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     let mut replaced = Vec::new();
+    let mut vars = FileVars::default();
     for item in &document.items {
+        vars.define(item);
         match item.key.as_deref() {
             Some(b"objectTypes") => {
                 for block in item.value.items().unwrap_or(&[]) {
+                    vars.define(block);
                     if block.key.as_deref() == Some(b"pdxmesh")
-                        && let Some(definition) = mesh_definition(&block.value)
+                        && let Some(definition) = mesh_definition(&block.value, &mut vars)
                         && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
                     {
                         replaced.push(old.name);
@@ -613,7 +650,7 @@ fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Ve
                 }
             }
             Some(b"entity") => {
-                if let Some(definition) = entity_definition(&item.value)
+                if let Some(definition) = entity_definition(&item.value, &mut vars)
                     && let Some(old) = out.entities.insert(definition.name.clone(), definition)
                 {
                     replaced.push(old.name);
@@ -709,7 +746,9 @@ impl Roster {
             };
             let path = file.text();
             let directory = file.folder_text();
+            let mut vars = FileVars::default();
             for item in &document.items {
+                vars.define(item);
                 if item.keyword_is("animation") {
                     let Some(animation) =
                         animation_definition(&item.value, directory.unwrap_or_default())
@@ -733,7 +772,7 @@ impl Roster {
                         .or_default()
                         .push(animation);
                 } else if item.keyword_is("entity") {
-                    entities.declare(&item.value, &file, &mut roster)?;
+                    entities.declare_with_vars(&item.value, &file, &mut vars, &mut roster)?;
                 } else if item.keyword_is("light")
                     && let Some(fields) = item.value.items()
                 {
@@ -883,14 +922,16 @@ fn add_objects(
     document: &parser::Document,
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
 ) {
-    for item in document
-        .items
-        .iter()
-        .filter(|item| item.keyword_is("objectTypes"))
-    {
+    let mut vars = FileVars::default();
+    for item in &document.items {
+        vars.define(item);
+        if !item.keyword_is("objectTypes") {
+            continue;
+        }
         for object in item.value.items().unwrap_or(&[]) {
+            vars.define(object);
             if object.keyword_is(OBJECTS[0]) {
-                if let Some(mesh) = mesh_definition(&object.value) {
+                if let Some(mesh) = mesh_definition(&object.value, &mut vars) {
                     objects.insert(mesh.name.clone(), Some(mesh));
                 }
             } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
@@ -932,10 +973,21 @@ fn loaded_animation(
 struct Entities(BTreeMap<String, (EntityDefinition, i32)>);
 
 impl Entities {
+    #[cfg(test)]
     fn declare(
         &mut self,
         value: &parser::Value,
         path: &ScriptPath,
+        roster: &mut Roster,
+    ) -> io::Result<()> {
+        self.declare_with_vars(value, path, &mut FileVars::default(), roster)
+    }
+
+    fn declare_with_vars(
+        &mut self,
+        value: &parser::Value,
+        path: &ScriptPath,
+        vars: &mut FileVars,
         roster: &mut Roster,
     ) -> io::Result<()> {
         let Some(fields) = value.items() else {
@@ -983,7 +1035,7 @@ impl Entities {
         if stored.is_some_and(|stored| version < stored) {
             return Ok(());
         }
-        let Some(mut definition) = entity_definition(value) else {
+        let Some(mut definition) = entity_definition(value, vars) else {
             return Ok(());
         };
         roster
@@ -1152,7 +1204,7 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
     })
 }
 
-fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
+fn mesh_definition(value: &parser::Value, vars: &mut FileVars) -> Option<MeshDefinition> {
     let items = value.items()?;
     let name = unquote(text(items, b"name")?);
     let file = unquote(text(items, b"file")?)
@@ -1185,15 +1237,20 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
                 .unwrap_or(squared);
             distance * distance
         });
+    let mut scale = 1.0;
+    for item in items {
+        vars.define(item);
+        if item.keyword_is("scale") {
+            scale = vars
+                .resolve_item(item)
+                .and_then(crt::scan_f32)
+                .unwrap_or(scale);
+        }
+    }
     Some(MeshDefinition {
         name,
         file,
-        scale: items
-            .iter()
-            .filter(|item| item.keyword_is("scale"))
-            .fold(1.0, |held, item| {
-                item.value.scalar().and_then(crt::scan_f32).unwrap_or(held)
-            }),
+        scale,
         settings,
         animations,
         cull_distance_squared,
@@ -1225,7 +1282,7 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
     Some(setting)
 }
 
-fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
+fn entity_definition(value: &parser::Value, vars: &mut FileVars) -> Option<EntityDefinition> {
     let items = value.items()?;
     let name = unquote(text(items, b"name")?);
     if name.is_empty() {
@@ -1313,6 +1370,17 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
             })
         })
         .collect();
+    let mut scale = None;
+    for item in items {
+        vars.define(item);
+        if item.keyword_is("scale") {
+            scale = Some(
+                vars.resolve_item(item)
+                    .and_then(crt::scan_f32)
+                    .unwrap_or_else(|| scale.unwrap_or(1.0)),
+            );
+        }
+    }
     Some(EntityDefinition {
         name,
         game_data: entity_game_data(items),
@@ -1320,17 +1388,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         mesh: text(items, b"pdxmesh").map(unquote),
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
-        scale: items
-            .iter()
-            .filter(|item| item.keyword_is("scale"))
-            .fold(None, |held, item| {
-                Some(
-                    item.value
-                        .scalar()
-                        .and_then(crt::scan_f32)
-                        .unwrap_or_else(|| held.unwrap_or(1.0)),
-                )
-            }),
+        scale,
         cull_radius: Some(
             items
                 .iter()

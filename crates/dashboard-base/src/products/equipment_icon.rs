@@ -176,7 +176,7 @@ pub fn inputs_stamped(layers: &content_reader_core::ResolvedLayers) -> io::Resul
         return Ok(false);
     }
     let default_map = content_reader_core::terrain::read_default_map(layers)?;
-    for name in ["definitions", "continent"] {
+    for name in ["definitions", "provinces", "continent"] {
         let Ok(path) = default_map.file(name) else {
             return Ok(false);
         };
@@ -195,9 +195,7 @@ impl IconContent {
         registry: &content_reader_core::gui::native::resources::Registry,
     ) -> io::Result<Self> {
         let default_map = content_reader_core::terrain::read_default_map(&layers)?;
-        let provinces = content_reader_core::map::parse_definitions(
-            &layers.read(&default_map.file("definitions")?)?,
-        )?;
+        let provinces = content_reader_core::map::load_definitions(&layers)?;
         let defines = content_reader_core::defines::read(&layers)?;
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(&layers, &default_map, &mut warnings)?;
@@ -248,9 +246,7 @@ impl IconContent {
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let default_map = content_reader_core::terrain::read_default_map(layers)?;
-        let provinces = content_reader_core::map::parse_definitions(
-            &layers.read(&default_map.file("definitions")?)?,
-        )?;
+        let provinces = content_reader_core::map::load_definitions(layers)?;
         let defines = content_reader_core::defines::read(layers)?;
         let mut warnings = Vec::new();
         let files = Arc::clone(&catalogue);

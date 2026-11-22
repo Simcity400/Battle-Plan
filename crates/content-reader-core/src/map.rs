@@ -193,6 +193,7 @@ pub fn decode_provinces_bmp(
     definitions: &mut Definitions,
 ) -> io::Result<ProvinceImage> {
     let bitmap = NativeBitmap::decode(input)?;
+    bitmap.require_rgb()?;
     let count = bitmap
         .width
         .checked_mul(bitmap.height)
@@ -292,6 +293,13 @@ pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors>
         apply_autonomy_colors(&mut colors, &path.read(layers)?, &names)?;
     }
     Ok(colors)
+}
+
+pub fn load_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<u32, ProvinceDefinition>> {
+    let files = crate::terrain::read_default_map(layers)?;
+    let mut definitions = read_definitions(&layers.read(&files.file("definitions")?)?)?;
+    decode_provinces_bmp(&layers.read(&files.file("provinces")?)?, &mut definitions)?;
+    Ok(definitions.provinces)
 }
 
 pub fn load(layers: &ResolvedLayers) -> io::Result<MapData> {
@@ -685,5 +693,26 @@ mod tests {
             .to_string();
         assert!(error.contains("u16 province IDs"), "{error}");
         assert_eq!(full.provinces.len(), 1 << 16);
+    }
+
+    #[test]
+    fn malformed_packed_bmp_fails_rgb_bounds_before_allocating_province_ids() {
+        let mut definitions = read_definitions(b"0;0;0;0;land\n1;1;2;3;land\n").unwrap();
+        let mut packed = vec![0_u8; 54];
+        packed[..2].copy_from_slice(b"BM");
+        packed[2..6].copy_from_slice(&54_u32.to_le_bytes());
+        packed[10..14].copy_from_slice(&54_u32.to_le_bytes());
+        packed[14..18].copy_from_slice(&40_u32.to_le_bytes());
+        packed[18..22].copy_from_slice(&4_i32.to_le_bytes());
+        packed[22..26].copy_from_slice(&i32::MAX.to_le_bytes());
+        packed[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        packed[28..30].copy_from_slice(&1_u16.to_le_bytes());
+        let error = decode_provinces_bmp(&packed, &mut definitions)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("pixel reads outside the native bitmap storage"),
+            "{error}"
+        );
     }
 }

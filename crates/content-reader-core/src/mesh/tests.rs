@@ -2153,3 +2153,43 @@ fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
     assert!((resolve("switched") - 0.3).abs() < 1e-6);
     assert!((resolve("bad_override") - 2.5).abs() < 1e-6);
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
+    let roster = roster_of(
+        "var_scales",
+        &[
+            (
+                "gfx/models/meshes.gfx",
+                br#"@mesh_factor = 2.5
+                    @mesh_factor = 9.0
+                    objectTypes = {
+                        pdxmesh = { name = early file = e.mesh scale = @late_mesh }
+                        pdxmesh = { name = var_mesh file = m.mesh scale = @mesh_factor }
+                        pdxmesh = { name = quoted_mesh file = q.mesh scale = 3.0 scale = "@mesh_factor" }
+                    }
+                    @late_mesh = 4.0"#,
+            ),
+            (
+                "gfx/entities/scales.asset",
+                br#"@base_scale = 0.4
+                    @override_scale = 1.6
+                    entity = { name = "base" pdxmesh = "var_mesh" scale = @base_scale }
+                    entity = { name = "inherited" clone = "base" }
+                    entity = { name = "overridden" clone = "base" scale = @override_scale }
+                    entity = { name = "forward" clone = "base" scale = @after_clone }
+                    @after_clone = 5.0"#,
+            ),
+        ],
+        &[],
+    );
+    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    assert!((resolve("early") - 1.0).abs() < 1e-6);
+    assert!((resolve("var_mesh") - 2.5).abs() < 1e-6);
+    assert!((resolve("quoted_mesh") - 3.0).abs() < 1e-6);
+    assert!((resolve("base") - 1.0).abs() < 1e-6);
+    assert!((resolve("inherited") - 1.0).abs() < 1e-6);
+    assert!((resolve("overridden") - 4.0).abs() < 1e-6);
+    assert!((resolve("forward") - 2.5).abs() < 1e-6);
+}

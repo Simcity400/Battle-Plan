@@ -67,7 +67,12 @@ impl Database {
 
     fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
         for field in body.iter().filter(|field| field.keyword_is("color")) {
-            self.colors[index].get_or_insert_default().read(field);
+            if let Some(message) = self.colors[index].get_or_insert_default().read(field) {
+                self.notes.push(format!(
+                    "state category {}: {message}",
+                    String::from_utf8_lossy(&self.names[index])
+                ));
+            }
         }
     }
 
@@ -231,7 +236,7 @@ mod tests {
             Some([2.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0, 1.0])
         );
         let packed = parse(
-            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}} argb={color=0x80102030}}",
+            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}} argb={color=0x80102030} bad={color={10 20 30} color=0xg} zero={color={10 20 30} color=0x}}",
             &KeyNames::default(),
         )
         .unwrap();
@@ -244,6 +249,21 @@ mod tests {
         assert_eq!(
             packed.color(b"argb").unwrap(),
             Some([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 128.0 / 255.0])
+        );
+        assert_eq!(
+            packed.color(b"bad").unwrap(),
+            Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0])
+        );
+        assert_eq!(packed.color(b"zero").unwrap(), Some([0.0; 4]));
+        assert!(
+            packed.notes.iter().any(|note| note.contains("0xg")),
+            "{:?}",
+            packed.notes
+        );
+        assert!(
+            packed.notes.iter().all(|note| !note.contains("`0x`")),
+            "{:?}",
+            packed.notes
         );
     }
 

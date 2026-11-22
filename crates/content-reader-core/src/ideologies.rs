@@ -192,20 +192,26 @@ impl Default for ColorReads {
 }
 
 impl ColorReads {
-    pub fn read(&mut self, item: &Item) {
+    pub fn read(&mut self, item: &Item) -> Option<String> {
         let Some(components) = item.value.items() else {
             if item.number() {
-                let value = match scan_x32(item.value.scalar().unwrap_or_default()) {
+                let text = item.value.scalar().unwrap_or_default();
+                let value = match scan_x32(text) {
                     Scanned::Stored(value) => Some(value),
                     Scanned::End => Some(0),
-                    Scanned::NoMatch => None,
+                    Scanned::NoMatch => {
+                        return Some(format!(
+                            "field `color` has malformed packed colour `{}`: previous colour kept",
+                            text.escape_ascii()
+                        ));
+                    }
                 };
                 if let Some(value) = value {
                     let [b, g, r, a] = value.to_le_bytes();
                     self.color = [r, g, b, a].map(|byte| f32::from(byte) / 255.0);
                 }
             }
-            return;
+            return None;
         };
         for (index, component) in components.iter().enumerate().take(4) {
             let text = component.value.scalar().unwrap_or_default();
@@ -226,6 +232,7 @@ impl ColorReads {
                 self.color[3] = 1.0;
             }
         }
+        None
     }
 
     pub fn color(&self) -> Result<[f32; 4], String> {
@@ -233,8 +240,9 @@ impl ColorReads {
     }
 }
 
-fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
+fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>, Vec<String>) {
     let mut groups = Vec::new();
+    let mut misreads = Vec::new();
     let roots = items.iter().filter(|item| item.keyword_is("ideologies"));
     for item in roots.flat_map(|root| root.value.items().unwrap_or_default()) {
         let mut unheld = Unheld::default();
@@ -243,7 +251,9 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
         let mut types: Vec<String> = Vec::new();
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("color") {
-                color.read(field);
+                if let Some(message) = color.read(field) {
+                    misreads.push(message);
+                }
             } else if field.keyword_is("types") {
                 for kind in field
                     .value
@@ -264,10 +274,10 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
                 color: color.color(),
                 types,
             }),
-            (_, cause) => return (groups, cause.map(str::to_owned)),
+            (_, cause) => return (groups, cause.map(str::to_owned), misreads),
         }
     }
-    (groups, None)
+    (groups, None, misreads)
 }
 
 fn number_groups(
@@ -321,7 +331,13 @@ fn read_ideologies(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate
                 .iter()
                 .map(|misread| (misread.kind, format!("Ideologies in {path}: {misread}."))),
         );
-        let (_, unheld) = groups(&read.items);
+        let (_, unheld, color_misreads) = groups(&read.items);
+        warnings.extend(color_misreads.into_iter().map(|message| {
+            (
+                crate::DiagnosticKind::Misread,
+                format!("Ideologies in {path}: {message}."),
+            )
+        }));
         let stop = undecided
             .first()
             .map(|cause| (crate::DiagnosticKind::Unsettled, cause.to_string()))
@@ -343,7 +359,7 @@ fn read_ideologies(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate
             .iter()
             .filter(|item| item.keyword_is("ideologies"))
         {
-            let (block, _) = groups(std::slice::from_ref(root));
+            let (block, _, _) = groups(std::slice::from_ref(root));
             for existing in &mut result.groups {
                 if result
                     .frames

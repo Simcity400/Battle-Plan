@@ -120,7 +120,7 @@ const SCRIPTED: &str = "defined_text = { name = GetModText text = { localization
 fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cached_vp() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     use replay_data::rows::{LexicalTokenRow, ProvinceRow, StateResistanceRow, StateRow};
-    let (cat, _folder) = catalogue_with(
+    let (cat, folder) = catalogue_with(
         "",
         concat!(
             " mod_continent:0 \"Generic continent\"\n",
@@ -147,6 +147,15 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
             ),
         ],
     );
+    let mut bmp = vec![0_u8; 58];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..57].copy_from_slice(&[0, 0, 1]);
+    std::fs::write(folder.0.join("map/provinces.bmp"), bmp).unwrap();
     let content = cat.scripted_content().unwrap();
     let mut f = complete_frame();
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {

@@ -224,7 +224,9 @@ impl TerrainDefinitions {
         for field in entry.value.items().unwrap_or_default() {
             let keyword = field.keyword().map(|keyword| keyword.folded());
             if keyword.as_deref() == Some(b"color") {
-                color.read(field);
+                if let Some(message) = color.read(field) {
+                    self.skipped.push(format!("{what}: {message}"));
+                }
                 continue;
             }
             if keyword.as_deref() == Some(b"minimum_seazone_dominance") {
