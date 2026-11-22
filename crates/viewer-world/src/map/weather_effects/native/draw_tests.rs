@@ -521,6 +521,7 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
         })],
         instanced: 0,
         stream: None,
+        vertex_color_tint: None,
     };
     let clear = |encoder: &mut wgpu::CommandEncoder| {
         let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -788,6 +789,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         })],
         instanced: 0,
         stream: None,
+        vertex_color_tint: None,
     };
     let old_arena = gpu::Arena::new(&device);
     let arena = gpu::Arena::new(&device);

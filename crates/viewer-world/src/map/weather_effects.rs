@@ -87,15 +87,43 @@ impl Parameter {
             curve,
         }
     }
+    #[cfg(test)]
     fn sample(&self, random: f32, age: f32) -> f32 {
         self.animate(self.base + (random * 2.0 - 1.0) * self.spread, age)
     }
+    fn sample_spawn(&self, random: f32, system_age: f32) -> f32 {
+        let base = match &self.curve {
+            Some(curve) if curve.time == TimeMode::Spawn => curve.apply(self.base, system_age),
+            _ => self.base,
+        };
+        base + (random * 2.0 - 1.0) * self.spread
+    }
+    fn has_live_curve(&self) -> bool {
+        self.curve
+            .as_ref()
+            .is_some_and(|curve| curve.time != TimeMode::Spawn)
+    }
+    #[cfg(test)]
     fn animate(&self, value: f32, age: f32) -> f32 {
-        value * self.curve.as_ref().map_or(1.0, |c| c.sample(age))
+        self.curve.as_ref().map_or(value, |c| c.apply(value, age))
+    }
+    fn animate_particle(&self, value: f32, age: f32, life: f32, system_age: f32) -> f32 {
+        let Some(curve) = &self.curve else {
+            return value;
+        };
+        let time = match curve.time {
+            TimeMode::Spawn => return value,
+            TimeMode::Life => age / life,
+            TimeMode::LifeAbs => age,
+            TimeMode::System => system_age,
+        };
+        curve.apply(value, time)
     }
     fn at(&self, seed: &mut u64, time: f32) -> f32 {
         let base = match &self.curve {
-            Some(curve) if curve.spawn => curve.apply(self.base, time),
+            Some(curve) if matches!(curve.time, TimeMode::Spawn | TimeMode::System) => {
+                curve.apply(self.base, time)
+            }
             _ => self.base,
         };
         if self.spread != 0.0 {
@@ -106,36 +134,35 @@ impl Parameter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TimeMode {
+    Spawn,
+    System,
+    Life,
+    LifeAbs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Op {
+pub(super) enum Op {
     Add,
     Mul,
     Abs,
 }
 
-pub(super) fn curve(knots: &[[f32; 2]], x: f32) -> f32 {
-    for p in knots.windows(2) {
-        if x <= p[1][0] {
-            let t = ((x - p[0][0]) / (p[1][0] - p[0][0]).max(1e-6)).clamp(0.0, 1.0);
-            return p[0][1] + t * (p[1][1] - p[0][1]);
-        }
-    }
-    knots.last().map_or(1.0, |p| p[1])
-}
-
 #[derive(Debug, Clone)]
-struct Curve {
+pub(super) struct Curve {
     samples: [f32; 64],
     start: f32,
     duration: f32,
-    op: Op,
-    spawn: bool,
-    repeat: bool,
+    pub(super) op: Op,
+    pub(super) time: TimeMode,
+    pub(super) repeat: bool,
 }
 impl Curve {
-    fn apply(&self, value: f32, time: f32) -> f32 {
-        let time = if self.repeat {
-            time % (self.start + self.duration)
+    pub(super) fn apply(&self, value: f32, time: f32) -> f32 {
+        let end = self.start + self.duration;
+        let time = if self.repeat && end != 0.0 {
+            time % end
         } else {
             time
         };
@@ -147,7 +174,133 @@ impl Curve {
         }
     }
 
-    fn new(knots: &[[f32; 2]], start: f32, duration: f32, min: f32, max: f32) -> Self {
+    fn curve_number(items: &[Item], name: &str, key: &str, default: f32) -> io::Result<f32> {
+        let Some(value) = get(items, key) else {
+            return Ok(default);
+        };
+        let token = match value {
+            Value::Scalar(_) => value.scalar_str(),
+            Value::Block(entries) if entries.len() == 1 && entries[0].key.is_none() => {
+                entries[0].value.scalar_str()
+            }
+            _ => None,
+        }
+        .ok_or_else(|| invalid(format!("animation curve {name:?} has malformed {key} value")))?;
+        let parsed = token.parse::<f32>().map_err(|_| {
+            invalid(format!(
+                "animation curve {name:?} has malformed {key} value {token:?}"
+            ))
+        })?;
+        if !parsed.is_finite() {
+            return Err(invalid(format!(
+                "animation curve {name:?} has non-finite {key} value {token:?}"
+            )));
+        }
+        Ok(parsed)
+    }
+
+    pub(super) fn parse(items: &[Item]) -> io::Result<Self> {
+        let name = text(items, "name");
+        let mut values = Vec::new();
+        if let Some(raw_curve) = get(items, "curve") {
+            let entries = match raw_curve {
+                Value::Block(entries) => entries.as_slice(),
+                _ => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed curve value"
+                    )));
+                }
+            };
+            values.reserve(entries.len());
+            for entry in entries {
+                if entry.key.is_some() {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed curve entry"
+                    )));
+                }
+                let token = entry.value.scalar_str().ok_or_else(|| {
+                    invalid(format!(
+                        "animation curve {name:?} has nested non-scalar item in curve"
+                    ))
+                })?;
+                let parsed = token.parse::<f32>().map_err(|_| {
+                    invalid(format!(
+                        "animation curve {name:?} has malformed curve value {token:?}"
+                    ))
+                })?;
+                if !parsed.is_finite() {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has non-finite curve value {token:?}"
+                    )));
+                }
+                values.push(parsed);
+            }
+        }
+        if values.len() % 2 != 0 {
+            return Err(invalid(format!(
+                "animation curve {name:?} has an odd number of curve values ({})",
+                values.len()
+            )));
+        }
+        let knots: Vec<[f32; 2]> = values.chunks_exact(2).map(|p| [p[0], p[1]]).collect();
+        for pair in knots.windows(2) {
+            if !(pair[1][0] > pair[0][0]) {
+                return Err(invalid(format!(
+                    "animation curve {name:?} has a non-increasing knot domain"
+                )));
+            }
+        }
+        let op = match get(items, "op") {
+            None => Op::Mul,
+            Some(value) => match value.scalar_str() {
+                Some(raw) => match raw.to_ascii_lowercase().as_str() {
+                    "" | "mul" => Op::Mul,
+                    "add" => Op::Add,
+                    "abs" => Op::Abs,
+                    other => {
+                        return Err(invalid(format!(
+                            "animation curve {name:?} has unsupported op {other:?}"
+                        )));
+                    }
+                },
+                None => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed op value"
+                    )));
+                }
+            },
+        };
+        let time = match get(items, "time") {
+            None => TimeMode::Spawn,
+            Some(value) => match value.scalar_str() {
+                Some("life_abs") => TimeMode::LifeAbs,
+                Some("life") => TimeMode::Life,
+                Some("system") => TimeMode::System,
+                Some(_) => TimeMode::Spawn,
+                None => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed time value"
+                    )));
+                }
+            },
+        };
+        let start = Self::curve_number(items, name, "start", 0.0)?;
+        let duration = Self::curve_number(items, name, "duration", 1.0)?;
+        let min = Self::curve_number(items, name, "minValue", 0.0)?;
+        let max = Self::curve_number(items, name, "maxValue", 1.0)?;
+        let mut curve = Self::new(&knots, start, duration, min, max);
+        curve.op = op;
+        curve.time = time;
+        curve.repeat = parser::read_bool_field(items, "repeat", false);
+        Ok(curve)
+    }
+
+    pub(super) fn new(knots: &[[f32; 2]], start: f32, duration: f32, min: f32, max: f32) -> Self {
+        let duration = if duration.is_finite() && duration > 0.0 {
+            duration
+        } else {
+            1.0
+        };
         let mut controls = Vec::new();
         if knots.len() >= 2 {
             controls.push(std::array::from_fn(|i| 2.0 * knots[0][i] - knots[1][i]));
@@ -181,14 +334,20 @@ impl Curve {
             start,
             duration,
             op: Op::Mul,
-            spawn: true,
+            time: TimeMode::Spawn,
             repeat: false,
         }
     }
-    fn sample(&self, age: f32) -> f32 {
-        let x = ((age - self.start) / self.duration * 64.0).clamp(0.0, 63.0);
-        let i = (x as usize).min(62);
-        self.samples[i] + (self.samples[i + 1] - self.samples[i]) * (x - i as f32)
+    pub(super) fn sample(&self, age: f32) -> f32 {
+        let x = (age - self.start) * 64.0 / self.duration;
+        if x <= 0.0 {
+            self.samples[0]
+        } else if x >= 63.0 {
+            self.samples[63]
+        } else {
+            let i = x as usize;
+            self.samples[i] + (self.samples[i + 1] - self.samples[i]) * (x - i as f32)
+        }
     }
 }
 #[derive(Debug, Clone)]
@@ -543,31 +702,7 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
         .filter(|i| i.key.as_deref() == Some(b"animation"))
     {
         let a = a.value.items().unwrap_or(&[]);
-        let values = get(a, "curve")
-            .map(tokens)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect::<Vec<_>>();
-        let mut curve = Curve::new(
-            &values
-                .chunks_exact(2)
-                .map(|p| [p[0], p[1]])
-                .collect::<Vec<_>>(),
-            number(a, "start", 0.0),
-            number(a, "duration", 1.0),
-            number(a, "minValue", 0.0),
-            number(a, "maxValue", 1.0),
-        );
-        match text(a, "op").to_ascii_lowercase().as_str() {
-            "add" => curve.op = Op::Add,
-            "mul" => curve.op = Op::Mul,
-            "abs" => curve.op = Op::Abs,
-            _ => {}
-        }
-        curve.spawn = !matches!(text(a, "time"), "life" | "life_abs" | "system");
-        curve.repeat = parser::read_bool_field(a, "repeat", false);
-        curves.insert(text(a, "name").to_owned(), curve);
+        curves.insert(text(a, "name").to_owned(), Curve::parse(a)?);
     }
     let system = system_forces(root, &curves);
     let turbulence: Vec<usize> = system
@@ -830,6 +965,8 @@ impl Assets {
         decode: Decode,
     ) -> io::Result<Arc<Self>> {
         let catalog = Catalog::read(layers)?;
+        let mut withheld = catalog.refused().to_vec();
+        let lights = super::entity_effects::Lights::load(layers, &mut withheld)?;
         let mut out = Self {
             effect: super::particle_shader::load(layers, map, decode)?,
             max_particles: 0,
@@ -840,8 +977,8 @@ impl Assets {
             systems: BTreeMap::new(),
             pages: Vec::new(),
             entities: BTreeMap::new(),
-            withheld: catalog.refused().to_vec(),
-            lights: super::entity_effects::Lights::load(layers)?,
+            withheld,
+            lights,
         };
         const POSITIONS: &str = "map/weatherpositions.txt";
         let (positions, skipped) = match layers.read_uncovered(POSITIONS) {
@@ -1224,6 +1361,7 @@ struct LiveParticle {
     velocity: [f32; 3],
     size: f32,
     rotation: [f32; 3],
+    rotation_base: [f32; 3],
     spin: [f32; 3],
     color: [f32; 4],
     tile: [u8; 4],
@@ -1239,6 +1377,7 @@ struct Simulation {
     particles: Vec<LiveParticle>,
     accumulator: f32,
     age: f32,
+    update_age: f32,
     time: f32,
     previous_translation: Option<[f32; 3]>,
     order: sort::Order,
@@ -1301,6 +1440,7 @@ impl Simulation {
             particles: Vec::with_capacity(e.max),
             accumulator: 0.0,
             age: 0.0,
+            update_age: 0.0,
             time: time.max(0.0),
             previous_translation: None,
             order: sort::Order::new(&e.render),
@@ -1316,6 +1456,7 @@ impl Simulation {
         self.origin = e.position.each_ref().map(|p| p.at(stream, 0.0));
         self.duration = e.duration.at(stream, 0.0);
         self.age = -e.start.at(stream, 0.0);
+        self.update_age = self.age;
     }
 
     fn waiting(&self) -> bool {
@@ -1382,16 +1523,19 @@ impl Simulation {
         self.accumulator -= births as f32;
         let basis = if births > 0 {
             emitter_basis(
-                e.emitter_yaw.sample(random(&mut self.seed), 0.0),
-                e.emitter_pitch.sample(random(&mut self.seed), 0.0),
+                e.emitter_yaw.sample_spawn(random(&mut self.seed), self.age),
+                e.emitter_pitch.sample_spawn(random(&mut self.seed), self.age),
             )
         } else {
             emitter_basis(0.0, 0.0)
         };
         for ordinal in 0..births {
-            let mut sample = |p: &Parameter| p.sample(random(&mut self.seed), 0.0);
-            let life = sample(&e.life).max(0.01);
-            let mass = sample(&e.mass);
+            let life = e
+                .life
+                .sample_spawn(random(&mut self.seed), self.age)
+                .max(0.01);
+            let mass = e.mass.sample_spawn(random(&mut self.seed), self.age);
+            let mut sample = |p: &Parameter| p.sample_spawn(random(&mut self.seed), self.age);
             let r = sample(&e.radius);
             let sp = -sample(&e.sphere_pitch).to_radians();
             let sy = -sample(&e.sphere_yaw).to_radians();
@@ -1427,23 +1571,28 @@ impl Simulation {
                 ],
             );
             let velocity = space.map_or(velocity, |space| space.vector(velocity));
+            let size = e.size.sample_spawn(random(&mut self.seed), self.age);
+            let rotation = e
+                .rotation
+                .each_ref()
+                .map(|p| p.sample_spawn(random(&mut self.seed), self.age));
+            let spin = e
+                .spin
+                .each_ref()
+                .map(|p| p.sample_spawn(random(&mut self.seed), self.age));
             self.particles.push(LiveParticle {
                 age: 0.0,
                 life,
                 mass,
                 position,
                 velocity,
-                size: e.size.base + (random(&mut self.seed) * 2.0 - 1.0) * e.size.spread,
-                rotation: e
-                    .rotation
-                    .each_ref()
-                    .map(|p| p.sample(random(&mut self.seed), 0.0)),
-                spin: e
-                    .spin
-                    .each_ref()
-                    .map(|p| p.sample(random(&mut self.seed), 0.0)),
+                size,
+                rotation,
+                rotation_base: rotation,
+                spin,
                 color: e.color.each_ref().map(|p| {
-                    (p.base + (random(&mut self.seed) * 2.0 - 1.0) * p.spread).clamp(0.0, 255.0)
+                    p.sample_spawn(random(&mut self.seed), self.age)
+                        .clamp(0.0, 255.0)
                 }),
                 tile: sample_tile(&mut self.seed, e.render.tiles),
             });
@@ -1474,6 +1623,11 @@ impl Simulation {
                 }
             }
         }
+        let shared_spin = self.particles.first().map_or([0.0; 3], |first| {
+            std::array::from_fn(|j| {
+                e.spin[j].animate_particle(first.spin[j], first.age, first.life, self.age)
+            })
+        });
         for p in &mut self.particles {
             if e.forces.is_empty() {
                 let step = scale * dt;
@@ -1481,7 +1635,7 @@ impl Simulation {
                     p.position[j] += p.velocity[j] * step;
                 }
             } else {
-                let mass = e.mass.animate(p.mass, p.age / p.life);
+                let mass = e.mass.animate_particle(p.mass, p.age, p.life, self.age);
                 let placed = std::array::from_fn(|j| p.position[j] + offset[j]);
                 let mut force = [0.0; 3];
                 for applied in &self.applied {
@@ -1497,12 +1651,21 @@ impl Simulation {
                 }
             }
             for j in 0..3 {
-                p.rotation[j] += p.spin[j] * dt;
+                if e.rotation[j].has_live_curve() {
+                    p.rotation[j] = e.rotation[j].animate_particle(
+                        p.rotation_base[j],
+                        p.age,
+                        p.life,
+                        self.age,
+                    );
+                }
+                p.rotation[j] += shared_spin[j] * dt;
             }
         }
         if let Some(space) = space {
             self.previous_translation = Some(space.world.translation);
         }
+        self.update_age = self.age;
         self.age += dt;
     }
     #[cfg(test)]
