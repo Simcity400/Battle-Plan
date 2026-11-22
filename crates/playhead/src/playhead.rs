@@ -1192,6 +1192,58 @@ impl Playhead {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn drive_until(
+        &self,
+        consumer: &mut Consumer,
+        head: Hour,
+        mut ready: impl FnMut() -> std::ops::ControlFlow<Result<(), String>>,
+    ) -> Result<(), String> {
+        let clamped = self.shared.timeline.clamp(head);
+        let mut out = Vec::new();
+        loop {
+            self.advance(head);
+            out.clear();
+            let taken = consumer.take(head, &mut out);
+            let version = {
+                let mut control = lock(&self.shared.control);
+                if control.asks.get(&None) != Some(&clamped) {
+                    if let Some(error) = &control.error {
+                        return Err(error.clone());
+                    }
+                    if control.stop {
+                        return Err("playhead stopped".into());
+                    }
+                    drop(control);
+                    std::thread::yield_now();
+                    continue;
+                }
+                if taken > 0 {
+                    control.version += 1;
+                    self.shared.wake.notify_all();
+                }
+                control.version
+            };
+            if consumer.reaches(head) != Some(false) {
+                std::thread::yield_now();
+                continue;
+            }
+            if let std::ops::ControlFlow::Break(result) = ready() {
+                return result;
+            }
+            let mut control = lock(&self.shared.control);
+            while control.version == version {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("playhead stopped".into());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
     pub fn declarations(&self) -> u64 {
         lock(&self.shared.control).selection
     }

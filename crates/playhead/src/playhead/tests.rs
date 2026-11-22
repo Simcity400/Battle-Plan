@@ -199,16 +199,14 @@ fn advance(playhead: &Playhead, head: i32) {
 }
 
 fn consumer_advance(consumer: &Consumer, head: i32) {
-    while !consumer.shared.ask(Some(consumer.id), head) {
-        std::thread::yield_now();
-    }
-    while !consumer.asked.load(Ordering::Relaxed) {
-        if let Some(mut ring) = super::try_lock(&consumer.shared.ring) {
-            ring.asks(consumer.id);
-            consumer.asked.store(true, Ordering::Relaxed);
-        } else {
-            std::thread::yield_now();
+    let clamped = consumer.shared.timeline.clamp(head);
+    loop {
+        consumer.advance(head);
+        let recorded = super::lock(&consumer.shared.control).asks.get(&Some(consumer.id)) == Some(&clamped);
+        if recorded && consumer.asked.load(Ordering::Relaxed) {
+            return;
         }
+        std::thread::yield_now();
     }
 }
 
@@ -2632,6 +2630,7 @@ fn a_contended_ring_refuses_frame_reads_without_consuming_pending_steps() {
     release_tx.send(()).unwrap();
     holder.join().unwrap();
 
+    assert!(!super::lock(&playhead.shared.ring).asked(consumer.id));
     assert!(reaches(&consumer, 24));
     let mut still_ahead = Vec::new();
     ahead_nonempty(&consumer, &mut still_ahead);
@@ -2644,8 +2643,12 @@ fn a_contended_ring_refuses_frame_reads_without_consuming_pending_steps() {
     let mut held = taken[0].states[&0].clone();
     held.apply(after[0].table(0).unwrap());
     assert!(held.holds(&states[0][0][24]));
-    consumer_advance(&consumer, 24);
+    while !consumer.asked.load(Ordering::Relaxed) {
+        consumer.advance(24);
+        std::thread::yield_now();
+    }
     assert!(consumer.asked.load(Ordering::Relaxed));
+    assert!(super::lock(&playhead.shared.ring).asked(consumer.id));
 }
 
 #[test]
@@ -2690,9 +2693,14 @@ fn a_contended_control_refuses_frame_advances_without_blocking_or_dropping_takes
 
     assert_eq!(super::lock(&playhead.shared.control).head, 0);
     assert!(!consumer.asked.load(Ordering::Relaxed));
+    assert!(!super::lock(&playhead.shared.ring).asked(consumer.id));
 
-    consumer_advance(&consumer, 72);
+    while !consumer.asked.load(Ordering::Relaxed) || super::lock(&playhead.shared.control).head != 72 {
+        consumer.advance(72);
+        std::thread::yield_now();
+    }
     assert!(consumer.asked.load(Ordering::Relaxed));
+    assert!(super::lock(&playhead.shared.ring).asked(consumer.id));
     assert_eq!(super::lock(&playhead.shared.control).head, 72);
     let mut rest = Vec::new();
     playhead.wait_until(|| {

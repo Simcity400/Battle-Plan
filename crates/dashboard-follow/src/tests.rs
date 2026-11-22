@@ -242,11 +242,15 @@ impl Harness {
             let mut played = None;
             let playhead = self.playhead.as_ref().expect("playing");
             playhead
-                .wait_for(|| {
-                    playhead.advance(self.head);
-                    self.consumer.take(self.head, &mut Vec::new());
-                    played = self.played.try_recv().ok();
-                    played.is_some()
+                .drive_until(&mut self.consumer, self.head, || match self.played.try_recv() {
+                    Ok(item) => {
+                        played = Some(item);
+                        std::ops::ControlFlow::Break(Ok(()))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        std::ops::ControlFlow::Break(Err("step hook channel disconnected".into()))
+                    }
                 })
                 .unwrap_or_else(|error| panic!("no step at head {} (the last seen ends at {}, Countries at {}, the newest built at {:?}, playing to {to}): {error}", self.head, self.seen, self.reached, playhead.newest()));
             let played = played.unwrap();
@@ -255,7 +259,6 @@ impl Harness {
                 (self.seen, self.reached) = (played.stats.last, played.head);
             }
             out.push(played);
-            self.consumer.take(self.head, &mut Vec::new());
         }
     }
 

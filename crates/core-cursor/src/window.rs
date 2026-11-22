@@ -1,9 +1,58 @@
-use crate::{Hours, Memory, Owner, PageInfo, Reservation};
+use crate::{Coverage, Hours, Memory, Owner, PageInfo, Reservation};
 use std::{io, mem::size_of, sync::Arc};
+
+pub(crate) fn can_merge(previous: &Coverage, next: &Coverage) -> bool {
+    previous.missing == next.missing
+        && previous.accepted_through(next.hours.first.saturating_sub(1)) == next.accepted_before
+}
+
+pub(crate) fn coverage_runs(coverage: &[Coverage]) -> usize {
+    let mut runs = 0;
+    let mut previous: Option<&Coverage> = None;
+    for item in coverage {
+        if previous.is_none_or(|prev| !can_merge(prev, item)) {
+            runs += 1;
+        }
+        previous = Some(item);
+    }
+    runs
+}
+
+fn boundary_reduction(left: &[Coverage], right: &[Coverage]) -> usize {
+    let (Some(prev), Some(next)) = (left.last(), right.first()) else {
+        return 0;
+    };
+    if i64::from(next.hours.first) == i64::from(prev.hours.last) + 1 {
+        usize::from(can_merge(prev, next))
+    } else if next.hours.first <= prev.hours.last {
+        if right.len() == 1 && next.hours.last <= prev.hours.last {
+            1
+        } else if next.hours.last > prev.hours.last {
+            crate::reference::clip(
+                next,
+                Hours {
+                    first: prev.hours.last + 1,
+                    last: next.hours.last,
+                },
+            )
+            .map_or(0, |clipped| usize::from(can_merge(prev, &clipped)))
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
 
 pub(crate) trait Entry {
     fn info(&self) -> PageInfo;
     fn bytes(&self) -> usize;
+    fn coverage(&self) -> &[Coverage] {
+        &[]
+    }
+    fn coverage_runs(&self) -> usize {
+        0
+    }
 }
 
 type Link<T> = Option<Arc<Node<T>>>;
@@ -11,10 +60,13 @@ struct Node<T> {
     value: Arc<T>,
     left: Link<T>,
     right: Link<T>,
+    first_entry: Arc<T>,
+    last_entry: Arc<T>,
     height: usize,
     count: usize,
     bytes: usize,
     directory_bytes: usize,
+    coverage_runs: usize,
     first: PageInfo,
     last: PageInfo,
     _memory: Reservation,
@@ -47,6 +99,22 @@ fn node<T: Entry>(
         Owner::Metadata,
         size_of::<Node<T>>() + 2 * size_of::<usize>(),
     )?;
+    let left_runs = left.as_ref().map_or(0, |n| n.coverage_runs);
+    let right_runs = right.as_ref().map_or(0, |n| n.coverage_runs);
+    let left_mid = left
+        .as_ref()
+        .map_or(0, |n| boundary_reduction(n.last_entry.coverage(), value.coverage()));
+    let mid_right = right
+        .as_ref()
+        .map_or(0, |n| boundary_reduction(value.coverage(), n.first_entry.coverage()));
+    let coverage_runs = (left_runs + value.coverage_runs() + right_runs)
+        .saturating_sub(left_mid + mid_right);
+    let first_entry = left
+        .as_ref()
+        .map_or_else(|| value.clone(), |n| n.first_entry.clone());
+    let last_entry = right
+        .as_ref()
+        .map_or_else(|| value.clone(), |n| n.last_entry.clone());
     Ok(Arc::new(Node {
         height: 1 + height(&left).max(height(&right)),
         count: 1 + left.as_ref().map_or(0, |n| n.count) + right.as_ref().map_or(0, |n| n.count),
@@ -54,8 +122,11 @@ fn node<T: Entry>(
         directory_bytes: value.info().resident_bytes
             + left.as_ref().map_or(0, |n| n.directory_bytes)
             + right.as_ref().map_or(0, |n| n.directory_bytes),
+        coverage_runs,
         first: left.as_ref().map_or(value.info(), |n| n.first),
         last: right.as_ref().map_or(value.info(), |n| n.last),
+        first_entry,
+        last_entry,
         value,
         left,
         right,
@@ -213,6 +284,9 @@ impl<T: Entry> Tree<T> {
     }
     pub fn directory_bytes(&self) -> usize {
         self.0.as_ref().map_or(0, |n| n.directory_bytes)
+    }
+    pub fn coverage_runs(&self) -> usize {
+        self.0.as_ref().map_or(0, |n| n.coverage_runs)
     }
     pub fn first(&self) -> Option<PageInfo> {
         self.0.as_ref().map(|n| n.first)

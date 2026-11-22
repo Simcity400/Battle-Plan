@@ -327,6 +327,7 @@ enum Payload<D: PageDecoder> {
 struct WindowPage<D: PageDecoder> {
     info: PageInfo,
     payload: Payload<D>,
+    coverage_runs: usize,
     _metadata: Reservation,
 }
 impl<D: PageDecoder> WindowPage<D> {
@@ -351,6 +352,12 @@ impl<D: PageDecoder> crate::window::Entry for WindowPage<D> {
                     + ring._metadata.bytes()
             }
         }
+    }
+    fn coverage(&self) -> &[Coverage] {
+        WindowPage::coverage(self)
+    }
+    fn coverage_runs(&self) -> usize {
+        self.coverage_runs
     }
 }
 struct Snapshot<D: PageDecoder> {
@@ -402,10 +409,7 @@ impl<D: PageDecoder> Snapshot<D> {
                 }
                 next = i64::from(item.hours.last) + 1;
                 if let Some(previous) = &mut pending {
-                    if previous.missing == item.missing
-                        && previous.accepted_through(item.hours.first.saturating_sub(1))
-                            == item.accepted_before
-                    {
+                    if crate::window::can_merge(previous, &item) {
                         previous.hours.last = item.hours.last;
                         continue;
                     }
@@ -472,6 +476,9 @@ impl<S: LogSource> PreparedScope<'_, S> {
                 .restoring
                 .store(!ready.rebase, Ordering::Release);
             self.request
+                .ready_rates
+                .store(ready.state.active_rates(), Ordering::Release);
+            self.request
                 .ready
                 .store(Box::into_raw(ready), Ordering::Release);
         }
@@ -516,6 +523,7 @@ struct Request<S: LogSource> {
     prepared_coverage: AtomicUsize,
     prepared_changes: AtomicUsize,
     active_rates: AtomicUsize,
+    ready_rates: AtomicUsize,
     completed: Mutex<u64>,
     completion: Condvar,
     error: ErrorMailbox,
@@ -672,6 +680,7 @@ impl<S: LogSource> Cursor<S> {
             prepared_coverage: AtomicUsize::new(0),
             prepared_changes: AtomicUsize::new(0),
             active_rates: AtomicUsize::new(state.active_rates()),
+            ready_rates: AtomicUsize::new(0),
             completed: Mutex::new(0),
             completion: Condvar::new(),
             error: ErrorMailbox::new(),
@@ -1387,7 +1396,12 @@ fn reader_loop<S: LogSource>(pool: &Arc<Pool<S>>) {
                     fill(pool, &request, base, target, reverse, speed, refresh, None)?;
                 }
                 let cycles = thread_cycles();
-                prepare_frame(&request, hour, target, reverse, speed, refresh)?;
+                let prepare_hour = if request.restoring.load(Ordering::Acquire) {
+                    request.restore_hour.load(Ordering::Acquire)
+                } else {
+                    hour
+                };
+                prepare_frame(&request, prepare_hour, target, reverse, speed, refresh)?;
                 add_cycles(&request.counters.preparation, cycles);
                 Ok(())
             })();
@@ -1508,6 +1522,7 @@ fn collect_retired<S: LogSource>(request: &Request<S>) {
         unsafe {
             let ready = Box::from_raw(retired);
             request.restoring.store(false, Ordering::Release);
+            request.ready_rates.store(0, Ordering::Release);
             if !ready.adopted {
                 *request.selection.lock().unwrap() = ready.previous.selection.clone();
                 *request.slots.lock().unwrap() = ready.previous.clone();
@@ -1583,7 +1598,17 @@ fn prepare_frame<S: LogSource>(
 ) -> io::Result<()> {
     let read = request.published.read();
     if let Some(snapshot) = read.get() {
-        prepare_frame_for(request, snapshot, hour, target, reverse, speed, refresh)?;
+        let pending_rates = request.ready_rates.load(Ordering::Acquire);
+        prepare_frame_for(
+            request,
+            snapshot,
+            hour,
+            target,
+            reverse,
+            speed,
+            refresh,
+            pending_rates,
+        )?;
     }
     Ok(())
 }
@@ -1595,32 +1620,34 @@ fn prepare_frame_for<S: LogSource>(
     reverse: bool,
     speed: f64,
     refresh: f64,
+    pending_rates: usize,
 ) -> io::Result<()> {
     let span = window(hour, target, reverse, speed, refresh, true).intersection(snapshot.served);
     if let Some(span) = span {
-        let changes = frame_capacity(
-            snapshot,
-            span,
-            snapshot.selection.len(),
-            request.active_rates.load(Ordering::Acquire),
-        );
-        let coverage = snapshot.coverage(snapshot.served, |_| Ok(()))?;
+        let rates = request
+            .active_rates
+            .load(Ordering::Acquire)
+            .max(pending_rates);
+        let changes = frame_capacity(snapshot, span, snapshot.selection.len(), rates);
+        let coverage = snapshot.pages.coverage_runs();
         prepare_workspace(request, coverage, changes)?;
     }
     Ok(())
 }
 fn prepare_workspace<S: LogSource>(
     request: &Request<S>,
-    coverage: usize,
-    changes: usize,
+    requested_coverage: usize,
+    requested_changes: usize,
 ) -> io::Result<()> {
     let prepared_coverage = request.prepared_coverage.load(Ordering::Acquire);
     let prepared_changes = request.prepared_changes.load(Ordering::Acquire);
-    let coverage = coverage
-        .max(request.coverage_capacity.load(Ordering::Acquire))
+    let current_coverage = request.coverage_capacity.load(Ordering::Acquire);
+    let current_changes = request.change_capacity.load(Ordering::Acquire);
+    let mut coverage = requested_coverage
+        .max(current_coverage)
         .max(prepared_coverage);
-    let changes = changes
-        .max(request.change_capacity.load(Ordering::Acquire))
+    let mut changes = requested_changes
+        .max(current_changes)
         .max(prepared_changes);
     if coverage == prepared_coverage && changes == prepared_changes {
         return Ok(());
@@ -1648,14 +1675,19 @@ fn prepare_workspace<S: LogSource>(
             unsafe {
                 drop(Box::from_raw(old));
             }
-            request.prepared_coverage.store(
-                request.coverage_capacity.load(Ordering::Acquire),
-                Ordering::Release,
-            );
-            request.prepared_changes.store(
-                request.change_capacity.load(Ordering::Acquire),
-                Ordering::Release,
-            );
+            let current_coverage = request.coverage_capacity.load(Ordering::Acquire);
+            let current_changes = request.change_capacity.load(Ordering::Acquire);
+            request
+                .prepared_coverage
+                .store(current_coverage, Ordering::Release);
+            request
+                .prepared_changes
+                .store(current_changes, Ordering::Release);
+            coverage = requested_coverage.max(current_coverage);
+            changes = requested_changes.max(current_changes);
+            if coverage == current_coverage && changes == current_changes {
+                return Ok(());
+            }
             build(coverage, changes)?
         }
         Err(error) => return Err(error),
@@ -1812,9 +1844,14 @@ fn window_page<S: LogSource>(
         Owner::Metadata,
         size_of::<WindowPage<S::Decoder>>() + 2 * size_of::<usize>(),
     )?;
+    let coverage_runs = crate::window::coverage_runs(match &payload {
+        Payload::Forward(page) => &page.coverage,
+        Payload::Reverse(ring) => &ring.coverage,
+    });
     Ok(Arc::new(WindowPage {
         info,
         payload,
+        coverage_runs,
         _metadata: metadata,
     }))
 }
@@ -1921,19 +1958,25 @@ fn fill<S: LogSource>(
         pages = crate::window::Tree::default();
     }
     if let Some(served) = existing {
-        publish(request, snapshot(request, pages.clone(), served, reverse)?);
-    }
-    add_cycles(&request.counters.publication, cycles);
-    if pending.ready.is_some() {
-        if let Some(served) = existing {
-            let publication = thread_cycles();
-            let next = snapshot(request, pages.clone(), served, reverse)?;
-            prepare_frame_for(request, &next, hour, target, reverse, speed, refresh)?;
-            publish(request, next);
+        let next = snapshot(request, pages.clone(), served, reverse)?;
+        if let Some(ready) = pending.ready.as_ref() {
+            prepare_frame_for(
+                request,
+                &next,
+                hour,
+                target,
+                reverse,
+                speed,
+                refresh,
+                ready.state.active_rates(),
+            )?;
+        }
+        publish(request, next);
+        if pending.ready.is_some() {
             pending.handoff(served, false);
-            add_cycles(&request.counters.publication, publication);
         }
     }
+    add_cycles(&request.counters.publication, cycles);
     let extension = match existing {
         Some(span) if reverse => Hours {
             first: desired.first,
@@ -2089,7 +2132,20 @@ fn fill<S: LogSource>(
             }
             if span.first <= span.last {
                 let next = snapshot(request, next_pages.clone(), span, reverse)?;
-                prepare_frame_for(request, &next, hour, target, reverse, speed, refresh)?;
+                let pending_rates = pending.ready.as_ref().map_or_else(
+                    || request.ready_rates.load(Ordering::Acquire),
+                    |ready| ready.state.active_rates(),
+                );
+                prepare_frame_for(
+                    request,
+                    &next,
+                    hour,
+                    target,
+                    reverse,
+                    speed,
+                    refresh,
+                    pending_rates,
+                )?;
                 request
                     .counters
                     .peak

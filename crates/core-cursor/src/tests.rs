@@ -701,6 +701,96 @@ fn a_resident_span_that_grows_after_a_miss_gets_a_larger_workspace() {
     assert_eq!(cursor.values().hour(), 4);
 }
 #[test]
+fn oom_workspace_retry_drops_unclaimed_maxima_and_fits_the_new_window() {
+    let memory = Memory::new(64_000_000).unwrap();
+    let keys = 50_000usize;
+    let pairs = 550_000 / (2 * std::mem::size_of::<Coverage>());
+    let half = (pairs * 2) as Hour;
+    let ended = Record {
+        hour: 2,
+        value: Value::End,
+        provenance: Provenance::default(),
+        break_before: false,
+    };
+    let mut dense_coverage = Vec::with_capacity(pairs * 2);
+    let reason = Text::copy_from(&memory, Owner::State, "").unwrap();
+    for pair in 0..pairs {
+        let even = half + 1 + (pair * 2) as Hour;
+        let odd = even + 1;
+        dense_coverage.push(Coverage {
+            hours: Hours { first: even, last: even },
+            missing: None,
+            accepted_before: (half + 1) as u64 + pair as u64,
+        });
+        dense_coverage.push(Coverage {
+            hours: Hours { first: odd, last: odd },
+            missing: Some(Missing {
+                kind: MissingKind::NotRecorded,
+                reason: reason.clone(),
+                hours: Hours { first: odd, last: odd },
+            }),
+            accepted_before: (half + 1) as u64 + pair as u64 + 1,
+        });
+    }
+    let last_hour = half * 2;
+    let pages = vec![
+        page(0, 0, 0, vec![], vec![prepared(0, 0)]),
+        page(1, 1, 1, vec![], vec![prepared(1, 1)]),
+        page(
+            2,
+            2,
+            2,
+            (0..keys).map(|key| (2, key as u64, ended.clone())).collect(),
+            vec![prepared(2, 2)],
+        ),
+        page(3, 3, half, vec![], vec![prepared(3, half)]),
+        page(4, half + 1, last_hour, vec![], dense_coverage),
+    ];
+    let source = Arc::new(InMemory::new(&memory, -1, vec![], pages).unwrap());
+    let mut page4 = None;
+    source
+        .pages(
+            &KeyFilter::All,
+            Hours {
+                first: half + 1,
+                last: half + 1,
+            },
+            &mut |info| {
+                page4 = Some(info);
+                ControlFlow::Break(())
+            },
+        )
+        .unwrap();
+    let page4 = page4.unwrap();
+    let open_speed = f64::from(half) / 2.0;
+    let mut cursor = Cursor::open_with(
+        &source,
+        KeyFilter::All,
+        0,
+        options(&memory, open_speed, open_speed / 2.0),
+    )
+    .unwrap();
+    cursor.wait_read_ahead().unwrap();
+    let window_bytes = cursor.stats().window_bytes;
+    let coverage_bytes = (pairs * 2 + 1) * std::mem::size_of::<Coverage>();
+    let changes_bytes = keys * std::mem::size_of::<usize>();
+    assert!(window_bytes + 32_768 < coverage_bytes);
+    assert!(coverage_bytes + 32_768 < window_bytes + changes_bytes);
+    let headroom = window_bytes + page4.resident_bytes + 32_768;
+    let _pressure = memory
+        .soft()
+        .reserve(Owner::Transient, memory.limit() - memory.used() - headroom)
+        .unwrap();
+    cursor.playback(f64::from(half), f64::from(half)).unwrap();
+    cursor.wait_read_ahead().unwrap();
+    assert_eq!(cursor.stats().scope_changes, 0);
+    assert_eq!(cursor.stats().shortened_windows, 0);
+    assert_eq!(cursor.stats().window_hours, last_hour as u64);
+    assert!(cursor.advance(1).unwrap().applied);
+    assert_eq!(cursor.stats().capacity_misses, 0);
+    assert!(memory.peak() <= memory.limit());
+}
+#[test]
 fn dictionary_slots_preserve_identities_wider_than_a_machine_word() {
     let memory = Memory::new(8_000_000).unwrap();
     let mut bytes = vec![0x81; 40];
@@ -940,6 +1030,61 @@ fn an_underrun_inside_the_previous_window_recovers_once_and_plays_on_both_ways()
         assert_eq!(cursor.stats().catch_ups, 1);
         assert_eq!(cursor.stats().catch_up_drops, 1);
     }
+}
+#[test]
+fn reverse_catch_up_into_a_quiet_frame_with_an_active_rate_reserves_its_change_slot() {
+    let memory = Memory::new(16_000_000).unwrap();
+    let pages = (0..=100)
+        .map(|hour| {
+            let changes = if hour == 17 {
+                vec![(
+                    17,
+                    0,
+                    record(
+                        17,
+                        Value::Accumulating(Accumulation {
+                            total: Total::Known(10),
+                            rate: 2,
+                            anchor_hour: 17,
+                            accepted_at_anchor: 18,
+                            rate_began: 17,
+                        }),
+                    ),
+                )]
+            } else if hour == 30 {
+                vec![(30, 0, number(30, 100.0))]
+            } else {
+                vec![]
+            };
+            page(hour as u64, hour, hour, changes, vec![prepared(hour, hour)])
+        })
+        .collect();
+    let source = Arc::new(
+        InMemory::new(
+            &memory,
+            -1,
+            vec![Row {
+                address: address(0),
+                record: number(-1, 0.0),
+            }],
+            pages,
+        )
+        .unwrap(),
+    );
+    let mut cursor =
+        Cursor::open_with(&source, KeyFilter::All, 100, options(&memory, -2.0, 2.0)).unwrap();
+    cursor.wait_read_ahead().unwrap();
+    assert_eq!(cursor.rewind(20).unwrap().status, DeltaStatus::CatchingUp);
+    cursor.wait_read_ahead().unwrap();
+    let delta = cursor.rewind(20).unwrap();
+    assert!(delta.applied && delta.full_refresh);
+    assert_eq!(cursor.values().hour(), 20);
+    assert_eq!(value(cursor.values(), 0).value, ValueRef::Fixed(16));
+    let delta = cursor.rewind(19).unwrap();
+    assert!(delta.applied && !delta.full_refresh);
+    assert_eq!(delta.changes().len(), 1);
+    assert_eq!(value(cursor.values(), 0).value, ValueRef::Fixed(14));
+    assert_eq!(cursor.stats().catch_ups, 1);
 }
 #[test]
 fn a_catch_up_joins_before_the_rest_of_its_window_is_read() {
