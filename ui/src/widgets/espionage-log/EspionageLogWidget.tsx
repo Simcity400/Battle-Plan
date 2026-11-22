@@ -19,6 +19,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
 import { loadTransientProduct, useProduct } from '../../dashboard/products';
@@ -84,7 +85,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const paint = useCallback((reply: EspionageOperationsReply) => { latest.current = reply; paintOperations(root.current, reply); }, []);
   const structure = useCallback((reply: EspionageOperationsReply) => underWayStructure(reply, order), [order]);
   const params = useMemo(() => track ? {} : null, [track]);
-  const head = useHeadProduct<EspionageOperationsReply>(runtime, widget, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
+  const head = useHeadProduct<EspionageOperationsReply>(runtime, useGate(runtime, widget), 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
   if (head.data && head.read !== 'followed') latest.current = head.data;
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? pinned ?? lastHour;

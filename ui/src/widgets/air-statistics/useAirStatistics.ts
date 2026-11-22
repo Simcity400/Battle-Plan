@@ -4,6 +4,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useProduct } from '../../dashboard/products';
 import { channelIndex, DEFAULT_CHANNEL, statisticName, validateAirStatistics } from './airStatisticsData.ts';
 import { OPTIONS } from './definition';
@@ -20,7 +21,7 @@ export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, act
   const channel = options.channel ? contentKey(String(options.channel)) : DEFAULT_CHANNEL;
   const index = channelIndex(channel);
   const params = track && tag && index !== null ? { country: countryFromKey(tag), channel: index } : null;
-  const product = useHeadProduct<AirStatisticsReply>(runtime, widget, 'air-statistics', params, { active, validate: validateAirStatistics, structure });
+  const product = useHeadProduct<AirStatisticsReply>(runtime, useGate(runtime, widget), 'air-statistics', params, { active, validate: validateAirStatistics, structure });
   return { track, tag, channel, options, ...product };
 }
 

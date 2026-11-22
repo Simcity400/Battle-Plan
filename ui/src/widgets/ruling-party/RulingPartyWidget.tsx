@@ -191,7 +191,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     [popularity.revision, popularity.subscribe]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="palette" message="Load a campaign and choose a country to see its politics." />;
-  if (following && shownHour === null && (live || window)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (following && shownHour === null && (live || window)) return <WidgetState kind="outside" />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading parties…" />;

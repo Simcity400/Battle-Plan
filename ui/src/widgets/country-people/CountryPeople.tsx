@@ -7,6 +7,7 @@ import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type RegionAction } from '../../dashboard/regionTime';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { factTexts, peopleStructure, peopleValue, validatePeople } from './peopleData';
@@ -32,7 +33,7 @@ export default function CountryPeople({ runtime, widget, track, tag, time = SPEC
     }
   }, [view]);
   const structure = useCallback((reply: PeopleReply) => peopleStructure(reply, view), [view]);
-  const head = useHeadProduct(runtime, widget, 'country-people', params, { active, validate: validatePeople, structure, paint, time });
+  const head = useHeadProduct(runtime, useGate(runtime, widget, time), 'country-people', params, { active, validate: validatePeople, structure, paint });
   const data = head.data;
   const current = answersKey(data?.asked, tag) && data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, data, onWarnings]);

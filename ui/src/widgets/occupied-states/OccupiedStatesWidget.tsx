@@ -14,6 +14,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { lookStarts } from '../../dashboard/countryTimeline';
@@ -54,7 +55,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const role: CountryRole = options.countryRole === 'occupied' ? 'occupied' : 'occupier';
-  const head = useHeadProduct(runtime, widget, 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates,
     structure: occupiedStructure });
   const data = head.data;
   const shown = useShownHour();

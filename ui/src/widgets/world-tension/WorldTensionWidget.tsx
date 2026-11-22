@@ -4,7 +4,9 @@ import { useContextMenu } from '../../components/ContextMenu';
 import MeasureRace from '../../charts/race/MeasureRace';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
+import { coverageOf } from '../../dashboard/widgetTime';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
 import type { EventBadge } from '../../charts/badges';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
@@ -23,6 +25,7 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -39,8 +42,8 @@ import TensionChart from './TensionChart';
 import { addedAt, contributionCell, contributorName, eventBadges, eventGroup, eventsThrough, layerContributions, layerUnits, otherUnits, percent, percentOf,
   validateThreatEvents, validateWorldTension, worldCells } from './tensionData.ts';
 import './worldTension.css';
-import { drillAction, pickedAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
-import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { pickedAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
@@ -81,28 +84,27 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const share = options.values !== 'recorded';
   const count = Number(options.layers) || 5;
-  const [drill, dispatch] = useState(CLOSED);
-  const act = useCallback((action: Parameters<typeof reduceDrill>[1]) => dispatch(before => reduceDrill(before, action)), []);
+  const drillControl = useDrill(runtime, useRegion(widget), pinnedDrill ? TENSION_BREAKDOWN.id : null);
+  const drill = drillControl.state;
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
-  useEffect(() => { act({ type: 'close' }); }, [resetKey, act]);
+  useEffect(() => { drillControl.close(); }, [resetKey]);
   const drawn = useRef<{ count: number; keep: (tag: string) => boolean; all: boolean }>({ count, keep: () => true, all: true });
-  const head = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track ? PARAMS : null, {
+  const head = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget), 'world-tension', track ? PARAMS : null, {
     active, validate: validateWorldTension,
     structure: reply => JSON.stringify([drawn.current.all ? reply.contributions : layerContributions(reply.contributions, drawn.current.count, drawn.current.keep),
       reply.contributions.length, reply.unnamed, reply.missing, reply.warnings]),
   });
-  const drillFollows = following && (drill.breakdown == null ? pinnedDrill : drill.follow);
-  const picks = drill.breakdown != null && !drill.follow;
-  const drillTime = drill.breakdown != null ? drillAction(drill, track) : SPEC;
-  const drillRegion = useRegion(widget, drillTime);
-  const drillCoverage = useRegionCoverage(runtime, drillRegion);
-  const drillAt = useRegionHour(runtime, drillRegion, active && (drill.breakdown != null || pinnedDrill));
-  const picked = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track && picks ? PARAMS : null, {
-    active: active && picks, validate: validateWorldTension, time: drillTime,
+  const drillFollows = drillControl.following;
+  const picks = drillControl.open && !drill.spec && !drill.follow;
+  const drillTime = drillControl.region.action;
+  const drillCoverage = coverageOf(drillControl.outside);
+  const drillAt = drillControl.hour;
+  const picked = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget, drillTime), 'world-tension', track && picks ? PARAMS : null, {
+    active: active && picks, validate: validateWorldTension,
   });
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hovered = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track && hoverHour !== null ? PARAMS : null, {
-    active: active && hoverHour !== null, validate: validateWorldTension, time: hoverHour === null ? SPEC : pickedAt(track, hoverHour),
+  const hovered = useHeadProduct<WorldTensionReply>(runtime, useGate(runtime, widget, hoverHour === null ? SPEC : pickedAt(track, hoverHour)), 'world-tension', track && hoverHour !== null ? PARAMS : null, {
+    active: active && hoverHour !== null, validate: validateWorldTension,
   });
   const listHour = head.at ?? Math.floor(playhead ?? extent[1]);
 
@@ -117,7 +119,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     return (tag: string) => tags.has(tag) && (!resolved.membership || isMember(resolved.membership.get(tag), listHour));
   }, [resolved, listHour]);
   const top = resolved?.top ?? count;
-  const breakdownShown = drill.breakdown != null || pinnedDrill;
+  const breakdownShown = drillControl.open;
   drawn.current = { count: Math.min(top, count), keep, all: breakdownShown };
   const everyContribution = breakdownShown && head.read === 'followed' ? head.current() : head.data;
   const layers = useMemo(() => head.data ? layerContributions(head.data.contributions, Math.min(top, count), keep) : [], [head.data, top, count, keep]);
@@ -217,8 +219,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     rows.push(...eventRows((events.data?.events ?? []).filter(event => event.hour === Math.floor(hour)), true, reply.contributionScale));
     return fitTooltip([{ title: dayLabel(hour), rows }], viewport, { more: hidden => `${hidden} more` });
   };
-  const followHour = () => track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0;
-  const open = (hour: number) => act({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? followHour() : null });
+  const open = (hour: number) => drillControl.show(TENSION_BREAKDOWN.id, hour);
   const anchor = useRef<HTMLDivElement>(null);
   const followRoot = head.root;
   const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; followRoot(element); }, [followRoot]);
@@ -227,17 +228,17 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (resolved?.reason) return <WidgetState kind="empty" icon="alert" message={resolved.reason} />;
   if (head.error && !head.data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  const breakdownReply = drillFollows || (pinnedDrill && drill.breakdown == null) ? head : picked;
+  const breakdownReply = drillFollows || drill.spec ? head : picked;
   const breakdownHour = drillAt;
   const breakdown = <TensionBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent} playhead={playhead}
     following={breakdownReply === head && following} hour={breakdownHour} read={drillCoverage} reply={breakdownReply === head ? everyContribution : breakdownReply.data} live={breakdownReply.live}
     error={breakdownReply.error}
     onRetry={breakdownReply.retry} looks={looks} colour={colourOf} otherColour={otherColour} layers={stableLayers} events={events.data?.events ?? []}
     tooltip={hour => tooltip(hour, [])} report={report}
-    onPick={hour => act(pinnedDrill && drill.breakdown == null ? { type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })} />;
+    onPick={drillControl.pick} />;
   if (pinnedDrill) return <div className="world-tension-pinned" ref={head.root}>
-    <p className="drill-empty">{breakdownHour === null ? '' : formatDateTime(breakdownHour)} {following && drill.breakdown != null && !drill.follow
-      && <button type="button" className="button small" onClick={() => act({ type: 'follow' })}>Follow playback</button>}</p>{breakdown}</div>;
+    <p className="drill-empty">{breakdownHour === null ? '' : formatDateTime(breakdownHour)} {following && !drillControl.following
+      && <button type="button" className="button small" onClick={drillControl.follow}>Follow playback</button>}</p>{drillControl.outside ? <WidgetState kind="outside" read={drillCoverage} /> : breakdown}</div>;
   const main = !head.data ? <WidgetState kind="loading" label="Loading world tension…" /> : <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
     <TensionChart runtime={runtime} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')} options={options}
       label="World tension and the countries that generated it" extent={extent} playhead={playhead} following={following} layers={stableLayers}
@@ -265,11 +266,10 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     {menu.menu}
   </div>;
   return <div ref={rootRef} style={{ height: '100%' }}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={TENSION_BREAKDOWN.label}
-      day={breakdownHour === null ? '' : formatDateTime(breakdownHour)} following={drill.follow} canFollow={following} onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })}
-      onPause={() => act({ type: 'pick', hour: followHour() })}
-      onPin={breakdownHour === null ? undefined : () => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, track.branch.firstHour, breakdownHour, drill.follow && following))}
-      main={main} time={{ runtime, region: drillRegion }}>{breakdown}</DrillHost>
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={TENSION_BREAKDOWN.label}
+      day={breakdownHour === null ? '' : formatDateTime(breakdownHour)} canFollow={following}
+      onPin={breakdownHour === null ? undefined : () => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track.id, track.branch.firstHour, breakdownHour, drillControl.following))}
+      main={main}>{breakdown}</DrillHost>
   </div>;
 }
 

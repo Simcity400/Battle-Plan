@@ -5,6 +5,7 @@ import { Segmented } from '../../components/Segmented';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import DrillHost from '../../charts/drill/DrillHost';
+import { useDrill } from '../../charts/drill/useDrill';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -300,6 +301,7 @@ const BattleCells = memo(function BattleCells({ stateKey, item, values, sides, t
 export default function LandBattleList(props: Props) {
   const { rows, view, log, country, live, menu, context, label, empty, onVisibleRows } = props;
   const listRegion = useRegion(context.widget);
+  const itemDrill = useDrill(context.runtime, listRegion);
   const tokens = useChartTokens();
   const colours = useMemo(() => [tokens.categories[0], tokens.categories[1]], [tokens]);
   const actions = useContext(HeaderActionsSlot);
@@ -384,7 +386,7 @@ export default function LandBattleList(props: Props) {
     setAsked(previous => previous?.held === current && (wanted.length === 0
       || previous.provinces.length === wanted.length && previous.provinces.every((value, index) => value === wanted[index])) ? previous : { held: current, provinces: wanted });
   }, [onVisibleRows]);
-  const open = (row: LandBattleRow) => setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour });
+  const open = (row: LandBattleRow) => { setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour }); itemDrill.attach(row.id); };
   const drawnItems = useMemo(() => new Map<string, LandBattleRow>(), [logRows]);
   const opener = useRef(open);
   opener.current = open;
@@ -425,9 +427,8 @@ export default function LandBattleList(props: Props) {
       }} />
   </div>;
   const drill = options.drill === 'popout' ? 'popout' : 'inline';
-  return <>{header}<DrillHost mode={drill} open={current !== null} title={current ? placeName(current, context.placePending(current)) : ''}
-    day={dayLabel(context.shownHour)} following={false} canFollow={false} onFollow={() => {}} onClose={() => setOpenId(null)} anchor={anchor} main={list}
-    time={{ runtime: context.runtime, region: listRegion }}>
+  return <>{header}<DrillHost drill={itemDrill} runtime={context.runtime} subject={current !== null} mode={drill} title={current ? placeName(current, context.placePending(current)) : ''}
+    day={dayLabel(context.shownHour)} canFollow={false} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
     {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} heldAt={heldAt} />}
   </DrillHost></>;
 }

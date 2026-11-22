@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import HeatChart from '../../charts/heat/HeatChart';
@@ -9,7 +9,7 @@ import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
 import { dayLabel, drawLine, placeEndLabels } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import type { PlotFrame } from '../../charts/frame';
 import LiveText, { liveTexts } from '../../charts/LiveText';
 import type { LiveTexts } from '../../charts/LiveText';
@@ -38,7 +38,7 @@ import type { ConvoyRow } from './convoyData';
 import { DETAILS, OPTIONS } from './definition';
 import './convoyHealth.css';
 import type { ConvoyHealthReply, ConvoyView } from '../../generated/dashboard';
-import { drillAction, regionFollows } from '../../dashboard/regionTime.ts';
+import {  regionFollows } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -79,7 +79,9 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
     params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: extent[0], to: extent[1] } } : null;
   const { data, error, retry } = useProduct<ConvoyHealthReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [picked, setPicked] = useState<string | null>(null);
   const wanted = useMemo(() => data ? labelDates(data) : [], [data]);
   const names = useCountryNamesAt(runtime.client, track, wanted, active, Math.max(1, new Set(wanted.map(item => item.hour)).size));
@@ -106,12 +108,11 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const anchor = useRef<HTMLDivElement>(null);
   const onPick = useCallback((row: HeatRow, period: HeatPeriod | null, hour: number) => {
     setPicked(row.id);
-    const head = track ? runtime.clock.getSnapshot().position + track.axisOffset : null;
-    dispatch({ type: 'open', breakdown: DETAILS.id, hour: period?.readHour ?? hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? head : null });
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour: period?.readHour ?? hour, follow: drillControl.followsAt(period?.readHour ?? hour) });
   }, [runtime, track, following, pinnedHour]);
   const pickOwner = useMemo(() => ({ data, view, tag }), [data, view, tag]);
   const drilled = picked ? byId.get(picked) ?? null : null;
-  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillRegion = drillControl.region;
   const drillFollows = regionFollows(drillRegion) && drill.breakdown !== null;
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const drillHour = drillFollows ? null : drillAt;
@@ -120,7 +121,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
     : null, [drilled, drillFollows, liveHead, runtime.clock]);
 
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see convoys." />;
-  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window) return <WidgetState kind="outside" />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || data.view !== view) return <WidgetState kind="loading" label="Loading convoys…" />;
@@ -146,10 +147,9 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
     {menu.menu}
   </div>;
   return <div ref={anchor} className="convoy-health-host" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!drilled} anchor={anchor}
-      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : drillHour === null ? '' : dayLabel(drillHour)} time={{ runtime, region: drillRegion }}
-      following={drillFollows} canFollow={following}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!drilled} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : drillHour === null ? '' : dayLabel(drillHour)} canFollow={following}
+      onClose={() => dispatch({ type: 'close' })} main={main}>
       {drilled && <ConvoyDrill row={drilled} runtime={runtime} track={track} hour={drillHour} liveHead={drillFollows ? liveHead : undefined}
         liveFacts={liveFacts} extent={extent} active={active} scale={data.scale} onPick={hour => dispatch({ type: 'pick', hour })} />}
     </DrillHost>

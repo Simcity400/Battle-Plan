@@ -56,7 +56,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
 
   if (!track || !tag) return <WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its idea history." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (following && hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (following && hour == null) return <WidgetState kind="outside" />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading ideas…" />;
   if (!category) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message={options.category

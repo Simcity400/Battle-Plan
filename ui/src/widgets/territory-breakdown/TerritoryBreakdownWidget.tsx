@@ -18,6 +18,7 @@ import { factionNameLabel } from '../../dashboard/factionNames';
 import { resolveCountries } from '../../dashboard/groups';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -38,7 +39,7 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const rule: RegionalRule = options.rule === 'owned' ? 'owned' : 'controlled';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const params = useMemo(() => ({ measure, rule }), [measure, rule]);
-  const breakdown = useHeadProduct<TerritoryBreakdownReply>(runtime, widget, 'territory-breakdown', track ? params : null,
+  const breakdown = useHeadProduct<TerritoryBreakdownReply>(runtime, useGate(runtime, widget), 'territory-breakdown', track ? params : null,
     { active, validate: validateBreakdownReply });
   const hour = breakdown.at ?? breakdown.hour ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
   const shownAt = useRef(breakdown.shownAt);

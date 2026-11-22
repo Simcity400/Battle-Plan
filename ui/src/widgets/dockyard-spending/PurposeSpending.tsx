@@ -81,7 +81,7 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
   else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
   else if (!data) body = <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
   else if (!read) body = <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
-  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="outside" />;
   else if (view === 'months') body = <PurposeMonths kind={kind} data={data} options={options}
     extent={[from ?? track.branch.firstHour, widget.time.mode === 'range' ? hour : track.branch.lastHour]}
     last={headAt ? track.branch.lastHour : hour} playhead={headAt ? hour : null} headAt={headAt} runtime={runtime}

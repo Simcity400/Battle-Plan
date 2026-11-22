@@ -1,6 +1,6 @@
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import { setAttr, setStyle, setText } from '../../charts/domText';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -8,7 +8,8 @@ import { Select } from '../../components/Select';
 import '../../components/ChipSet.css';
 import { useContextMenu } from '../../components/ContextMenu';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { drawGapSummary, drawLineSummary, pickSummaryLines } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
@@ -41,6 +42,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
 import { useFallbackHour } from '../../dashboard/follow/useFollow';
@@ -54,7 +56,7 @@ import type { Balance, LineAt, RowOrder } from './resourceData';
 import ResourceBreakdown from './ResourceBreakdown';
 import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
-import { drillAction, regionFollows, SPEC } from '../../dashboard/regionTime.ts';
+import {  regionFollows } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -102,7 +104,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const tokens = useChartTokens();
   const menu = useContextMenu('Resource actions');
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [resourceId, setResourceId] = useState<number>();
   const following = widget.time.mode === 'follow';
   const requestHour = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
@@ -114,12 +118,12 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); }, [track.source.id, track.source.revision, track.branch.id, tag, options.show]);
 
   const shown = !!saved || drill.breakdown !== null;
-  const drillTime = drill.breakdown !== null ? drillAction(drill, track) : SPEC;
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillFollows = regionFollows(drillRegion);
   const drillAt = useRegionHour(runtime, drillRegion, active && shown);
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
-    { active: active && shown, validate: validateResourceBalance, time: drillTime });
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget, drillTime), RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
+    { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
   const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
@@ -136,7 +140,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const open = (resource: ResourceInfo, hour: number | null) => {
     setResourceId(resource.id);
     const at = hour ?? Math.floor(runtime.clock.getHour() + axisOffset);
-    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: following ? at : null });
+    dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour: at, follow: drillControl.followsAt(at) });
   };
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
 
@@ -149,7 +153,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
               hour={dayAt} following={drillFollows} tokens={tokens} extent={extent} playhead={drillFollows ? null : drillAt} liveHead={drillFollows ? liveHead : undefined}
               playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
               hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
-              onPick={hour => dispatch(drill.breakdown !== null ? { type: 'pick', hour } : { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null })}
+              onPick={hour => dispatch(drill.breakdown !== null ? { type: 'pick', hour } : { type: 'open', breakdown: BREAKDOWN.id, hour, follow: false })}
               onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />;
 
   if (saved) return <div ref={anchor} className="resource-balance">
@@ -165,9 +169,9 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
     ? <ResourcesOverTime {...props} extent={extent} playhead={playhead} liveHead={liveHead} onPick={open} />
     : <ResourceBars {...props} onPick={open} />;
   return <div ref={anchor} className="resource-balance-host">
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} following={drillFollows} canFollow={following}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}
+    <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} canFollow={following}
+      onClose={() => dispatch({ type: 'close' })} main={main}
       onPin={picked && dayAt !== null ? () => {
         const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id);
         const origin = dayAt - track.branch.firstHour;
@@ -205,7 +209,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, active, validateResourceSizes, track.source);
   const colours = useMemo(() => partColours(tokens), [tokens]);
   const cells = useRef(new Map<number, RowCells>());
-  const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
+  const head = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
   const data = head.data;
   const report = useShownHour();
@@ -254,7 +258,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
 
   let body;
   if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  else if (head.read === 'off' && !data) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.read === 'off' && !data) body = <WidgetState kind="outside" />;
   else if (!data) body = <WidgetState kind="loading" label="Loading resources…" />;
   else if (!isMember(within, head.at)) body = <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   else if (data.poolsMissing) body = <WidgetState kind="unavailable" message={data.poolsMissing} />;
@@ -328,7 +332,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
+  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
     structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
   const request = (hour: number) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } });
   const sizes = useProduct(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,

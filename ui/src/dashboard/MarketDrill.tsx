@@ -4,6 +4,7 @@ import WidgetState from '../components/WidgetState';
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { useHeadProduct } from './headProduct';
+import { useGate } from './regionGate';
 import type { RegionAction } from './regionTime.ts';
 import { MARKET, validateMarketReply } from './market.ts';
 import MarketOccurrences from './MarketOccurrences';
@@ -17,8 +18,8 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
   onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, { countries: [...tags].sort().map(countryFromKey) },
-    { active, validate: validateMarketReply, time });
+  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget, time), MARKET, { countries: [...tags].sort().map(countryFromKey) },
+    { active, validate: validateMarketReply });
   useEffect(() => {
     onAnswered?.(head.at ?? undefined);
     return () => onAnswered?.(undefined);

@@ -10,6 +10,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { divisionName, entryText, entryTooltip, headerDetail, recordRows, recordStructure, validateDivisionRecord } from './careersData';
 import type { RecordItem } from './careersData';
@@ -26,10 +27,10 @@ export default function RecordView({ runtime, widget, trackId, division, time, s
   const region = useRegion(widget, time);
   const live = regionFollows(region);
   const hour = useRegionHour(runtime, region, active);
-  const state = useHeadProduct(runtime, widget, 'division-record', track ? { division } : null,
-    { active, validate: validateDivisionRecord, structure: recordStructure, time });
+  const state = useHeadProduct(runtime, useGate(runtime, widget, time), 'division-record', track ? { division } : null,
+    { active, validate: validateDivisionRecord, structure: recordStructure });
   const data = state.data;
-  const answered = data === undefined ? undefined : state.hour ?? undefined;
+  const answered = data === undefined ? undefined : state.at ?? undefined;
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   useEffect(() => {
     onAnswered?.(answered);

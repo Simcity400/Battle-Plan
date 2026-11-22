@@ -35,7 +35,7 @@ function TopDivisionRecord({ widget, ...record }: Omit<ComponentProps<typeof Rec
   const tag = dashboard ? defaultCountryKey(track) : null;
   const selection = useCountriesSelectionAt(widget, runtime, active);
   const tags = selection.countries === undefined ? undefined : selection.countries === null ? null : [...selection.countries].sort();
-  const state = useHeadProduct(runtime, widget, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
+  const state = useHeadProduct(runtime, selection.gate, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
     { active, validate: validateDivisionCareers, structure: careersStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;

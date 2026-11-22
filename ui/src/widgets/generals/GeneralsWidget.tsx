@@ -1,8 +1,9 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { jumpItem } from '../../charts/jump';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -29,7 +30,6 @@ import { attributeNames, leaderKey as rowKey, leaderRequestSelection, leaderRows
 import type { LeaderRow } from './generalsData';
 import './generals.css';
 import type { LeaderKinds, UnitLeadersReply } from '../../generated/dashboard';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const EMPTY: readonly LeaderRow[] = [];
@@ -48,10 +48,11 @@ export default function GeneralsWidget(props: WidgetProps) {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const savedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const drill = drillOwner === owner ? savedDrill : CLOSED;
-  const drillTime = drillAction(drill, track);
-  const drillRegion = useRegion(widget, drillTime);
+  const drillRegion = drillControl.region;
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -60,7 +61,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const members = useCountriesSelectionAt(widget, runtime, active);
   const params = useMemo(() => asked.requestTags === undefined ? null : { selection: leaderRequestSelection(asked.requestTags), leaders: kind },
     [asked.requestTags, kind]);
-  const head = useHeadProduct<UnitLeadersReply>(runtime, widget, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
+  const head = useHeadProduct<UnitLeadersReply>(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const hour = members.outside ? null : head.at ?? members.hour;
   const selection = { group: asked.group, countries: members.countries, selectionReason: asked.selectionReason ?? members.selectionReason };
   const shown = useShownHour();
@@ -79,10 +80,8 @@ export default function GeneralsWidget(props: WidgetProps) {
   const open = useCallback((row: LeaderRow) => {
     if (currentOwner.current !== owner) return;
     setDrillOwner(owner);
-    dispatch({ type: 'open', breakdown: row.key, hour: row.hour,
-      playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
-      playhead: widget.time.mode === 'follow' ? hour : null });
-  }, [owner, runtime.clock, hour, widget.time.mode]);
+    drillControl.show(row.key, row.hour);
+  }, [owner, drillControl]);
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); }, [owner]);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
   useDiagnostics(onDiagnostics, drill.breakdown == null ? diagnostics : null);
@@ -140,14 +139,13 @@ export default function GeneralsWidget(props: WidgetProps) {
       {withheld.length > 0 && <details className="career-note"><summary>Some leaders are missing.</summary><p className="leader-withheld-detail">{withheldState.detail}</p></details>}
     </div>;
   };
-  return <div ref={anchor} className="generals-widget"><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null}
-    title="General career" day={drillAt === null ? '' : formatDateTime(drillAt)} following={drill.follow} canFollow anchor={anchor} time={{ runtime, region: drillRegion }}
+  return <div ref={anchor} className="generals-widget"><DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown != null} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+    title="General career" day={drillAt === null ? '' : formatDateTime(drillAt)} canFollow anchor={anchor}
     onClose={() => { if (currentOwner.current === owner) dispatch({ type: 'close' }); }}
-    onFollow={() => { if (currentOwner.current === owner && drill.breakdown) dispatch({ type: 'follow' }); }}
     onPin={drill.breakdown && track && drillAt !== null ? () => {
       if (currentOwner.current === owner) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, drill.breakdown!, track, drillAt, drill.follow));
     } : undefined} main={<div ref={head.root} className="generals-main">{body()}</div>}>
-    {drill.breakdown && <CareerView {...props} time={drillTime}
+    {drill.breakdown && <CareerView {...props} time={drillRegion.action}
       reference={drill.breakdown} onPick={h => {
         if (currentOwner.current === owner) dispatch({ type: 'pick', hour: h });
       }} />}

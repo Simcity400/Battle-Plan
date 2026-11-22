@@ -1,4 +1,5 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 import { countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { HeadProduct } from '../../dashboard/headProduct';
@@ -24,8 +25,8 @@ import type { ChartSummary } from '../chartSummary';
 import type { TimeChartProps } from '../TimeChart';
 import type { TooltipContent, TooltipRow } from '../tooltip';
 import DrillHost from '../drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../drill/drillState';
-import type { DrillAction, DrillState } from '../drill/drillState';
+import { pinnedBreakdown } from '../drill/drillState';
+import { useDrill } from '../drill/useDrill';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, resolveCountries } from '../../dashboard/groups';
@@ -57,8 +58,7 @@ import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measu
 import type { MeasureParts, PartValues } from './measureParts';
 import { PartFollows, PartsHead, usePartStates } from './PartFollows';
 import PartsBreakdown from './PartsBreakdown';
-import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const holds = (summary: ChartSummary) => summary.buckets.some(bucket => bucket !== null && bucket.maxValue > 0);
 
@@ -224,7 +224,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null);
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
   useEffect(() => raceHead?.subscribe(() => live.current?.wake()), [raceHead]);
-  const rankRequest = !arsenal && racing && track && !entry && (top != null || asked) ? {
+  const rankRequest = !arsenal && racing && track && !entry && (top != null || asked) && recordedHour(track, moment) !== null ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: top != null ? { branchId: track.branch.id, family: measure, hour: moment, top }
       : { branchId: track.branch.id, family: measure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: moment })) },
@@ -295,16 +295,14 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     ...(secondMeasure ? [{ tag, id: secondLineId(tag, secondMeasure), runs: [], dash: SECONDARY_DASH }] : [])]), [lineTags, secondMeasure]);
 
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, measure, partsKey, widget.countries]);
-  const [drillState, setDrill] = useState<{ key: string; drill: DrillState }>({ key: resetKey, drill: CLOSED });
-  const drill = drillState.key === resetKey ? drillState.drill : CLOSED;
-  const dispatch = useCallback((action: DrillAction) => setDrill(before => ({ key: resetKey, drill: reduceDrill(before.key === resetKey ? before.drill : CLOSED, action) })), [resetKey]);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  useEffect(() => { drillControl.close(); }, [resetKey]);
   const shownEntries = () => liveRanked ? liveRanked.entries() : entries;
   const mixTag = parts && raceView === null ? mixCountry(widget.countries, fallbackTag, shownEntries()) : null;
   const breakdownTag = drill.breakdown ?? mixTag;
-  const breakdownFollows = following && (drill.breakdown == null || drill.follow);
-  const drillRegion = useRegion(widget, drill.breakdown != null ? drillAction(drill, track) : SPEC);
-  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
-  const breakdownHour = Math.floor(drill.breakdown != null ? regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock)) ?? moment : moment);
+  const breakdownFollows = drill.breakdown == null ? following : drillControl.following;
+  const breakdownHour = Math.floor(drill.breakdown != null ? (breakdownFollows ? moment : drillControl.hour) ?? moment : moment);
   const breakdownTags = useMemo(() => breakdownTag ? [breakdownTag] : [], [breakdownTag]);
   const breakdownHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
   const breakdownOn = active && !!breakdownTag && breakdownFollows;
@@ -318,7 +316,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const headDate = useMemo(() => ({ read: () => Math.floor(runtime.clock.getHour()) + axisOffset, subscribe: runtime.clock.subscribeFrame }), [runtime.clock, axisOffset]);
   const openDrill = (hour: number, tag?: string) => {
     if (!tag) return;
-    dispatch({ type: 'open', breakdown: tag, hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? moment : null });
+    drillControl.show(tag, hour);
   };
 
   const error = racing && raceView === 'race' ? ranked.error : raceView === 'lines' ? (top == null ? series.error : rankedLines.error) ?? seconds.error : undefined;
@@ -364,7 +362,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const breakdownOf = (tag: string, picked: boolean) => track && parts ? <><PartsBreakdown runtime={runtime} track={track} active={active} options={options} parts={parts}
     tag={tag} name={breakdownName ?? 'Country name unavailable'} extent={extent} playhead={playhead} hour={breakdownHour} head={breakdownFollows ? breakdownHead : null}
     values={breakdownAsked.values?.get(tag)} totalLabel={label} format={formatValue} error={breakdownAsked.error} onRetry={breakdownAsked.retry}
-    onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} />{details?.(tag, breakdownHour, breakdownFollows)}</> : null;
+    onPick={picked ? drillControl.pick : undefined} />{details?.(tag, breakdownHour, breakdownFollows)}</> : null;
   const follows = parts && track ? <>
     <PartFollows store={store} branchId={track.branch.id} tags={partsRead ? followedTags : []} on={active && partsRead && !!entry} root={root} head={raceHead!} />
     <PartFollows store={store} branchId={track.branch.id} tags={breakdownTags} on={breakdownOn} root={root} head={breakdownHead!} />
@@ -404,10 +402,9 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
   return <div className="parts-race" ref={attachRoot}>{follows}
-    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={drillTitle}
-      day={dayLabel(breakdownHour)} following={drill.follow} canFollow={following}
-      returnFocus=".country-race-chart canvas" onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      onPause={() => dispatch({ type: 'pick', hour: Math.floor(runtime.clock.getHour()) + axisOffset })}
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={drillTitle}
+      day={dayLabel(breakdownHour)} canFollow={following}
+      returnFocus=".country-race-chart canvas"
       onPin={drill.breakdown && (!isSlotKey(drill.breakdown) || breakdownName) ? () => runtime.addWidgetBelow(widget.id, { ...pinnedBreakdown(widget, { id: 'breakdown', label: parts.label }, track.id),
         countries: { kind: 'tags', tags: [isSlotKey(drill.breakdown!) ? breakdownName! : drill.breakdown!] } }) : undefined}
       main={race(drill.breakdown == null || options.drill === 'popout')}>

@@ -7,6 +7,7 @@ import { useDrawnPanel } from '../dashboard/DrawnPanel';
 import { panelFeed } from '../dashboard/panelFeed';
 import type { PanelFeed } from '../dashboard/panelFeed';
 import { useHeadProduct, withHeld } from '../dashboard/headProduct';
+import { useGate } from '../dashboard/regionGate';
 import { registerWidgets } from '../dashboard/definitions';
 import type { WidgetProps, WidgetRuntime } from '../dashboard/definitions';
 import { WidgetBody } from '../dashboard/widgets';
@@ -194,7 +195,7 @@ function Panel() {
 
 function Headed() {
   const root = useRef<HTMLDivElement | null>(null);
-  const read = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const read = useHeadProduct(runtime, useGate(runtime, headed), 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
   const head = withHeld(read);
   useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', read, arsenalStructure, headed, runtime), true);
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
@@ -206,7 +207,7 @@ function Headed() {
 
 function Asked() {
   const root = useRef<HTMLDivElement | null>(null);
-  const read = useHeadProduct(runtime, headed, ASKED, NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const read = useHeadProduct(runtime, useGate(runtime, headed), ASKED, NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
   const head = withHeld(read);
   useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', read, arsenalStructure, headed, runtime), true);
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
@@ -218,7 +219,7 @@ function Asked() {
 
 const totalOf = (reply: NuclearArsenalReply) => String(reply.countries[0]?.total);
 function Listed() {
-  const head = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: totalOf });
+  const head = useHeadProduct(runtime, useGate(runtime, headed), 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: totalOf });
   useLayoutEffect(() => { listedRead = head.read; wake(); });
   if (!head.data) return <div className="listed-loading">Loading the arsenal…</div>;
   return <p id="listed" ref={head.root}>{head.data.countries[0]?.total}</p>;

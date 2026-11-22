@@ -4,6 +4,7 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct.ts';
+import { useGate } from '../../dashboard/regionGate';
 import { useProduct } from '../../dashboard/products.ts';
 import { setToken } from '../../dashboard/options';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -40,7 +41,7 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   root: RefObject<HTMLElement | null>) {
   const { tag, track } = researchTarget(widget, runtime);
   const params = useMemo(() => tag ? { country: countryFromKey(tag) } : null, [tag]);
-  const now = useHeadProduct<ResearchSlotsReply>(runtime, widget, 'research-slots', params,
+  const now = useHeadProduct<ResearchSlotsReply>(runtime, useGate(runtime, widget), 'research-slots', params,
     { active, validate: validateResearchSlots, structure });
   const attach = useCallback((element: HTMLElement | null) => {
     root.current = element;

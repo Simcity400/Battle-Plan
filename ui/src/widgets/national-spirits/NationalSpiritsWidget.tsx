@@ -80,7 +80,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   if (!track || !tag) return <WidgetState kind="empty" icon="star" message="Load a campaign and choose a country to see its national spirits." />;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (live ? coverage.outside : hour == null) return <WidgetState kind="outside" read={coverage} />;
+  if (coverage.outside || !live && hour == null) return <WidgetState kind="outside" read={coverage} />;
   if (failure && !data) return failure;
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;
   if (hour == null) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;

@@ -1,8 +1,8 @@
-import { useMemo, useReducer, useRef, useState } from 'react';
+import { useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ChipSet } from '../../components/ChipSet';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { logSettings } from '../../charts/log/logOptions';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
@@ -21,7 +21,6 @@ import { trackHourOf } from '../../dashboard/settledHour';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
-import { drillAction, recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 export default function MarketLedgerWidget({ widget, runtime, active, setOption }: WidgetProps) {
@@ -49,16 +48,17 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const kindsKey = kinds.join(',');
   const stableKinds = useMemo(() => kinds, [kindsKey]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const [pick, setPick] = useState<{ owner: string | null; item: LedgerItem } | null>(null);
   const picked = pick && pick.owner === pickOwner ? pick.item : null;
   const open = (item: LedgerItem, at: number) => {
     setPick({ owner: pickOwner, item });
-    dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, playing: runtime.clock.getSnapshot().playing,
-      playhead: follow && track ? recordedHour(track, Math.floor(runtime.clock.getHour()) + track.axisOffset) : null });
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, follow: drillControl.followsAt(at) });
   };
-  const drillTime = drillAction(drill, track);
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillOpen = drill.breakdown !== null && !!picked;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
@@ -67,7 +67,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
-  const parent = !follow && widget.time.mode !== 'campaign' && !window ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+  const parent = !follow && widget.time.mode !== 'campaign' && !window ? <WidgetState kind="outside" />
     : needsGroups && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : tags !== null && tags !== undefined && !tags.length ? <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} /> : null;
   if (parent && !drillOpen) return parent;
@@ -80,10 +80,9 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
           density={log.density} months={log.months} animate={log.animate} onOpen={open} />}
   </div>;
   return <div ref={anchor} className="market-ledger-host">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
-      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)}
-      following={drill.follow} canFollow={follow} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={main} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={follow} onClose={() => dispatch({ type: 'close' })}
+      main={main}>
       {picked && (pickedTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={pickedTags} selected={ledgerSelection(picked)} />
         : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}

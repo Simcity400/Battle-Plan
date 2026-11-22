@@ -12,6 +12,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useAtHead } from '../../dashboard/atHead';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -27,7 +28,7 @@ import { OPTIONS } from './definition';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';
 import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboard';
-import { regionWindow, SPEC, type AxisHour, type RegionAction } from '../../dashboard/regionTime.ts';
+import { axisAt, regionWindow, SPEC, type RegionAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_PORTRAIT: readonly PortraitAt[] = [];
@@ -42,14 +43,14 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
     product: 'unit-leader-career', params: { branchId: track.branch.id, reference } } : null, active, validateCareer, track?.source);
   const params = useMemo(() => ({ reference }), [reference]);
   const region = useRegion(widget, time);
-  const head = useHeadProduct<LeaderHourReply>(runtime, widget, 'unit-leader-hour', params, { active, validate: validateLeaderHour, time });
+  const head = useHeadProduct<LeaderHourReply>(runtime, useGate(runtime, widget, time), 'unit-leader-hour', params, { active, validate: validateLeaderHour });
   const regionAt = useRegionHour(runtime, region, active);
   const data = career.data;
   const now = head.data;
   const first = track?.branch.firstHour ?? 0;
-  const before = useAtHead(runtime.clock, active && head.outside && !!track,
-    at => !!track && (regionWindow(region, track, runtime.tracks, at as AxisHour)?.lastHour ?? Infinity) < track.branch.firstHour);
-  const shownAt = head.outside ? before ? null : track?.branch.lastHour ?? null : head.at ?? regionAt;
+  const after = useAtHead(runtime.clock, active && head.outside && !!track,
+    at => !!track && (regionWindow(region, track, runtime.tracks, axisAt(at))?.lastHour ?? -Infinity) > track.branch.lastHour);
+  const shownAt = head.outside ? after ? track?.branch.lastHour ?? null : null : head.at ?? regionAt;
   const hour = shownAt ?? first - 1;
   const shown = useShownHour();
   const options = resolveOptions(OPTIONS, widget.options);

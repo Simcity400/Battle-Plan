@@ -1,5 +1,5 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -9,7 +9,8 @@ import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { dayLabel, font, placeEndLabels } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { motionOf } from '../../charts/easing.ts';
 import type { PlotFrame } from '../../charts/frame';
 import { jumpItem } from '../../charts/jump';
@@ -58,11 +59,11 @@ import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsu
 import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
 import { COUNTRY_FUEL, FUEL_DAYS, QUANTITY_SCALE, formatFuel, fuelDecimals, fuelTooltips, stripBars, stripNote, validateCountryFuel } from './fuelData';
-import { fuelExtentToken, fuelOpen, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
+import { fuelExtentToken, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
 import type { CountryFuelReply } from '../../generated/dashboard';
-import { drillAction, recordedHour, regionFollows, SPEC } from '../../dashboard/regionTime.ts';
-import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
+import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 
 const STRIP_SHARE = 0.28;
 const DAY_HOURS = 24;
@@ -74,7 +75,10 @@ function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
 }
 
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
-  const [storedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const savedShow = BREAKDOWNS.find(item => item.id === widget.options?.show)?.id ?? null;
+  const drillControl = useDrill(runtime, useRegion(widget), savedShow);
+  const storedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object>();
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -102,8 +106,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
   const headFollowed = fuelHead && (!showCapacity || capacityHead);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
-  const drillOnClock = saved ? following && storedDrill.breakdown === null || storedDrill.breakdown !== null && storedDrill.follow
-    : storedDrill.breakdown !== null && storedDrill.follow;
+  const drillOnClock = drillControl.following;
   const clockHour = useFallbackHour(runtime.clock, active && (following && !headFollowed && !saved || drillOnClock && !playing));
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
@@ -190,8 +193,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const chartData = useMemo<ChartData>(() => ({ revision: () => [fuel.revision(), capacity.revision(), gain.revision(), burn.revision()],
     subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
-  const hoverRequests = useMemo(() => track && hoverHour !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: Math.floor(hoverHour) } })) : [], [track, hoverHour, tags, saved]);
+  const hoverAt = recordedHour(track, hoverHour);
+  const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } })) : [], [track, hoverAt, tags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null || single ? [] : tags.map(tag => ({ tag, hour: Math.floor(hoverHour) })), active);
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
@@ -200,15 +204,13 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
 
   const pickScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tags, options.show, extent]);
   const pickOwner = useMemo(() => ({ scope: pickScope }), [pickScope]);
-  const drill = drillOwner === undefined || drillOwner === pickOwner ? storedDrill : CLOSED;
+  const drill = saved || drillOwner === undefined || drillOwner === pickOwner ? storedDrill : CLOSED;
   const [measure, setMeasure] = useState<'gain' | 'burn' | 'consumption'>('consumption');
   const drillMeasure = (saved?.id ?? BREAKDOWNS.find(item => item.id === drill.breakdown)?.id ?? measure) as 'gain' | 'burn' | 'consumption';
   const actualHour = track ? recordedHour(track, clockHour + track.axisOffset) : null;
-  const drillTime = drill.breakdown !== null ? drillAction(drill, track) : SPEC;
-  const drillRegion = useRegion(widget, drillTime);
-  const drillCoverage = useRegionCoverage(runtime, drillRegion);
-  const at = useRegionHour(runtime, drillRegion, active && (!!saved || drill.breakdown !== null));
-  const drillFollows = regionFollows(drillRegion);
+  const drillCoverage = coverageOf(drillControl.outside);
+  const at = drill.breakdown !== null ? drillControl.hour : null;
+  const drillFollows = drillControl.following;
   const [chosenTag, setChosenTag] = useState<string>();
   const [pickTags, setPickTags] = useState<readonly string[]>();
   const campaign = track?.source.metadata.campaignKey ?? '';
@@ -237,7 +239,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || saved.id === 'consumption' && !!options.fuelConsumptionLevel && !savedLevel);
 
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
-    : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="outside" />
       : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
         : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
           : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
@@ -265,7 +267,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       setPickTags(undefined); setChosenTag(picked);
       setCountryPick({ owner: pickOwner, selection: { campaign, branch: track.branch.id, tag: picked, originOffset: hour - track.branch.firstHour } });
     }
-    dispatch(fuelOpen(drillMeasure, hour, choosing ? false : runtime.clock.getSnapshot().playing, !choosing && following, playhead));
+    if (choosing) drillControl.showAt(drillMeasure, hour); else drillControl.show(drillMeasure, hour);
   };
   const tooltip = (hour: number) => {
     const at = Math.floor(hour);
@@ -335,7 +337,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     playhead: drillFollows ? actualHour : playhead, playback,
     liveHead: drillFollows ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
     hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: drillTag ? membership?.get(drillTag) ?? null : null, detailHours: DETAIL_HOURS,
-    onPick: (hour: number) => { setDrillOwner(pickOwner); dispatch(saved ? { type: 'open', breakdown: saved.id, hour, playing: false, playhead: null } : { type: 'pick', hour }); },
+    onPick: (hour: number) => { setDrillOwner(pickOwner); drillControl.pick(hour); },
     onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) } : null;
   const parentState = !track ? state : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
     : pending ? <WidgetState kind="loading" label="Loading fuel…" /> : undefined;
@@ -360,14 +362,13 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     {pinnedHeader}{notices}
     {!drillFollows && <button type="button" className="button small quiet" onClick={() => {
       if (actorState || invalidSaved) return;
-      setDrillOwner(pickOwner); dispatch({ type: 'open', breakdown: saved.id, hour: actualHour ?? Math.floor(clockHour + (track?.axisOffset ?? 0)), playing: true, playhead: actualHour });
+      setDrillOwner(pickOwner); drillControl.follow();
     }}>Follow playback</button>}
     {breakdown}{menu.menu}
   </div>;
-  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    open={drill.breakdown !== null} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)} following={drill.follow}
-    canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })} onFollow={() => { setDrillOwner(pickOwner); dispatch({ type: 'follow' }); }}
-    main={main} time={{ runtime, region: drillRegion }}
+  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{notices}<DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Fuel consumption and daily accounting" day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)}
+    canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })}
+    main={main}
     onPin={drillTag && track && !actorState && at !== null ? () => {
       const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [selectedCountry?.tag ?? drillTag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id);
       if (!drill.follow && at !== null) pinned.time = { mode: 'pin', windows: { [track.id]: { firstOffset: at - track.branch.firstHour, lastOffset: at - track.branch.firstHour } } };
@@ -387,7 +388,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       }} />}
     <Segmented label="Breakdown of" value={drillMeasure} onChange={next => {
       setMeasure(next); setRecipient(null); setConsumption(null); setLevel(null);
-      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, playing: drill.follow, playhead: drill.follow ? actualHour : null });
+      if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.followsAt(at) });
     }} options={BREAKDOWNS.map(item => ({ value: item.id, label: item.label }))} />
     {breakdown}
   </DrillHost>{menu.menu}</div>;

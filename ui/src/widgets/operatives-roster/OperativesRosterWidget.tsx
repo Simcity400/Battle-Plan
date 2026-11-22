@@ -15,6 +15,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, noMembersAt, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -59,7 +60,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     painted.current = paintedRows(reply);
     paintRoster(root.current, painted.current);
   }, []);
-  const head = useHeadProduct<OperativesRosterReply>(runtime, widget, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
+  const head = useHeadProduct<OperativesRosterReply>(runtime, useGate(runtime, widget), 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;

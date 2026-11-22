@@ -1,4 +1,3 @@
-import type { DrillAction } from '../../charts/drill/drillState';
 import { liveKey } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { equipmentOf, FIXED5, FUEL_QUANTITY, fixedText, SHARE } from '../../dashboard/market.ts';
@@ -114,7 +113,5 @@ export function agreementValues(rows: readonly AgreementRow[], live: Live<LiveVa
   return { read, subscribe: live.subscribe };
 }
 
-export const openAgreement = (row: Pick<AgreementRow, 'at' | 'ended'>, breakdown: string, playing: boolean, playhead: number | null): DrillAction =>
-  ({ type: 'open', breakdown, hour: row.at, playing, playhead: row.ended ? null : playhead });
 
 export type { EndedLease };

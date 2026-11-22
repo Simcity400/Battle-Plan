@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import { Select } from '../../components/Select';
 import { createPortal } from 'react-dom';
@@ -9,7 +9,8 @@ import { dayLabel, drawValueRule, placeEndLabels } from '../../charts/draw';
 import { drawLineSummary, extentOfSummary, pickSummaryLines, summaryGeometry } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import type { DrillAction } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
 import { lineStyles } from '../../charts/palette';
@@ -54,7 +55,8 @@ import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { StockpileHolder } from '../../generated/dashboard';
-import { drillAction, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
+import { drillAction } from '../../charts/drill/drillState.ts';
 import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -88,14 +90,16 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const anchor = useRef<HTMLDivElement | null>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
   const pickOwner = useMemo(() => ({ scope, client: runtime.client }), [scope, runtime.client]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
   const [selection, setSelection] = useState<{ owner: object; key: string; mode: StockpileMode } | null>(null);
   const shownDrill = drillOwner === pickOwner ? drill : CLOSED;
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
   const mode: StockpileMode = selection?.mode ?? 'stock';
   const playbackHour = Math.floor(runtime.clock.getHour()) + axisOffset;
-  const detailTime = shownDrill.breakdown !== null ? drillAction(shownDrill, track) : SPEC;
+  const detailTime = drillAction(shownDrill, track);
   const detailRegion = useRegion(widget, detailTime);
   const detailCoverage = useRegionCoverage(runtime, detailRegion);
   const at = useRegionHour(runtime, detailRegion, active && (saved || shownDrill.breakdown !== null));
@@ -143,7 +147,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); setSelection(null); setCountryPick(null); }, [pickOwner]);
 
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its equipment stockpile." /></>;
-  if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="outside" /></>;
   if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
   if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!saved && shownDrill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading the stockpile…" /></>;
@@ -155,8 +159,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     setSelection({ owner: pickOwner, key: group.key, mode });
     setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
       tag, originOffset: Math.floor(hour) - track.branch.firstHour } });
-    const playing = runtime.clock.getSnapshot().playing;
-    act({ type: 'open', breakdown: BREAKDOWN.id, hour, playing, playhead: widget.time.mode === 'follow' ? playhead : playing ? playbackHour : null });
+    act({ type: 'open', breakdown: BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) });
   };
   const main = !saved && data && viewHour !== null ? <div className="equipment-stockpile">
     {options.view === 'time'
@@ -180,18 +183,18 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
     hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active && (saved || shownDrill.breakdown !== null)}
     pickOwner={detailPickOwner} onPick={hour => act(saved
-      ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
+      ? { type: 'open', breakdown: BREAKDOWN.id, hour, follow: false } : { type: 'pick', hour })}
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
     : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
   return <div ref={root} className="stockpile-drill-host">
     {saved ? <div className="drill-body">
       {pinnedHeader}
       {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
-        onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{identityNotice}{detail}
-    </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={shownDrill.breakdown !== null}
-      title={picked && at !== null ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={at === null ? '' : dayLabel(at)} following={shownDrill.follow}
+        onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, follow: drillControl.followsAt(playbackHour) })}>Follow playback</button>}{identityNotice}{detail}
+    </div> : <DrillHost drill={drillControl} runtime={runtime} subject={shownDrill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={picked && at !== null ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={at === null ? '' : dayLabel(at)}
       returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
-      canFollow onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })} main={main} time={{ runtime, region: detailRegion }}
+      canFollow onClose={() => act({ type: 'close' })} main={main}
       onPin={picked && selectedCountry && !actor.reason && at !== null && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
         const pinned = pinStockpileDrill(widget, track, selectedCountry.tag, picked, grouping, mode, at, shownDrill.follow, selectedCountry);

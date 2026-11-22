@@ -132,7 +132,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour)
-    return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+    return <>{groupFailure}<WidgetState kind="outside" /></>;
 
   const pageError = history.errors.get(browseIndex);
   if (pageError) return <>{groupFailure}<WidgetState kind="error" failure={pageError} onRetry={history.retry} /></>;

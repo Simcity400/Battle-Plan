@@ -14,6 +14,7 @@ import { trackHourOf } from './settledHour';
 import { useKeyTagsAt } from './useKeyTagsAt.ts';
 import { countryLineColours } from './countryLineColours.ts';
 import { useHeadProduct } from './headProduct';
+import { useGate } from './regionGate';
 import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
 import type { AirLooks } from './airSuperiority';
 import { airChoiceKey, airChoiceToken } from './airOptions';
@@ -91,7 +92,7 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
     [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
-  const product = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
+  const product = useHeadProduct<AirSuperiorityReply>(runtime, useGate(runtime, widget), 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
   const looks = useAirLooks(props, product.data, product.at, mode, product.read === 'followed');
   useEffect(() => {
     const warnings = [...(product.data?.warnings ?? []), ...looks.warnings];

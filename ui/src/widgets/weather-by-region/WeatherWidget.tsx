@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import RegionProvinces from './RegionProvinces';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -28,14 +28,15 @@ import { columnTooltip, pickedDay, shownRegions, uncoveredSpans, weatherPeriods,
 import type { Choice, WeatherPeriod, WeatherShow } from './weatherData';
 import { useWeatherInView } from './useWeather';
 import './weather.css';
-import { drillAction, recordedHour } from '../../dashboard/regionTime.ts';
+import {  recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 export default function WeatherWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const drillTime = drillAction(drill, track);
-  const drillRegion = useRegion(widget, drillTime);
+  const drillTime = drillControl.region.action;
   const following = active && widget.time.mode === 'follow';
   const extentAt = (hour: number) => { const window = track && resolveWindow(widget, track, runtime.tracks, hour); return track && window ? windowExtent(track, window) : null; };
   const playback = useHeadHour(runtime.clock, following, hour => JSON.stringify(extentAt(hour)));
@@ -95,7 +96,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     </div>
     {setOption && <Segmented value={show} options={SHOWS} label="Show" onChange={value => setOption('show', value)} />}
   </div>;
-  const chart = !window || !extent || extent[1] < extent[0] ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+  const chart = !window || !extent || extent[1] < extent[0] ? <WidgetState kind="outside" />
     : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
     : !data ? <WidgetState kind="loading" label="Loading weather…" />
     : chosenTheatres.length && !air.theatres ? <WidgetState kind="unavailable" message={air.unavailable ?? 'Air theatres are not known at this time.'} />
@@ -108,16 +109,15 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
         const region = regions.find(item => item.id === row.id);
         if (!region) return;
         setPicked(region);
-        const playing = widget.time.mode === 'follow';
-        dispatch({ type: 'open', breakdown: 'provinces', hour: pickedDay(hour, dayHours, extent), playing, playhead: playing ? clockHour() : null });
+        drillControl.show('provinces', pickedDay(hour, dayHours, extent));
       }} /></div>;
   if (drill.breakdown === null && (!window || !extent || extent[1] < extent[0] || error || !data)) return chart;
   if (drill.breakdown === null && (chosenTheatres.length && !air.theatres || !heat || !heat.rows.length)) return <div className="weather">{caption}{chart}</div>;
   return <div ref={anchor} className="weather">
     {caption}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked?.name ?? 'Region'} day={drillShown === null ? '' : dayLabel(drillShown)} following={drill.follow} canFollow
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={chart} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={picked?.name ?? 'Region'} day={drillShown === null ? '' : dayLabel(drillShown)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={chart}>
       {picked && drill.breakdown !== null && <RegionProvinces runtime={runtime} widget={widget} region={picked.id} time={drillTime} active={active} onWarnings={setDrillWarnings} onHour={setDrillShown} />}
     </DrillHost>
     {menu.menu}

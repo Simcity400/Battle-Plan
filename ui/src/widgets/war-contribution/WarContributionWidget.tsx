@@ -18,6 +18,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
@@ -78,7 +79,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     live.set(group && !group.reason ? contributionItems(contributionRows(group), shownAs, looks, muted) : NO_ITEMS);
     shown(reply.hour);
   }, [groupOf, live, shown]);
-  const head = useHeadProduct<WarContributionsReply>(runtime, widget, 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
+  const head = useHeadProduct<WarContributionsReply>(runtime, useGate(runtime, widget), 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
     active, validate: validateWarContributions, paint, structure: reply => contributionStructure(groupOf(reply), reply.available),
   });
   const ended = useProduct<WarContributionsReply>(runtime.client, track && war && !going ? { sourceId: track.source.id, revision: track.source.revision,

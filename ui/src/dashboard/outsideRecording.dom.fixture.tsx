@@ -5,6 +5,7 @@ import { PHASES } from '../engine/frame';
 import { registerWidgets } from './definitions';
 import type { WidgetProps, WidgetRuntime } from './definitions';
 import { useHeadProduct } from './headProduct';
+import { useGate } from './regionGate';
 import type { WidgetSpec } from './model';
 import { PlaybackController } from './playback';
 import { WidgetBody } from './widgets';
@@ -24,7 +25,7 @@ clock.setBounds({ firstHour: 0, lastHour: 500 });
 const renders = { count: 0 };
 function Probe({ widget, runtime, active }: WidgetProps) {
   renders.count++;
-  const head = useHeadProduct(runtime, widget, 'probe-moment', {}, { active, validate: value => value });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'probe-moment', {}, { active, validate: value => value });
   return head.data !== undefined ? <p>read</p> : <WidgetState kind="loading" label="Loading the probeâ€¦" />;
 }
 registerWidgets([{ ...warGoals, playsBackDated: true, render: Probe }]);

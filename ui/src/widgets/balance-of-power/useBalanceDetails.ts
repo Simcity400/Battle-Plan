@@ -1,4 +1,5 @@
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 import { useEffect, useState } from 'react';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -18,7 +19,7 @@ const NOT_READ = noValues('Not read yet');
 export function useBalanceDetails(runtime: WidgetRuntime, track: BoundTrack | undefined, hour: number | null, active: boolean): BalanceDetails {
   const revision = useContentRevision(runtime.client);
   const [attempt, setAttempt] = useState(0);
-  const request = track && hour !== null && active ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
+  const request = track && hour !== null && recordedHour(track, hour) !== null && active ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
     params: { branchId: track.branch.id, hour, view: 'balances' } } : null;
   const key = JSON.stringify([request, revision, attempt]);
   const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: PoliticsStateAt; values?: LiveValues<number>; error?: Failure }>();

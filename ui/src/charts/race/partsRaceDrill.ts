@@ -55,12 +55,12 @@ export type PartsRaceDrillAction = DrillAction
 export type NativePartsRaceDrillAction = PartsRaceDrillAction & { selection?: CountryPartsSelection; owner?: unknown; pickOwner?: unknown };
 
 export function reducePartsRaceDrill(state: PartsRaceDrillState, action: NativePartsRaceDrillAction): PartsRaceDrillState {
-  if (action.type === 'actors') return { ...CLOSED, follow: false, hour: Math.floor(action.hour),
+  if (action.type === 'actors') return { ...CLOSED, spec: false, follow: false, hour: Math.floor(action.hour),
     choices: { key: action.key, tags: action.tags }, ...(action.owner ? { owner: action.owner } : {}),
     ...(action.pickOwner ? { pickOwner: action.pickOwner } : {}) };
   if (action.type === 'choose') {
     if (!state.choices || state.choices.key !== action.key || state.hour !== action.hour || !state.choices.tags.includes(action.tag)) return state;
-    return { ...reduceDrill(state, { type: 'open', breakdown: action.tag, hour: action.hour, playing: false, playhead: null }), choices: null,
+    return { ...reduceDrill(state, { type: 'open', breakdown: action.tag, hour: action.hour, follow: false }), choices: null,
       ...(action.selection ? { selection: action.selection } : {}), ...(action.owner ? { owner: action.owner } : {}) };
   }
   if (state.choices && (action.type === 'follow' || action.type === 'pick')) return state;

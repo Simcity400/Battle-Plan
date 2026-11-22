@@ -19,6 +19,7 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
@@ -74,7 +75,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const hasData = data !== undefined;
   const heading = following && hasData && !needsViewpoint && regions.length > 0;
   const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
-  const head = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
+  const head = useHeadProduct<AirSuperiorityReply>(runtime, useGate(runtime, widget), 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);
@@ -139,7 +140,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   [air.legend, mode.theatres.length, options.look, tokens.surface, tokens.text]);
   if (needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (!window || beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || beforeBranch) return <WidgetState kind="outside" />;
   const error = ranking.error ?? [...tiles.errors.values()][0] ?? cut.error;
   if (error) return <WidgetState kind="error" failure={error} onRetry={() => { ranking.retry(); tiles.retry(); cut.retry(); }} />;
   if (!ranking.data) return <WidgetState kind="loading" label="Loading air superiority…" />;

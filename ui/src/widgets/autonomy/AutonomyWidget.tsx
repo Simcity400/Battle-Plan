@@ -195,7 +195,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
     if (groupFailure && !groups.data) return groupFailure;
     if (widget.countries.kind === 'group' && !groups.data) return <WidgetState kind="loading" label="Loading country membership…" />;
     if (filter.reason) return <WidgetState kind="empty" message={filter.reason} />;

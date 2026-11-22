@@ -1,10 +1,10 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -22,6 +22,7 @@ import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useChoiceHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { LEASE_HISTORY, MARKET, partyTags, validateLeaseHistory, validateMarketReply } from '../../dashboard/market.ts';
 import MarketDrill from '../../dashboard/MarketDrill';
 import MarketEquipment from '../../dashboard/MarketEquipment';
@@ -32,12 +33,11 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { agreementRows, agreementValues, amountOf, openAgreement } from './agreementsData';
+import { agreementRows, agreementValues, amountOf } from './agreementsData';
 import type { AgreementRow, Direction } from './agreementsData';
 import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
 import './lendLeaseAgreements.css';
 import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../../generated/dashboard';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly AgreementRow[] = [];
@@ -60,7 +60,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: 'agreements' } : null, [track, tags]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
+  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
   const showEnded = options.ended !== 'hidden';
   const history = useProduct<LendLeaseHistoryReply>(runtime.client, track && showEnded ? { sourceId: track.source.id, revision: track.source.revision,
     product: LEASE_HISTORY, params: { branchId: track.branch.id } } : null, active, validateLeaseHistory, track?.source);
@@ -127,15 +127,17 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const menu = useCallback((row: AgreementRow) => track ? [row.since, row.last, row.ended ? row.at : null]
     .flatMap(at => at === null ? [] : [jumpItem(runtime, track.id, at)]) : [], [runtime, track]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const [pick, setPick] = useState<{ owner: string | null; row: AgreementRow } | null>(null);
   const picked = pick && pick.owner === pickOwner ? pick.row : null;
   const open = (row: AgreementRow) => {
     setPick({ owner: pickOwner, row });
-    dispatch(openAgreement(row, AGREEMENT.id, runtime.clock.getSnapshot().playing, widget.time.mode === 'follow' ? hour : null));
+    if (row.ended) drillControl.showAt(AGREEMENT.id, row.at); else drillControl.show(AGREEMENT.id, row.at);
   };
-  const drillTime = drillAction(drill, track);
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillOpen = drill.breakdown !== null && !!picked;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
@@ -171,10 +173,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   </div>;
   return <div ref={anchor} className="lend-lease-agreements-host">{parent ? null : groupFailure}
     {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
-      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)}
-      following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={main} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
+      main={main}>
       {picked && (drillTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={drillTags} selected={`agreement:${picked.terms.id}`} />
         : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}

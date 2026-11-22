@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { at, axisAt, drillAction, FOLLOW, pickedAt, recordedHour, regionDetail, regionFollows, regionHour, regionKey, regionWindow, resolveRegion,
-  SETTINGS_DETAIL, SPEC, stageOf, type RegionAction, type TrackHour } from './regionTime.ts';
-import { reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
+import { at, axisAt, coverageAt, FOLLOW, OUTSIDE_MESSAGE, pickedAt, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
+  SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
+import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import type { BoundTrack, WidgetSpec, WidgetTime } from './model';
 
-const track = (id: string, firstHour: number, lastHour: number, axisOffset: number) =>
-  ({ id, axisOffset, branch: { id, firstHour, lastHour } }) as unknown as BoundTrack;
+const track = (id: string, firstHour: number, lastHour: number, axisOffset: number, gaps: { firstHour: number; lastHour: number; reason: string }[] = []) =>
+  ({ id, axisOffset, branch: { id, firstHour, lastHour, gaps } }) as unknown as BoundTrack;
 const late = track('late', 1000, 1009, 900);
 const early = track('early', 0, 9, 0);
 const tracks = [late, early];
@@ -46,16 +46,18 @@ test('the region follows playback only when its own action, or its widget, follo
     assert.equal(regionFollows({ widget: widget(time), action: FOLLOW }), true, `${specName} told to follow`);
     assert.equal(regionFollows({ widget: widget(time), action: at(hour(1003)) }), false, `${specName} at a picked hour`);
     const own = { widget: widget(time), action: SPEC };
-    assert.equal(regionDetail(own, null), time.mode === 'follow' ? undefined : SETTINGS_DETAIL, `${specName}: the remedy is the widget’s own setting`);
-    assert.equal(regionDetail({ widget: widget(time), action: FOLLOW }, null), undefined, `${specName}: following playback outside is not a settings problem`);
-    assert.equal(regionDetail({ widget: widget(time), action: pickedAt(late, 2000) }, null), undefined, `${specName}: a picked hour is not a settings problem`);
-    assert.equal(regionDetail(own, hour(1005)), undefined, `${specName}: a recorded hour needs no remedy`);
+    const missing = regionOutside(own, late, tracks, axisAt(2000));
+    assert.equal(missing === null, regionHour(own, late, tracks, axisAt(2000)) !== null, `${specName}: outside exactly when it has no recorded hour`);
+    if (missing) assert.equal(missing.detail, time.mode === 'follow' ? undefined : SETTINGS_DETAIL, `${specName}: the remedy is the widget’s own setting`);
+    assert.equal(regionOutside({ widget: widget(time), action: FOLLOW }, late, tracks, axisAt(2000))?.detail, undefined, `${specName}: following playback outside is not a settings problem`);
+    assert.equal(regionOutside({ widget: widget(time), action: pickedAt(late, 2000) }, late, tracks, axisAt(2000))?.detail, undefined, `${specName}: a picked hour is not a settings problem`);
+    assert.equal(regionOutside({ widget: widget(time), action: at(hour(1005)) }, late, tracks, axisAt(0)), null, `${specName}: a recorded hour needs no remedy`);
   }
 });
 
 test('a pinned widget’s drill told to follow playback reads the playback hour, never the pin, and a picked hour never moves with the clock', () => {
   const pinned = widget(SPECS.pin);
-  const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'detail', hour: 1005, playing: false, playhead: null });
+  const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'detail', hour: 1005, follow: false });
   assert.deepEqual(drillAction(opened, late), at(hour(1005)));
   const followed = reduceDrill(opened, { type: 'follow' });
   assert.equal(regionHour({ widget: pinned, action: drillAction(followed, late) }, late, tracks, axisAt(108)), 1008);
@@ -91,11 +93,30 @@ test('only a recorded track hour is a track hour; the region key tells regions r
 });
 
 test('the stages run in a fixed order: coverage, then the country, then membership, then the read', () => {
-  assert.deepEqual(stageOf({ hour: null, detail: SETTINGS_DETAIL, country: 'absent', members: 'none', read: 'loading' }), { stage: 'outside', detail: SETTINGS_DETAIL });
+  const outside = { message: OUTSIDE_MESSAGE, detail: SETTINGS_DETAIL };
+  assert.deepEqual(stageOf({ hour: null, outside, country: 'absent', members: 'none', read: 'loading' }), { stage: 'outside', outside });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'loading', members: 'none' }), { stage: 'loading' });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'absent', members: 'none' }), { stage: 'absent' });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'none', read: 'loading' }), { stage: 'no-members' });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'loading' }), { stage: 'loading' });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'held', read: 'loading' }), { stage: 'loading' });
   assert.deepEqual(stageOf({ hour: hour(1005), country: 'held', members: 'held', read: 'held' }), { stage: 'ready' });
+});
+
+test('a declared gap is not a recorded hour: every region time and pick inside it is unrecorded, with the recording’s own reason, and the hours around it are read', () => {
+  const reason = 'Branch 1 block 1005 – 1006 is unreadable: checksum';
+  const gapped = track('late', 1000, 1009, 900, [{ firstHour: 1005, lastHour: 1006, reason }]);
+  for (const at of [1004, 1007]) assert.equal(recordedHour(gapped, at), at);
+  for (const at of [1005, 1006.5]) {
+    assert.equal(recordedHour(gapped, at), null, `${at} is in the declared gap`);
+    assert.deepEqual(coverageAt(gapped, at), { hour: null, outside: { message: UNRECORDED_MESSAGE, detail: reason } });
+  }
+  const pinned = { widget: widget({ mode: 'pin', windows: { late: { firstOffset: 5, lastOffset: 5 } } }), action: SPEC };
+  assert.equal(regionHour(pinned, gapped, [gapped], axisAt(0)), null, 'a pin inside the gap has no hour, so nothing is chosen, saved or read there');
+  assert.deepEqual(regionOutside(pinned, gapped, [gapped], axisAt(0)), { message: UNRECORDED_MESSAGE, detail: `${reason} ${SETTINGS_DETAIL}` });
+  assert.equal(regionHour({ widget: widget({ mode: 'follow' }), action: FOLLOW }, gapped, [gapped], axisAt(106)), null);
+  assert.deepEqual(pickedAt(gapped, 1006), at(null), 'a pick inside the gap is no hour');
+  const overlapping = track('late', 0, 100, 0, [{ firstHour: 10, lastHour: 60, reason: 'a' }, { firstHour: 20, lastHour: 30, reason: 'b' }, { firstHour: 70, lastHour: 71, reason: 'c' }]);
+  assert.equal(coverageAt(overlapping, 50).hour, null, 'a gap is found behind a later, shorter one');
+  assert.equal(recordedHour(overlapping, 65), 65);
 });

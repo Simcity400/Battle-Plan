@@ -192,7 +192,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
-    if (!query.window || first == null || last == null || first > last) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (!query.window || first == null || last == null || first > last) return <WidgetState kind="outside" />;
     if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
     if (query.reason && !headEntry) return <WidgetState kind="unavailable" message={query.reason} />;
     if (players && registry.error) return <WidgetState kind="error" failure={registry.error} onRetry={registry.retry} />;

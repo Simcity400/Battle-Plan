@@ -23,6 +23,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { trackHourOf } from '../../dashboard/settledHour';
@@ -84,8 +85,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]);
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
-  const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { country: countryFromKey(first)} : null,
-    { active, validate: validateExperienceReply, structure: experienceStructure, time: hover === null ? SPEC : pickedAt(track, hover) });
+  const card = useHeadProduct(runtime, useGate(runtime, widget, hover === null ? SPEC : pickedAt(track, hover)), 'country-experience', track && first ? { country: countryFromKey(first)} : null,
+    { active, validate: validateExperienceReply, structure: experienceStructure });
   const setRoots = useCallback((element: HTMLDivElement | null) => { setRoot(element); card.root(element); }, [card.root]);
   const styleAt = Math.max(extent[0], Math.min(moment, extent[1]));
   const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);

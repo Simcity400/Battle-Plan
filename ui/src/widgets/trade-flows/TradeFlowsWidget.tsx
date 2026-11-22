@@ -1,9 +1,11 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { ReactNode } from 'react';
 import { nameReadFrom, nameReadMetadata } from '../../dashboard/nameReads.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { useContextMenu } from '../../components/ContextMenu';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -40,7 +42,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions } from '../../dashboard/options';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime';
-import { drillAction, recordedHour, SPEC } from '../../dashboard/regionTime';
+import {  recordedHour } from '../../dashboard/regionTime';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { perfLog } from '../../shell/perf.ts';
 import { mix, toHex } from '../../shell/appearance/color';
@@ -52,7 +54,7 @@ import TradeDrill, { tradeTexts } from './TradeDrillView';
 import type { LiveHour } from './TradeDrillView';
 import TradeCountryView, { countryTexts, resourceLegendItems } from './TradeCountryView';
 import { countryTradeTags } from './tradeCountry';
-import { contributionCountryTag, linkSelection, nodeSelections, observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, tradeContext } from './tradeDrill';
+import { contributionCountryTag, linkSelection, nodeSelections, observedTradeSpans, pinContributions, readSelection, selectedContributors, tradeContext } from './tradeDrill';
 import type { TradeSelection } from './tradeDrill';
 import { heldTradeColours, tradeColourPlan, tradeCountryColours, tradeFixedColourKey } from './tradeColours';
 import { OPTIONS } from './definition';
@@ -100,7 +102,9 @@ function marketSelectionAt(members: ReturnType<typeof useCountriesSelectionAt>, 
 }
 
 export default function TradeFlowsWidget({ widget, runtime, active, countrySlot, onDiagnostics, setOption }: WidgetProps) {
-  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatchDrill = drillControl.dispatch;
   const [selection, setSelection] = useState<TradeSelection | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -292,10 +296,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [data, trade, measure, hoverLabels.labelAt, askHover, nodeName, coverageAt, viewport, options.colour, resourceColour]);
 
   const headNow = useCallback(() => live ? live.hour() : moment, [live, moment]);
-  const playing = () => runtime.clock.getSnapshot().playing;
   const openCountry = useCallback((holder: string, hour: number) => {
     setSelection({ kind: 'country', holder });
-    dispatchDrill(openContributions(widget, hour, runtime.clock.getSnapshot().playing, following ? headNow() : playhead));
+    drillControl.show('contributions', hour);
   }, [widget, runtime.clock, following, headNow, playhead]);
   const onContextMenu = useCallback((hit: FlowHit | null, x: number, y: number) => {
     if (!track) return;
@@ -322,7 +325,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const effectiveDrill = drill.breakdown ? drill : pinnedView ? { breakdown: 'contributions', follow: following, hour: null } : CLOSED;
   const drillFollows = effectiveDrill.breakdown !== null && effectiveDrill.follow && !!track;
   const drillOpen = effectiveDrill.breakdown !== null;
-  const drillTime = drill.breakdown ? drillAction(drill, track) : SPEC;
+  const drillTime = drillControl.region.action;
   const mainRegion = useRegion(widget);
   const drillRegion = useRegion(widget, drillTime);
   const mainRead = useRegionCoverage(runtime, mainRegion);
@@ -361,7 +364,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     const drawn = hit.kind === 'node' ? (hit.node as TradeNode).trade : (hit.link as TradeLink).trade;
     if (!drawn) return;
     setSelection(drawn.selection);
-    dispatchDrill(openContributions(widget, hour, runtime.clock.getSnapshot().playing, following ? headNow() : playhead));
+    drillControl.show('contributions', hour);
   }, [track, widget, runtime.clock, following, headNow, playhead]);
   const openLabel = useCallback((node: FlowNode, hour: number) => {
     const drawn = (node as TradeNode).trade;
@@ -375,11 +378,11 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const drillMarket = marketSelectionAt(drillMembers, marketView && drillOpen, all);
   const marketTags = mainMarket.tags, marketReason = mainMarket.reason;
   const marketReady = !!track && marketView && mainMarket.ready;
-  const market = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease', marketReady ? { countries: marketTags.map(countryFromKey) } : null,
+  const market = useHeadProduct<MarketLendLeaseReply>(runtime, mainMembers.gate, 'market-lendlease', marketReady ? { countries: marketTags.map(countryFromKey) } : null,
     { active: active && marketView, validate: validateMarketReply });
-  const pickedMarketHead = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease',
+  const pickedMarketHead = useHeadProduct<MarketLendLeaseReply>(runtime, drillMembers.gate, 'market-lendlease',
     !!track && marketView && drillOpen && drillMarket.ready ? { countries: drillMarket.tags.map(countryFromKey) } : null,
-    { active: active && marketView && drillOpen, validate: validateMarketReply, time: drillTime });
+    { active: active && marketView && drillOpen, validate: validateMarketReply });
 
   useEffect(() => {
     const warnings = [...(marketView ? market.data?.warnings ?? [] : data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
@@ -399,7 +402,36 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   if (marketView && market.outside && !drillOpen) return <WidgetState kind="outside" read={market} />;
   if (!marketView && (pinnedView ? drillRead.outside : mainRead.outside && !drillOpen)) return <>{pinnedHeader}<WidgetState kind="outside" read={pinnedView ? drillRead : mainRead} /></>;
   const groupFailure = (widget.countries.kind === 'group' || marketView && !all) && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return <>{pinnedHeader}{groupFailure}</>;
+  const pickDay = (hour: number) => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, follow: false });
+  const drillMenu = (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]);
+  const frame = (main: ReactNode) => <div className="trade-flows" ref={anchor}>{groupFailure}
+    {pinnedHeader}
+    <DrillHost drill={drillControl} runtime={runtime} subject={effectiveDrill.breakdown != null} mode={pinnedView || options.drill !== 'popout' ? 'inline' : 'popout'} anchor={anchor}
+      title={drillTitle} day={drillRead.outside ? '' : drillLive ? <LiveText live={drillLive.texts} at="caption-day" /> : drillAt == null ? '' : dayLabel(drillAt)} canFollow
+      returnFocus=".flow-diagram canvas" onClose={() => {
+        dispatchDrill({ type: 'close' });
+        if (pinnedView) setOption?.('show', 'main');
+      }}
+      onPin={chosenSelection && drillAt != null && !drillRead.outside ? () => {
+        const at = drillFollows ? recordedHour(track, Math.floor(runtime.clock.getHour()) + axisOffset) : drillAt;
+        if (at !== null) runtime.addWidgetBelow(widget.id, pinContributions(widget, track, chosenSelection, at, effectiveDrill.follow, extent, countryFact?.tag ?? null));
+      } : undefined} main={main}>
+      {drillRead.outside ? <WidgetState kind="outside" read={drillRead} />
+        : countryHolder ? countryReply.error && countryTags ? <WidgetState kind="error" failure={countryReply.error} onRetry={countryReply.retry} />
+        : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
+        : <TradeCountryView holder={countryHolder} trade={countryData} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
+          hour={drillAt} live={drillLive} extent={extent} colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
+          onPick={pickDay} onContextMenu={drillMenu} />
+      : !trade ? <WidgetState kind="loading" label="Loading trade…" />
+      : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
+        hour={drillAt} live={drillLive} extent={extent} known={known} colours={resourceColour} tokens={tokens}
+        identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
+        onPick={pickDay} onContextMenu={drillMenu} />}
+    </DrillHost>
+    {menu.menu}
+  </div>;
+  const drillShown = effectiveDrill.breakdown != null && !marketView;
+  if (groupFailure && !groups.data) return drillShown ? frame(groupFailure) : <>{pinnedHeader}{groupFailure}</>;
   if (marketView) {
     const pickedMarket = pinnedView ? savedSelection?.kind === 'market' ? savedSelection.key : null : marketSelection;
     const loadingMarket = <WidgetState kind="loading" label="Loading market and lend-lease…" />;
@@ -415,7 +447,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     const marketData = market.data && market.at !== null ? { ...market.data, hour: market.at } : null;
     const main = parent ?? (marketData && <div ref={market.root} style={{ display: 'contents' }}><TradeMarketView data={marketData} values={market.live.read()}
       deliveries={deliveriesAt(marketData.hour, following, marketTags)} onPick={key => {
-        setMarketSelection(key); dispatchDrill(openContributions(widget, marketData.hour, playing(), following ? headNow() : playhead));
+        setMarketSelection(key); drillControl.show('contributions', marketData.hour);
       }} /></div>);
     const drillHead = pickedMarketHead;
     const drillData = drillHead.data && drillHead.at !== null ? { ...drillHead.data, hour: drillHead.at } : null;
@@ -426,14 +458,13 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       : <div ref={drillHead.root} style={{ display: 'contents' }}><TradeMarketView data={drillData} selected={pickedMarket} values={drillHead.live.read()}
         deliveries={deliveriesAt(drillData.hour, drillFollows, drillMarket.tags)} /></div>;
     return <div className="trade-flows" ref={anchor}>{groupFailure}
-      <DrillHost mode={!pinnedView && options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
-        title="Market & lend-lease" day={drillData ? dayLabel(drillData.hour) : ''} following={effectiveDrill.follow} canFollow
+      <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={!pinnedView && options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+        title="Market & lend-lease" day={drillData ? dayLabel(drillData.hour) : ''} canFollow
         returnFocus=".market-lendlease summary" onClose={() => { dispatchDrill({ type: 'close' }); if (pinnedView) setOption?.('show', 'main'); }}
-        onFollow={() => dispatchDrill(drill.breakdown ? { type: 'follow' } : { type: 'open', breakdown: 'contributions', hour: moment, playing: true, playhead: headAt(runtime.clock.getSnapshot().position) })}
         onPin={!pickedMarket || !drillData ? undefined : () => {
           const pinned = pinContributions(widget, track, { kind: 'market', key: pickedMarket }, drillData.hour, effectiveDrill.follow, extent);
           runtime.addWidgetBelow(widget.id, { ...pinned, title: 'Market & lend-lease', options: { ...pinned.options, view: 'market' } });
-        }} main={main} time={{ runtime, region: drillRegion }}>
+        }} main={main}>
         {drillBody}
       </DrillHost>
     </div>;
@@ -441,10 +472,11 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const atMoment = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, moment, lastHour, identities);
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
-  if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
+  if (error) return drillShown ? frame(<WidgetState kind="error" failure={error} onRetry={retry} />) : <>{groupFailure}{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
   if (none && !pinnedView && !drill.breakdown) return <>{groupFailure}{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
-  if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
+  if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return drillShown ? frame(<WidgetState kind="loading" label="Loading trade…" />)
+    : <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
   if (!data.known.length) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
   if (resourceIds && !resourceIds.size) return <>{groupFailure}{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
   if (pinnedView && options.tradeSelection && (!savedSelection || savedSelection.kind === 'market')) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;
@@ -458,7 +490,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     {options.colour === 'seller' ? <p className="chart-line-key">Ribbons in each seller’s map colour</p> : null}
     <div className="trade-inventory-action"><button type="button" className="button small quiet" onClick={() => {
       setSelection(ALL_CONTRIBUTORS);
-      dispatchDrill(openContributions(widget, headNow(), playing(), following ? headNow() : playhead));
+      drillControl.show('contributions', headNow());
     }}>All trades</button></div>
     <FlowDiagram label={`Trade flows: sellers to buyers${all ? ', all countries' : ''}`} nodes={shown.nodes} links={shown.links} live={live ?? undefined}
       stretch={measure === 'current' ? knownSpanAt(data.known, moment) : 'all'} scale={scale} slots={perSide + 1} hour={moment} onPick={openDrill}
@@ -466,33 +498,5 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       onLabelPick={openLabel}
       active={active && !(effectiveDrill.breakdown && (pinnedView || options.drill !== 'popout'))} />
   </div>;
-  const pickDay = (hour: number) => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null });
-  const drillMenu = (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]);
-  return <div className="trade-flows" ref={anchor}>{groupFailure}
-    {pinnedHeader}
-    <DrillHost mode={pinnedView || options.drill !== 'popout' ? 'inline' : 'popout'} open={effectiveDrill.breakdown != null} anchor={anchor}
-      title={drillTitle} day={drillRead.outside ? '' : drillLive ? <LiveText live={drillLive.texts} at="caption-day" /> : drillAt == null ? '' : dayLabel(drillAt)} following={effectiveDrill.follow} canFollow
-      returnFocus=".flow-diagram canvas" onClose={() => {
-        dispatchDrill({ type: 'close' });
-        if (pinnedView) setOption?.('show', 'main');
-      }}
-      onFollow={() => dispatchDrill(drill.breakdown ? { type: 'follow' }
-        : { type: 'open', breakdown: 'contributions', hour: moment, playing: true, playhead: headAt(runtime.clock.getSnapshot().position) })}
-      onPin={chosenSelection && drillAt != null && !drillRead.outside ? () => {
-        const at = drillFollows ? recordedHour(track, Math.floor(runtime.clock.getHour()) + axisOffset) : drillAt;
-        if (at !== null) runtime.addWidgetBelow(widget.id, pinContributions(widget, track, chosenSelection, at, effectiveDrill.follow, extent, countryFact?.tag ?? null));
-      } : undefined} main={main} time={{ runtime, region: drillRegion }}>
-      {drillRead.outside ? <WidgetState kind="outside" read={drillRead} />
-        : countryHolder ? countryReply.error && countryTags ? <WidgetState kind="error" failure={countryReply.error} onRetry={countryReply.retry} />
-        : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
-        : <TradeCountryView holder={countryHolder} trade={countryData} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
-          hour={drillAt} live={drillLive} extent={extent} colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
-          onPick={pickDay} onContextMenu={drillMenu} />
-      : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
-        hour={drillAt} live={drillLive} extent={extent} known={known} colours={resourceColour} tokens={tokens}
-        identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
-        onPick={pickDay} onContextMenu={drillMenu} />}
-    </DrillHost>
-    {menu.menu}
-  </div>;
+  return frame(main);
 }

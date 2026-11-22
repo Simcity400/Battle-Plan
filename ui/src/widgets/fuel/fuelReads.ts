@@ -5,6 +5,7 @@ import { LiveCell } from '../../charts/live';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { FOLLOW, pickedAt } from '../../dashboard/regionTime';
 import type { Failure } from '../../dashboard/queryError';
@@ -27,8 +28,8 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: Bou
   active: boolean, structure: (reply: CountryFuelReply) => string): FuelAt {
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
   const paint = useCallback((reply: CountryFuelReply) => live.set(reply), [live]);
-  const head = useHeadProduct<CountryFuelReply>(runtime, widget, COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateCountryFuel, structure, paint, time: follows ? FOLLOW : pickedAt(track, hour) });
+  const head = useHeadProduct<CountryFuelReply>(runtime, useGate(runtime, widget, follows ? FOLLOW : pickedAt(track, hour)), COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateCountryFuel, structure, paint });
   useEffect(() => { live.set(head.data); }, [live, head.data]);
   return { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: follows, shownAt: head.shownAt,
     outside: head.outside, outsideDetail: head.outsideDetail };

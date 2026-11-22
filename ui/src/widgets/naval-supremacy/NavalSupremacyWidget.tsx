@@ -76,7 +76,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   useShownEachFrame(runtime.clock, () => data && extent ? liveHead ? Math.min(liveHead.read(), data.lastHour) : extent[1] : null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see naval supremacy." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
-  if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading naval supremacy…" />;
   if (!rows.length) return <WidgetState kind="empty" message="No sea regions match these filters." />;

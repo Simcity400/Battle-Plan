@@ -4,6 +4,7 @@ import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import { isNoMembers } from '../dashboard/noMembers.ts';
 import { useOutsideRecording, type ReadCoverage } from '../dashboard/widgetTime.ts';
+import { OUTSIDE_MESSAGE } from '../dashboard/regionTime.ts';
 import '../charts/charts.css';
 
 export type WidgetStateProps =
@@ -31,12 +32,12 @@ export default function WidgetState(props: WidgetStateProps) {
 }
 
 function Outside({ read }: { read?: ReadCoverage }) {
-  const { detail } = useOutsideRecording(read);
-  return <WidgetState kind="unavailable" message="This time is outside the recording." detail={detail} />;
+  const outside = useOutsideRecording(read, true);
+  return <WidgetState kind="unavailable" message={outside?.message ?? OUTSIDE_MESSAGE} detail={outside?.detail} />;
 }
 
 function Loading({ label, read }: { label: string; read?: ReadCoverage }) {
-  const { outside } = useOutsideRecording(read);
+  const outside = useOutsideRecording(read);
   if (outside) return <Outside read={read} />;
   return <div className="widget-state" data-state="loading" role="status" aria-label={label}><span className="skeleton skeleton-chart" aria-hidden="true" /></div>;
 }

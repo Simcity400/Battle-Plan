@@ -1,10 +1,10 @@
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
-import { useCallback, useId, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useId, useMemo,  useRef, useState } from 'react';
 import { setStyle, setText } from '../../charts/domText';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawEndLabels } from '../../charts/draw';
 import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
@@ -29,6 +29,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
 import { useFallbackHour } from '../../dashboard/follow/useFollow';
@@ -38,7 +39,6 @@ import { FUEL_BRANCHES, FUEL_CONSUMERS, barWidths, branchName, branchesAt, fuelA
 import type { BranchAt } from './fuelBranchesData';
 import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -87,7 +87,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
       setStyle(held.short, 'width', width.unmet);
     }
   }, [digits]);
-  const head = useHeadProduct<FuelBranchesReply>(runtime, widget, FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
+  const head = useHeadProduct<FuelBranchesReply>(runtime, useGate(runtime, widget), FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const rows = useMemo(() => data ? branchesAt(data) : [], [data]);
@@ -105,13 +105,15 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
     return { title: row.name, rows: lines };
   }, [digits, data?.readHour]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
+  const drillRegion = drillControl.region;
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const open = () => {
     const at = head.at ?? head.hour;
     if (at === null) return;
-    dispatch({ type: 'open', breakdown: CONSUMPTION.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? at : null });
+    dispatch({ type: 'open', breakdown: CONSUMPTION.id, hour: at, follow: drillControl.followsAt(at) });
   };
   const rowTips = useRowTooltips<number>({ owner, active, revision: `${data?.readHour}:${digits}:${fuelStructure(data ?? EMPTY)}`,
     content: index => { const row = rows.find(item => item.index === index); return row ? fitTooltip([tooltip(row)], viewport) : null; },
@@ -119,7 +121,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
 
   let body;
   if (head.error) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  else if (head.read === 'off' && !data) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (head.read === 'off' && !data) body = <WidgetState kind="outside" />;
   else if (!data) body = <WidgetState kind="loading" label="Loading fuel by branch…" />;
   else if (!isMember(within, hour)) body = <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   else if (data.missing) body = <WidgetState kind="unavailable" message={data.missing} />;
@@ -159,9 +161,8 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   </div>;
   const at = drillAt;
   return <div ref={anchor} className="fuel-branches-host">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} anchor={anchor} title={CONSUMPTION.label}
-      day={at === null ? '' : dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
-      onFollow={() => dispatch({ type: 'follow' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor} title={CONSUMPTION.label}
+      day={at === null ? '' : dayLabel(at)} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
       <FuelConsumptionDrill />
     </DrillHost>
   </div>;

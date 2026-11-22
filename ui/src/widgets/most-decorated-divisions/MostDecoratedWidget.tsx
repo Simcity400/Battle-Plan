@@ -1,9 +1,9 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { logSettings } from '../../charts/log/logOptions';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -25,7 +25,6 @@ import RecordView from '../division-service-record/RecordView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import './mostDecorated.css';
 import type { CareerRow } from '../../generated/dashboard';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const EMPTY: readonly CareerRow[] = [];
@@ -35,16 +34,18 @@ const RECORD_LOG = logSettings({});
 
 export default function MostDecoratedWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const selection = useCountriesSelectionAt(widget, runtime, active);
   const hour = selection.hour;
-  const drillTime = drillAction(drill, track);
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const tags = selection.countries === undefined ? undefined : selection.countries === null ? null : [...selection.countries].sort();
-  const state = useHeadProduct(runtime, widget, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
+  const state = useHeadProduct(runtime, selection.gate, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
     { active, validate: validateDivisionCareers, structure: careersStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;
@@ -60,8 +61,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   useEffect(() => { dispatch({ type: 'close' }); }, [track?.source.id, track?.source.revision, track?.branch.id]);
   const open = useCallback((row: CareerRow) => {
     if (!data || dataHour === null) return;
-    dispatch({ type: 'open', breakdown: row.division, hour: dataHour,
-      playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    drillControl.show(row.division, dataHour);
   }, [data, dataHour, widget.time.mode, runtime.clock, hour]);
   const country = useCallback((row: CareerRow) => row.tag && data && dataHour !== null ? labelAt(dataHour)(row.tag) : { name: 'Country not recorded' }, [labelAt, data, dataHour]);
   const columns = useMemo<readonly TableColumn<CareerRow>[]>(() => [
@@ -101,11 +101,11 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   const shownHour = drill.breakdown ? answered ?? drillAt : drillAt;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; state.root(element); }, [state.root]);
   return <div ref={root} className="most-decorated">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} title="Division service record"
-      day={shownHour === null ? '' : formatDateTime(shownHour)} following={drill.follow} canFollow anchor={anchor}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => { if (drill.breakdown) dispatch({ type: 'follow' }); }}
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Division service record"
+      day={shownHour === null ? '' : formatDateTime(shownHour)} canFollow anchor={anchor}
+      onClose={() => dispatch({ type: 'close' })}
       onPin={drill.breakdown && track && shownHour !== null ? () => runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, shownHour, drill.follow)) : undefined}
-      main={main} time={{ runtime, region: drillRegion }}>
+      main={main}>
       {drill.breakdown && track && <RecordView runtime={runtime} widget={widget} trackId={track.id} division={drill.breakdown} time={drillTime} show="both"
         log={RECORD_LOG} active={active} onDiagnostics={onDiagnostics} onAnswered={setAnswered} />}
     </DrillHost></div>;

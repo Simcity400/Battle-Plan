@@ -3,20 +3,22 @@ import type { ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
 import FollowControl from './FollowControl';
-import { TimeRegion } from '../../dashboard/widgetTime';
-import type { Region } from '../../dashboard/regionTime';
+import { coverageOf, TimeRegion } from '../../dashboard/widgetTime';
+import WidgetState from '../../components/WidgetState';
 import type { WidgetRuntime } from '../../dashboard/definitions';
+import type { DrillControl } from './useDrill';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
-export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children, time }: {
-  mode: 'inline' | 'popout'; open: boolean; title: string; day: import('react').ReactNode; following: boolean; canFollow: boolean;
-  onClose: () => void; onFollow: () => void; onPause?: () => void; onPin?: () => void;
+export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, anchor, returnFocus, main, children }: {
+  mode: 'inline' | 'popout'; drill: Pick<DrillControl, 'open' | 'following' | 'region' | 'outside' | 'follow' | 'pause' | 'close'>; runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; subject?: boolean;
+  title: string; day: ReactNode; canFollow: boolean; onClose?: () => void; onPin?: () => void;
   anchor: RefObject<HTMLElement | null>;
   returnFocus?: string;
   main: ReactNode; children: ReactNode;
-  time: { runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; region: Region };
 }) {
+  const open = drill.open && subject;
+  const onClose = () => { drill.close(); closed?.(); };
   const panel = usePopover('start');
   const panelRef = useRef(panel);
   panelRef.current = panel;
@@ -75,13 +77,13 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     return () => window.removeEventListener('keydown', key);
   }, [popout, open, anchor]);
 
-  const body = <TimeRegion runtime={time.runtime} region={time.region}>{children}</TimeRegion>;
+  const body = <TimeRegion runtime={runtime} region={drill.region}>{drill.outside ? <WidgetState kind="outside" read={coverageOf(drill.outside)} /> : children}</TimeRegion>;
   const header = <div className="drill-header">
     {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     <strong>{title}</strong>
-    <span className="drill-day">{day}</span>
-    {canFollow && <FollowControl following={following} onFollow={onFollow} onPause={onPause} />}
-    {onPin && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
+    <span className="drill-day">{drill.outside ? '' : day}</span>
+    {canFollow && <FollowControl following={drill.following} onFollow={drill.follow} onPause={drill.pause} />}
+    {onPin && !drill.outside && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
     {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
   </div>;
 

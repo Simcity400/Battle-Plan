@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
-import type { BoundTrack, WidgetSpec } from './model';
+import type { BoundTrack } from './model';
 import { useFollowedProduct } from './products.ts';
 import type { ProductState } from './products';
 import type { Failure } from './queryError';
@@ -13,13 +13,14 @@ import { canonical } from './follow/canonical.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
-import { useOutsideTime, useReadsRegion, useRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
-import { regionDetail, regionFollows, regionHour, type AxisHour, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
+import { coverageOf, useReadsRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
+import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type Region, type TrackHour } from './regionTime.ts';
+import type { Gate } from './regionGate';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
 
-export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (clockHour: number) => TrackHour | null } {
-  return { follows: regionFollows(region), hourAt: clockHour => regionHour(region, track, tracks, clockHour as AxisHour) };
+export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (axis: AxisHour) => TrackHour | null } {
+  return { follows: regionFollows(region), hourAt: axis => regionHour(region, track, tracks, axis) };
 }
 
 export function headSource(following: boolean, status: 'off' | FollowEntry['status'], landed: boolean, hidden = false): 'pushed' | 'fallback' | 'asked' | 'idle' {
@@ -28,7 +29,7 @@ export function headSource(following: boolean, status: 'off' | FollowEntry['stat
   return status === 'followed' && landed ? 'pushed' : 'fallback';
 }
 
-export { useOutsideTime, watchBoundary };
+export { watchBoundary };
 
 export const heldPanel = (entry: FollowEntry | null): Landed | undefined => entry && !entry.panel ? entry.landed ?? undefined : undefined;
 
@@ -64,7 +65,6 @@ export interface HeadProductOptions<T> {
   active: boolean;
   validate: (data: unknown) => T;
   structure?: (reply: T, hour: number) => string;
-  time?: RegionAction;
 }
 
 export interface HeadProduct<T> extends ProductState<T>, ReadCoverage {
@@ -114,11 +114,11 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
   return held && held.client === client && held.subject === subject && eligible(held.hour) ? held : null;
 }
 
-export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, product: string, params: Readonly<Record<string, unknown>> | null,
+export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: string, wanted: Readonly<Record<string, unknown>> | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
   const { active, validate, structure, paint } = options;
-  const region = useRegion(widget, options.time);
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const { region, track } = gate;
+  const params = gate.open ? wanted : null;
   const { follows, hourAt } = useMemo(() => headRead(region, track, runtime.tracks), [region, track, runtime.tracks]);
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
@@ -142,7 +142,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     if (data !== undefined) return latest.current.paint?.(data);
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
-  const outside = useOutsideTime(runtime.clock, !!track, hourAt);
+  const outside = gate.outside !== null;
   useReadsRegion(region, active);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
@@ -152,7 +152,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const heldLive = useMemo(() => store && entry ? followedLive(store, entry, () => entry.landed?.values) : null, [store, entry]);
   const fallback = source === 'fallback';
   const requestHour = useFallbackHour(runtime.clock, fallback);
-  const hour = pushed || idle || !track || !params ? null : hourAt(fallback ? requestHour : runtime.clock.getHour());
+  const hour = pushed || idle || !track || !params ? null : hourAt(fallback ? axisAt(requestHour) : axisHour(runtime.clock));
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : { sourceId: track!.source.id, revision: track!.source.revision,
     product, params: { ...params, branchId: track!.branch.id, hour } }, !follows ? [] : MOVING, active, validate, track?.source);
   const askedAt = asked.data === undefined ? null : momentHour(asked.moment) ?? hour;
@@ -170,7 +170,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const heldReading = useMemo(() => heldData !== undefined && landed && heldLive ? { data: heldData, hour: landed.hour, through: landed.through, live: heldLive } : undefined,
     [heldData, landed, heldLive]);
   const kept = outside || pushed ? undefined : held.current ?? undefined;
-  const shown = kept && shownAsked(kept.hour, follows && !runtime.clock.getSnapshot().playing ? hourAt(runtime.clock.getHour()) : null) ? kept : undefined;
+  const shown = kept && shownAsked(kept.hour, follows && !runtime.clock.getSnapshot().playing ? hourAt(axisHour(runtime.clock)) : null) ? kept : undefined;
   const data = outside ? undefined : pushed ? fromPanel.data : shown?.data;
   const dataAt = shown?.hour ?? null;
   const error: Failure | undefined = outside ? undefined : pushed ? fromPanel.error : asked.error;
@@ -191,7 +191,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);
   return {
-    data, error, retry: asked.retry, root, hour, live, outside, outsideDetail: outside ? regionDetail(region, null) : undefined,
+    data, error, retry: asked.retry, root, hour, live, ...coverageOf(gate.outside),
     exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,

@@ -241,7 +241,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message="Selected country unavailable at this time." /></>;
   if (!tags.length) return <>{groupNotice}<WidgetState kind="empty" message="Choose a country to see its spending." /></>;
   if (!ledgers) return <>{groupNotice}<WidgetState kind="loading" label={`Loading ${noun} spending…`} /></>;
-  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="outside" /></>;
   if (ledgers.every(ledger => !ledger.coverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message={`${noun[0].toUpperCase()}${noun.slice(1)} spending wasn’t recorded.`} /></>;
 
   return <div className="politics-spending">{groupNotice}

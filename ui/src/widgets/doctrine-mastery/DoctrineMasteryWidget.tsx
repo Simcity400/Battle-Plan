@@ -17,6 +17,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
@@ -37,7 +38,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const valueId = useId();
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
+  const head = useHeadProduct<DoctrineMasteryReply>(runtime, useGate(runtime, widget), 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const drawn = withHeld(head), holding = drawn !== head;

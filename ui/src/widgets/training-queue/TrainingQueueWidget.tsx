@@ -12,17 +12,17 @@ import { usNumber } from '../../charts/numberFormat';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
+import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime.ts';
+import GateState from '../../dashboard/GateState';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
 import { divisionName, divisionTooltip, orderIcon, equipmentFill, lowestFill, orderName, orderTooltip, percent, queueRows, queueStructure, trainingRatio, validateTrainingQueue } from './trainingQueueData';
 import type { QueueRow } from './trainingQueueData';
 import './trainingQueue.css';
-import { SPEC } from '../../dashboard/regionTime.ts';
 
 const rowKey = (row: QueueRow) => row.key;
 const NO_SORT = { column: 'name', direction: 'ascending' } as const;
@@ -34,15 +34,15 @@ function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
 
 export default function TrainingQueueWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const country = useReachedCountry(widget, runtime, SPEC, active, widget.options?.country, setOption);
-  const hour = country.hour;
-  const tag = country.tag;
+  const gate = useGate(runtime, widget, SPEC, active, { country: { stored: widget.options?.country, setOption } });
+  const country = gate.country!;
+  const hour = gate.hour;
+  const tag = gate.open ? country.tag : null;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
-  const state = useHeadProduct(runtime, widget, 'training-queue', track && window && tag ? { country: countryFromKey(tag) } : null,
+  const state = useHeadProduct(runtime, gate, 'training-queue', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateTrainingQueue, structure: queueStructure });
   const data = state.data;
   const rows = useMemo(() => data ? queueRows(data) : [], [data]);
@@ -90,14 +90,8 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   const pill = headerSlot && data && data.missing === null && createPortal(<span className="pill">{training} in training</span>, headerSlot);
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see the training queue." />;
-  else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (state.outside) body = <WidgetState kind="outside" read={state} />;
-  else if (!country.chosen) body = <WidgetState kind="empty" message="Choose a country to see its training queue." />;
-  else if (country.error && !country.historyHeld) body = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
-  else if (country.holders) body = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
-  else if (country.reason) body = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
-  else if (!tag) body = <WidgetState kind="loading" label="Loading the training queue…" />;
+  else if (!gate.open) body = <GateState gate={gate} loading="Loading the training queue…" choose="Choose a country to see its training queue."
+    absent={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading the training queue…" />;
   else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." detail={nameDetail} />;

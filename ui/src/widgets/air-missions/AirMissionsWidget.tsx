@@ -1,11 +1,11 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -19,6 +19,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { headRead, useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
 
 import { reporting } from '../../dashboard/follow/liveCells.ts';
@@ -27,12 +28,12 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { DEFAULT_SORT } from './definition';
-import { efficiencyText, flownBy, missionRows, missionTooltip, missionValues, openWings, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
+import { efficiencyText, flownBy, missionRows, missionTooltip, missionValues, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
 import type { MissionRow } from './airMissionsData';
 import type { AirMissionWing, AirMissionWingsReply } from '../../generated/dashboard';
 import { useAirMissions } from './useAirMissions';
 import './airMissions.css';
-import { SPEC, drillAction } from '../../dashboard/regionTime';
+import { SPEC, axisAt } from '../../dashboard/regionTime';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const rowKey = (row: MissionRow) => row.key;
@@ -77,21 +78,22 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const tooltip = useCallback((row: MissionRow) => missionTooltip(row, missions, values.read(), readDate), [missions, values, readDate]);
   const menu = useCallback(() => track && readHour !== null ? [jumpItem(runtime, track.id, readHour)] : [], [runtime, track, readHour]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [region, setRegion] = useState<MissionRow | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setRegion(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const following = widget.time.mode === 'follow';
   const onRowClick = useCallback((row: MissionRow) => {
-    const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(runtime.clock.getHour());
+    const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(axisAt(runtime.clock.getHour()));
     if (hour === null) return;
     setRegion(row);
-    dispatch(openWings(hour, following));
-  }, [widget, track, runtime, following]);
+    drillControl.show('wings', hour);
+  }, [widget, track, runtime, drillControl]);
   const open = drill.breakdown !== null && region !== null;
-  const drillTime = drillAction(drill, track);
-  const drillRegion = useRegion(widget, drillTime);
-  const wings = useHeadProduct<AirMissionWingsReply>(runtime, widget, 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
-    { active: active && open, validate: validateAirWings, structure: wingsStructure, time: drillTime });
+  const drillTime = drillControl.region.action;
+  const wings = useHeadProduct<AirMissionWingsReply>(runtime, useGate(runtime, widget, drillTime), 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
+    { active: active && open, validate: validateAirWings, structure: wingsStructure });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => wingsShown.current() ?? Number.NaN,
@@ -115,9 +117,8 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
       hoursPerSecond={hoursPerSecond} onRowClick={onRowClick} live={values} />;
   return <div ref={attach} data-detail={failureDetails([...country.values()].map(nameReadFailure))} className="air-missions">
     {pill}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
-      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)}
-      following={drill.follow} canFollow={following} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={open} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)} canFollow={following} onClose={() => dispatch({ type: 'close' })} main={main}>
       <div ref={wings.root} className="air-missions">
         <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
       </div>

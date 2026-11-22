@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
+import type { DrillState } from '../drill/drillState';
 import test from 'node:test';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import { partsRaceModel, validatePartsRaceReply } from '../../dashboard/partsRace.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { runAt } from '../series.ts';
-import { axisAt, drillAction, regionHour } from '../../dashboard/regionTime.ts';
+import { axisAt, regionHour } from '../../dashboard/regionTime.ts';
+import { drillAction } from '../drill/drillState.ts';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, partsRaceDrillBands, partsRaceDrillData, pinPartsRace, reducePartsRaceDrill, validateNativePartsRaceReply } from './partsRaceDrill.ts';
 import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData.ts';
 
 const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
-const drillAt = (state: { follow: boolean; hour: number | null }, playhead: number) =>
+const drillAt = (state: DrillState, playhead: number) =>
   regionHour({ widget: { trackIds: ['wide'], time: { mode: 'follow' } } as unknown as WidgetSpec, action: drillAction(state, WIDE) }, WIDE, [WIDE], axisAt(playhead));
 
 test('drawn actor candidates override ranking without adding hidden or missing countries', () => {
@@ -32,7 +34,7 @@ test('drawn actor candidates override ranking without adding hidden or missing c
 
 test('actor chooser retains the clicked hour and branch and rejects superseded input', () => {
   const key = JSON.stringify(['campaign', 'branch']);
-  let state = reducePartsRaceDrill(CLOSED_PARTS_RACE, { type: 'open', breakdown: 'old actor', hour: 20, playing: true, playhead: 20 });
+  let state = reducePartsRaceDrill(CLOSED_PARTS_RACE, { type: 'open', breakdown: 'old actor', hour: 20, follow: true });
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 31.9, tags: ['drawn A', 'drawn B'] });
   assert.equal(state.breakdown, null);
   assert.equal(state.follow, false);
@@ -44,15 +46,15 @@ test('actor chooser retains the clicked hour and branch and rejects superseded i
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key: 'another branch', hour: 44, tag: 'drawn C' }), state);
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key, hour: 44, tag: 'hidden rank leader' }), state);
   state = reducePartsRaceDrill(state, { type: 'choose', key, hour: 44, tag: 'drawn D' });
-  assert.deepEqual(state, { breakdown: 'drawn D', follow: false, hour: 44, choices: null });
+  assert.deepEqual(state, { breakdown: 'drawn D', spec: false, follow: false, hour: 44, choices: null });
   state = reducePartsRaceDrill(state, { type: 'follow' });
   assert.equal(drillAt(state, 500), 500);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 60, tags: ['drawn A', 'drawn B'] });
   state = reducePartsRaceDrill(state, { type: 'close' });
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key, hour: 60, tag: 'drawn A' }), state);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 60, tags: ['drawn A', 'drawn B'] });
-  state = reducePartsRaceDrill(state, { type: 'open', breakdown: 'direct actor', hour: 61, playing: true, playhead: 61 });
-  assert.deepEqual(state, { breakdown: 'direct actor', follow: true, hour: null, choices: null });
+  state = reducePartsRaceDrill(state, { type: 'open', breakdown: 'direct actor', hour: 61, follow: true });
+  assert.deepEqual(state, { breakdown: 'direct actor', spec: false, follow: true, hour: null, choices: null });
 });
 
 test('drill stacks retain exact totals through missing classification, zeros, gaps and identity changes', () => {

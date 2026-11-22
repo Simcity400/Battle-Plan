@@ -160,7 +160,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
   const state = warsReplyState(data, product.error);
   if (state === 'error') return <WidgetState kind="error" failure={product.error!} onRetry={product.retry} />;
   if (state === 'unavailable') return <WidgetState kind="unavailable" message="Wars are not in this recording." />;

@@ -4,7 +4,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-const NO_TIME = { runtime: { clock: {}, tracks: [] }, region: { widget: { trackIds: [], time: { mode: 'follow' } }, action: { kind: 'spec' } } } as never;
+const RUNTIME = { clock: { getHour: () => 0 }, tracks: [] } as never;
+const drillOf = (open: boolean, close: () => void = () => {}) => ({ open, following: false, outside: null, follow() {}, pause() {}, close,
+  region: { widget: { trackIds: [], time: { mode: 'follow' } }, action: { kind: 'spec' } } }) as never;
 
 test('actual queued drill close restores its own focus and preserves a later widget or button', async () => {
   class SurfaceElement {
@@ -68,9 +70,9 @@ test('actual queued drill close restores its own focus and preserves a later wid
         } }; } } as unknown as HTMLElement;
       const anchor = { current: target as HTMLElement | null };
       state.effects = []; state.menu.popup.current = panel; browser.activeElement = scenario.mode === 'inline' ? anchorControl : ownControl;
-      const html = renderToStaticMarkup(createElement(DrillHost, { mode: scenario.mode, open: true, title: 'Recorded parts', day: 'Recorded day',
-        following: false, canFollow: false, anchor, returnFocus: 'defaultFocus' in scenario ? undefined : '.country-race-chart canvas',
-        main: null, children: null, time: NO_TIME, onFollow() {}, onClose() { closes++; state.menu.popup.current = null; } }));
+      const html = renderToStaticMarkup(createElement(DrillHost, { mode: scenario.mode, drill: drillOf(true), runtime: RUNTIME, title: 'Recorded parts', day: 'Recorded day',
+        canFollow: false, anchor, returnFocus: 'defaultFocus' in scenario ? undefined : '.country-race-chart canvas',
+        main: null, children: null, onClose() { closes++; state.menu.popup.current = null; } }));
       assert.match(html, scenario.mode === 'popout' ? /Close breakdown/ : /Back/);
       try {
         for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
@@ -145,8 +147,8 @@ test('opening slides at once and mounts the breakdown on the next frame', async 
     const { default: DrillHost } = await vite.ssrLoadModule('/ui/src/charts/drill/DrillHost.tsx') as typeof import('./DrillHost');
     const render = (open: boolean) => {
       cursor = 0;
-      return renderToStaticMarkup(DrillHost({ mode: 'inline', open, title: 'Recorded parts', day: 'Recorded day', following: false, canFollow: false,
-        anchor: { current: null }, main: null, children: createElement('p', null, 'breakdown'), time: NO_TIME, onFollow() {}, onClose() {} }));
+      return renderToStaticMarkup(DrillHost({ mode: 'inline', drill: drillOf(open), runtime: RUNTIME, title: 'Recorded parts', day: 'Recorded day', canFollow: false,
+        anchor: { current: null }, main: null, children: createElement('p', null, 'breakdown') }));
     };
     render(false);
     assert.doesNotMatch(render(true), /breakdown/, 'the click commits only the slide and header');

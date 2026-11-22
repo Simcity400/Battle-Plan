@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo } from 'react';
+import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 import type { RefObject } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/connection.ts';
 import type { FollowQuery } from '../../dashboard/follow/store';
 import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
-import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
@@ -50,9 +50,8 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const followedText = followed ? structure() : '\u0001';
 
   const playbackHour = useFallbackHour(runtime.clock, following && !followed);
-  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const moment = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const params = !followed && track && rank ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
+  const moment = regionHour({ widget, action: SPEC }, track, runtime.tracks, axisAt(playbackHour));
+  const params = !followed && track && rank && moment !== null ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
   const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, 1), []);
   const reply = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour'], active, validate, track?.source);

@@ -51,7 +51,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
 
   if (!track || !tag) return <WidgetState kind="empty" icon="history" message="Load a campaign and choose a country to see its national spirits." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (following && hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (following && hour == null) return <WidgetState kind="outside" />;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;

@@ -45,7 +45,7 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   }, [data, onDiagnostics]);
   if (!track || !tag) return <WidgetState kind="empty" message="Load a campaign and choose a country to see its bombing damage." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || !index || pending) return <WidgetState kind="loading" label="Loading bombing damage…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;

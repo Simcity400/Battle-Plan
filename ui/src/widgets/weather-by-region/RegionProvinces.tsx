@@ -5,6 +5,7 @@ import type { TableColumn } from '../../charts/table/Table';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { temperatureText, validateProvinces } from './weatherData';
 import type { ProvinceWeather, ProvincesReply } from './weatherData';
 import { type RegionAction } from '../../dashboard/regionTime';
@@ -18,7 +19,7 @@ export default function RegionProvinces({ runtime, widget, region, time, active,
   onHour?: (hour: number | null) => void;
 }) {
   const params = useMemo(() => ({ region }), [region]);
-  const read = useHeadProduct<ProvincesReply>(runtime, widget, 'regional-weather-provinces', params, { active, validate: validateProvinces, structure, time });
+  const read = useHeadProduct<ProvincesReply>(runtime, useGate(runtime, widget, time), 'regional-weather-provinces', params, { active, validate: validateProvinces, structure });
   useEffect(() => { if (read.data) onWarnings(read.data.warnings); }, [read.data]);
   useEffect(() => { onHour?.(read.data?.readHour ?? read.hour); }, [read.data, read.hour]);
   useEffect(() => () => onHour?.(null), []);

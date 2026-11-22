@@ -31,8 +31,8 @@ function TopGeneralCareer(props: WidgetProps) {
   const selection = useCountriesRequest(widget, runtime, active);
   const params = useMemo(() => selection.requestTags === undefined ? null : { selection: leaderRequestSelection(selection.requestTags), leaders: 'land' },
     [selection.requestTags]);
-  const head = useHeadProduct<UnitLeadersReply>(runtime, widget, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const atRead = useCountriesSelectionAt(widget, runtime, active);
+  const head = useHeadProduct<UnitLeadersReply>(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const read = atRead.hour;
   const rows = useMemo(() => head.data && read !== null && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
   const top = useMemo(() => topLeader(rows), [rows]);

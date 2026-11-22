@@ -1,6 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { pageClock } from '../../dashboard/widgetClock.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
@@ -10,7 +11,8 @@ import type { ChordFrame } from '../../charts/chord/ChordChart';
 import type { ChordHit } from '../../charts/chord/layout';
 import type { ChordData } from '../../charts/chord/layout';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
 import { compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment, stackEdges } from '../../charts/stack';
 import { runAt } from '../../charts/series';
@@ -54,7 +56,7 @@ import { definition, DETAIL } from './definition';
 import './casualtyPairs.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { drillAction, regionHour, axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import {  regionHour, axisAt, recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const SORT = { column: 'value', direction: 'descending' } as const;
@@ -93,7 +95,9 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
 });
 
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const speed = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(definition.options, widget.options);
   const tokens = useChartTokens(), height = useViewportHeight();
@@ -124,15 +128,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const effectiveDrill = drill.breakdown ? drill : pinned
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
-  const drillRegion = useRegion(widget, drill.breakdown ? drillAction(drill, track) : SPEC);
+  const drillRegion = drillControl.region;
   const detailAt = open ? regionHour(drillRegion, track, runtime.tracks, axisAt(playback)) : recordedHour(track, hour);
   const detailHour = detailAt ?? hour;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   const detailOutside = !!track && detailAt === null;
   const pickDay = useCallback((at: number) => dispatch(drill.breakdown ? { type: 'pick', hour: at }
-    : { type: 'open', breakdown: DETAIL.id, hour: at, playing: false, playhead: null }), [drill.breakdown]);
+    : { type: 'open', breakdown: DETAIL.id, hour: at, follow: false }), [drill.breakdown]);
   const follow = () => dispatch(drill.breakdown ? { type: 'follow' }
-    : { type: 'open', breakdown: DETAIL.id, hour: detailHour, playing: true, playhead: clockHour });
+    : { type: 'open', breakdown: DETAIL.id, hour: detailHour, follow: drillControl.followsAt(detailHour) });
   const savedSelection = useMemo(() => track ? readPairSelection(options.pairSelection, track) : null, [options.pairSelection, track]);
   const grouped = widget.countries.kind === 'group';
   const needsGroups = widget.countries.kind !== 'all';
@@ -199,11 +203,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const frameAt = useMemo(() => {
     let lastHour = NaN, lastSeek = -1, frame: ChordFrame = { data: null };
     let labels: { hour: number; at: CountryLabel } | null = null;
-    return (now: number): ChordFrame => {
+    return (): ChordFrame => {
       const clock = runtime.clock.getSnapshot();
       const seek = widget.time.mode === 'follow' ? clock.seekSequence : 0;
-      const shown = track ? resolveWindow(widget, track, runtime.tracks, widget.time.mode === 'follow'
-        ? runtime.clock.positionAt(now) : clock.position)?.lastHour ?? NaN : NaN;
+      const shown = track ? resolveWindow(widget, track, runtime.tracks, pageClock(runtime.clock).getHour())?.lastHour ?? NaN : NaN;
       const playing = widget.time.mode === 'follow' && clock.playing;
       if (shown === lastHour && seek === lastSeek) return { ...frame, playing };
       const index = casualtyPairWindows(manifest.data, shown, false)[0];
@@ -246,8 +249,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const openPairs = (ids: readonly string[], at: number) => {
     if (!active) return;
     setDetail(ids);
-    dispatch({ type: 'open', breakdown: DETAIL.id, hour: at, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
-      playhead: widget.time.mode === 'follow' ? clockHour : null });
+    dispatch({ type: 'open', breakdown: DETAIL.id, hour: at, follow: drillControl.followsAt(at) });
   };
   const columns = useMemo<TableColumn<PairFlow>[]>(() => [
     { key: 'from', header: 'Dealt by', label: 'Dealt by', value: flow => detailLabel(flow.from).name,
@@ -272,7 +274,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const body = <div className="casualty-pair-details">
     {pinned && <p className="chart-line-key">{drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
-    {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    {detailOutside ? <WidgetState kind="outside" />
       : detailError ? <WidgetState kind="error" failure={detailError} onRetry={histories.retry} />
       : !detailData ? <WidgetState kind="loading" label="Loading this moment…" />
         : !detailData.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
@@ -299,7 +301,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     {chartWindows.some(index => !histories.data.has(index) && !histories.errors.has(index)) && <p className="drill-empty">Loading history in the visible time range…</p>}
     {chartWindows.some(index => histories.errors.has(index)) && <button type="button" className="button small" onClick={histories.retry}>Retry history</button>}
   </div>;
-  const main = outside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+  const main = outside ? <WidgetState kind="outside" />
     : error ? <WidgetState kind="error" failure={error} onRetry={histories.retry} />
     : !data ? <WidgetState kind="loading" label="Loading casualty pairs…" />
       : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
@@ -326,8 +328,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), through)}>Corrections</button>}
   </>;
   return <div className="casualty-pairs" ref={anchor}>{groupFailure}
-    {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs" time={{ runtime, region: drillRegion }}
-      day={drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
+    {pinned ? body : <DrillHost drill={drillControl} runtime={runtime} subject={open} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Casualty pairs"
+      day={drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} canFollow
       onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}
       onClose={() => { dispatch({ type: 'close' }); setDetail(null); }}
       returnFocus=".chord-chart canvas" anchor={anchor} main={main}>{body}</DrillHost>}

@@ -14,8 +14,6 @@ import { drawBands } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { LiveDrillParts } from '../../charts/drill/DrillParts';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
-import type { DrillState } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
 import { liveAt, liveKey, valuesOf } from '../../charts/live';
 import type { Live, LiveValues } from '../../charts/live';
@@ -36,6 +34,7 @@ import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { resolveOptions } from '../../dashboard/options';
@@ -53,7 +52,7 @@ import { exactLossHour, stretchWindow, useLossHistory } from './lossesSource';
 import type { LossSelection } from './lossesSource';
 import type { LandSource, LossHeadReply, LossLeaf, LossesReply } from '../../generated/dashboard';
 import './equipmentLosses.css';
-import { drillAction, SPEC } from '../../dashboard/regionTime.ts';
+import { useDrill } from '../../charts/drill/useDrill';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
@@ -75,7 +74,6 @@ function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, nam
 }
 
 function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
-  const [localDrill, setLocalDrill] = useState<{ owner: unknown; state: DrillState } | null>(null);
   const [picked, setPicked] = useState<readonly string[] | null | undefined>(undefined);
   const anchor = useRef<HTMLDivElement>(null), menu = useContextMenu('Equipment loss actions');
   const shown = useShownHour();
@@ -86,16 +84,16 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const bindingKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time,
     hasSavedCountry, widget.options?.lossCountry, widget.options?.lossSelection, options.show]);
   const bindingOwner = useMemo(() => ({ client: runtime.client, key: bindingKey }), [runtime.client, bindingKey]);
-  const drill = localDrill?.owner === bindingOwner ? localDrill.state : CLOSED;
-  const setDrill = (next: DrillState | ((state: DrillState) => DrillState)) => setLocalDrill(before => ({ owner: bindingOwner,
-    state: typeof next === 'function' ? next(before?.owner === bindingOwner ? before.state : CLOSED) : next }));
+  const drillControl = useDrill(runtime, useRegion(widget), options.show === DETAIL.id ? DETAIL.id : null);
+  const drill = drillControl.state;
+  useEffect(() => { drillControl.close(); }, [bindingOwner]);
   const speed = usePlaybackMotion(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
   const followView = widget.time.mode === 'follow';
   const requestedView: LossWindow | null = !track ? null : followView
     ? { first: track.branch.firstHour, hour: track.branch.lastHour, end: track.branch.lastHour, campaign: false, from: null }
     : lossWindow(resolveWindow(widget, track, runtime.tracks, 0), track.branch, widget.time.mode);
   const hourAt = (position: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? requestedView?.end ?? 0);
-  const saved = options.show === DETAIL.id, open = saved || drill.breakdown !== null;
+  const saved = options.show === DETAIL.id, open = drillControl.open;
   const catalogue = useCountryGroups(runtime, track, active);
   const origin = requestedView ? followView ? hourAt(runtime.clock.getSnapshot().position) : requestedView.hour : null;
   const originRef = useRef<{ owner: unknown; hour: number } | null>(null);
@@ -118,12 +116,11 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
     branchId: track.branch.id, country: selectedCountry.tag, landSource: options.landSource as LandSource,
     identity: { slot: selectedCountry.slot, countryId: selectedCountry.countryId },
   } : null, [track, selectedCountry, actorSpans, options.landSource]);
-  const following = followView && (drill.breakdown === null || drill.follow);
-  const drillRegion = useRegion(widget, drill.breakdown !== null ? drillAction(drill, track) : SPEC);
+  const following = drill.breakdown === null ? followView : drillControl.following;
   const pinnedDetail = !following && drill.breakdown !== null ? drill.hour : null;
   const product = useLossHistory(runtime.client, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
-  const head = useHeadProduct<LossHeadReply>(runtime, widget, 'equipment-loss-head',
+  const head = useHeadProduct<LossHeadReply>(runtime, useGate(runtime, widget), 'equipment-loss-head',
     followView && selection ? { country: selection.country, identity: selection.identity } : null,
     { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
   const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);
@@ -143,7 +140,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const selected = useMemo(() => picked === undefined ? selectionPick ? new Set(selectionPick.keys) : null : picked === null ? null : new Set(picked), [picked, selectionPick]);
   const scope = JSON.stringify([identity, widget.time, widget.options?.lossSelection]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  useEffect(() => { setDrill(CLOSED); setPicked(undefined); }, [pickOwner]);
+  useEffect(() => { drillControl.close(); setPicked(undefined); }, [pickOwner]);
   const hour = view?.hour ?? 0;
   const detailPickOwner = useMemo(() => ({ pickOwner, selected }), [pickOwner, selected]);
   const detailHour = following ? hour : Math.floor(drill.hour ?? hour);
@@ -250,7 +247,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
     return () => onDiagnostics(NO_WARNINGS); }, [warnings, contentPending, onDiagnostics]);
 
   const unavailable = !track || !tag ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its equipment losses." />
-    : !view ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+    : !view ? <WidgetState kind="outside" />
       : following && head.outside ? <WidgetState kind="outside" read={head} />
       : selectionPick === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
         : (hasSavedCountry && !savedCountry) || (catalogue.data && !slotsPending && (!selectedCountry || !actorSpans))
@@ -261,8 +258,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
                 : !data || !shownReply ? <WidgetState kind="loading" label="Loading equipment losses..." /> : null;
   const catalogueNotice = catalogue.error && catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} /> : null;
   if (unavailable || !track || !tag || !view || !data || !shownReply) return <div ref={head.root} className="equipment-losses">{countryHeader}{catalogueNotice}{unavailable}</div>;
-  const openRows = (keys: readonly string[] | null) => { setPicked(keys); setDrill(state => reduceDrill(state, { type: 'open', breakdown: DETAIL.id,
-    hour, playing: followView && runtime.clock.getSnapshot().playing, playhead: followView ? hour : null })); };
+  const openRows = (keys: readonly string[] | null) => { setPicked(keys); drillControl.show(DETAIL.id, hour); };
   const coverage = coverageLegend(shownReply, view, tokens);
   const airCoverage = shownReply.landSource === 'combatLog' ? destructionLegend(shownReply, view, tokens) : [];
   const incomplete = total.incomplete || [...coverage, ...airCoverage].some(item => item.label === 'Incomplete')
@@ -286,10 +282,10 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
         menu.open(x, y, [{ label: 'Losses', run: () => openRows(node ? [...node.counted] : null) }, ...(read === null ? [] : [jumpItem(runtime, track.id, read)])]); }} />
     <button type="button" className="button small" onClick={() => openRows(null)}>View all losses</button>
   </div>;
-  const detail = !detailView ? <WidgetState kind="unavailable" message="This time is outside the recording." /> : <>
+  const detail = !detailView ? <WidgetState kind="outside" /> : <>
     {detailView.since != null && <p className="chart-line-key">Counted {sinceLabel(detailView.since)}, after hours the recording lost.</p>}
     {saved && <p className="chart-line-key">{following ? 'Following playback' : formatDateTime(detailView.hour)} {!following && followView && view.from == null && <button type="button" className="button small"
-      onClick={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}>Follow playback</button>}</p>}
+      onClick={drillControl.follow}>Follow playback</button>}</p>}
     {actorReason && <p className="drill-empty">{actorReason}</p>}
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>View all losses</button>}
     <DrillParts parts={parts} live={partsLive} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
@@ -314,7 +310,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
         void product.exactAt(selectedHour).then(exact => {
           if (!exact) return;
           const point = lossHistory(withShips(exact, selectedHour), selectedHour, selectedHour, view.from, selected, coverageSpans);
-          if (point.model.edges[0]?.some(edge => edge.high > edge.low)) setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: false, hour: selectedHour }));
+          if (point.model.edges[0]?.some(edge => edge.high > edge.low)) drillControl.dispatch(drillControl.open ? { type: 'pick', hour: selectedHour } : { type: 'open', breakdown: DETAIL.id, hour: selectedHour, follow: false });
         });
       }}
       onContextMenu={(at, x, y) => { const pointed = Math.floor(Math.min(at, view.end)); if (!entryAt(known, pointed)?.value) return;
@@ -325,12 +321,11 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
           rows: lossRows(withShips(data, pointed), { ...view, hour: pointed }, selected).map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
   </>;
   return <div ref={rootRef} className="equipment-losses">{countryHeader}{catalogueNotice}
-    {saved ? detail : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
-    title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} following={following} canFollow={followView && view.from == null}
-    onClose={() => setDrill(CLOSED)} onFollow={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}
+    {saved ? detail : <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+    title="Equipment losses" day={following ? 'Following playback' : formatDateTime(detailHour)} canFollow={followView && view.from == null}
     onPin={detailView ? () => runtime.addWidgetBelow(widget.id,
       pinLosses(widget, track, tag, following && headLive ? headLive.hour() : detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
-    anchor={anchor} main={main} time={{ runtime, region: drillRegion }}>{detail}</DrillHost>}{menu.menu}</div>;
+    anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
 }
 
 export default function EquipmentLossesWidget(props: WidgetProps) {

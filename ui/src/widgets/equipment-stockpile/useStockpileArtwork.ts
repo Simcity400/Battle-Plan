@@ -1,6 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { drawableIcon } from '../../dashboard/artwork';
 import { useHeadProduct } from '../../dashboard/headProduct.ts';
+import { useGate } from '../../dashboard/regionGate';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { StockpileArtworkReply } from '../../generated/dashboard';
@@ -22,6 +23,6 @@ export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
 
 export function useStockpileArtwork(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, variants: readonly string[], active: boolean,
   time: RegionAction = SPEC) {
-  return useHeadProduct<StockpileArtworkReply>(runtime, widget, 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
-    { active, validate: validateStockpileArtwork, time });
+  return useHeadProduct<StockpileArtworkReply>(runtime, useGate(runtime, widget, time), 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
+    { active, validate: validateStockpileArtwork });
 }

@@ -1,9 +1,10 @@
 import { failureDetails } from '../../dashboard/queryError.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { jumpItem } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
@@ -23,7 +24,7 @@ import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { COUNTRY_SORT, OPTIONS, TRANSFER_BREAKDOWN, TRANSFER_SORT, TRANSFER_SORT_KEY } from './definition';
 import TransferDrill from './TransferDrill';
 import { CountryTable, TransferTable } from './TransferTables';
-import { transferDrillOpen, selectedTransfers, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
+import { selectedTransfers, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
 import { chosenConference, conferenceChoiceId, conferenceToken, countryBalances, decodeTransfers, involving, transferConferenceLabel, transferCutoff, transferEmptyMessage,
   transferGapHint, transferGapWindow, transferGaps, transferHow, transferScope, transfersAt, visibleConferences } from './territoryData.ts';
 import type { CountryBalance, TransferOccurrence } from './territoryData';
@@ -33,7 +34,6 @@ import './territoryTransfers.css';
 import { motionOf } from '../../charts/easing.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -42,7 +42,9 @@ const NO_BALANCES: readonly CountryBalance[] = [];
 const NO_REQUESTS: TransferTipRequest = { countries: [], states: [] };
 
 export default function TerritoryTransfersWidget({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
-  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatchDrill = drillControl.dispatch;
   const [drillCountry, setDrillCountry] = useState<string | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
   const following = widget.time.mode === 'follow';
@@ -137,7 +139,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const transferMenu = useCallback((row: TransferOccurrence) => track ? [jumpItem(runtime, track.id, row.afterHour)] : [], [runtime, track]);
 
   const playhead = track ? Math.floor(playbackHour + track.axisOffset) : null;
-  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillRegion = drillControl.region;
   const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
   const drillAt = drill.breakdown ? regionAt ?? moment : moment;
   const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
@@ -148,8 +150,8 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const focus = pinned ? storedSelection?.country ?? null : drillCountry;
   const openDrill = useCallback((row: CountryBalance) => {
     setDrillCountry(row.key);
-    dispatchDrill(transferDrillOpen(moment, following, playhead, runtime.clock.getSnapshot().playing));
-  }, [moment, following, playhead, runtime.clock]);
+    drillControl.show('parts', moment);
+  }, [moment, drillControl]);
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillCountry(null); }, [track?.source.id, track?.branch.id, scope, selectedToken]);
   const transferSetOption = useMemo(() => setOption && ((key: string, value: OptionValue) =>
     setOption(key === 'tableSort' ? TRANSFER_SORT_KEY : key, value)), [setOption]);
@@ -158,7 +160,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const transferSort = tableSortOf(options[TRANSFER_SORT_KEY], TRANSFER_SORT);
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
-  if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="outside" />;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
@@ -188,7 +190,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     {storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
       <div className="drill-header"><span className="drill-day">{formatDateTime(drillAt)}</span>
         {drill.breakdown && drill.follow ? <span className="pill drill-following">Following playback</span>
-          : <button type="button" className="button small" onClick={() => dispatchDrill({ type: 'open', breakdown: 'parts', hour: drillAt, playing: true, playhead })}>Follow playback</button>}
+          : <button type="button" className="button small" onClick={drillControl.follow}>Follow playback</button>}
       </div>{notes}{drillBody}</>}
   </div></>;
 
@@ -214,9 +216,9 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   </div>;
   return <>{failure}<div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfer-host" ref={drillAnchor}>
     {header}
-    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
-      title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null}
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={drillAnchor}
+      title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} canFollow={playhead != null}
       returnFocus={drillCountry == null || typeof CSS === 'undefined' ? undefined : `tr[data-table-row="${CSS.escape(drillCountry)}"]`}
-      onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{drillBody}</DrillHost>
+      onClose={() => dispatchDrill({ type: 'close' })} onPin={pin} main={main}>{drillBody}</DrillHost>
   </div></>;
 }

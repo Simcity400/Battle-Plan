@@ -1,10 +1,10 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { liveKey } from '../../charts/live';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -21,6 +21,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { MARKET, partyTags, validateMarketReply } from '../../dashboard/market.ts';
 import MarketDrill from '../../dashboard/MarketDrill';
 import MarketEquipment from '../../dashboard/MarketEquipment';
@@ -35,7 +36,6 @@ import { cic, cicLabel, collectedText, contractRows, firstWithMore, levelText, o
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import './internationalMarket.css';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -58,7 +58,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: view === 'inventory' ? 'offers' : 'contracts' } : null, [track, tags, view]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
+  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
   const shown = useShownHour();
@@ -120,7 +120,9 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     (column: string) => live.read().get(liveKey(row.key, column)) ?? null), [labelAt, hour, viewport, live]);
   const offerTip = useCallback((row: OfferRow) => offerTooltip(row, tag => tag === null ? { name: UNNAMED } : labelAt(hour)(tag), hour, viewport), [labelAt, hour, viewport]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const [pick, setPick] = useState<{ owner: string | null; title: string; tags: string[]; selected: string | null } | null>(null);
   const picked = pick && pick.owner === pickOwner ? pick : null;
@@ -128,9 +130,9 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     const tagsOf = partyTags(...rowTags);
     if (!tagsOf) return;
     setPick({ owner: pickOwner, title, tags: tagsOf, selected });
-    dispatch({ type: 'open', breakdown: DETAILS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour, follow: drillControl.followsAt(hour) });
   };
-  const drillTime = drillAction(drill, track);
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillOpen = drill.breakdown !== null && !!picked;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
@@ -169,10 +171,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const drillDay = drillShown ?? drillAt;
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
-      title={picked?.title ?? DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={<div ref={head.root} className="international-market-table">{body}</div>} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={picked?.title ?? DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow={widget.time.mode === 'follow'}
+      onClose={() => dispatch({ type: 'close' })}
+      main={<div ref={head.root} className="international-market-table">{body}</div>}>
       {picked && <MarketDrill runtime={runtime} widget={widget} time={drillTime} tags={picked.tags} selected={picked.selected} active={active} onAnswered={setDrillShown} />}
     </DrillHost>
   </div>;

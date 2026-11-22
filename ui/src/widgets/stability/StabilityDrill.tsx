@@ -106,7 +106,7 @@ export default function StabilityDrill({ client, clock, source, branchId, lastHo
       options={(['stability', 'warSupport'] as const).map(value => ({ value, label: MEASURE_NAMES[value] }))} />}
     {live ? <DrillParts parts={[]} live={live} format={value => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`} totalRow={{ label: 'Total', value: '' }} />
       : day == null ? <p className="drill-empty">Choose a day.</p>
-      : !parts.loadedAt(day) && parts.parts.length ? <p className="drill-empty">Loading the breakdown…</p>
+      : !parts.loadedAt(day) ? <p className="drill-empty">{parts.error ? `The breakdown couldn’t be read: ${parts.error.message}` : 'Loading the breakdown…'}</p>
       : values == null ? <p className="drill-empty">No breakdown was recorded for {dayLabel(day)}.</p>
         : <DrillParts parts={values.parts} format={value => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`} total={values.total}
           unattributed={values.unattributed} totalRow={{ label: 'Total', value: values.totalText }} />}

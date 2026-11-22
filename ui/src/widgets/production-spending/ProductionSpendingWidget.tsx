@@ -65,7 +65,7 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading production spending…" />;
   else if (!spendingRecorded(data)) body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
-  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="outside" />;
   else if (empty(hour)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
   else body = <Sunburst label={widget.title} items={values.items} root={ROOTS[kind]} levels={levels} text={text} settings={settings}
     authoritativeTotal={values.authoritativeTotal} live={live} hoursPerSecond={hoursPerSecond} active={active} />;

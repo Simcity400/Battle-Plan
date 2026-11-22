@@ -1,5 +1,5 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -9,7 +9,7 @@ import RunLines from '../../charts/RunLines';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { liveKey } from '../../charts/live';
 import type { LiveValues } from '../../charts/live';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -28,6 +28,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
 
 import { useProduct } from '../../dashboard/products';
@@ -39,7 +40,7 @@ import type { RegionRow } from './minefieldsData';
 import { OPTIONS } from './definition';
 import './minefields.css';
 import type { MineReport, MinefieldReportsReply } from '../../generated/dashboard';
-import { drillAction, type RegionAction } from '../../dashboard/regionTime.ts';
+import {  type RegionAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
@@ -52,7 +53,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement | null>(null);
   const menu = useContextMenu('Minefields');
-  const head = useHeadProduct(runtime, widget, 'minefields', useMemo(() => tags.length ? { countries: tags.map(countryFromKey) } : {}, [JSON.stringify(tags)]),
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'minefields', useMemo(() => tags.length ? { countries: tags.map(countryFromKey) } : {}, [JSON.stringify(tags)]),
     { active, validate: validateMinefields, structure: minefieldsStructure });
   const { data, error, retry } = head;
   const live = head.live;
@@ -93,8 +94,10 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const tips = useRowTooltips<string>({ owner: `minefields:${widget.id}`, active, content: tooltip, revision: `${lookHour}`,
     onMenu: (_, x, y) => { const at = shownHour(); if (track && at !== null) menu.open(x, y, [jumpItem(runtime, track.id, at)]); } });
   const [picked, setPicked] = useState<RegionRow | null>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const drillTime = drillAction(drill, track);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
+  const drillTime = drillControl.region.action;
   const drillRegion = useRegion(widget, drillTime);
   const drillOpen = picked !== null && drill.breakdown !== null;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
@@ -115,7 +118,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
       {({ item: row }) => <div className="minefields-row" {...tips.rowProps(row.region)} onClick={() => {
         setPicked(row);
         const at = shownHour();
-        if (at !== null) dispatch({ type: 'open', breakdown: 'region', hour: at, playing: following, playhead: following ? at : null });
+        if (at !== null) dispatch({ type: 'open', breakdown: 'region', hour: at, follow: drillControl.followsAt(at) });
       }}>
         {tips.hovered === row.region && <span id={tips.descriptionId(row.region)} className="sr-only">{tooltipText(tooltip(row.region)!)}</span>}
         <span className="minefields-name">{row.name}</span>
@@ -131,9 +134,9 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   </div>;
   return <div ref={attach} className="minefields">
     {pill}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} title={picked?.name ?? 'Region'}
-      day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow={following}
-      onClose={() => { setPicked(null); dispatch({ type: 'close' }); }} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={picked?.name ?? 'Region'}
+      day={drillAt === null ? '' : dayLabel(drillAt)} canFollow={following}
+      onClose={() => { setPicked(null); dispatch({ type: 'close' }); }} main={main}>
       {picked && <RegionDrill widget={widget} runtime={runtime} active={active} region={picked} hoursPerSecond={hoursPerSecond}
         name={tag => looks.name(tag, lookHour)} colour={tag => colour(tag, lookHour)} time={drillTime}
         onPick={hour => dispatch({ type: 'pick', hour })} />}
@@ -152,7 +155,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const history = useProduct(runtime.client, tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
     params: { branchId: track.branch.id, region: Number(region.region), countries: tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
   active, validateHistory, track.source);
-  const reports = useHeadProduct<MinefieldReportsReply>(runtime, widget, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports, time });
+  const reports = useHeadProduct<MinefieldReportsReply>(runtime, useGate(runtime, widget, time), 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
   const namedAt = reports.at;
   const reportTags = useMemo(() => namedAt === null || !reports.data ? [] : [...new Set(reports.data.reports.flatMap(report => [report.victim, report.mineOwner])
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);

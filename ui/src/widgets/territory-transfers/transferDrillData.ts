@@ -1,4 +1,3 @@
-import type { DrillAction } from '../../charts/drill/drillState';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveWindow } from '../../dashboard/model.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
@@ -11,10 +10,6 @@ export function transferTime(widget: WidgetSpec, track: BoundTrack, tracks: Boun
   const from = Math.max(widget.time.mode === 'range' ? Math.ceil(window?.firstHour ?? Infinity) : -Infinity,
     fromOffset == null ? -Infinity : track.branch.firstHour + fromOffset);
   return { moment: Math.floor(window?.lastHour ?? -Infinity), from };
-}
-
-export function transferDrillOpen(hour: number, following: boolean, playhead: number | null, playing: boolean): DrillAction {
-  return { type: 'open', breakdown: 'parts', hour, playhead: following ? playhead : null, playing: following && playing };
 }
 
 export interface TransferSelection { ids: string[]; fromOffset: number | null; country: string | null }

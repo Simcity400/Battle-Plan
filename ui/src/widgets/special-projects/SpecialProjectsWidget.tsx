@@ -25,6 +25,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useProducts } from '../../dashboard/products';
@@ -148,7 +149,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = withHeld(useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+  const live = withHeld(useHeadProduct(runtime, useGate(runtime, widget), 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateSpecialProjectsReply, structure: projectStructure }));
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
@@ -245,7 +246,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
   else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="outside" />;
   else if (error || (groups.error && !groups.data)) body = <WidgetState kind="error" failure={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading countries…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;

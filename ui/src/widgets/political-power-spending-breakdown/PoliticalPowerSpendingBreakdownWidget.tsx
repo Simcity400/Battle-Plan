@@ -100,7 +100,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message={reason} /></>;
   if (!tags.length) return <>{groupNotice}<WidgetState kind="empty" message="Choose a country to see its political power spending." /></>;
   if (!ledgers) return <>{groupNotice}<WidgetState kind="loading" label="Loading political power spending…" /></>;
-  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="outside" /></>;
   if (ledgers.every(ledger => !ledger.coverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
   const notes = <LiveText live={texts} at="notes" />;
   const gain = <p className="chart-line-key"><LiveText live={texts} at="gain" /></p>;

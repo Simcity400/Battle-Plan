@@ -7,6 +7,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { OPTIONS } from './definition';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { arsenalStructure, nukeParts, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -21,7 +22,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const race = view === 'race' && options.show !== 'breakdown';
   const names = useProduct(runtime.client, !race && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
     params: { branchId: track.branch.id, hour: track.branch.lastHour } } : null, active, validateNuclearArsenal, track?.source);
-  const strict = useHeadProduct(runtime, widget, 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const strict = useHeadProduct(runtime, useGate(runtime, widget), 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
   const head = withHeld(strict);
   const metadata = race ? head.data : names.data, shown = race ? strict.data : names.data;
   const parts = useMemo(() => nukeParts(metadata), [metadata]);

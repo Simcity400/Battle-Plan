@@ -169,7 +169,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="flag-torn" message="Load a campaign to see its civil wars." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
     if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
     if (narrowing && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (!data || !view || narrowing && !identities) return <WidgetState kind="loading" label="Loading civil wars…" />;

@@ -46,7 +46,11 @@ const hooks = `const state = () => globalThis.__airDrill;
   export const useState = initial => { const value = cell(() => ({ value: typeof initial === 'function' ? initial() : initial }));
     return [value.value, next => { value.value = typeof next === 'function' ? next(value.value) : next; }]; };
   export const useReducer = (reduce, initial) => { const value = cell(() => ({ value: initial }));
-    return [value.value, action => { value.value = reduce(value.value, action); }]; };`;
+    return [value.value, action => { value.value = reduce(value.value, action); }]; };
+  export const useCallback = (callback, deps) => useMemo(() => callback, deps);
+  export const useLayoutEffect = () => {};
+  export const useSyncExternalStore = (_subscribe, read) => read();
+  export { createContext, createElement, useContext } from 'react';`;
 
 function fixture() {
   return { hooks: [] as unknown[], cursor: 0, data: validateMilitaryAirReply(data()),
@@ -54,7 +58,7 @@ function fixture() {
       branch: { id: 'branch', firstHour: 10, lastHour: 20, gaps: [span(17)] } }, hour: -988, playing: false, added: [] as WidgetSpec[],
     bombing: undefined as ComponentProps<typeof BombingDrill> | undefined,
     butterfly: undefined as { items: unknown[]; active: boolean; onSelect: (item: unknown, side: 'left' | 'right') => void } | undefined,
-    chart: undefined as ComponentProps<typeof CountryRaceView> | undefined, host: undefined as ComponentProps<typeof DrillHost> | undefined,
+    chart: undefined as ComponentProps<typeof CountryRaceView> | undefined, host: undefined as (ComponentProps<typeof DrillHost> & { open: boolean; onFollow: () => void; onPause: () => void; following: boolean }) | undefined,
     picker: undefined as ComponentProps<typeof CountryPicker> | undefined, detail: undefined as ComponentProps<typeof AirLossDrill> | undefined,
     parts: undefined as ComponentProps<typeof DrillParts> | undefined, history: undefined as ComponentProps<typeof TimeChart> | undefined,
     datePicker: undefined as ComponentProps<typeof DateTimePicker> | undefined, reset: undefined as (() => void) | undefined };
@@ -67,7 +71,8 @@ async function server(replacements: Record<string, string>) {
       transform(code, id) {
         const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
-        if (path.endsWith('/dashboard/MilitaryAirView.tsx') || path.endsWith('/dashboard/AirLossDrill.tsx') || path.endsWith('/dashboard/BombingDrill.tsx'))
+        if (path.endsWith('/dashboard/MilitaryAirView.tsx') || path.endsWith('/dashboard/AirLossDrill.tsx') || path.endsWith('/dashboard/BombingDrill.tsx')
+          || path.endsWith('/charts/drill/useDrill.ts') || path.endsWith('/dashboard/widgetTime.ts'))
           return code.replace("from 'react'", "from 'air-drill-hooks'");
       },
     }] });
@@ -118,7 +123,9 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     '/dashboard/AirLossDrill.tsx': 'export default props => { globalThis.__airDrill.detail = props; return null; };',
     '/components/CountryPicker.tsx': 'export default props => { globalThis.__airDrill.picker = props; return null; };',
     '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => {
-      globalThis.__airDrill.host = props; return createElement('div', null, props.main, props.open ? props.children : null); };`,
+      const open = props.drill.open && props.subject !== false;
+      globalThis.__airDrill.host = { ...props, open, onFollow: props.drill.follow, onPause: props.drill.pause, following: props.drill.following };
+      return createElement('div', null, props.main, open ? props.children : null); };`,
   });
   try {
     const registry = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
@@ -349,7 +356,9 @@ test('bombing Drill follows the shared clock from a campaign view and rejects re
     '/charts/butterfly/index.ts': 'export const ButterflyChart = props => { globalThis.__airDrill.butterfly = props; return null; };',
     '/dashboard/BombingDrill.tsx': 'export default props => { globalThis.__airDrill.bombing = props; return null; };',
     '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => {
-      globalThis.__airDrill.host = props; return createElement('div', null, props.main, props.open ? props.children : null); };`,
+      const open = props.drill.open && props.subject !== false;
+      globalThis.__airDrill.host = { ...props, open, onFollow: props.drill.follow, onPause: props.drill.pause, following: props.drill.following };
+      return createElement('div', null, props.main, open ? props.children : null); };`,
   });
   try {
     const registry = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');

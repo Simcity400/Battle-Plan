@@ -1,4 +1,3 @@
-import type { DrillAction } from '../../charts/drill/drillState';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { Span } from '../../charts/series';
@@ -51,10 +50,6 @@ export function readFuelExtent(token: unknown, campaign: string, branch: string)
     return Array.isArray(value) && value.length === 4 && value[0] === campaign && value[1] === branch
       && int(value[2]) && int(value[3]) && value[2] <= value[3] ? [value[2], value[3]] : null;
   } catch { return null; }
-}
-
-export function fuelOpen(breakdown: string, hour: number, playing: boolean, follows: boolean, playhead: number | null): DrillAction {
-  return { type: 'open', breakdown, hour, playing, playhead: follows ? playhead : null };
 }
 
 export function detailWindows(extent: readonly [number, number], visible: readonly [number, number], hour: number | null, detailHours: number): number[] {

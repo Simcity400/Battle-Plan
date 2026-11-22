@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { PlaybackController } from './playback';
 import { pageClock } from './widgetClock.ts';
-import { axisHour, regionDetail, regionFollows, regionHour, regionKey, regionTrack, SPEC, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
+import { axisHour, regionFollows, regionHour, regionKey, regionOutside, regionTrack, SPEC, type AxisHour, OUTSIDE_MESSAGE, type Outside, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
 
 export { SETTINGS_DETAIL } from './regionTime.ts';
 
@@ -27,7 +27,7 @@ export class ActiveHeads {
   };
 }
 
-export interface ReadCoverage { outside: boolean; outsideDetail?: string }
+export interface ReadCoverage { outside: boolean; outsideMessage?: string; outsideDetail?: string }
 
 interface Boundary { holds: () => unknown; was: unknown; changed: () => void }
 interface Boundaries { watches: Set<Boundary>; sequence: number; stop: () => void }
@@ -60,12 +60,6 @@ export function watchBoundary(clock: PlaybackController, holds: () => unknown, c
   };
 }
 
-export function useOutsideTime(clock: PlaybackController, bounded: boolean, hourAt: (clockHour: number) => number | null): boolean {
-  const outsideNow = useCallback(() => bounded && hourAt(clock.getHour()) === null, [bounded, hourAt, clock]);
-  const watchClock = useCallback((changed: () => void) => bounded ? watchBoundary(clock, outsideNow, changed) : () => {}, [bounded, clock, outsideNow]);
-  return useSyncExternalStore(watchClock, outsideNow, outsideNow);
-}
-
 type Timed = { clock: PlaybackController; tracks: BoundTrack[] };
 
 export function useRegion(widget: WidgetSpec, action: RegionAction = SPEC): Region {
@@ -73,17 +67,34 @@ export function useRegion(widget: WidgetSpec, action: RegionAction = SPEC): Regi
   return useMemo(() => ({ widget, action }), [widget, action.kind, hour]);
 }
 
-export function useRegionHourAt(runtime: Timed, region: Region): (clockHour: number) => TrackHour | null {
+export function useRegionHourAt(runtime: Timed, region: Region): (axis: AxisHour) => TrackHour | null {
   const track = regionTrack(region, runtime.tracks);
-  return useCallback((clockHour: number) => regionHour(region, track, runtime.tracks, clockHour as never), [region, track, runtime.tracks]);
+  return useCallback((axis: AxisHour) => regionHour(region, track, runtime.tracks, axis), [region, track, runtime.tracks]);
+}
+
+const outsideKey = (outside: Outside | null) => outside ? `${outside.message}\u0000${outside.detail ?? ''}` : '';
+const unwatched = () => () => {};
+
+export function useRegionOutside(runtime: Timed, region: Region, on = true): Outside | null {
+  const track = regionTrack(region, runtime.tracks);
+  const { clock, tracks } = runtime;
+  const now = useCallback(() => outsideKey(regionOutside(region, track, tracks, axisHour(clock))), [region, track, tracks, clock]);
+  const watch = useCallback((changed: () => void) => on && track ? watchBoundary(clock, now, changed) : () => {}, [on, track, clock, now]);
+  const key = useSyncExternalStore(on && track ? watch : unwatched, now, now);
+  return useMemo(() => {
+    if (!key) return null;
+    const [message, detail] = key.split('\u0000');
+    return { message, detail: detail || undefined };
+  }, [key]);
 }
 
 export function useRegionCoverage(runtime: Timed, region: Region): ReadCoverage {
-  const hourAt = useRegionHourAt(runtime, region);
-  const outside = useOutsideTime(runtime.clock, !!regionTrack(region, runtime.tracks), hourAt);
-  const detail = outside ? regionDetail(region, null) : undefined;
-  return useMemo(() => ({ outside, outsideDetail: detail }), [outside, detail]);
+  const outside = useRegionOutside(runtime, region);
+  return useMemo(() => coverageOf(outside), [outside]);
 }
+
+export const coverageOf = (outside: Outside | null): ReadCoverage =>
+  outside ? { outside: true, outsideMessage: outside.message, outsideDetail: outside.detail } : { outside: false };
 
 export function epochOf(epochs: readonly number[] | undefined, hour: number | null): number {
   if (hour === null) return -1;
@@ -103,7 +114,7 @@ export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?
     if (!on || !follows) return () => {};
     const notify = () => { generation.current++; changed(); };
     const stopAnchor = clock.subscribe(notify);
-    const stopBoundary = watchBoundary(clock, () => epochOf(epochs, hourAt(clock.getHour())), notify);
+    const stopBoundary = watchBoundary(clock, () => epochOf(epochs, hourAt(axisHour(clock))), notify);
     return () => { stopAnchor(); stopBoundary(); };
   }, [on, follows, clock, hourAt, epochs]);
   const read = () => {
@@ -117,14 +128,14 @@ export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?
   return useSyncExternalStore(subscribe, read, read);
 }
 
-export interface RegionScope { key: string; heads: ActiveHeads; outside: boolean; detail: string | undefined }
+export interface RegionScope { key: string; heads: ActiveHeads; outside: Outside | null }
 export const RegionContext = createContext<RegionScope | null>(null);
 
 export function useRegionScope(runtime: Timed, region: Region): RegionScope {
-  const { outside, outsideDetail } = useRegionCoverage(runtime, region);
+  const outside = useRegionOutside(runtime, region);
   const [heads] = useState(() => new ActiveHeads());
   const key = regionKey(region);
-  return useMemo(() => ({ key, heads, outside, detail: outsideDetail }), [key, heads, outside, outsideDetail]);
+  return useMemo(() => ({ key, heads, outside }), [key, heads, outside]);
 }
 
 export function TimeRegion({ runtime, region, children }: { runtime: Timed; region: Region; children?: ReactNode }) {
@@ -146,9 +157,9 @@ export function useReadsRegion(region: Region, active: boolean): void {
 const unsubscribed = () => () => {};
 const none = () => false;
 
-export function useOutsideRecording(read?: ReadCoverage): { outside: boolean; detail: string | undefined } {
+export function useOutsideRecording(read?: ReadCoverage, shown = false): Outside | null {
   const scope = useContext(RegionContext);
   const reading = useSyncExternalStore(scope?.heads.subscribe ?? unsubscribed, scope?.heads.any ?? none, scope?.heads.any ?? none);
-  if (read) return { outside: read.outside, detail: read.outsideDetail };
-  return { outside: !!scope?.outside && reading, detail: scope?.detail };
+  if (read) return read.outside ? { message: read.outsideMessage ?? OUTSIDE_MESSAGE, detail: read.outsideDetail } : null;
+  return scope?.outside && (reading || shown) ? scope.outside : null;
 }

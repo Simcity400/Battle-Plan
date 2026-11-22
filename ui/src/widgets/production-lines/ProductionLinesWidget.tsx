@@ -1,12 +1,12 @@
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
@@ -25,6 +25,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { readDatedCountry } from '../../dashboard/datedCountry';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -41,7 +42,7 @@ import {
 } from './productionData.ts';
 import './productionLines.css';
 import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
-import { drillAction, SPEC } from '../../dashboard/regionTime.ts';
+import {  SPEC } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -70,7 +71,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const live = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const pinned = options.show === 'efficiency' || options.show === 'output';
   const order: LineOrder = options.order === 'factories' || options.order === 'output' ? options.order : 'game';
-  const head = useHeadProduct<ProductionLinesAtReply>(runtime, widget, 'production-lines-at', live && !pinned && tag ? { country: countryFromKey(tag), ...order === 'game' ? {} : { order } } : null,
+  const head = useHeadProduct<ProductionLinesAtReply>(runtime, useGate(runtime, widget), 'production-lines-at', live && !pinned && tag ? { country: countryFromKey(tag), ...order === 'game' ? {} : { order } } : null,
     { active, validate: validateAtReply });
   const reportShown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -80,7 +81,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Production line actions');
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [opened, setOpened] = useState<{ key: string; part: Part } | null>(null);
   const [factor, setFactor] = useState<string | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setOpened(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
@@ -99,7 +102,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
-  const drillRegion = useRegion(widget, pinned ? SPEC : drillAction(drill, track));
+  const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
   const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
   const breakdownHour = pinned ? clockHour : regionAt;
   const breakdown = useLineBreakdown(runtime, widget, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
@@ -113,7 +116,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     if (!lineKey) return;
     setFactor(null);
     setOpened({ key: lineKey, part: nextPart });
-    dispatch({ type: 'open', breakdown: nextPart, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? headHour() : null });
+    dispatch({ type: 'open', breakdown: nextPart, hour, follow: drillControl.followsAt(hour) });
   };
 
   if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." />;
@@ -128,7 +131,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const lineLabel = data && lineIndex >= 0 ? productionLineLabel(data, data.lines[lineIndex], lineIndex, breakdownHour ?? extent[1]) : 'Production line';
   const main = live ? <div ref={head.root} className="production-live">
     {head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
-      : !head.data ? head.read === 'off' ? <WidgetState kind="unavailable" message="This time is outside the recording." /> : <WidgetState kind="loading" label="Loading production lines…" />
+      : !head.data ? head.read === 'off' ? <WidgetState kind="outside" /> : <WidgetState kind="loading" label="Loading production lines…" />
         : <LiveTable reply={head.data} history={data} live={head.live} report={() => reportShown(shownAt.current())} more={options.columns === 'more'}
           glide={Math.round(3 * easeTau(tokens.motion, motion, tokens.reducedMotion))} onBreakdown={(handle, nextPart) => open(handle, nextPart, head.hour ?? headHour())} />}
   </div>
@@ -138,10 +141,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
           { label: 'Efficiency breakdown', run: () => open(lineKey, 'efficiency', hour, true) },
           { label: 'Output breakdown', run: () => open(lineKey, 'output', hour, true) }] : []])} />;
   return <div ref={anchor} className="production-lines">
-    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!opened} anchor={anchor}
-      title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)}
-      following={drill.follow} canFollow={widget.time.mode === 'follow'} main={main}
-      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }} onFollow={() => dispatch({ type: 'follow' })}>{drillView}</DrillHost>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!opened} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)} canFollow={widget.time.mode === 'follow'} main={main}
+      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }}>{drillView}</DrillHost>
     {menu.menu}
   </div>;
 }

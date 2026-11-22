@@ -27,7 +27,7 @@ import { OPTIONS } from './definition';
 import { eventHours, eventsThrough, memberNameHour, selectionName, upgradeLanes } from './upgradesData';
 import type { LaneInfo } from './upgradesData';
 import type { FactionRulesReply } from '../../generated/dashboard';
-import { SPEC } from '../../dashboard/regionTime.ts';
+import { SPEC, axisAt } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -46,8 +46,8 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const following = widget.time.mode === 'follow';
   const { hourAt } = headRead({ widget, action: SPEC }, track, runtime.tracks);
   const events = useMemo(() => data ? eventHours(data) : NO_EVENTS, [data]);
-  const clockHour = useHeadHour(runtime.clock, active && following && !!data, hour => { const at = hourAt(hour); return at === null ? 'outside' : String(eventsThrough(events, at)); });
-  const at = hourAt(following ? clockHour : runtime.clock.getHour()) ?? chosenAt;
+  const clockHour = useHeadHour(runtime.clock, active && following && !!data, hour => { const at = hourAt(axisAt(hour)); return at === null ? 'outside' : String(eventsThrough(events, at)); });
+  const at = hourAt(axisAt(following ? clockHour : runtime.clock.getHour())) ?? chosenAt;
   const coverage = useRegionCoverage(runtime, useRegion(widget));
   const shown = useShownHour();
   const axisOffset = track?.axisOffset ?? 0;

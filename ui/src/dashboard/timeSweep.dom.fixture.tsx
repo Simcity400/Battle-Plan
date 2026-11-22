@@ -25,7 +25,8 @@ class OnScreen {
 }
 Object.assign(window, { IntersectionObserver: OnScreen });
 
-const FIRST = 1000, LAST = 1009, OFFSET = 900;
+const FIRST = 1000, LAST = 1009, OFFSET = 900, GAP = [1005, 1006] as const;
+const GAP_REASON = 'Branch branch block 1005 – 1006 is unreadable: sweep';
 const shown = new Map<string, number | null>();
 const crashes = new Map<string, string>();
 measureWith(new Proxy({
@@ -43,11 +44,14 @@ const groups: CountryGroupReply = {
 type Replies = 'pending' | 'failing';
 const pending = new Promise<never>(() => {});
 const requests: string[] = [];
+const asked: { product: string; hour: number }[] = [];
 const reply = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
 const makeClient = (replies: Replies) => ({
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params?: unknown }) => {
     requests.push(`${request.product} ${JSON.stringify(request.params)}`.slice(0, 300));
+    const hour = (request.params as { hour?: unknown } | undefined)?.hour;
+    if (typeof hour === 'number') asked.push({ product: request.product, hour });
     if (request.product === 'follow') return reply(request, { available: false, reason: 'not followed in the sweep' });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
     if (request.product === 'country-groups') return reply(request, groups);
@@ -58,7 +62,7 @@ const makeClient = (replies: Replies) => ({
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 });
 const source = { id: 'sweep', path: 'sweep.battleplan', revision: '1', metadata: { path: 'sweep.battleplan', name: 'Sweep', format: 1, captureMode: 'full', campaignKey: 'campaign',
-  branches: [{ id: 'branch', sessionId: 's', firstHour: FIRST, lastHour: LAST, main: true, fork: null, joins: [], sampleBoundary: '', gaps: [] }],
+  branches: [{ id: 'branch', sessionId: 's', firstHour: FIRST, lastHour: LAST, main: true, fork: null, joins: [], sampleBoundary: '', gaps: [{ firstHour: GAP[0], lastHour: GAP[1], reason: GAP_REASON }] }],
   countries: [{ id: '1', tag: 'GER', name: 'Germany', observedBranchId: 'branch', observedHour: FIRST }, { id: '2', tag: 'ENG', name: 'England', observedBranchId: 'branch', observedHour: FIRST }],
   playerCountryId: '1', contentVerified: true, partial: null, warnings: [], buildWarnings: [], revision: '1' } };
 const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch: source.metadata.branches[0], axisOffset: OFFSET,
@@ -69,13 +73,14 @@ const makeRuntime = (replies: Replies, client = makeClient(replies)) => ({ campa
   maps: new MapViewsStore(client as never, clock), onMapBranch() {}, client, alignment: 'anchors', nativeHidden: false, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false,
   addWidgetBelow() {} }) as unknown as WidgetRuntime;
 
-export type Mode = 'follow' | 'pin inside' | 'pin outside' | 'range';
+export type Mode = 'follow' | 'pin inside' | 'pin gap' | 'pin outside' | 'range';
 export interface Case { id: string; kind: string; mode: Mode; show: string | null; scope: 'moment' | 'history' }
 const TIMES: Record<Mode, WidgetTime> = {
   follow: { mode: 'follow' },
-  'pin inside': { mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } },
+  'pin inside': { mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 } } },
+  'pin gap': { mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } },
   'pin outside': { mode: 'pin', windows: { main: { firstOffset: 15, lastOffset: 15 } } },
-  range: { mode: 'range', firstOffset: 2, lastOffset: 6 },
+  range: { mode: 'range', firstOffset: 1, lastOffset: 8 },
 };
 const timeMode = (mode: Mode) => TIMES[mode].mode;
 
@@ -121,13 +126,15 @@ function read(item: Case) {
   const drill = host?.querySelector('.drill-host[data-open] > .drill-view, .drill-popout:has(.drill-body)');
   const all = regionStates(host ?? null), inDrill = regionStates(drill ?? null);
   const main = all.filter(state => !inDrill.includes(state));
-  return { main, drill: inDrill, open: !!drill, shown: shown.has(item.id) ? shown.get(item.id)! : undefined, crash: crashes.get(item.id) ?? null,
+  const drawn = !!host?.querySelector('canvas, svg, table, [role="grid"], [role="table"], [role="status"]') || !!host?.textContent?.trim();
+  return { main, drawn, drill: inDrill, open: !!drill, shown: shown.has(item.id) ? shown.get(item.id)! : undefined, crash: crashes.get(item.id) ?? null,
     text: (host?.textContent ?? '').slice(0, 400) };
 }
 
 Object.assign(window, { timeSweep: {
   cases: () => cases(),
   requests: () => requests.splice(0),
+  asked: () => asked.splice(0),
   async preload() { await Promise.all(widgetDefinitions().map(definition => loadWidgetRenderer(definition.kind).catch(() => undefined))); return widgetDefinitions().length; },
   async mount(ids: string[], replies: Replies, axis: number) {
     const runtime = makeRuntime(replies);
@@ -162,8 +169,9 @@ Object.assign(window, { timeSweep: {
     clock.setSpeed(speed);
     clock.setPlaying(true);
     await new Promise<void>(resolve => setTimeout(resolve, ms));
+    const playing = { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
     clock.setPlaying(false);
     await settle();
-    return { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) };
+    return { playing, paused: { hour: clock.getHour(), states: Object.fromEntries(mounted.map(item => [item.id, read(item)])) } };
   },
 } });

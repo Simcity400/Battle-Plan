@@ -91,7 +91,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading raids…" /></>;
   if (data.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid types available." detail={data.unavailable ?? undefined} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!inBranch) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!inBranch) return <>{groupFailure}<WidgetState kind="outside" /></>;
 
   const chosen = contentSet(types);
   const renderRow = (row: LogRow<RaidAt>) => {

@@ -74,7 +74,7 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
   if (!data.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
-  if (!shownWindow || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!shownWindow || !inBranch) return <WidgetState kind="outside" />;
   const note = footnote(data, items, shownWindow);
   if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={note} />;
   return <div style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}

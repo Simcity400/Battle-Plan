@@ -3,30 +3,43 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-
+import { FOLLOW, pickedAt, regionFollows, SPEC, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
+import type { BoundTrack } from '../../dashboard/model';
 
 export interface Breakdown { id: string; label: string }
-export interface DrillState { breakdown: string | null; follow: boolean; hour: number | null }
-export const CLOSED: DrillState = { breakdown: null, follow: true, hour: null };
+export interface DrillState { breakdown: string | null; spec: boolean; follow: boolean; hour: number | null }
+export const CLOSED: DrillState = { breakdown: null, spec: true, follow: false, hour: null };
+export const savedDrill = (breakdown: string | null): DrillState => breakdown === null ? CLOSED : { breakdown, spec: true, follow: false, hour: null };
 
 export const FOLLOW_NEAR_HOURS = 45 * 24;
 
 export type DrillAction =
-  | { type: 'open'; breakdown: string; hour: number; playing: boolean; playhead: number | null }
+  | { type: 'open'; breakdown: string; hour: number; follow: boolean }
+  | { type: 'attach'; breakdown: string }
   | { type: 'pick'; hour: number }
   | { type: 'follow' }
   | { type: 'close' };
 
-export function reduceDrill(state: DrillState, action: DrillAction): DrillState {
+export function reduceDrill<S extends DrillState>(state: S, action: DrillAction): S {
   switch (action.type) {
-    case 'open': {
-      const follow = action.playhead != null && (action.playing || Math.abs(action.hour - action.playhead) <= FOLLOW_NEAR_HOURS);
-      return { breakdown: action.breakdown, follow, hour: follow ? null : Math.floor(action.hour) };
-    }
-    case 'pick': return state.breakdown ? { ...state, follow: false, hour: Math.floor(action.hour) } : state;
-    case 'follow': return state.breakdown ? { ...state, follow: true, hour: null } : state;
-    case 'close': return CLOSED;
+    case 'open': return { ...state, breakdown: action.breakdown, spec: false, follow: action.follow, hour: action.follow ? null : Math.floor(action.hour) };
+    case 'attach': return { ...state, breakdown: action.breakdown, spec: true, follow: false, hour: null };
+    case 'pick': return state.breakdown === null ? state : { ...state, spec: false, follow: false, hour: Math.floor(action.hour) };
+    case 'follow': return state.breakdown === null ? state : { ...state, spec: false, follow: true, hour: null };
+    case 'close': return { ...state, ...CLOSED };
   }
+}
+
+export function drillAction(drill: DrillState, track: Pick<BoundTrack, 'branch'> | undefined): RegionAction {
+  return drill.spec ? SPEC : drill.follow ? FOLLOW : pickedAt(track, drill.hour);
+}
+
+export function drillFollows(parent: Region, drill: DrillState): boolean {
+  return drill.spec ? drill.breakdown !== null && regionFollows(parent) : drill.follow;
+}
+
+export function opensFollowing(parent: Region, hour: number, playing: boolean, playhead: number): boolean {
+  return regionFollows(parent) && (playing || Math.abs(hour - playhead) <= FOLLOW_NEAR_HOURS);
 }
 
 export const DRILL_OPTION: OptionField = {

@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey } from '../../charts/live.ts';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
-import { NOT_FLOWN, choicesAt, flownBy, efficiencyText, missionRows, missionTooltip, missionValues, openWings, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
+import { NOT_FLOWN, choicesAt, flownBy, efficiencyText, missionRows, missionTooltip, missionValues, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
 
 const reply = validateAirMissions({
   readHour: 6, missing: null, theatresMissing: null, warnings: [],
@@ -49,7 +48,3 @@ test('replies validate, and anything else refuses them', () => {
   assert.equal(efficiencyText(null), '—');
 });
 
-test('wings open following playback only when the widget follows it', () => {
-  assert.deepEqual(reduceDrill(CLOSED, openWings(100, true)), { breakdown: 'wings', follow: true, hour: null });
-  assert.deepEqual(reduceDrill(CLOSED, openWings(100, false)), { breakdown: 'wings', follow: false, hour: 100 });
-});

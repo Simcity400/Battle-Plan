@@ -1,5 +1,4 @@
 import type { TooltipContent } from '../../charts/tooltip';
-import type { DrillAction } from '../../charts/drill/drillState';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { setToken } from '../../dashboard/options.ts';
@@ -95,8 +94,6 @@ export function efficiencyText(raw: string | null): string {
   return `${value.toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
 }
 
-export const openWings = (hour: number, following: boolean): DrillAction =>
-  ({ type: 'open', breakdown: 'wings', hour, playing: following, playhead: following ? hour : null });
 
 export function choicesAt(listed: readonly { id: string; name: string }[], chosen: readonly string[]) {
   return [...listed.map(item => ({ value: setToken(item.id), label: item.name })),

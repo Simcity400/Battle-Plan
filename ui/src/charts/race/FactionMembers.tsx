@@ -1,4 +1,5 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../TimeChart';
@@ -49,7 +50,7 @@ export default function FactionMembers({ runtime, track, active, options, kind, 
   const lines = useMeasureSeries(runtime.client, track.source, track.branch.id, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colours = useMemo(() => partColours(tags.map(tag => ({ id: tag, label: tag })), tokens.categories), [tags, tokens.categories]);
-  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length && recordedHour(track, hour) !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour })) } } : null, active, validateStates, track.source);
   const summaries = useCallback((): ChartSummary[] | null => {
     const out: ChartSummary[] = [];

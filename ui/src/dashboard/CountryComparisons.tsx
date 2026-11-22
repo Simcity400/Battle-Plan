@@ -5,7 +5,7 @@ import { CountryFlagUrl } from '../components/CountryFlag';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import { useComparisonCountries } from './comparisonCountries';
 import type { WidgetProps } from './definitions';
-import { resolveWindow } from './model';
+import { axisAt, regionHour, SPEC } from './regionTime.ts';
 import { useIdentityHour } from './atHead.ts';
 import { useDiagnostics } from './useDiagnostics';
 import { isSlotKey } from './countryKey.ts';
@@ -36,10 +36,10 @@ export default function CountryComparisons({ component: Component, ...props }: W
   const first = multiple ? Math.min(Math.max(0, countries.tags.length - 1), Math.max(0, Math.floor(view.left / panelWidth) - 1)) : 0;
   const last = multiple ? Math.min(countries.tags.length, Math.ceil((view.left + view.width) / panelWidth) + 1) : countries.tags.length;
   const shown = useMemo(() => countries.tags.slice(first, Math.max(first + 1, last)), [countries.tags, first, last]);
-  const trackHour = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? track.branch.lastHour : null,
+  const trackHour = useCallback((clockHour: number) => regionHour({ widget, action: SPEC }, track, runtime.tracks, axisAt(clockHour)),
     [widget, track, runtime.tracks]);
-  const hour = useIdentityHour(runtime.client, track, shown, runtime.clock, active && widget.time.mode === 'follow' && !!track, trackHour) ?? 0;
-  const wanted = useMemo(() => shown.map(tag => ({ hour, tag })), [shown, hour]);
+  const hour = useIdentityHour(runtime.client, track, shown, runtime.clock, active && widget.time.mode === 'follow' && !!track, trackHour);
+  const wanted = useMemo(() => hour === null ? [] : shown.map(tag => ({ hour, tag })), [shown, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
   useEffect(() => {
     if (body.current) body.current.scrollLeft = 0;
@@ -53,7 +53,7 @@ export default function CountryComparisons({ component: Component, ...props }: W
   })])), [countries.tags]);
   const slots = useSlotTags(runtime.client, track, active && countries.tags.some(isSlotKey));
   const diagnostics = useMemo(() => [...(contentPending ? ['Group names are updating from the recorded content.'] : []),
-    ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${keyNameAt(slots, tag, hour) ?? 'Country name unavailable'}: ${note}`)))],
+    ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${(hour === null ? null : keyNameAt(slots, tag, hour)) ?? 'Country name unavailable'}: ${note}`)))],
   [countries.tags, notes, contentPending, slots, hour]);
   useDiagnostics(onDiagnostics, diagnostics);
   const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);
@@ -65,9 +65,9 @@ export default function CountryComparisons({ component: Component, ...props }: W
     onScroll={event => setView({ left: event.currentTarget.scrollLeft, width: event.currentTarget.clientWidth })}>
     {first > 0 && <div aria-hidden="true" style={{ flex: `0 0 ${first * panelWidth}px` }} />}
     {shown.map(tag => {
-      const label = labels.labelAt(hour)(tag);
-      return <section key={tag} className="country-comparison" aria-label={label.name} style={multiple ? { flex: `0 0 ${panelWidth}px` } : undefined}>
-        {countries.tags.length > 1 && <p className="country-comparison-name"><CountryFlagUrl className="country-comparison-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />{label.name}</p>}
+      const label = hour === null ? null : labels.labelAt(hour)(tag);
+      return <section key={tag} className="country-comparison" aria-label={label?.name ?? tag} style={multiple ? { flex: `0 0 ${panelWidth}px` } : undefined}>
+        {countries.tags.length > 1 && label && <p className="country-comparison-name"><CountryFlagUrl className="country-comparison-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />{label.name}</p>}
         <Component {...props} within={countries.membership?.get(tag)} onDiagnostics={handlers.get(tag)!}
           widget={panels.get(tag)!} />
       </section>;

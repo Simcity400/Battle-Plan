@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import type { CountryRacePart, LiveRaceEntries } from '../../charts/race/countryRace';
 import { useCountryColours } from '../../charts/race/countryColours';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { mapLive } from '../../charts/live';
 import type { LiveHead } from '../../charts/TimeChart';
@@ -16,6 +17,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour } from '../../dashboard/IntelCountry';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
@@ -28,7 +30,7 @@ import { holderBands, holderOf, holderToken, historySources, holderTooltip, pers
   segmentParts, sourceKey, sourceTagAt, UNRESOLVED, validateOccupationReserve, validateReserveHistory } from './occupationReserveData';
 import './occupationReserve.css';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
-import { drillAction, SPEC } from '../../dashboard/regionTime';
+import {  SPEC } from '../../dashboard/regionTime';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime';
 
 const PARAMS = {} as const;
@@ -36,14 +38,16 @@ const NO_TAGS: readonly string[] = [];
 
 export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const pinned = options.show === 'breakdown';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<OccupationReserveReply>(runtime, widget, 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
+  const head = useHeadProduct<OccupationReserveReply>(runtime, useGate(runtime, widget), 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
     { active, validate: validateOccupationReserve, structure: reserveStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;
@@ -91,7 +95,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const [chosen, setChosen] = useState<{ tag: string; id: number } | null>(null);
   const pinnedHolder = pinned && options.holder ? holderOf(contentKey(String(options.holder))) : null;
   const drilled = pinned ? pinnedHolder : drill.breakdown ? chosen : null;
-  const drillRegion = useRegion(widget, pinned ? SPEC : drillAction(drill, track));
+  const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
   const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
   const drillAt = pinned ? moment : regionAt;
   const headRoot = head.root;
@@ -100,7 +104,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...unnamed ? [`${unnamed} holders the recording names no tag for are not shown.`] : [], ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
   if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
@@ -122,12 +126,11 @@ export default function OccupationReserveWidget(props: WidgetProps) {
       const holder = tag ? byTag.get(tag) : undefined;
       if (!holder) return;
       setChosen({ tag: holder.country.tag!, id: holder.country.id });
-      dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: following, playhead: following ? moment : null });
+      dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) });
     }} />;
   return <div ref={root} className="parts-race occupation-reserve">{groupFailure}
-    <DrillHost time={{ runtime, region: drillRegion }} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drilled !== null}
-      title={drilled ? looks.name(drilled.tag, drillAt ?? moment) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)}
-      following={drill.follow} canFollow onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drilled !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={drilled ? looks.name(drilled.tag, drillAt ?? moment) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}
       onPin={drilled ? () => {
         const pin = pinnedBreakdown(widget, BREAKDOWN, track.id);
         pin.options = { ...pin.options, holder: setToken(holderToken(drilled)) };

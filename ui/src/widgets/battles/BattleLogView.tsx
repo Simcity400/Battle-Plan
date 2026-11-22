@@ -279,7 +279,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
   if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
-  if (manifest.data && !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (manifest.data && !inBranch) return <WidgetState kind="outside" />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;

@@ -1,4 +1,5 @@
 import { nameReadFrom, sameNameRead, type NameRead } from './nameReads.ts';
+import { recordedHour } from './regionTime.ts';
 import type { Failure } from './queryError';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryStyleReply } from '../generated/dashboard';
@@ -161,8 +162,7 @@ const NAMES: FactSpec<string> = {
 
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   maxHours = Infinity, attempt = 0, exact = false): ReadonlyMap<string, NameRead> {
-  const available = useMemo(() => wanted.filter(item => track && Number.isSafeInteger(item.hour)
-    && item.hour >= track.branch.firstHour && item.hour <= track.branch.lastHour), [wanted, track]);
+  const available = useMemo(() => wanted.filter(item => Number.isSafeInteger(item.hour) && recordedHour(track, item.hour) === item.hour), [wanted, track]);
   const read = useCountryFactsByKey(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
   const lastRead = useRef<{ client: DashboardClient | null; track: string; names: Map<string, NameRead> }>({ client: null, track: '', names: new Map() });

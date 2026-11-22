@@ -8,6 +8,7 @@ import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useHeadProduct } from '../../dashboard/headProduct.ts';
+import { useGate } from '../../dashboard/regionGate';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { contentKey, contentSet, setToken } from '../../dashboard/options';
@@ -22,7 +23,7 @@ import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateSt
 import type { Grouping } from './stockpileData';
 import { pinnedGrouping } from './stockpileDrill';
 import type { StockpileCatalogueReply } from './types';
-import { SPEC, type RegionAction, regionFollows } from '../../dashboard/regionTime.ts';
+import { SPEC, type RegionAction, regionFollows, axisAt } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
 import { useAtHead } from '../../dashboard/atHead.ts';
 
@@ -41,8 +42,8 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
 }
 
 export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, time: RegionAction = SPEC) {
-  return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), time });
+  return useHeadProduct<StockpileAtReply>(runtime, useGate(runtime, widget, time), 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply) });
 }
 
 function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, tag?: string) {
@@ -98,7 +99,7 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, live);
   const region = useRegion(widget, time);
   const hourAt = useRegionHourAt(runtime, region);
-  const tag = useAtHead(runtime.clock, live && regionFollows(region), clockHour => { const at = hourAt(clockHour); return at === null ? null : holderAt(holders, at); });
+  const tag = useAtHead(runtime.clock, live && regionFollows(region), clockHour => { const at = hourAt(axisAt(clockHour)); return at === null ? null : holderAt(holders, at); });
   const at = useStockpileAt(runtime, widget, tag, live, time);
   const { view, hour: shownHour } = useView(catalogue.data, at, track, selection?.tag);
   const error = catalogue.error ?? at.error;

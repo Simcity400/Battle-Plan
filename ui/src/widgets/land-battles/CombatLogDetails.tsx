@@ -43,7 +43,7 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
   const state = useProduct<Reply>(runtime.client, request, active, validateCombatLog, track?.source);
   const shown = useShownHour();
   shown(state.data?.hour ?? null);
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!inBranch) return <WidgetState kind="outside" />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" what="country selection" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;

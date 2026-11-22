@@ -1,10 +1,11 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
-import { useCallback, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useMemo,  useRef, useState, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import {  pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem, MatrixCell } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
@@ -31,6 +32,8 @@ import { useFactionDisplayNames } from '../../dashboard/factionChoice';
 import { noMembersAt, resolveCountries } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime.ts';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
@@ -43,7 +46,7 @@ import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, 
 import type { ChosenPair, OpinionDomain } from './relationsData';
 import './diplomaticRelations.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_TAGS: readonly string[] = [];
 const NO_WARNINGS: string[] = [];
@@ -95,17 +98,18 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const displayNames = useFactionDisplayNames(track?.source);
-  const mainRegion = useRegion(widget);
-  const hour = useRegionHour(runtime, mainRegion, active);
+  const gate = useGate(runtime, widget, SPEC, active, { members: true });
+  const hour = gate.hour;
   const groups = useCountryGroups(runtime, track, active);
   const resolved = track ? resolveCountries(widget.countries, [defaultCountryKey(track) ?? ''].filter(Boolean), groups.data, track.branch.lastHour, Number.MAX_SAFE_INTEGER) : null;
   const top = resolved?.top ?? null;
   const [rankRoot, setRankRoot] = useState<HTMLDivElement | null>(null);
   const ranked = useTopCountries({ widget, runtime, active }, track, top, options.topMeasure, useMemo(() => ({ current: rankRoot }), [rankRoot]));
-  const members = useMemo(() => hour === null ? NO_TAGS : (resolved?.tags ?? []).filter(tag => !resolved?.membership || resolved.membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)),
-    [resolved?.tags.join(','), resolved?.membership, hour]);
+  const memberSet = gate.members?.countries;
+  const members = useMemo(() => hour === null || memberSet === undefined ? NO_TAGS : (resolved?.tags ?? []).filter(tag => memberSet === null || memberSet.has(tag)),
+    [resolved?.tags.join(','), memberSet, hour]);
   const tags = top === null ? members : ranked.tags ?? NO_TAGS;
-  const opinions = useHeadProduct(runtime, widget, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { countries: tags.map(countryFromKey) } : null,
+  const opinions = useHeadProduct(runtime, gate, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { countries: tags.map(countryFromKey) } : null,
     { active, validate: validateRelations, structure: relationsStructure });
   const data = opinions.data;
   const shownAt = opinions.at ?? hour;
@@ -155,7 +159,9 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
       ...(read != null && read !== shown ? [{ label: 'As of', value: dayLabel(read) }] : []),
     ] };
   }, [ordered, live, data, label, shown]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const savedPairKey = typeof options.pair === 'string' && options.pair ? contentKey(options.pair) : null;
   const savedPair = pairOf(savedPairKey);
   const anchor = useRef<HTMLDivElement>(null);
@@ -193,18 +199,17 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
         const [firstId, secondId] = [idOf(first), idOf(second)];
         if (firstId === null || secondId === null || shownAt === null) return;
         setChoice({ scope, pair: { first, second, hour: shownAt, firstId, secondId } });
-        dispatch({ type: 'open', breakdown: PAIR.id, hour: shownAt, playing: false, playhead: null });
+        dispatch({ type: 'open', breakdown: PAIR.id, hour: shownAt, follow: false });
       }}
       menu={(row) => { const read = readHourOf(live.read(), ordered[row]); return read != null && read !== shown ? [jumpItem(runtime, track.id, read)] : []; }}
       legend={[{ id: 'low', label: low < 0 ? opinionText(low) : '0', color: low < 0 ? tokens.error : grey }, { id: 'zero', label: '0', color: grey },
         { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />);
     return <div ref={element => { anchor.current = element; opinions.root(element); }} className="diplomatic-relations" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>{state ? null : groupFailure}
-      <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} title="Pair history" day={hour === null ? '' : dayLabel(hour)}
-        following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }} onFollow={() => {}}
+      <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Pair history" day={drillControl.hour === null ? '' : dayLabel(drillControl.hour)} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }}
         onPin={picked ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id);
           runtime.addWidgetBelow(widget.id, { ...pinned, title: `${label(picked.first, picked.hour).name} and ${label(picked.second, picked.hour).name} opinions`, options: { ...pinned.options, pair: setToken(pairToken(picked)) } }); } : undefined}
-        main={main} time={{ runtime, region: mainRegion }}>
-        {picked && <PairHistory runtime={runtime} track={track} pair={picked} hour={hour} active={active} following={widget.time.mode === 'follow'} />}
+        main={main}>
+        {picked && <PairHistory runtime={runtime} track={track} pair={picked} hour={drillControl.hour} active={active} following={drillControl.following} />}
       </DrillHost>
     </div>;
   })();

@@ -13,6 +13,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -34,7 +35,7 @@ export default function RefitsWidget({ widget, runtime, active, onDiagnostics }:
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct(runtime, widget, 'naval-refits', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRefits, structure: refitsStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'naval-refits', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRefits, structure: refitsStructure });
   const { data, error, retry } = head;
   const shown = useShownHour();
   const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);

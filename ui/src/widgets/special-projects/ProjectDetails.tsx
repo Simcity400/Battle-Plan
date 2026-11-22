@@ -7,6 +7,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import type { WidgetSpec } from '../../dashboard/model';
 import { dayLabel } from '../../charts/draw';
 import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails, validateProjectEffects } from './projectDetailsData';
@@ -59,7 +60,7 @@ function Project(props: Asked & { project: ProjectRuntimeDetails }) {
 function ProjectBody({ project, runtime, widget, tag, active, open, box }: Asked & {
   project: ProjectRuntimeDetails; open: boolean; box: RefObject<HTMLDetailsElement | null>;
 }) {
-  const effects = withHeld(useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', open ? { country: countryFromKey(tag), owner: project.owner, project: project.id } : null,
+  const effects = withHeld(useHeadProduct<SpecialProjectEffects>(runtime, useGate(runtime, widget), 'special-project-effects', open ? { country: countryFromKey(tag), owner: project.owner, project: project.id } : null,
     { active: active && open, validate: validateProjectEffects, structure: effectsStructure }));
   const state = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effects.data.unavailable;
   useLayoutEffect(() => { effects.root(box.current); }, [effects.root, box]);
@@ -119,7 +120,7 @@ function Shown({ details, asked }: { details: SpecialProjectDetails; asked: Aske
 
 export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const head = withHeld(useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
+  const head = withHeld(useHeadProduct<SpecialProjectDetails>(runtime, useGate(runtime, widget), 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: detailsStructure }));
   const { data, error, retry, root } = head;
   useDrawnPanel(box, runtime.clock, panelFeed('special-project-details', head, detailsStructure, widget, runtime), active);

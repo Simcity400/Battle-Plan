@@ -1,4 +1,5 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
@@ -98,7 +99,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const following = widget.time.mode === 'follow';
   const hour = useAtHead(runtime.clock, active && following, clockHour => settledHour(hours, trackHour(clockHour)));
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
+  const inside = !!track && !!window && recordedHour(track, hour) !== null;
   const read = !!data && readAt(data.known, hour);
   const view = useMemo(() => data && read && match.ready && !match.reason ? electionsAt(data, hour, match.matches) : null,
     [data, read, hour, match]);
@@ -127,7 +128,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
-  if (!window || !inside) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || !inside) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;

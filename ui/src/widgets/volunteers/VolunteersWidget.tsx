@@ -1,9 +1,12 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime.ts';
+import { coverageOf } from '../../dashboard/widgetTime.ts';
+import { useDrill } from '../../charts/drill/useDrill';
 import FlowDiagram from '../../charts/flow/FlowDiagram';
 import type { FlowHit, FlowValues } from '../../charts/flow/FlowDiagram';
 import { liveAt } from '../../charts/live';
@@ -56,8 +59,8 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const mainRegion = useRegion(widget);
+  const at = Math.floor(window?.lastHour ?? Number.NaN);
+  const gate = useGate(runtime, widget, SPEC, active);
   const all = widget.countries.kind === 'all';
   const groups = useCountryGroups(runtime, track, active && !all);
   const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -68,7 +71,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     [widget.countries, fallback, groups.data, lastHour, track?.branch.firstHour]);
   const tags = useMemo(() => requestTags(all, chosen.membership), [all, chosen.membership]);
   const requestable = all || (match.ready && !match.reason && !!tags?.length);
-  const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && requestable ? { sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
+  const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && gate.open && requestable ? { sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
     params: { branchId: track.branch.id, kind, countries: tags?.map(countryFromKey) ?? null } } : null, active, undefined, track?.source);
   const keep = useMemo(() => linkFilter(all ? null : match.matches, options.between === 'between'), [all, match, options.between]);
   const current = useMemo(() => reply.data ? linksAt(reply.data, at, keep) : { links: [], unknown: 0 }, [reply.data, at, keep]);
@@ -86,7 +89,9 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const holders = useMemo(() => linkHolders(current.links), [current.links]);
   const tagOf = useMemo(() => new Map(holders.map(holder => [holder.key, holder.tag])), [holders]);
   const looks = useHolderLooks(runtime.client, track, holders, active, tokens);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const picked = drill.breakdown;
   const pickedTag = useMemo(() => { if (!picked) return null; const parsed: unknown = JSON.parse(picked); return Array.isArray(parsed) && typeof parsed[0] === 'string' ? parsed[0] : null; }, [picked]);
   const [drillRows, setDrillRows] = useChangedState<readonly string[]>([]);
@@ -137,10 +142,12 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   }, [summed, current.links, nodeName, label, tagOf, kind, at]);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Volunteer actions');
-  const partners = useMemo<Partner[]>(() => { if (!picked) return []; const { sent, received } = partnersOf(current.links, picked);
+  const drillAt = drillControl.hour;
+  const drillLinks = useMemo(() => reply.data && drillAt !== null ? linksAt(reply.data, drillAt, keep).links : [], [reply.data, drillAt, keep]);
+  const partners = useMemo<Partner[]>(() => { if (!picked) return []; const { sent, received } = partnersOf(drillLinks, picked);
     return [...sent.map(link => ({ ...link, partner: link.host, partnerKey: link.hostKey, direction: 'sent' as const })),
-      ...received.map(link => ({ ...link, partner: link.sender, partnerKey: link.senderKey, direction: 'received' as const }))]; }, [picked, current.links]);
-  const pickedName = pickedTag && drill.hour !== null ? label(pickedTag, drill.hour).name : '';
+      ...received.map(link => ({ ...link, partner: link.sender, partnerKey: link.senderKey, direction: 'received' as const }))]; }, [picked, drillLinks]);
+  const pickedName = pickedTag && drillAt !== null ? label(pickedTag, drillAt).name : '';
   const columns = useMemo<readonly TableColumn<Partner>[]>(() => [
     { key: 'partner', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)', value: row => label(row.partner).name, render: row => <CountryCell {...label(row.partner)} /> },
     { key: 'direction', header: 'Direction', label: 'Direction', width: 'max-content', priority: 1, value: row => row.direction, render: row => row.direction === 'sent' ? 'Sent to' : 'Received from' },
@@ -148,7 +155,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     { key: 'since', header: 'Since', label: 'Since', width: 'max-content', priority: 2, value: row => row.since, render: row => dayLabel(row.since) },
   ], [label]);
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see volunteers." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (gate.outside) return <WidgetState kind="outside" read={coverageOf(gate.outside)} />;
   const groupFailure = !all && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="empty" message={match.reason} /></>;
@@ -165,15 +172,14 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     membershipUnobserved: chosen.unobserved.some(covers), unknown: current.unknown });
   const main = <FlowDiagram live={reported} label={`${kind === 'land' ? 'Volunteers' : 'Expeditionary forces'}: senders to hosts`} nodes={nodes} links={links}
     stretch={`${kind}:${lookHour(track.branch, at)?.stretch ?? 'unrecorded'}`} scale={scale} slots={perSide + 1} hour={at} hoursPerSecond={hoursPerSecond} message={message} tooltip={tooltip}
-    onCapacity={setCapacity} onLabelPick={node => { const found = summed.nodes.find(item => item.id === node.id); if (found?.tag) dispatch({ type: 'open', breakdown: found.tag, hour: at, playing: false, playhead: null }); }}
+    onCapacity={setCapacity} onLabelPick={node => { const found = summed.nodes.find(item => item.id === node.id); if (found?.tag) dispatch({ type: 'open', breakdown: found.tag, hour: at, follow: false }); }}
     onContextMenu={(hit, x, y) => { const link = hit?.kind === 'link' ? summed.links.find(item => item.id === hit.link.id) : null;
       const since = link ? Math.min(...link.parts.map(part => part.since)) : null;
       if (since != null) menu.open(x, y, [{ ...jumpItem(runtime, track.id, since), label: `Jump to the start ${dayLabel(since)}` }]); }}
     description={`${current.links.length} links at ${dayLabel(at)}.`} active={active && (!picked || options.drill === 'popout')} />;
   return <div ref={anchor} className="volunteers">{groupFailure}
     {setOption && <div className="volunteers-caption"><Segmented value={kind} options={KINDS} label="Kind" onChange={value => setOption('kind', value)} /></div>}
-    <DrillHost time={{ runtime, region: mainRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title={pickedName} day={dayLabel(at)}
-      following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setDrillRows([]); }} onFollow={() => {}} main={main}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={picked != null} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={pickedName} day={drillAt === null ? '' : dayLabel(drillAt)} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setDrillRows([]); }} main={main}>
       {picked && (partners.length ? <Table rowRevision={row => [row, columns]} label={`${pickedName} ${kind === 'land' ? 'volunteers' : 'expeditionary forces'}`} rows={partners} columns={columns}
         rowKey={row => `${row.direction}:${row.key}`} sort={{ column: 'divisions', direction: 'descending' }} cellBars={false} rankMarkers={false}
         onVisibleRows={rows => setDrillRows(previous => { const next = [...new Set(rows.map(row => row.partner))];

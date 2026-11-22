@@ -1,11 +1,12 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { mapLive } from '../../charts/live';
@@ -15,6 +16,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
 import { resolveOptions, setToken } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -28,7 +30,6 @@ import PairHistory from './PairHistory';
 import './intelCoverage.css';
 import type { IntelCoverageReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
-import { drillAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const PARAMS = {} as const;
@@ -42,7 +43,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === 'pair';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<IntelCoverageReply>(runtime, widget, 'intel-network-coverage', track && !saved ? PARAMS : null,
+  const head = useHeadProduct<IntelCoverageReply>(runtime, useGate(runtime, widget), 'intel-network-coverage', track && !saved ? PARAMS : null,
     { active, validate: validateIntelCoverage, structure: coverageStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;
@@ -85,12 +86,14 @@ export default function IntelCoverageWidget(props: WidgetProps) {
       readHour.current === null ? null : dayLabel(readHour.current)),
     ...countryNameDetails(axis[row].countryFlag, axis[column].countryFlag),
   }, [at, live, axis, axisTags]);
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const savedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
   const [choice, setPair] = useState<{ scope: object; pair: ChosenPair } | null>(null);
   const pair = choice?.scope === scope ? choice.pair : null;
   const drill = pair ? savedDrill : CLOSED;
-  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillRegion = drillControl.region;
   const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const pairLabels = useIntelLabels(runtime, widget, pair ? [pair.owner, pair.target] : NO_TAGS, pair?.hour ?? null, active);
   const headRoot = head.root;
@@ -98,7 +101,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
   if (saved) return <PairHistory {...props} pair={null} hour={hour} />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   if (filtered && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   if (selection?.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
@@ -115,16 +118,16 @@ export default function IntelCoverageWidget(props: WidgetProps) {
           ?? at.ids.get(axisTags[column]);
         if (targetId === undefined) return;
         setPair({ scope, pair: { owner: axisTags[row], target: axisTags[column], targetId, hour } });
-        dispatch({ type: 'open', breakdown: PAIR.id, hour, playing: widget.time.mode === 'follow', playhead: widget.time.mode === 'follow' ? hour : null });
+        dispatch({ type: 'open', breakdown: PAIR.id, hour, follow: drillControl.followsAt(hour) });
       }} menu={() => readHour.current === null ? [] : [jumpItem(runtime, track.id, readHour.current)]} />;
   return <div ref={root} className="intel-coverage">
     <div className="intel-coverage-caption">
       {setOption && <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />}
     </div>
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={pair ? `${pairLabels(pair.owner).name} → ${pairLabels(pair.target).name}` : PAIR.label}
-      day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}
+      day={drillAt === null ? '' : dayLabel(drillAt)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={main}
       onPin={pair ? () => {
         const pinned = pinnedBreakdown(widget, PAIR, track.id);
         const saved = pairOptions(pair);
