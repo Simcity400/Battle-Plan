@@ -39,7 +39,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const settle = () => { resolve?.(); resolve = undefined; hideTooltip(owner); };
     const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; settle();
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
-    const held = heldPicture(clock, canvas, region, () => latest.current.model.fixed === undefined, clear, settle);
+    const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, settle);
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
       if (!width || !height) { clear(); return; }

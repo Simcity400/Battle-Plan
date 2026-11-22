@@ -15,6 +15,8 @@ export interface FollowTransport {
 
 export type Availability = { available: true } | { available: false; reason: string };
 
+export interface Landed { panel: FollowedPanel; values?: Map<string, number | string>; hour: number; through: number }
+
 export interface FollowEntry {
   readonly id: number;
   values?: Map<string, number | string>;
@@ -23,6 +25,7 @@ export interface FollowEntry {
   reason?: string;
   answer: FollowedAnswer | undefined;
   panel?: FollowedPanel;
+  landed?: Landed | null;
   hour: number;
   through: number;
   version: number;
@@ -157,12 +160,14 @@ export class FollowStore {
     return () => { listeners.delete(changed); if (!listeners.size) this.liveListeners.delete(entry.id); };
   }
 
-  seek(branch: string, retainThrough?: number) {
-    if (retainThrough !== undefined) return;
+  seek(branch: string, retainThrough?: number, stepped = false) {
+    if (retainThrough !== undefined && !stepped) return;
     for (const held of this.byId.values()) if (held.branch === branch) {
-      const entry = held.entry;
+      const entry = held.entry, coverage = entry.coverage;
+      if (retainThrough !== undefined && coverage && coverage.start <= retainThrough && retainThrough <= coverage.through) continue;
       entry.coverage = undefined;
       entry.panel = undefined; entry.answer = undefined; entry.values = undefined;
+      if (retainThrough === undefined && entry.landed) entry.landed = null;
       this.changed(held);
     }
   }
@@ -175,6 +180,7 @@ export class FollowStore {
     if (reading.panel !== undefined) entry.panel = reading.panel ?? undefined;
     if (reading.answer !== undefined) entry.answer = reading.answer ?? undefined;
     if (reading.values !== undefined) entry.values = reading.values ?? undefined;
+    if (entry.panel) entry.landed = { panel: entry.panel, values: entry.values, hour: entry.hour, through: entry.through };
     this.changed(held);
   }
 
@@ -202,6 +208,7 @@ export class FollowStore {
       held.entry.answer = undefined;
       held.entry.panel = undefined;
       held.entry.values = undefined;
+      held.entry.landed = undefined;
       this.tellLive(held);
     }
     held.entry.status = availability.available ? 'followed' : 'unavailable';

@@ -80,8 +80,13 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
       return true;
     });
-    const handles = new Map<HTMLElement, { refresh: () => void; close: () => void }>();
+    const handles = new Map<HTMLElement, { refresh: () => void; close: () => void; readonly stale: boolean }>();
     let interaction = 0;
+    const hold = () => {
+      interaction++;
+      const tip = tooltipStore.get();
+      if (tip && node.matches(':hover, :focus-within')) hideTooltip(tip.owner);
+    };
     const attach = (content: HTMLElement) => {
       let fields: HTMLElement[] = [];
       const model = (id: number, owner: number) => {
@@ -104,12 +109,13 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
         if (row !== null) content.dataset.drawnRow = row;
         else { delete content.dataset.drawnRow; }
       };
-      const handle = attachPanel(content, clock, model, own, hit);
-      if (handle) handles.set(content, { refresh: handle.refresh, close() {
+      const handle = attachPanel(content, clock, model, own, hit, hold);
+      if (handle) handles.set(content, { refresh: handle.refresh, get stale() { return handle.stale; }, close() {
         handle.close();
         for (const f of fields) delete f.dataset.rowInk;
       } });
     };
+    const held = (target: HTMLElement) => handles.get(layer(target))?.stale === true;
     reconcile.current = () => {
       const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].filter(owned).map(layer));
       for (const [content, handle] of handles) {
@@ -120,11 +126,13 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     };
     const inspect = async (event: Event) => {
       const reading = latest.current, target = event.target;
-      if (!event.isTrusted || reading?.follow === undefined || !(target instanceof HTMLElement) || !owned(target)) return;
+      if (!event.isTrusted || !(target instanceof HTMLElement) || !owned(target)) return;
+      if (held(target)) { event.stopPropagation(); return; }
+      if (reading?.follow === undefined) return;
       const ticket = ++interaction, seek = clock.getSnapshot().seekSequence;
       event.stopPropagation();
       const picture = await inspectFollow(reading.follow);
-      if (!picture?.panel || picture.seek !== seek || seek !== clock.getSnapshot().seekSequence || ticket !== interaction ||
+      if (held(target) || !picture?.panel || picture.seek !== seek || seek !== clock.getSnapshot().seekSequence || ticket !== interaction ||
           !node.contains(target) || reading.follow !== latest.current?.follow) return;
       const live = picture.values;
       const values = panelViews[view]?.values(picture.panel.data, live ? {

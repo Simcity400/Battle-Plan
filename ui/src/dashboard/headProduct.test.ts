@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, landedPanel, momentHour, retain, whenDue } from './headProduct.ts';
+import { headRead, headSource, headSubject, heldPanel, momentHour, retain, whenDue, withHeld } from './headProduct.ts';
+import type { HeadProduct } from './headProduct';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { FollowEntry } from './follow/store';
 import { observeOnScreen } from './follow/useFollow.ts';
@@ -52,20 +53,23 @@ test('a followed panel is asked by the fallback’s clock until its first push l
   assert.equal(headSource(false, 'followed', true), 'asked');
 });
 
-test('the panel a followed head shows stays the last one landed while a seek empties its reading, and only that follow’s', () => {
-  const panel = { data: 'hour 23', refused: null };
-  const values = new Map([['GER:total', 3]]);
-  const entry = { id: 1, status: 'followed', answer: undefined, panel, values, hour: 23, through: 23, version: 1 } as FollowEntry;
-  const landed = landedPanel(null, entry);
-  assert.deepEqual([landed?.panel, landed?.values], [panel, values]);
-  const emptied = { ...entry, panel: undefined, version: 2 } as FollowEntry;
-  assert.equal(landedPanel(landed, emptied)?.panel, undefined, 'another entry never shows it');
+test('a followed head reads only the panel of the hour shown, and holds the last landed one apart, only while that hour is read', () => {
+  const landed = { panel: { data: 'hour 23', refused: null }, values: new Map([['GER:total', 3]]), hour: 23, through: 23 };
+  const entry = { id: 1, status: 'followed', answer: undefined, panel: landed.panel, values: landed.values, landed, hour: 23, through: 23, version: 1 } as FollowEntry;
+  assert.equal(heldPanel(entry), undefined, 'the panel of the hour shown is the reading, nothing is held');
   Object.assign(entry, { panel: undefined, values: undefined });
-  assert.equal(landedPanel(landed, entry), landed, 'emptied by a seek, the last panel, its values and its hours stay');
-  const next = { data: 'hour 24', refused: null };
-  Object.assign(entry, { panel: next, hour: 24, through: 24 });
-  assert.equal(landedPanel(landed, entry)?.panel, next, 'the new hour replaces it once it lands');
-  assert.equal(landedPanel(landed, null), null);
+  assert.equal(heldPanel(entry), landed, 'a step that empties the reading holds the last panel with its values and hours');
+  Object.assign(entry, { landed: null });
+  assert.equal(heldPanel(entry), undefined, 'a backward seek holds nothing');
+  assert.equal(headSource(true, 'followed', entry.landed !== undefined), 'pushed', 'and the follow keeps its pushed source');
+  assert.equal(heldPanel(null), undefined);
+  const live = { read: () => ({ get: () => 3, missing: () => '' }), subscribe: () => () => {} };
+  const pending = { data: undefined, at: null, atNow: () => null, shownAt: () => null, held: { data: 'hour 23', hour: 23, through: 23, live } } as unknown as HeadProduct<string>;
+  const drawn = withHeld(pending);
+  assert.deepEqual([pending.data, drawn.data, drawn.at, drawn.atNow(), drawn.shownAt(), drawn.live], [undefined, 'hour 23', 23, 23, 23, live],
+    'only a drawn host, which dims it, is handed the held reading, dated at its own hours');
+  const current = { ...pending, data: 'hour 24' } as HeadProduct<string>;
+  assert.equal(withHeld(current), current, 'once the hour shown lands it is read');
 });
 
 test('the reply shown while a newer hour loads is dated at the hour it was asked for', () => {

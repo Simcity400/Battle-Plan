@@ -2,11 +2,10 @@ import type { PlaybackController } from '../dashboard/playback';
 import { motionOf } from '../charts/easing.ts';
 import './held.css';
 
-export function heldPicture(clock: PlaybackController, layer: HTMLElement, region: HTMLElement, moving: () => boolean,
-  release: () => void, dim: () => void) {
+export function heldPicture(clock: PlaybackController, region: HTMLElement, moving: () => boolean, release: () => void, dim: () => void) {
   let shown = false, stale = false, holds = -Infinity;
   const mark = (next: boolean) => {
-    stale = next; layer.dataset.held = next ? 'stale' : 'current';
+    stale = next; region.dataset.held = next ? 'stale' : 'current';
     if (next) region.setAttribute('aria-busy', 'true'); else region.removeAttribute('aria-busy');
   };
   mark(false);
@@ -20,6 +19,6 @@ export function heldPicture(clock: PlaybackController, layer: HTMLElement, regio
     get stale() { return stale; },
     present(through: number | null | undefined) { shown = true; holds = through ?? -Infinity; mark(false); },
     drop() { shown = false; holds = -Infinity; mark(false); },
-    close() { stop(); region.removeAttribute('aria-busy'); delete layer.dataset.held; },
+    close() { stop(); region.removeAttribute('aria-busy'); delete region.dataset.held; },
   };
 }

@@ -1,10 +1,11 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import '../styles.css';
 import { PlaybackController } from '../dashboard/playback';
 import { useDrawnPanel } from '../dashboard/DrawnPanel';
 import { panelFeed } from '../dashboard/panelFeed';
 import type { PanelFeed } from '../dashboard/panelFeed';
-import { useHeadProduct } from '../dashboard/headProduct';
+import { useHeadProduct, withHeld } from '../dashboard/headProduct';
 import type { WidgetRuntime } from '../dashboard/definitions';
 import type { WidgetSpec } from '../dashboard/model';
 import { clockGeneration, onDraw } from '../dashboard/pulled';
@@ -18,6 +19,7 @@ import type { NuclearArsenalReply } from '../generated/dashboard';
 import type { Present } from './notifications';
 import type { FromWorker } from './kit';
 
+document.documentElement.dataset.motion = 'reduced';
 const HOURS = 100_000;
 const reply: NuclearArsenalReply = { types: [{ ordinal: 0, token: 'nuke', name: 'Nuclear bomb' }],
   countries: [{ tag: 'GER', countryId: 1, total: 3, counts: [{ ordinal: 0, value: 3, ready: 3 }] }], missing: null, warnings: [] };
@@ -31,7 +33,7 @@ clock.seek(23);
 
 const ports: MessagePort[] = [];
 const decoder = new FollowDecoder();
-const native = { id: -1, hold: false, asked: null as { hour: number; seek: number } | null, pushed: '' };
+const native = { id: -1, hold: false, asked: null as { hour: number; seek: number } | null, pushed: '', asks: 0 };
 function push() {
   const asked = native.asked;
   if (!asked || native.id < 0 || native.pushed === `${asked.seek}:${asked.hour}`) return;
@@ -47,7 +49,7 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
     return null;
   }
   if (product === 'unfollow') return null;
-  if (product === 'nuclear-arsenal') return arsenalAt((params as { hour: number }).hour);
+  if (product === 'nuclear-arsenal') { native.asks++; return arsenalAt((params as { hour: number }).hour); }
   throw new Error(`${product} is not served here`);
 };
 const client = {
@@ -68,8 +70,8 @@ const NO_PARAMS = {};
 const presents = new Map<number, Present>();
 const drawn = new Map<number, number | null>();
 let racePresent: Extract<FromWorker, { type: 'racePresent' }> | undefined;
-const emptied = { seek: -1, commits: 0 };
-let commits = 0;
+const emptied = { seek: -1 };
+let strict: number | null = null, followedSurface = false, listedRead = '';
 const waiting = new Set<() => void>();
 const wake = () => queueMicrotask(() => { for (const heard of [...waiting]) heard(); });
 onDraw(message => {
@@ -79,7 +81,7 @@ onDraw(message => {
   }
   if (message.type === 'racePresent') racePresent = message;
   if (message.type === 'structure' && message.updates.some(update => update.id === native.id && update.panel === null))
-    Object.assign(emptied, { seek: clock.getSnapshot().seekSequence, commits });
+    emptied.seek = clock.getSnapshot().seekSequence;
   wake();
 });
 const panelId = () => Math.min(...presents.keys()), headedId = () => presents.size > 1 ? Math.max(...presents.keys()) : -1;
@@ -96,13 +98,21 @@ function Panel() {
 
 function Headed() {
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
-  useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', head, arsenalStructure, headed, runtime), true);
-  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
-  useLayoutEffect(() => { commits++; wake(); });
+  const read = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const head = withHeld(read);
+  useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', read, arsenalStructure, headed, runtime), true);
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
+  useLayoutEffect(() => { strict = read.data?.countries[0]?.total ?? null; followedSurface = read.read === 'followed'; wake(); });
   return <div id="headed" ref={attach} style={{ width: '480px', height: '40px' }}>
     {head.data && <span data-paint="empty">{arsenalNotice(head.data, clock.getHour())}</span>}
   </div>;
+}
+
+function Listed() {
+  const head = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  useLayoutEffect(() => { listedRead = head.read; wake(); });
+  if (!head.data) return <p>Loading the arsenal…</p>;
+  return <p id="listed" ref={head.root}>{head.data.countries[0]?.total}</p>;
 }
 
 function Race() {
@@ -118,25 +128,34 @@ new MutationObserver(records => {
   for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLCanvasElement && node.closest('#headed')) mounts++;
 }).observe(document.body, { childList: true, subtree: true });
 
+function opacity(element: Element | null) {
+  let seen = 1;
+  for (let at = element; at; at = at.parentElement) seen *= Number(getComputedStyle(at).opacity);
+  return Math.round(seen * 1000) / 1000;
+}
 function surface(canvas: HTMLCanvasElement | null, region: Element | null, visible: boolean, hour: number | null | undefined) {
-  return { visible, dim: canvas?.dataset.held === 'stale', busy: region?.getAttribute('aria-busy') === 'true', hour: hour ?? null };
+  return { visible, opacity: opacity(canvas), busy: region?.getAttribute('aria-busy') === 'true', hour: hour ?? null };
 }
 const ink = (panel: string) => document.querySelector<HTMLElement>(`#${panel} [data-paint="empty"]`)?.dataset.rowInk ?? null;
 const inkOf = (panel: string) => document.querySelector<HTMLCanvasElement>(`#${panel} canvas.draw-panel-ink`);
 function shown() {
   const ink1 = inkOf('panel'), ink2 = inkOf('headed');
   const race = document.querySelector<HTMLCanvasElement>('#race canvas');
-  return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(),
+  return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks,
+    listed: document.querySelector('#listed')?.textContent ?? null,
+    muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(panelId())),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent?.hour),
     headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(headedId())) };
 }
-const lit = (now: { visible: boolean; dim: boolean }) => now.visible && !now.dim;
+const lit = (now: { visible: boolean; opacity: number }) => now.visible && now.opacity === 1;
 const painted = () => { const now = shown(); return now.field === 'worker' && now.headedField === 'worker' && lit(now.panel) && lit(now.race) && lit(now.headed); };
-const current = () => {
+const currentOf = (...given: (Present | Extract<FromWorker, { type: 'racePresent' }> | undefined)[]) => {
   const generation = clockGeneration(clock), seek = clock.getSnapshot().seekSequence;
-  return [panelPresent(), headedPresent(), racePresent].every(present => present?.generation === generation && present.seek === seek);
+  return given.every(present => present?.generation === generation && present.seek === seek);
 };
+const current = () => currentOf(panelPresent(), headedPresent(), racePresent);
+const readEmptied = () => emptied.seek === clock.getSnapshot().seekSequence && strict === null;
 
 function until(ready: () => boolean) {
   return new Promise<void>(resolve => {
@@ -162,23 +181,26 @@ function at(time: number, change: () => void) {
   try { change(); } finally { Reflect.deleteProperty(performance, 'now'); }
 }
 
+async function heldSeek(hour: number, settled: () => boolean) {
+  let pending: ReturnType<typeof shown>[] = [];
+  const seen = await watch(() => { native.hold = true; clock.seek(hour); }, async () => {
+    await until(settled);
+    pending = [shown()];
+    native.hold = false; push();
+    await until(() => current() && painted() && headedPresent()?.readHour === hour && shown().listed === String(hour));
+  });
+  return { seen, pending: pending[0]! };
+}
+
 export const fixture = {
   async mount() {
-    createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed /></>);
-    await until(() => current() && painted());
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed /><Listed /></>);
+    await until(() => followedSurface && listedRead === 'followed' && shown().listed === '23' && current() && painted());
     return shown();
   },
   speed: (hoursPerSecond: number) => watch(() => clock.setSpeed(hoursPerSecond)),
-  async heldSeek(hour: number) {
-    let pending: ReturnType<typeof shown>[] = [];
-    const seen = await watch(() => { native.hold = true; clock.seek(hour); }, async () => {
-      await until(() => current() && emptied.seek === clock.getSnapshot().seekSequence && commits > emptied.commits);
-      pending = [shown()];
-      native.hold = false; push();
-      await until(() => current() && painted() && headedPresent()?.readHour === hour);
-    });
-    return { seen, pending: pending[0]! };
-  },
+  heldSeek: (hour: number) => heldSeek(hour, () => current() && readEmptied()),
+  heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => current() && painted())),
   async playFor(milliseconds: number) {
     const start = performance.now();

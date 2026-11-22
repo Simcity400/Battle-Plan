@@ -130,7 +130,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
       box.show?.(visible);
       if (box.hidden !== hidden) { box.hidden = hidden; for (const changed of box.listeners) changed(); }
     };
-    if (!element || prepared) { seen(false, false); return; }
+    if (!element?.isConnected || prepared) { seen(false, false); return; }
     return onScreen(element, seen);
   }, [store, key, target, onScreen, box, prepared]);
   useLayoutEffect(() => { box.painter?.repaint(); }, [structure, box]);

@@ -8,7 +8,7 @@ import { heldPicture } from './held.ts';
 import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
-  own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void) {
+  own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void, hold: () => void) {
   if (typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== 'function') return;
   const id = surfaceId(), canvas = document.createElement('canvas');
   content.setAttribute('data-ink-content', '');
@@ -25,7 +25,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     canvas.hidden = !show; perfLog?.ink(id, show);
   };
   const release = () => { held.drop(); visible(false); own(false, true); hit(null); };
-  const held = heldPicture(clock, canvas, content, () => fixed === undefined, release, () => hit(null));
+  const held = heldPicture(clock, content, () => fixed === undefined, release, () => { hit(null); hold(); });
   const measure = () => {
     const reading = model(id, owner);
     if (!reading?.cells.length) return release;
@@ -76,7 +76,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (fixed === undefined) { release(); refresh(); }
   });
   refresh();
-  return { refresh, close() {
+  return { refresh, get stale() { return held.stale; }, close() {
     closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); held.close(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');

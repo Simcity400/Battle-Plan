@@ -69,6 +69,27 @@ test('a seek that keeps what covers its hour leaves the choice to the worker, wh
   transport.reading({ id: entry.id, hour: 41, through: 41, coverage: { start: 41, through: 41 }, seek: 1, answer });
   store.seek('1');
   assert.equal(entry.answer, undefined, 'a seek that keeps nothing clears at once');
+
+  const { entry: drawn } = store.acquire({ panel: 'nuclear-arsenal', branchId: '1' });
+  const landed = () => drawn.landed;
+  const step = (hour: number) => transport.reading({ id: drawn.id, hour, through: hour, coverage: { start: hour, through: hour }, seek: 2,
+    panel: { data: { hour }, refused: null }, values: new Map([['GER:total', hour]]) });
+  assert.equal(landed(), undefined, 'nothing has landed on a new follow');
+  step(23); step(24);
+  transport.reading({ id: drawn.id, hour: 24, through: 24, seek: 2, panel: null, values: null });
+  assert.deepEqual([drawn.panel, landed()?.panel.data, landed()?.values?.get('GER:total'), landed()?.hour, landed()?.through],
+    [undefined, { hour: 24 }, 24, 24, 24], 'a forward step that empties the reading keeps the last panel to arrive, with its values and hours, whatever rendered in between');
+  store.seek('1', 30);
+  assert.equal(landed()?.hour, 24, 'a forward seek leaves it to the worker');
+  store.seek('1');
+  assert.equal(landed(), null, 'a backward seek discards it, and the follow stays one that has landed');
+  step(25);
+  assert.equal(landed()?.hour, 25);
+  store.seek('1', 25, true);
+  assert.deepEqual(drawn.panel?.data, { hour: 25 }, 'a paused step to an hour the reading covers keeps it');
+  store.seek('1', 26, true);
+  assert.deepEqual([drawn.panel, drawn.values, landed()?.hour], [undefined, undefined, 25],
+    'a paused step past what the reading covers empties it at once, before the worker says so, and holds the last panel apart');
 });
 
 test('a painter runs at most once a frame and only when its version moved', () => {

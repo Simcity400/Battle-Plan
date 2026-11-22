@@ -22,7 +22,7 @@ function availability(data: unknown): Availability {
 }
 
 function followTransport(client: DashboardClient, source: DashboardSource, clock: PlaybackController, offset: number,
-  seek: (branch: string, retainThrough?: number) => void): FollowTransport {
+  seek: (branch: string, retainThrough: number | undefined, stepped: boolean) => void): FollowTransport {
   const nameOf = (branch: string) => JSON.stringify([source.id, source.revision, offset, branch]);
   interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
@@ -43,7 +43,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
       if (sought || stopping) {
         structures.discard(b.ids);
         const retainThrough = (sought && s.forwardSeek) || (!sought && stopping) ? hour : undefined;
-        seek(name, retainThrough);
+        seek(name, retainThrough, sought && !s.playing);
         b.seek = s.seekSequence;
         drawPost({ type: 'seek', branch: nameOf(name), seek: b.seek, retainThrough });
       }
@@ -149,7 +149,7 @@ export function followStore(client: DashboardClient, source: DashboardSource, wi
   const key = `${source.id}\u0000${source.revision}\u0000${offset}`;
   let store = held.get(key);
   if (!store) {
-    const transport = followTransport(baseClient(client), source, clock, offset, (branch, retainThrough) => store?.seek(branch, retainThrough));
+    const transport = followTransport(baseClient(client), source, clock, offset, (branch, retainThrough, stepped) => store?.seek(branch, retainThrough, stepped));
     store = new FollowStore(transport, undefined, ids);
     held.set(key, store);
   }

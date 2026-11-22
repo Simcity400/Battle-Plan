@@ -16,7 +16,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
-import { useHeadProduct } from '../../dashboard/headProduct';
+import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
@@ -40,9 +40,10 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
-  const { data, error, retry } = head;
+  const drawn = withHeld(head);
+  const { data, error, retry } = drawn;
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
-  const live = head.live;
+  const live = drawn.live;
   const paintArt = useCallback((icons: ReadonlyMap<string, string | null>) => {
     for (const img of root.current?.querySelectorAll<HTMLImageElement>('img[data-doctrine-art]') ?? []) {
       const src = icons.get(img.dataset.doctrineArt!);
@@ -57,7 +58,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const chosen = contentSet(options.folders).map(contentKey);
   const shown = useMemo(() => data?.folders.filter(folder => !chosen.length || chosen.includes(folder.id)) ?? [],
     [data, JSON.stringify(chosen)]);
-  const hourShown = () => head.shownAt() ?? Math.floor(runtime.clock.getHour());
+  const hourShown = () => drawn.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
   const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
@@ -93,12 +94,12 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     const [folder, item] = (key ?? '').split('|').map(Number);
     setDescribing(kind === 'mark' && Number.isSafeInteger(folder) && Number.isSafeInteger(item) ? { folder: folder!, track: item!, hour: hourShown() } : null);
   }, [tips.hovered]);
-  useDiagnostics(onDiagnostics, data ? [...data.warnings, ...(described.data?.warnings ?? [])] : null);
-  const nameHour = head.at ?? head.hour;
+  useDiagnostics(onDiagnostics, head.data ? [...head.data.warnings, ...(described.data?.warnings ?? [])] : null);
+  const nameHour = drawn.at ?? drawn.hour;
   const country = useCountryNamesAt(runtime.client, track, useMemo(() => tag && nameHour !== null && data && !data.folders.length ? [{ hour: nameHour, tag }] : [],
     [tag, nameHour, data]), active);
   const countryName = tag && nameHour !== null ? nameReadText(country.get(nameKey(nameHour, tag))) : undefined;
-  const pill = headerSlot && data && createPortal(<span className="pill">{activeTracks(data.folders)} tracks active</span>, headerSlot);
+  const pill = headerSlot && head.data && createPortal(<span className="pill">{activeTracks(head.data.folders)} tracks active</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="flask" message="Load a campaign to see doctrines." />;
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
   if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -110,7 +111,8 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     setOption?.('folders', next.length === chips.length ? '' : next.map(setToken).join(' '));
   };
   const values = live.read();
-  return <div ref={attach} className="doctrine-mastery">
+  const holding = drawn !== head;
+  return <div ref={attach} className="doctrine-mastery" data-held={holding ? 'stale' : 'current'} aria-busy={holding || undefined}>
     {pill}
     {chips.length > 1 && setOption && <div className="log-chips doctrine-mastery-chips"><ChipSet label="Doctrine folders" chips={chips}
       selected={chosen.length ? chosen : chips.map(chip => chip.value)} max={chips.length} onToggle={toggle} /></div>}
