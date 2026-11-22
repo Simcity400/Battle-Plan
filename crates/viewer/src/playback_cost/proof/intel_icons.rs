@@ -261,20 +261,13 @@ fn compare_with_substituted(
     compared
 }
 
-fn reference_icons(
-    content: &crate::document::Content,
+fn reference_icons_from_ours(
     frame: &DecodedFrame,
-    ours: io::Result<u32>,
+    ours: Result<u32, String>,
+    build_icons: impl FnOnce(&DecodedFrame, u32) -> IntelIcons,
 ) -> IntelIcons {
     match ours {
-        Ok(ours) => intel_icons::icons(
-            &content.icons.intel,
-            &content.icons.raids,
-            frame,
-            ours,
-            &content.names.localisation,
-            &content.raid_hover.recorded_language,
-        ),
+        Ok(ours) => build_icons(frame, ours),
         Err(why) => {
             let mut icons = IntelIcons {
                 built_for: None,
@@ -320,28 +313,46 @@ fn compare_today(
     )
 }
 
+fn today_with(
+    layer: &Icons,
+    frame: &DecodedFrame,
+    initial_ours: impl FnOnce() -> io::Result<u32>,
+    resolve_ours: impl Fn(&DecodedFrame) -> io::Result<u32>,
+    build_icons: impl Fn(&DecodedFrame, u32) -> IntelIcons,
+) -> Compared {
+    let Some((_, hour, _)) = layer.icons_with_failures() else {
+        return Compared {
+            notes: json!({"skipped": "no icons yet: their tables are being learned or loading", "tables": layer.tables().len()}),
+            ..Compared::default()
+        };
+    };
+    if hour != frame.hour {
+        return Compared {
+            notes: json!({"skipped": format!("the icons are of hour {hour}")}),
+            ..Compared::default()
+        };
+    }
+    let initial_ours = initial_ours().map_err(|error| error.to_string());
+    compare_today(layer, frame, |target| {
+        let resolved = if std::ptr::eq(target, frame) {
+            initial_ours.clone()
+        } else {
+            resolve_ours(target).map_err(|error| error.to_string())
+        };
+        reference_icons_from_ours(target, resolved, &build_icons)
+    })
+}
+
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = of(layer);
     let frame = document.frame()?;
-    let Some((_, hour, _)) = layer.icons_with_failures() else {
-        return Ok(Compared {
-            notes: json!({"skipped": "no icons yet: their tables are being learned or loading", "tables": layer.tables().len()}),
-            ..Compared::default()
-        });
-    };
-    if hour != frame.hour {
-        return Ok(Compared {
-            notes: json!({"skipped": format!("the icons are of hour {hour}")}),
-            ..Compared::default()
-        });
-    }
     let choice = viewer_foundation::map::perspective::Choice::default();
-    let initial_ours = document.vision(&choice)?.ours();
     let content = &document.content;
-    Ok(compare_today(layer, frame, |target| {
-        let resolved = if std::ptr::eq(target, frame) {
-            Ok(initial_ours)
-        } else {
+    Ok(today_with(
+        layer,
+        frame,
+        || document.vision(&choice).map(|vision| vision.ours()),
+        |target| {
             viewer_foundation::map::perspective::incremental::Fold::advance(
                 &mut None,
                 target,
@@ -349,9 +360,18 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
                 viewer_foundation::map::visibility::FogContent::loaded(&content.counters.fog),
             )
             .map(|vision| vision.ours())
-        };
-        reference_icons(content, target, resolved)
-    }))
+        },
+        |target, ours| {
+            intel_icons::icons(
+                &content.icons.intel,
+                &content.icons.raids,
+                target,
+                ours,
+                &content.names.localisation,
+                &content.raid_hover.recorded_language,
+            )
+        },
+    ))
 }
 
 pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
@@ -725,6 +745,82 @@ mod tests {
                 .iter()
                 .all(|item| !item.as_str().unwrap_or_default().contains("report counts inconsistent")),
             "report invariant violation must never enter known_exceptions: {compared:?}"
+        );
+    }
+
+    #[test]
+    fn unavailable_original_country_links_compares_refusal_instead_of_exiting_early() {
+        struct RefusingLayer;
+        impl Evaluate for RefusingLayer {
+            fn icons(
+                &self,
+                frame: &DecodedFrame,
+                choice: &viewer_foundation::map::perspective::Choice,
+            ) -> IntelIcons {
+                let resolved = crate::layers::intel_icons::ours(frame, choice)
+                    .map_err(|error| error.to_string());
+                reference_icons_from_ours(frame, resolved, synthetic_eval_for_country)
+            }
+        }
+
+        struct EmittingLayer;
+        impl Evaluate for EmittingLayer {
+            fn icons(
+                &self,
+                frame: &DecodedFrame,
+                _choice: &viewer_foundation::map::perspective::Choice,
+            ) -> IntelIcons {
+                synthetic_eval_for_country(frame, 1)
+            }
+        }
+
+        let choice = viewer_foundation::map::perspective::Choice::default();
+        let doc = frame_with_unavailable(&[(
+            TableId::CountryLinks,
+            "recorded CountryLinks unavailable".into(),
+        )]);
+        let resolve = |target: &DecodedFrame| {
+            viewer_foundation::map::perspective::incremental::Fold::advance(
+                &mut None,
+                target,
+                &choice,
+                Err("unloaded"),
+            )
+            .map(|vision| vision.ours())
+        };
+
+        let mut refusing = Icons::new(Arc::new(RefusingLayer), Pace::Step);
+        let refusing_icons = refusing.evaluate(&doc);
+        refusing.install_for_test(refusing_icons, doc.hour, Vec::new());
+        let matching = today_with(
+            &refusing,
+            &doc,
+            || resolve(&doc),
+            resolve,
+            synthetic_eval_for_country,
+        );
+        assert_eq!(
+            matching.differing, 0,
+            "layer that emits the matching viewing-country refusal should pass: {matching:?}"
+        );
+
+        let mut emitting = Icons::new(Arc::new(EmittingLayer), Pace::Step);
+        let emitting_icons = emitting.evaluate(&doc);
+        emitting.install_for_test(emitting_icons, doc.hour, Vec::new());
+        let mismatch = today_with(
+            &emitting,
+            &doc,
+            || resolve(&doc),
+            resolve,
+            synthetic_eval_for_country,
+        );
+        assert!(
+            mismatch.differing >= 1,
+            "layer that wrongly emits icons when CountryLinks is unavailable must fail proof: {mismatch:?}"
+        );
+        assert!(
+            mismatch.first.as_deref().unwrap_or_default().contains("built for"),
+            "{mismatch:?}"
         );
     }
 }
