@@ -1344,7 +1344,8 @@ fn run_with_memory(
         ),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
         Job::EventFeedSeal(feed) => {
-            feed.seal();
+            // SAFETY: Admitted hourly capture worker owns sealing this prepared event-feed interval.
+            unsafe { feed.seal() };
             Report::EventFeedSeal
         }
         Job::FinalInputs(request) => {

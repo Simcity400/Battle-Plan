@@ -132,6 +132,18 @@ macro_rules! spool_inputs {
     (air_records, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
+    (air_losses, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's air-loss events once.
+        unsafe { $captured.table_inputs() }
+    };
+    (building_bombing, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's building-bombing events once.
+        unsafe { $captured.table_inputs() }
+    };
+    (nuclear_strikes, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's nuclear-strike events once.
+        unsafe { $captured.table_inputs() }
+    };
     (naval_bases, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
@@ -1187,7 +1199,8 @@ impl Captured {
         progress: combat_progress::Captured,
         ticks: u64,
     ) {
-        self.land_events.lost_casualty_reads(progress.lost_reads());
+        // SAFETY: Admitted hourly capture owns attributing lost casualty reads to land events.
+        unsafe { self.land_events.lost_casualty_reads(progress.lost_reads()) };
         self.combat_progress = progress;
         self.overhead[TableId::LandCombatProgress.index()] += ticks;
     }
@@ -1217,7 +1230,8 @@ impl Captured {
     /// Only the originating spool may discard this frame's event-feed handoff after conversion and
     /// writer preparation, before returning the slot.
     pub unsafe fn discard_event_feed(&mut self) {
-        self.event_feed.discard();
+        // SAFETY: Caller is the originating spool discarding this uncommitted event-feed handoff.
+        unsafe { self.event_feed.discard() };
     }
     pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
         std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant())
@@ -3358,10 +3372,12 @@ impl<M: Memory> MapSources for Sources<'_, M> {
     fn finish_land(&mut self, outcome: Outcome) -> u64 {
         let begin = qpc();
         // SAFETY: Settles the admitted hour's land-combat baseline and reports observer demand.
-        unsafe { self.captured.combat_progress.finish(outcome) };
-        self.captured
-            .land_events
-            .lost_casualty_reads(self.captured.combat_progress.lost_reads());
+        unsafe {
+            self.captured.combat_progress.finish(outcome);
+            self.captured
+                .land_events
+                .lost_casualty_reads(self.captured.combat_progress.lost_reads());
+        }
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
 }

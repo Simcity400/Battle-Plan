@@ -352,7 +352,8 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let allocated = captured.allocated_bytes();
     read(&mut captured, &worlds);
     assert_eq!(captured.allocated_bytes(), allocated);
-    events.lost_casualty_reads(captured.lost_reads());
+    // SAFETY: Unit test owns its isolated land-events fixture.
+    unsafe { events.lost_casualty_reads(captured.lost_reads()) };
     let [
         _,
         _,

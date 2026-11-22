@@ -65,26 +65,35 @@ impl Captured {
     /// event-feed interval (or own an isolated test fixture).
     pub unsafe fn drain(&mut self, hour: i32, partial: bool) {
         self.prepared = None;
-        match collector_observers::event_feed_observer::prepare_growing(hour, partial) {
+        // SAFETY: Caller holds hourly observer-boundary ownership for event-feed preparation.
+        match unsafe { collector_observers::event_feed_observer::prepare_growing(hour, partial) } {
             Ok(()) => self.prepared = Some((hour, partial)),
             // SAFETY: Caller holds hourly observer-boundary ownership on drain failure.
             Err(reason) => unsafe { self.fail(hour, reason) },
         }
     }
-    pub fn seal(&mut self) {
+    /// # Safety
+    /// Caller must hold hourly capture ownership as the sole consumer sealing this frame's
+    /// prepared event-feed interval while observer storage stays live.
+    pub unsafe fn seal(&mut self) {
         if let Some((hour, partial)) = self.prepared {
-            collector_observers::event_feed_observer::seal(
-                &mut self.snapshot,
-                hour,
-                partial,
-            );
+            // SAFETY: Caller holds hourly capture ownership for sealing this event-feed interval.
+            unsafe {
+                collector_observers::event_feed_observer::seal(&mut self.snapshot, hour, partial);
+            }
             self.prepared = None;
             self.sampled = true;
         }
     }
-    pub fn discard(&mut self) {
+    /// # Safety
+    /// Caller must be the originating spool or capture recovery path discarding an uncommitted
+    /// event-feed publication for this session.
+    pub unsafe fn discard(&mut self) {
         if self.sampled {
-            collector_observers::event_feed_observer::discarded(self.snapshot.publication());
+            // SAFETY: Caller owns discarding this uncommitted event-feed publication receipt.
+            unsafe {
+                collector_observers::event_feed_observer::discarded(self.snapshot.publication());
+            }
             self.sampled = false;
         }
     }
@@ -123,7 +132,7 @@ mod tests {
         assert!(captured.prepared.is_none());
         assert!(captured.prepare_pack().unwrap().is_some());
 
-        captured.seal();
+        unsafe { captured.seal() };
         unsafe { captured.fail_prepared("event feed seal job failed") };
         let kept = captured.snapshot.boundary;
         assert!(matches!(kept.coverage, EventFeedCoverage::Unavailable));
@@ -133,7 +142,7 @@ mod tests {
 
         captured.reset();
         assert!(captured.prepare_pack().unwrap().is_none());
-        captured.seal();
+        unsafe { captured.seal() };
         assert!(captured.prepare_pack().unwrap().is_none());
     }
 }

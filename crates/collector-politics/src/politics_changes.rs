@@ -439,6 +439,13 @@ impl Log {
     fn consumed_frontier(&self) -> u64 {
         self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
     }
+    fn spill_pending(&self) -> usize {
+        let spill = self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        spill.len().saturating_add(self.pushed.len())
+    }
     fn held(&self) -> std::sync::MutexGuard<'_, Vec<(Record, Vec<u8>)>> {
         let mut spill = self
             .spill
@@ -2866,25 +2873,61 @@ pub fn status() -> impl serde::Serialize {
     let counters = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
+    let (
+        events,
+        spill_pending,
+        required_entries_per_lane,
+        staging_entries_per_lane,
+        staging_entries,
+        staging_threads,
+        shared_lane_entries,
+        required_shared_lane_entries,
+        staging_key_stride,
+    ) = {
+        let retained = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pointer = LOG.load(Ordering::Acquire) as *const Log;
+        let active = retained
+            .iter()
+            .flat_map(|batch| batch.iter())
+            .find(|log| std::ptr::eq(*log, pointer));
+        (
+            active.map(Log::frontier),
+            active.map(Log::spill_pending),
+            active.map(|log| {
+                log.lanes
+                    .iter()
+                    .map(|lane| lane.required_entries.load(Ordering::Relaxed))
+                    .collect::<Vec<_>>()
+            }),
+            active.map(|log| log.lanes.iter().map(|lane| lane.slots.len()).collect::<Vec<_>>()),
+            active.map(|log| log.entries),
+            active.map(|log| log.lanes.len()),
+            active.map(|log| log.shared.len()),
+            active.map(|log| log.shared.required_entries()),
+            active.map(|log| log.key_stride),
+        )
+    };
     crate::status::status!({
         "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
         "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
-        "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(Log::frontier),
+        "epoch": EPOCH.load(Ordering::SeqCst), "events": events,
         "spilled_records": counters[1], "sentinel_failures": counters[2],
-        "spill_pending": log().map(|log| log.held().len()),
+        "spill_pending": spill_pending,
         "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
         "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
         "failed_native_reads": counters[3], "missing_item_identities": counters[4],
-        "required_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
-        "staging_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.slots.len()))),
+        "required_entries_per_lane": required_entries_per_lane,
+        "staging_entries_per_lane": staging_entries_per_lane,
         "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
-        "staging_entries": log().map(|log| log.entries),
-        "staging_threads": log().map(|log| log.lanes.len()),
+        "staging_entries": staging_entries,
+        "staging_threads": staging_threads,
         "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
-        "shared_lane_entries": log().map(|log| log.shared.len()),
-        "required_shared_lane_entries": log().map(|log| log.shared.required_entries()),
-        "staging_key_stride": log().map(|log| log.key_stride),
+        "shared_lane_entries": shared_lane_entries,
+        "required_shared_lane_entries": required_shared_lane_entries,
+        "staging_key_stride": staging_key_stride,
         "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
         "staging_allocation_failures": counters[10],
         "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),

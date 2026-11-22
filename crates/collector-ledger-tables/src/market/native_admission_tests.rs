@@ -277,7 +277,7 @@ impl Memory for NoReads {
 
 #[test]
 fn populated_native_startup_and_zero_country_replacement_survive_production_spool() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -333,7 +333,7 @@ fn populated_native_startup_and_zero_country_replacement_survive_production_spoo
 
 #[test]
 fn active_removal_precedes_retired_cleanup_variable_marks_and_new_contract_admission() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -427,7 +427,7 @@ fn active_removal_precedes_retired_cleanup_variable_marks_and_new_contract_admis
 #[test]
 fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
     for missing_birth in [true, false] {
-        let _session = producer::test_support::Session::default();
+        let _session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -472,7 +472,7 @@ fn unobserved_birth_and_unreadable_selected_variable_holder_still_refuse() {
 
 #[test]
 fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -501,7 +501,7 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
 
 #[test]
 fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
-    let _session = producer::test_support::Session::default();
+    let _session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -530,7 +530,7 @@ fn an_unobserved_variable_change_rereads_every_contract_and_keeps_its_terms() {
 
 #[test]
 fn surrender_target_changes_do_not_change_inventory_or_marked_country_identity() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -565,7 +565,7 @@ fn surrender_target_changes_do_not_change_inventory_or_marked_country_identity()
 
 #[test]
 fn authenticated_census_replacement_rebinds_holdings_without_a_reset_occurrence() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -622,7 +622,7 @@ impl Memory for Missing<'_> {
 #[test]
 fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals() {
     for domain in 0..4 {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -692,7 +692,7 @@ fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals
 
 #[test]
 fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -741,7 +741,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
         0x4800 + market::COUNTRY_BACKLINK,
         0x4800 + engine_production::cequipment_market_status::MANAGER,
     ] {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -769,7 +769,7 @@ fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder()
 
 #[test]
 fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -848,7 +848,7 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
 
 #[test]
 fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     // SAFETY: `session` serializes market-change globals with no live hooks.
     unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
@@ -891,7 +891,7 @@ fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
 
 #[test]
 fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
-    let _session = producer::test_support::Session::default();
+    let _session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -936,7 +936,7 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
 #[test]
 fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writer_marks_at_scale()
 {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     // SAFETY: `session` serializes market-change globals with no live hooks.
     unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
@@ -1138,7 +1138,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
 
 #[test]
 fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1210,7 +1210,7 @@ fn country_witness_recovery_recertifies_once_and_keeps_recovered_holders() {
 
 #[test]
 fn refused_country_registration_renews_only_once_without_reacquiring_recovered_holders() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1280,7 +1280,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
 
 #[test]
 fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_hour() {
-    let session = producer::test_support::Session::default();
+    let session = unsafe { producer::test_support::Session::new() };
     let mut memory = Native::new();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(&TABLES);
@@ -1363,7 +1363,7 @@ fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_
 #[test]
 fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_collection() {
     for offer_hour in [101, 103] {
-        let session = producer::test_support::Session::default();
+        let session = unsafe { producer::test_support::Session::new() };
         let mut memory = Native::new();
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);

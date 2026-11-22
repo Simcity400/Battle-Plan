@@ -77,7 +77,10 @@ impl Captured {
             .saturating_sub(start)
             .max(0) as u64
     }
-    pub fn lost_casualty_reads(&mut self, count: u64) {
+    /// # Safety
+    /// Caller must hold hourly capture admission for the active session (or an isolated test
+    /// owning land-event observation) so global casualty-read loss accounting belongs to this pass.
+    pub unsafe fn lost_casualty_reads(&mut self, count: u64) {
         if count != 0 {
             let lost = crate::land_events::lost_casualty_reads(count);
             if let Some(drain) = &mut self.drained {

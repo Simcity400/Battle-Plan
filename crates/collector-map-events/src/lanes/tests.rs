@@ -364,3 +364,25 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     );
     assert!(drained(seal()).is_empty());
 }
+
+#[test]
+fn capacity_and_allocated_bytes_observe_spilled_records_without_popping_or_losing_them() {
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_tests();
+    grow(1, MINIMUM_LANE_BYTES).unwrap();
+    let seq = spill(current(), 1, 1, 1, b"spilled".len(), |writer| {
+        writer.put(b"spilled");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seq, 1);
+    let (cap, bytes) =
+        collector_test_support::with_allocations_denied(|| (capacity(), allocated_bytes()));
+    assert_eq!(cap.spill_pending, 1);
+    assert!(bytes >= b"spilled".len());
+    assert_eq!(current().pushed.len(), 1);
+    assert_eq!(drained(seal()), vec![(1, 1, 1, b"spilled".to_vec())]);
+    assert_eq!(capacity().spill_pending, 0);
+}

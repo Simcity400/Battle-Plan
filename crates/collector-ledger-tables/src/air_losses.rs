@@ -7,7 +7,8 @@ use collector_observers::air_losses as producer;
 use engine_allocation as allocation;
 use engine_native::{Memory, walk::Outcome};
 use replay_data::{rows::AirLossEventRow, rows::TableId, rows::TableRows};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::AirLossEvents, TableId::AirDailyRoster];
@@ -27,6 +28,7 @@ pub struct Captured {
     rows: CaptureRows<producer::Entry>,
     roster: Vec<engine_air_history::air_loss_sites::RosterRow>,
     roster_outcome: Outcome,
+    loss_recorded: AtomicBool,
 }
 impl Captured {
     pub fn vacant() -> Self {
@@ -37,12 +39,14 @@ impl Captured {
             rows: CaptureRows::new(capacity.events),
             roster: allocation::owned_vec(allocation::vec(capacity.roster)),
             roster_outcome: Outcome::Rows { len: 0 },
+            loss_recorded: AtomicBool::new(false),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
         self.roster.clear();
         self.roster_outcome = Outcome::Rows { len: 0 };
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -65,6 +69,7 @@ impl Captured {
         let outcome = Outcome::Unavailable { reason };
         self.rows.fail(outcome);
         self.roster_outcome = outcome;
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
     /// # Safety
     /// Caller must hold hourly capture admission as the sole consumer of air-loss events while
@@ -92,13 +97,15 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome, self.roster_outcome]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    fn project_tables(&self, record_loss: bool) -> [TableView; N] {
         let losses = match self.rows.outcome {
             Outcome::Rows { len } => match project(&self.rows.rows[..len]) {
                 Ok(rows) => TableView::Complete(TableRows::AirLossEvents(rows)),
                 Err(reason) => {
-                    // SAFETY: Owning frame projection records lost output when conversion fails.
-                    unsafe { producer::lost_output(len) };
+                    if record_loss && !self.loss_recorded.swap(true, Ordering::AcqRel) {
+                        // SAFETY: Caller is the owning publication path recording loss once.
+                        unsafe { producer::lost_output(len) };
+                    }
                     unavailable(reason)
                 }
             },
@@ -114,6 +121,15 @@ impl Captured {
             },
         );
         [losses, roster]
+    }
+    pub fn tables(&self) -> [TableView; N] {
+        self.project_tables(false)
+    }
+    /// # Safety
+    /// Caller must be the owning spool publication path converting this frame while observer
+    /// storage stays live; conversion failure records `lost_output` at most once per frame.
+    pub unsafe fn table_inputs(&self) -> [TableInput; N] {
+        self.project_tables(true).map(TableInput::Sampled)
     }
 }
 

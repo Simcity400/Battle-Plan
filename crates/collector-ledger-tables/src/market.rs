@@ -256,7 +256,7 @@ mod tests {
                 panic!("failed shared bootstrap must not be retried");
             }
         }
-        let _session = producer::test_support::Session::default();
+        let _session = unsafe { producer::test_support::Session::new() };
         unsafe { producer::boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 100,
@@ -321,7 +321,7 @@ mod tests {
             }
         }
         for daily in [true, false] {
-            let _session = producer::test_support::Session::default();
+            let _session = unsafe { producer::test_support::Session::new() };
             unsafe { producer::boundary(
                 Some(engine_native::cgame_state::Clock {
                     hour: 100,
@@ -360,7 +360,7 @@ mod tests {
             }
         }
         for populated in [false, true] {
-            let session = producer::test_support::Session::default();
+            let session = unsafe { producer::test_support::Session::new() };
             let mut encoder = FrameEncoder::new();
             let mut decoder = FrameDecoder::for_tables(&TABLES);
             let scratch = ProjectionScratch::default();

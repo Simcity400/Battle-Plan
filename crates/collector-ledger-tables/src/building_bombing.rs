@@ -7,13 +7,15 @@ use collector_observers::building_bombing as producer;
 use engine_allocation as allocation;
 use engine_native::{Memory, walk::Outcome};
 use replay_data::{rows::BuildingBombingDamageRow, rows::TableId, rows::TableRows};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::BuildingBombingDamage];
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<producer::Entry>,
+    loss_recorded: AtomicBool,
 }
 impl Captured {
     pub fn vacant() -> Self {
@@ -22,10 +24,12 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
+            loss_recorded: AtomicBool::new(false),
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -43,6 +47,7 @@ impl Captured {
     }
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
     /// # Safety
     /// Caller must hold hourly capture admission as the sole consumer of building-bombing events
@@ -65,7 +70,7 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    fn project_tables(&self, record_loss: bool) -> [TableView; N] {
         let Outcome::Rows { len } = self.rows.outcome else {
             return [unavailable(match self.rows.outcome {
                 Outcome::Unavailable { reason } => reason,
@@ -75,11 +80,22 @@ impl Captured {
         match project(&self.rows.rows[..len]) {
             Ok(rows) => [TableView::Complete(TableRows::BuildingBombingDamage(rows))],
             Err(reason) => {
-                // SAFETY: Owning frame projection records lost output when conversion fails.
-                unsafe { producer::lost_output(len) };
+                if record_loss && !self.loss_recorded.swap(true, Ordering::AcqRel) {
+                    // SAFETY: Caller is the owning publication path recording loss once.
+                    unsafe { producer::lost_output(len) };
+                }
                 [unavailable(reason)]
             }
         }
+    }
+    pub fn tables(&self) -> [TableView; N] {
+        self.project_tables(false)
+    }
+    /// # Safety
+    /// Caller must be the owning spool publication path converting this frame while observer
+    /// storage stays live; conversion failure records `lost_output` at most once per frame.
+    pub unsafe fn table_inputs(&self) -> [TableInput; N] {
+        self.project_tables(true).map(TableInput::Sampled)
     }
 }
 fn project(events: &[producer::Entry]) -> Result<Vec<BuildingBombingDamageRow>, &'static str> {
@@ -162,5 +178,42 @@ mod tests {
             .is_err()
         );
         assert!(project(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tables_is_pure_and_table_inputs_records_loss_at_most_once() {
+        let mut captured = Captured::with_capacities(&1);
+        captured.rows.rows = vec![producer::Entry {
+            id: 1,
+            game_hour: 1,
+            attacker: None,
+            victim: 1,
+            state: 1,
+            province: None,
+            building_type: 1,
+            native_cause: 1,
+            cause: engine_events::building_damage_sites::Cause::Unknown,
+            amount_raw: 0,
+            credited_raw: 0,
+        }];
+        captured.rows.outcome = Outcome::Rows { len: 1 };
+        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(!captured.loss_recorded.load(Ordering::Acquire));
+        // SAFETY: Test exercises owning publication loss reporting on an isolated frame.
+        let first = unsafe { captured.table_inputs() };
+        assert!(matches!(
+            first[0],
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        assert!(captured.loss_recorded.load(Ordering::Acquire));
+        // SAFETY: Test verifies repeated publication on the same frame does not double-record.
+        let second = unsafe { captured.table_inputs() };
+        assert!(matches!(
+            second[0],
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
+        captured.reset();
+        assert!(!captured.loss_recorded.load(Ordering::Acquire));
     }
 }

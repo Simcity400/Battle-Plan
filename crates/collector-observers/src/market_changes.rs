@@ -1215,8 +1215,12 @@ pub mod test_support {
     use super::*;
     pub(super) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub struct Session(std::sync::MutexGuard<'static, ()>);
-    impl Default for Session {
-        fn default() -> Self {
+    impl Session {
+        /// # Safety
+        /// Caller must run in a detached, isolated test process with no live collector session
+        /// for the lifetime of the returned guard; creating a `Session` resets and enables the
+        /// process-wide market observer state.
+        pub unsafe fn new() -> Self {
             let guard = SERIAL.lock().unwrap();
             LEDGER.reset();
             VARIABLES_UNOBSERVED.store(false, Ordering::SeqCst);
@@ -1324,7 +1328,7 @@ mod tests {
     use super::*;
     #[test]
     fn country_receiver_keys_cover_zero_and_the_full_native_id_domain() {
-        let _session = test_support::Session::default();
+        let _session = unsafe { test_support::Session::new() };
         unsafe { boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 1,
@@ -1348,7 +1352,7 @@ mod tests {
     }
     #[test]
     fn contract_removal_copies_only_fixed_scalars_without_allocation() {
-        let _session = test_support::Session::default();
+        let _session = unsafe { test_support::Session::new() };
         unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 1,
             ..Default::default()

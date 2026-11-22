@@ -1748,7 +1748,10 @@ struct PublicationReceipt(Option<collector_observers::event_feed_history::Prepar
 impl Drop for PublicationReceipt {
     fn drop(&mut self) {
         if let Some(publication) = &self.0 {
-            collector_observers::event_feed_observer::discarded(publication.publication());
+            // SAFETY: Dropping an uncommitted spool receipt discards its publication once.
+            unsafe {
+                collector_observers::event_feed_observer::discarded(publication.publication());
+            }
         }
     }
 }
@@ -1875,7 +1878,8 @@ impl Drop for Processor {
                 if completion.committed
                     && let Some(publication) = frame.event_feed_publication.0.take()
                 {
-                    let _ = collector_observers::event_feed_observer::accepted(&publication);
+                    // SAFETY: Originating spool resolves a writer-confirmed publication receipt.
+                    let _ = unsafe { collector_observers::event_feed_observer::accepted(&publication) };
                 }
             }
         }
@@ -2557,7 +2561,10 @@ impl Processor {
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
         if collector_memory::terminal::failed() {
             if let Some(publication) = &prepared.event_feed_publication {
-                collector_observers::event_feed_observer::discarded(publication.publication());
+                // SAFETY: Originating spool discards an uncommitted publication on terminal OOM.
+                unsafe {
+                    collector_observers::event_feed_observer::discarded(publication.publication());
+                }
             }
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -2753,7 +2760,8 @@ impl Processor {
             ..
         } = *frame;
         if let Some(publication) = event_feed_publication.0.take() {
-            collector_observers::event_feed_observer::accepted(&publication)?;
+            // SAFETY: Originating spool resolves a writer-confirmed event-feed publication receipt.
+            unsafe { collector_observers::event_feed_observer::accepted(&publication)? };
         }
         if let Some(publication) = operation_publication {
             // SAFETY: The originating spool has the writer receipt and still owns the observers.

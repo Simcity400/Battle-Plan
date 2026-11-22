@@ -428,7 +428,7 @@ fn fail_owned() {
     advance_epoch();
 }
 
-pub fn lost_casualty_reads(count: u64) -> u64 {
+pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
     unless_foreign(|| count, || lost_casualty_reads_owned(count))
 }
 fn lost_casualty_reads_owned(count: u64) -> u64 {
