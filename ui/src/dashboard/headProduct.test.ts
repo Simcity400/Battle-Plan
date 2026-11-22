@@ -9,18 +9,21 @@ import { observeOnScreen } from './follow/useFollow.ts';
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
 
-test('scrolling project details inside a visible widget keeps its follow', t => {
+test('content scrolled inside a visible widget, or replaced inside a pop-out, is watched by the container that outlives it', t => {
   let watched: Element | undefined;
   const placement = { closest: () => null } as unknown as Element;
-  const details = { closest: (selector: string) => selector === 'article.dash-widget' ? placement : null } as Element;
+  const inside = (container: string) => ({ closest: (selectors: string) => selectors.split(',').map(selector => selector.trim()).includes(container) ? placement : null }) as Element;
   const scope = globalThis as unknown as Record<string, unknown>;
   const before = [scope.IntersectionObserver, scope.getComputedStyle];
   t.after(() => { [scope.IntersectionObserver, scope.getComputedStyle] = before; });
   scope.IntersectionObserver = class { observe(e: Element) { watched = e; } disconnect() {} };
   scope.getComputedStyle = () => ({ display: 'block' });
-  const stop = observeOnScreen(details, () => {});
-  assert.equal(watched, placement);
-  stop();
+  for (const container of ['article.dash-widget', '[popover]']) {
+    watched = undefined;
+    const stop = observeOnScreen(inside(container), () => {});
+    assert.equal(watched, placement, `content inside ${container} is watched by it`);
+    stop();
+  }
 });
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {

@@ -1,6 +1,6 @@
 import type { DashboardClient, DashboardSource } from '../client';
-import type { PlaybackController } from '../playback';
-import { FollowStore, queryBranch } from './store.ts';
+import type { PlaybackController, PlaybackSnapshot } from '../playback';
+import { FollowStore, queryBranch, showsAt } from './store.ts';
 import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
@@ -30,9 +30,10 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   const ask = (product: string, params: Record<string, unknown>) => client.product({
     sourceId: source.id, revision: source.revision, product, params,
   }, new AbortController().signal);
+  const pausedAt = (s: PlaybackSnapshot) => s.playing ? null : Math.floor(s.position) + offset;
   const anchor = () => {
     const s = clock.getSnapshot();
-    const hour = Math.floor(s.position) + offset, paused = s.playing ? null : hour;
+    const hour = Math.floor(s.position) + offset, paused = pausedAt(s);
     const frameRate = playbackRate();
     const key = JSON.stringify([s.playing, s.hoursPerSecond, s.seekSequence, paused, frameRate]);
     for (const [name, b] of branches) {
@@ -108,7 +109,8 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     listen(receive, fail) {
       let stopFrame: (() => void) | undefined;
       const publish = (r: PageReading) => {
-        if (owners.get(r.id)?.seek === r.seek && clock.getSnapshot().seekSequence === r.seek) receive(r);
+        const s = clock.getSnapshot();
+        if (owners.get(r.id)?.seek === r.seek && s.seekSequence === r.seek && showsAt(r, pausedAt(s))) receive(r);
       };
       const drain = () => {
         structures.drain(Math.floor(clock.positionAt()) + offset, publish);
@@ -128,12 +130,9 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
           drain();
           if (structures.pending) stopFrame ??= clock.subscribeFrame(drain);
         }
-        if (message.type === 'inspection') {
-          const r = message.reading;
-          if (r && owners.has(r.id) && r.seek === clock.getSnapshot().seekSequence) receive(r);
-        }
+        if (message.type === 'inspection' && message.reading) publish(message.reading);
         if (message.type !== 'structure') return;
-        for (const update of message.updates) if (owners.get(update.id)?.seek === update.seek) receive(update);
+        for (const update of message.updates) publish(update);
       });
       return () => { stopFrame?.(); stop(); off(); offRate(); };
     },

@@ -59,9 +59,10 @@ function Project(props: Asked & { project: ProjectRuntimeDetails }) {
 function ProjectBody({ project, runtime, widget, tag, active, open, box }: Asked & {
   project: ProjectRuntimeDetails; open: boolean; box: RefObject<HTMLDetailsElement | null>;
 }) {
-  const effects = withHeld(useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', open ? { country: countryFromKey(tag), owner: project.owner, project: project.id } : null,
-    { active: active && open, validate: validateProjectEffects, structure: effectsStructure }));
-  const state = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effects.data.unavailable;
+  const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', open ? { country: countryFromKey(tag), owner: project.owner, project: project.id } : null,
+    { active: active && open, validate: validateProjectEffects, structure: effectsStructure });
+  const drawn = withHeld(effects).data;
+  const state = effects.error ? effects.error.message : effects.data ? effects.data.unavailable : drawn && !drawn.unavailable ? null : 'Loading effects…';
   useLayoutEffect(() => { effects.root(box.current); }, [effects.root, box]);
   useDrawnPanel(box, runtime.clock, panelFeed('special-project-effects', effects, effectsStructure, widget, runtime), active && open);
   return <>
@@ -69,13 +70,13 @@ function ProjectBody({ project, runtime, widget, tag, active, open, box }: Asked
       <h4><Name label={project.pending.label} /></h4>{project.pending.description && <p>{project.pending.description}</p>}
       {project.pending.unavailable && <p>{project.pending.unavailable}</p>}
       {project.pending.options.map((option, index) => <details key={index}><summary><Name label={option.label} /></summary>
-        <Effects prefix={String(index)} value={effects.data?.options[index]} state={state} /></details>)}
+        <Effects prefix={String(index)} value={drawn?.options[index]} state={state} /></details>)}
     </div>}
     <details><summary>Chosen reward options</summary>{project.choices === null ? <p>Choice history unavailable.</p> : project.choices.length === 0 ? <p>No chosen reward options recorded.</p> : <ul>{project.choices.map(choice => <li key={choice.ordinal}>
       {dayLabel(choice.date)} · <Name label={choice.reward} /> · <Name label={choice.option} />
       <p>Character reference {choice.characterReference} · Province {choice.province} · Progress {choice.progress}{choice.scientist !== null && ` · Scientist ${choice.scientist}`}{choice.country !== null && ` · Country ${choice.country}`}{choice.state !== null && ` · State ${choice.state}`}</p>
     </li>)}</ul>}</details>
-    <details><summary>Project output</summary><Effects prefix="output" value={effects.data?.output} state={state} /></details>
+    <details><summary>Project output</summary><Effects prefix="output" value={drawn?.output} state={state} /></details>
     <details><summary>Variables</summary>{project.variables === null ? <p>Variables unavailable.</p> : project.variables.length === 0 ? <p>No project variables.</p> : <dl>{project.variables.map((variable, index) => <div key={index}><dt>{variable.name}</dt><dd><Painted at={`j:${project.owner}:${project.id}:var:${index}`} /></dd></div>)}</dl>}
       {project.seed !== null && <p>Variable random seed: <Painted at={`j:${project.owner}:${project.id}:seed`} /></p>}</details>
   </>;
@@ -119,12 +120,12 @@ function Shown({ details, asked }: { details: SpecialProjectDetails; asked: Aske
 
 export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const head = withHeld(useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
-    { active, validate: validateProjectDetails, structure: detailsStructure }));
-  const { data, error, retry, root } = head;
+  const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
+    { active, validate: validateProjectDetails, structure: detailsStructure });
+  const { error, retry, root } = head, data = withHeld(head).data;
   useDrawnPanel(box, runtime.clock, panelFeed('special-project-details', head, detailsStructure, widget, runtime), active);
   const values = useMemo(() => data ? detailTexts(data) : new Map<string, string>(), [data]);
-  const warnings = JSON.stringify(data?.warnings ?? []);
+  const warnings = JSON.stringify(head.data?.warnings ?? []);
   useEffect(() => onWarnings(JSON.parse(warnings) as string[]), [warnings, onWarnings]);
   useEffect(() => () => onWarnings([]), [onWarnings]);
   const ref = useCallback((element: HTMLDivElement | null) => { box.current = element; root(element); }, [root]);

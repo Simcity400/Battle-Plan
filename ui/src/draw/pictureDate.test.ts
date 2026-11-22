@@ -196,9 +196,12 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
     projects: [{ id: 'episode', start: { hour: 100, exact: false }, runs: [
       { firstHour: 100, lastHour: 147, presentation: 0, progress: 17, state: 'running', cancellation: null, completion: null, iterations: 2 },
       { firstHour: 148, lastHour: 199, presentation: 0, progress: 100, state: 'completed', cancellation: null, completion: { hour: 148, exact: true }, iterations: 3 }] }] };
-  const layoutClears: number[][] = [];
-  const layout = { getContext: () => ({ fillText() {}, clearRect: (...args: number[]) => layoutClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
-  const project = (owner: number, hour: number, data: unknown = completing) => post({ type: 'surface', id: 7, owner, width: 100, height: 20, dpr: 1,
+  const layoutClears: number[][] = [], drawing: string[] = [];
+  let backing = { width: 0, height: 0 };
+  const layout = { get width() { return backing.width; }, set width(width: number) { backing = { ...backing, width }; drawing.push(`width ${width}`); },
+    get height() { return backing.height; }, set height(height: number) { backing = { ...backing, height }; drawing.push(`height ${height}`); },
+    getContext: () => ({ fillText: () => drawing.push('text'), clearRect: (...args: number[]) => layoutClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
+  const project = (owner: number, hour: number, data: unknown = completing, width = 100) => post({ type: 'surface', id: 7, owner, width, height: 20, dpr: 1,
     ...(owner === 1 && { canvas: layout }), model: { widget: 'projects', view: 'special-projects', offset: 0, date: { since: 100, through: 199 }, reply: data,
       structure: currentKey(completing as never, hour), cells: [{ ...cell, key: 'episode' }] } });
   const projectNotice = () => sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 7).at(-1);
@@ -213,12 +216,18 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   now += 17; frame();
   assert.deepEqual([layoutClears.length, projectNotice()?.readHour, projectNotice()?.date, projectNotice()?.waiting], [0, undefined, undefined, true],
     'a paused step whose reply completes a project keeps the 147:00 pixels and waits for the new rows to be measured');
-  project(2, 148);
+  drawing.length = 0;
+  project(2, 147, completing, 120);
   now += 17; frame();
-  assert.deepEqual([projectNotice()?.owner, projectNotice()?.readHour, projectNotice()?.waiting], [2, 148, false], 'the measured rows are painted at 148:00');
+  assert.deepEqual([drawing, layoutClears.length, projectNotice()?.waiting], [[], 0, true],
+    'a held panel resized before its new rows are measured keeps its backing store, and the pixels under the dim, until it can paint');
+  project(3, 148, completing, 120);
+  now += 17; frame();
+  assert.deepEqual([drawing[0], drawing.at(-1), backing, projectNotice()?.owner, projectNotice()?.readHour, projectNotice()?.waiting],
+    ['width 120', 'text', { width: 120, height: 20 }, 3, 148, false], 'the measured rows are painted at 148:00 in the frame that resizes the backing store');
   layoutClears.length = 0;
-  project(3, 148, { ...completing, projects: 'refused' });
+  project(4, 148, { ...completing, projects: 'refused' }, 120);
   now += 17; frame();
-  assert.ok(layoutClears.length > 0 && projectNotice()?.owner === 3 && projectNotice()?.waiting === false && projectNotice()?.date === undefined,
+  assert.ok(layoutClears.length > 0 && projectNotice()?.owner === 4 && projectNotice()?.waiting === false && projectNotice()?.date === undefined,
     'a reply the view refuses releases the picture and erases it');
 });

@@ -40,7 +40,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
-  const drawn = withHeld(head);
+  const drawn = withHeld(head), holding = drawn !== head;
   const { data, error, retry } = drawn;
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
   const live = drawn.live;
@@ -87,7 +87,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     }
     return trackTooltip(folder, item, numbers, dayLabel(hourShown()));
   }, [tracks, described.data, head.hour, live]);
-  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
+  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, held: holding, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];
@@ -111,12 +111,12 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     setOption?.('folders', next.length === chips.length ? '' : next.map(setToken).join(' '));
   };
   const values = live.read();
-  const holding = drawn !== head;
   return <div ref={attach} className="doctrine-mastery" data-held={holding ? 'stale' : 'current'} aria-busy={holding || undefined}>
     {pill}
     {chips.length > 1 && setOption && <div className="log-chips doctrine-mastery-chips"><ChipSet label="Doctrine folders" chips={chips}
       selected={chosen.length ? chosen : chips.map(chip => chip.value)} max={chips.length} onToggle={toggle} /></div>}
-    {!data.folders.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
+    {!data.folders.length ? holding ? <WidgetState kind="loading" label="Loading doctrines…" />
+      : <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
       : <div className="doctrine-mastery-folders themed-scrollbar">{shown.map(folder => <section key={folder.id} className="doctrine-mastery-folder" aria-label={folderName(folder)}>
         <h3 className="doctrine-mastery-heading">{artNode(folder.grand?.icon)}
           <span>{folderName(folder)}</span>

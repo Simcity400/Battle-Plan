@@ -14,8 +14,10 @@ export class PanelProgram {
 
   clear() {
     for (const cell of this.drawn) this.erase(cell);
-    this.drawn = []; this.values = [];
+    this.reset();
   }
+
+  reset() { this.drawn = []; this.values = []; }
 
   write(cells: readonly RowCell[], values: ReadonlyMap<string, string>) {
     if (cells !== this.drawn) this.clear();

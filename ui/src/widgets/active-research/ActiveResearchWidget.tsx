@@ -33,7 +33,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const tokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data, recorded);
-  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(reply?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, reply, images.warnings]);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(now.warnings ?? NO_WARNINGS), ...images.warnings])], [data, now.warnings, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
@@ -55,8 +55,10 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const databaseIndex = entry?.databaseIndex ?? null;
     const art = researchArt(artwork, token, databaseIndex);
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
-    const content = (): TooltipContent => {
-      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
+    const content = (): TooltipContent | null => {
+      const at = latest.current ?? (now.holding ? undefined : reply);
+      if (!at) return null;
+      const hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
       const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
       const left = slotNumbers(current, hour).left;
@@ -65,9 +67,10 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
         { label: 'Days left', value: left === null ? 'Not recorded' : `${left}` },
       ], note: left === null ? undefined : 'Days left is the game’s estimate at this hour’s research speed.' };
     };
+    const tip = (x: number, y: number) => { const shown = content(); if (shown) showTooltip(owner, shown, x, y, key); else untip(); };
     return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
-      onPointerMove={event => showTooltip(owner, content(), event.clientX, event.clientY, key)} onPointerLeave={untip}
-      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}>
+      onPointerMove={event => tip(event.clientX, event.clientY)} onPointerLeave={untip}
+      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); tip(box.right, box.top); }} onBlur={untip}>
       <span className="active-row-art">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
       <span className="active-row-name">{name}</span>
       <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />
@@ -78,6 +81,6 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
     <div className="active-rows">{rows.map(row)}</div>
-    {!rows.length && <p>{reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`}</p>}
+    {!rows.length && (now.holding ? <ListSkeleton label="Loading research..." /> : <p>{reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`}</p>)}
   </section>;
 }

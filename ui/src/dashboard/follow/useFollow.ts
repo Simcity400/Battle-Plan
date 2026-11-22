@@ -15,7 +15,7 @@ export const DASHBOARD_SCROLL = '.dash-grid-scroll';
 
 export const observeOnScreen: OnScreen = (element, changed) => {
   if (typeof IntersectionObserver !== 'function') { changed(true); return () => {}; }
-  element = element.closest('article.dash-widget') ?? element;
+  element = element.closest('article.dash-widget, [popover]') ?? element;
   const root = element.closest(DASHBOARD_SCROLL);
   const reach: IntersectionObserverInit | undefined = root ? { root, rootMargin: NEAR_SCREEN } : undefined;
   if (getComputedStyle(element).display !== 'contents') {

@@ -19,8 +19,9 @@ import { repliedCells } from '../dashboard/follow/liveCells.ts';
 
 const post = (message: FromWorker) => self.postMessage(message);
 const wall = () => performance.timeOrigin + performance.now();
+interface Backing { width: number; height: number; dpr: number }
 interface Panel {
-  kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
+  kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; size: Backing; dpr?: number;
   date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; waiting?: boolean; remeasure?: boolean; reply?: unknown; through?: number; nextText?: number;
 }
 interface Race {
@@ -152,6 +153,12 @@ function scheduleChange(surface: Surface, at: number) {
   }
   scheduledChanges.splice(lo, 0, { surface, at });
 }
+function fit(s: Panel) {
+  const { width, height, dpr } = s.size;
+  if (s.canvas.width === width && s.canvas.height === height && s.dpr === dpr) return;
+  s.canvas.width = width; s.canvas.height = height; s.dpr = dpr;
+  s.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); s.program.reset();
+}
 function paint(s: Surface, head: number) {
   const { model } = s;
   const fixed = model.fixed ?? (anchor.playing ? undefined : Math.floor(head));
@@ -239,6 +246,7 @@ function paint(s: Surface, head: number) {
       if (refused) s.program.clear();
       s.pointer.clear(); s.date.drawn = undefined; s.through = undefined; s.remeasure = !refused; return false;
     }
+    fit(s);
     changed = s.program.write(m.cells, values);
     s.reply = raw;
   }
@@ -620,18 +628,18 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       anchor = m.anchor; break;
     case 'surface': {
       let s = panels.get(m.id);
+      const size = { width: Math.max(1, Math.round(m.width * m.dpr)), height: Math.max(1, Math.round(m.height * m.dpr)), dpr: m.dpr };
       if (!s) {
         const ctx = m.canvas?.getContext('2d');
         if (!ctx || !m.canvas) { post({ type: 'failed', page: m.id, reason: 'Panel drawing surface unavailable' }); break; }
         const pointer = new HeldPointer(key => post({ type: 'hit', id: m.id, owner: s!.owner, key }));
-        panels.set(m.id, s = { kind: 'panel', id: m.id, owner: m.owner, model: m.model, canvas: m.canvas, ctx,
+        panels.set(m.id, s = { kind: 'panel', id: m.id, owner: m.owner, model: m.model, canvas: m.canvas, ctx, size,
           program: new PanelProgram(ctx), pointer, date: new PictureDate() });
       } else unbind(s);
-      const w = Math.max(1, Math.round(m.width * m.dpr)), h = Math.max(1, Math.round(m.height * m.dpr));
-      const prior = s.model;
+      const prior = s.model, sized = s.size;
       const keep = s.date.drawn && prior.view === m.model.view && prior.follow === m.model.follow &&
         prior.offset === m.model.offset && prior.fixed === m.model.fixed && prior.structure === m.model.structure &&
-        s.canvas.width === w && s.canvas.height === h && prior.cells.length === m.model.cells.length &&
+        sized.width === size.width && sized.height === size.height && sized.dpr === size.dpr && prior.cells.length === m.model.cells.length &&
         prior.cells.every((c, i) => {
           const next = m.model.cells[i]!;
           return (Object.keys(c) as (keyof typeof c)[]).every(key => c[key] === next[key]) &&
@@ -639,10 +647,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
         });
       if (keep) m.model.cells = prior.cells;
       else invalidate(s);
-      s.model = m.model; s.owner = m.owner; s.shown = undefined;
-      if (s.canvas.width !== w) s.canvas.width = w;
-      if (s.canvas.height !== h) s.canvas.height = h;
-      s.ctx.setTransform(m.dpr, 0, 0, m.dpr, 0, 0);
+      s.model = m.model; s.owner = m.owner; s.shown = undefined; s.size = size;
       bind(s); break;
     }
     case 'pointer': {

@@ -33,6 +33,9 @@ export interface FollowEntry {
 
 export const shownThrough = (entry: FollowEntry): number | null => entry.answer === undefined && entry.panel === undefined ? null : entry.through;
 
+export const showsAt = (reading: Pick<PageReading, 'panel' | 'answer' | 'coverage'>, paused: number | null) => paused === null || !reading.panel && !reading.answer
+  || !!reading.coverage && reading.coverage.start <= paused && paused <= reading.coverage.through;
+
 export function queryBranch(query: FollowQuery): string | null {
   const branch = query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId;
   return typeof branch === 'string' ? branch : null;
@@ -163,8 +166,8 @@ export class FollowStore {
   seek(branch: string, retainThrough?: number, stepped = false) {
     if (retainThrough !== undefined && !stepped) return;
     for (const held of this.byId.values()) if (held.branch === branch) {
-      const entry = held.entry, coverage = entry.coverage;
-      if (retainThrough !== undefined && coverage && coverage.start <= retainThrough && retainThrough <= coverage.through) continue;
+      const entry = held.entry;
+      if (retainThrough !== undefined && showsAt(entry, retainThrough)) continue;
       entry.coverage = undefined;
       entry.panel = undefined; entry.answer = undefined; entry.values = undefined;
       if (retainThrough === undefined && entry.landed) entry.landed = null;

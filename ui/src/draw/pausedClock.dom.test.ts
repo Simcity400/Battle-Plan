@@ -4,7 +4,8 @@ import { withNativePage } from '../../../tools/native-page.ts';
 
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
-  field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listed: string | null; muted: number;
+  field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
+  aces: string | null; projects: string | null; tip: string | null; described: boolean; muted: number;
   panel: Surface; race: Surface; headed: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
@@ -15,13 +16,15 @@ const kept = (state: Shown) => state.field === 'worker' && state.headedField ===
 const at = (state: Shown, hour: number) => kept(state) && state.hour === hour && surfaces(state).every(surface => lit(surface, hour));
 const show = (state: Shown | undefined) => JSON.stringify(state);
 
-test('paused, a speed change keeps the exact pictures, a move past the hour they hold dims them on the same surfaces until the worker paints the new hour, and a pause paints the hour it stops on', async t => {
+test('paused, a speed change keeps the exact pictures, a move past the hour they hold dims them on the same surfaces until the worker paints the new hour, nothing of the previous hour is taken or shown as current, and a pause paints the hour it stops on', async t => {
   await withNativePage('paused-clock', '/ui/src/draw/pausedClock.dom.fixture.tsx', page => page.stage('paused clock', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.pausedClock.${expression}`);
     const mounted = await act<Shown>('mount()');
     mounts = mounted.mounts; muted = mounted.muted; asks = mounted.asks;
     assert.ok(muted > 0 && muted < 1, `the production styles give a held picture a muted opacity: ${muted}`);
     assert.ok(at(mounted, 23) && mounted.strict === 23, `the worker paints every picture at the paused hour on the surface the push made: ${show(mounted)}`);
+    assert.ok(mounted.aces === 'empty' && mounted.projects === 'empty' && mounted.tip !== null && mounted.described,
+      `Aces and Special projects show 23:00, and a focused Doctrine mastery row shows its tooltip and description: ${show(mounted)}`);
     for (const speed of [168, 1, 1440]) {
       const seen = await act<Shown[]>(`speed(${speed})`);
       const wrong = seen.findIndex(state => !at(state, 23));
@@ -29,32 +32,51 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
       assert.equal(wrong, -1, `at ${speed} h/s while paused, sample ${wrong} dimmed or lost the exact paused values: ${show(seen[wrong])}`);
     }
     const { seen: midnight, pending } = await act<{ seen: Shown[]; pending: Shown }>('heldSeek(24)');
+    assert.equal(pending.listedRead, 'followed',
+      `a pop-out widget whose content is removed while 24:00 is read keeps its follow through the observers' callbacks: ${show(pending)}`);
     const held = midnight[0]!;
     assert.ok(kept(held) && held.hour === 24 && surfaces(held).every(surface => dim(surface, 23)),
       `before the worker paints, the previous day's pictures stay visible at the muted opacity and busy: ${show(held)}`);
     assert.ok(kept(pending) && pending.strict === null && dim(pending.headed, 23) && [pending.panel, pending.race].every(surface => dim(surface, 23) || lit(surface, 24)),
       `with the followed reply for 24:00 still pending, the head's data is empty and only the drawn host holds 23:00, dimmed on its surface: ${show(pending)}`);
+    assert.ok(pending.aces === 'loading' && pending.projects === 'loading',
+      `while 24:00 is read, Aces and Special projects show loading, not a status of 23:00 or one outside the recording: ${show(pending)}`);
+    assert.ok(pending.tip === null && !pending.described, `while Doctrine mastery holds 23:00, its row tooltip and description are withheld: ${show(pending)}`);
     const framed = midnight.slice(1);
     assert.ok(pending.listed === null && framed.every(state => state.listed !== '23'),
       `from the first frame at 24:00, a widget with no drawn host shows nothing of 23:00: ${show(framed.find(state => state.listed === '23'))}`);
+    assert.equal(framed.find(state => state.aces === 'unavailable' || state.projects === 'empty' || state.tip === mounted.tip), undefined,
+      'from the first frame at 24:00, no status or tooltip of 23:00 is shown, and Aces is never outside the recording');
     const between = midnight.find(state => !kept(state) || !surfaces(state).every(surface => dim(surface, 23) || lit(surface, 24)));
     t.diagnostic(`midnight: ${midnight.length} samples, ${midnight.filter(state => surfaces(state).some(surface => !surface.visible)).length} blank`);
     assert.equal(between, undefined, `every sample shows the previous day dimmed or the next day at full strength, on the surfaces it mounted with: ${show(between)}`);
-    assert.ok(at(midnight.at(-1)!, 24) && midnight.at(-1)!.strict === 24, `the next day is painted at full strength: ${show(midnight.at(-1))}`);
+    const midnightEnd = midnight.at(-1)!;
+    assert.ok(at(midnightEnd, 24) && midnightEnd.strict === 24, `the next day is painted at full strength: ${show(midnightEnd)}`);
+    assert.ok(midnightEnd.aces === 'empty' && midnightEnd.projects === 'unavailable' && midnightEnd.tip !== null && midnightEnd.tip !== mounted.tip && midnightEnd.described,
+      `24:00 lands in every widget, and the row tooltip returns with its day: ${show(midnightEnd)}`);
     const sameDay = await act<Shown[]>('step()');
     const lost = sameDay.find(state => !kept(state) || ![state.panel, state.race].every(surface => lit(surface, 24) || lit(surface, 25)) ||
       !(dim(state.headed, 24) || lit(state.headed, 25)));
     assert.ok(lost === undefined && at(sameDay.at(-1)!, 25),
       `a step within the day keeps the pictures that still hold at full strength, and the followed one dimmed until 25:00 paints: ${show(lost ?? sameDay.at(-1))}`);
+    const { taken, pending: unread, done } = await act<{ taken: { type: string; hour: number | null }[]; pending: Shown; done: Shown }>('staleStep()');
+    t.diagnostic(`replies of 26:00 delivered after the step to 27:00: ${JSON.stringify(taken)}`);
+    assert.ok(taken.some(reply => reply.type === 'structure') && taken.some(reply => reply.type === 'inspection'),
+      'a structure and an inspection reply of 26:00 were in flight across the step');
+    assert.deepEqual(taken.filter(reply => reply.hour !== null), [], 'after a step to 27:00, the delayed 26:00 structure and inspection replies are not taken as current');
+    assert.ok(unread.aces === 'loading' && unread.projects === 'loading' && unread.strict === null,
+      `while the hour after 25:00 is read, Special projects does not show 25:00's not-recorded status, and nothing is taken as current: ${show(unread)}`);
+    assert.ok(at(done, 27) && done.strict === 27, `27:00 is then read and painted at full strength: ${show(done)}`);
+    const stoppedAt = 27 + 72;
     const stopped = await act<Shown>('playFor(50)');
-    assert.ok(at(stopped, 25 + 72), `50 ms at 1440 h/s pauses on hour 97 and paints it: ${show(stopped)}`);
+    assert.ok(at(stopped, stoppedAt), `50 ms at 1440 h/s pauses on hour ${stoppedAt} and paints it: ${show(stopped)}`);
     const after = await act<Shown[]>('speed(168)');
-    assert.ok(after.every(state => at(state, 97)), `paused again, a speed change neither dims nor hides: ${show(after.find(state => !at(state, 97)))}`);
+    assert.ok(after.every(state => at(state, stoppedAt)), `paused again, a speed change neither dims nor hides: ${show(after.find(state => !at(state, stoppedAt)))}`);
     const { seen: rewound, pending: rewinding } = await act<{ seen: Shown[]; pending: Shown }>('heldRewind(30)');
     assert.ok(rewinding.strict === null && rewinding.listed === null && rewinding.headedField === null && !rewinding.headed.visible,
-      `a backward seek with the reply for 30:00 still pending leaves the followed head empty, never holding 97:00: ${show(rewinding)}`);
-    assert.equal(rewound.slice(1).find(state => state.headed.visible && state.headed.hour === 97 || state.listed === '97'), undefined,
-      'no sample after the backward seek shows 97:00');
+      `a backward seek with the reply for 30:00 still pending leaves the followed head empty, never holding ${stoppedAt}:00: ${show(rewinding)}`);
+    assert.equal(rewound.slice(1).find(state => state.headed.visible && state.headed.hour === stoppedAt || state.listed === String(stoppedAt)), undefined,
+      `no sample after the backward seek shows ${stoppedAt}:00`);
     const back = rewound.at(-1)!;
     mounts = back.mounts;
     assert.ok(at(back, 30) && back.strict === 30 && back.listed === '30', `30:00 is painted at full strength: ${show(back)}`);

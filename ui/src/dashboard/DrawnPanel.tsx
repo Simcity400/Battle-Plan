@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { hideTooltip, tooltipStore } from '../charts/tooltip.ts';
 import { inspectFollow } from './pulled.ts';
+import { showsAt } from './follow/store.ts';
 import { panelValues, panelViews } from '../draw/panels/views.ts';
 import { attachPanel } from '../draw/host.ts';
 import type { PanelFeed } from './panelFeed';
@@ -131,9 +132,9 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       if (reading?.follow === undefined) return;
       const ticket = ++interaction, seek = clock.getSnapshot().seekSequence;
       event.stopPropagation();
-      const picture = await inspectFollow(reading.follow);
-      if (held(target) || !picture?.panel || picture.seek !== seek || seek !== clock.getSnapshot().seekSequence || ticket !== interaction ||
-          !node.contains(target) || reading.follow !== latest.current?.follow) return;
+      const picture = await inspectFollow(reading.follow), now = clock.getSnapshot();
+      if (held(target) || !picture?.panel || picture.seek !== seek || seek !== now.seekSequence || ticket !== interaction ||
+          !showsAt(picture, now.playing ? null : Math.floor(now.position) + reading.offset) || !node.contains(target) || reading.follow !== latest.current?.follow) return;
       const live = picture.values;
       const values = panelViews[view]?.values(picture.panel.data, live ? {
         get: k => typeof live.get(k) === 'number' ? live.get(k) as number : undefined,
