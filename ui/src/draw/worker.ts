@@ -19,7 +19,11 @@ import { buildDetail, buildStretch, buildTable, type BuiltTable } from './tables
 import { repliedCells } from '../dashboard/follow/liveCells.ts';
 
 const post = (message: FromWorker) => self.postMessage(message);
-const outbox = new StructureOutbox(updates => post({ type: 'structure', updates }));
+const outbox = new StructureOutbox(() => {
+  const updates = [...followed.structures(anchor.playing)];
+  if (updates.length) post({ type: 'structure', updates });
+  return updates.length > 0;
+});
 const wall = () => performance.timeOrigin + performance.now();
 interface Panel {
   kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
@@ -428,7 +432,7 @@ function frame(at: number) {
   }
   followed.drain(head);
   if (lane === 0) {
-    outbox.add([...followed.structures(anchor.playing)]);
+    outbox.flush();
   }
   while (scheduledChanges.length && scheduledChanges.at(-1)!.at <= head) dirty.add(scheduledChanges.pop()!.surface);
   const changed = audit && new Set<string>();
@@ -502,10 +506,9 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       dataPort = m.port;
       m.port.onmessage = ({ data }: MessageEvent<FollowItem[]>) => {
         if (lane === 0) for (const item of data) if (item.kind === 'failure') post({ type: 'followFailure', reason: item.reason });
-        followed.land(data, lane === 0 ? { reset: (ids, route, seek, from) => {
-          outbox.discard(ids, from);
-          post({ type: 'resetStructures', route, seek, from });
-        }, lead: anchor.playing ? updates => post({ type: 'structureLead', updates }) : undefined } : undefined); wake();
+        followed.land(data);
+        if (lane === 0) outbox.flush();
+        wake();
       };
       return;
     case 'structureTaken': outbox.taken(); return;
@@ -584,11 +587,11 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       const race = races.get(m.id), picture = race?.owner === m.owner && race.shown ? race.picture.inspect(m.target) : undefined;
       post({ type: 'raceInspection', id: m.id, owner: m.owner, request: m.request, seek: anchor.seek, picture }); return;
     }
-    case 'inspect': post({ type: 'inspection', request: m.request, reading: followed.snapshot(m.id) }); return;
+    case 'inspect': post({ type: 'inspection', request: m.request, update: followed.inspect(m.id) }); return;
     case 'clock':
       const speedChanged = anchor.speed !== m.anchor.speed;
       if (speedChanged || anchor.seek !== m.anchor.seek || anchor.playing !== m.anchor.playing) responding = true;
-      if (anchor.playing && !m.anchor.playing) followed.paused();
+      if (!m.anchor.playing && (anchor.playing || anchor.position !== m.anchor.position)) followed.paused();
       if (anchor.playing !== m.anchor.playing || !m.anchor.playing && anchor.position !== m.anchor.position) {
         for (const s of [...panels.values(), ...races.values(), ...tables.values()]) if (s.model.fixed === undefined) dirty.add(s);
       }

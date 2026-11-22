@@ -17,12 +17,6 @@ export function inFrameNow(update: () => void): void {
   queue(urgent, update);
 }
 
-export function commitInFrame(): void {
-  if (typeof requestAnimationFrame !== 'function' || framed) return;
-  framed = true;
-  engine.next('commit', flush);
-}
-
 function queue(into: (() => void)[], update: () => void): void {
   into.push(update);
   waiting ??= busy('updates');

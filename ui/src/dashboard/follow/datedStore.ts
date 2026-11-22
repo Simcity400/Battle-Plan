@@ -2,18 +2,18 @@ import type { DatedPanel, FollowItem, FollowedPanel } from './message';
 import { CellGroup, isCellsId, sectionOf } from './liveCells.ts';
 import type { FollowEntry } from './store';
 import type { Release } from './decode';
-import { newer, type Version } from './version.ts';
 
 export interface Coverage { start: number; through: number }
 interface Picture extends Coverage { panel: FollowedPanel; cells: number[]; seeds: Map<number, CellGroup> }
-interface Reading { entry: FollowEntry; branch: string; offset: number; version: Version; seek?: number; candidate?: Picture; shown?: Coverage; stream?: Route; lane?: { hour: number }; cells: Map<number, CellGroup>;
+interface Reading { entry: FollowEntry; branch: string; offset: number; ahead: Packet[]; seek?: number; candidate?: Picture; shown?: Coverage; stream?: Route; lane?: { hour: number }; cells: Map<number, CellGroup>;
   ends?: number; waiting?: number }
 interface LaneClock { hour: number; limited?: Map<number, number> }
 function coverageClock(clock: LaneClock, id: number) {
   return { get hour() { return clock.limited?.get(id) ?? clock.hour; } };
 }
-interface Route { id: number; seek: number; generation: number; version: Version; laneDue: number; lane: LaneClock; waiting: Map<Reading, number>; through: number; receivedThrough: number; stepHour?: number }
-interface Packet { route: number; stamp: number; panel: boolean; hour: number; clock: number; reset?: boolean; version?: Version; apply: () => void }
+interface Route { id: number; seek: number; laneDue: number; lane: LaneClock; waiting: Map<Reading, number>; through: number; receivedThrough: number; stepHour?: number }
+export type Lead = DatedPanel & { panel: FollowedPanel };
+interface Packet { route: number; stamp: number; panel: boolean; hour: number; clock: number; lead?: Lead; apply: () => void }
 
 const covers = (group: CellGroup | undefined, at: number) =>
   group?.start != null && group.start <= at && group.through != null && group.through >= at;
@@ -30,12 +30,8 @@ export class DatedStore {
   private packets: Packet[] = [];
   private first = 0;
   private head = -Infinity;
-  private generation = 0;
-  private sequence = 0;
 
-  private fresh(): Version { return { generation: ++this.generation, hour: -Infinity, sequence: ++this.sequence }; }
-
-  private enqueue(packet: Packet): Version | undefined {
+  private enqueue(packet: Packet) {
     const route = this.byId.get(packet.route);
     if (!route) {
       if (!this.unbound.size) return;
@@ -46,15 +42,14 @@ export class DatedStore {
     }
     if (route.seek !== packet.stamp) return;
     if (!packet.panel) route.laneDue = packet.hour = Math.max(packet.hour, route.laneDue);
-    if (packet.reset) route.generation = ++this.generation;
-    const version = packet.version = { generation: route.generation, hour: packet.hour, sequence: ++this.sequence };
+    if (packet.lead) this.queueLead(packet, route.id);
     if (this.first && this.first * 2 >= this.packets.length) {
       this.packets = this.packets.slice(this.first);
       this.first = 0;
     }
     if (!this.packets.length || this.packets.at(-1)!.hour <= packet.hour) {
       this.packets.push(packet);
-      return version;
+      return;
     }
     let low = this.first, high = this.packets.length;
     while (low < high) {
@@ -63,12 +58,26 @@ export class DatedStore {
       else high = mid;
     }
     this.packets.splice(low, 0, packet);
-    return version;
+  }
+
+  private queueLead(packet: Packet, route: number) {
+    const r = this.reading(packet.lead!.id, route);
+    if (!r) return;
+    let at = r.ahead.length;
+    while (at > 0 && r.ahead[at - 1]!.lead!.hour > packet.lead!.hour) at--;
+    r.ahead.splice(at, 0, packet);
+    this.resend(r.entry);
+  }
+
+  private dropLead(packet: Packet) {
+    const r = packet.lead && this.readings.get(packet.lead.id), at = r ? r.ahead.indexOf(packet) : -1;
+    if (at < 0) return;
+    r!.ahead.splice(at, 1);
+    this.resend(r!.entry);
   }
 
   private run(packet: Packet) {
-    const route = this.byId.get(packet.route);
-    if (route && newer(packet.version!, route.version)) route.version = packet.version!;
+    this.dropLead(packet);
     packet.apply();
   }
 
@@ -80,7 +89,13 @@ export class DatedStore {
   }
 
   private discard(matches: (packet: Packet) => boolean) {
-    this.packets = this.packets.slice(this.first).filter(p => !matches(p));
+    const kept: Packet[] = [];
+    for (let at = this.first; at < this.packets.length; at++) {
+      const p = this.packets[at]!;
+      if (!matches(p)) kept.push(p);
+      else this.dropLead(p);
+    }
+    this.packets = kept;
     this.first = 0;
     for (const [id, packets] of this.early) this.early.set(id, packets.filter(p => !matches(p)));
   }
@@ -88,12 +103,14 @@ export class DatedStore {
 
   private readonly release: (what: Release) => void;
 
-  constructor(changed: (entry: FollowEntry) => void, release: (what: Release) => void) {
-    this.changed = changed; this.release = release;
+  private readonly resend: (entry: FollowEntry) => void;
+
+  constructor(changed: (entry: FollowEntry) => void, release: (what: Release) => void, resend: (entry: FollowEntry) => void = () => {}) {
+    this.changed = changed; this.release = release; this.resend = resend;
   }
 
   add(entry: FollowEntry, branch: string) {
-    const reading = { entry, branch, offset: 0, version: this.fresh(), cells: new Map() };
+    const reading: Reading = { entry, branch, offset: 0, ahead: [], cells: new Map() };
     this.readings.set(entry.id, reading);
     let members = this.members.get(branch);
     if (!members) this.members.set(branch, members = new Set());
@@ -159,8 +176,12 @@ export class DatedStore {
   seek(branch: string, seek: number, retainThrough?: number) {
     this.clearRoute(branch, retainThrough);
     const route = this.routes.get(branch);
-    if (route) { route.seek = seek; route.version = this.fresh(); route.generation = route.version.generation; }
-    else for (const r of this.members.get(branch) ?? []) r.version = this.fresh();
+    if (route) route.seek = seek;
+  }
+
+  fail() {
+    this.early.clear();
+    for (const branch of this.members.keys()) this.seek(branch, this.routes.get(branch)?.seek ?? 0);
   }
 
   bind(branch: string, id: number, seek: number) {
@@ -168,8 +189,7 @@ export class DatedStore {
     const old = this.routes.get(branch);
     if (old?.id === id && old.seek === seek) return;
     if (old) { this.clearRoute(branch); this.byId.delete(old.id); }
-    const version = this.fresh();
-    const route = { id, seek, generation: version.generation, version, laneDue: -Infinity, lane: { hour: -Infinity }, waiting: new Map<Reading, number>(), through: -Infinity, receivedThrough: -Infinity };
+    const route = { id, seek, laneDue: -Infinity, lane: { hour: -Infinity }, waiting: new Map<Reading, number>(), through: -Infinity, receivedThrough: -Infinity };
     this.routes.set(branch, route); this.byId.set(id, route);
     this.unbound.delete(branch);
     const early = this.early.get(id) ?? [];
@@ -183,7 +203,7 @@ export class DatedStore {
     return r && this.routes.get(r.branch)?.id === route ? r : undefined;
   }
 
-  accept(item: Exclude<FollowItem, {kind: 'failure'}>, enqueued?: (panel: DatedPanel, version: Version) => void) {
+  accept(item: Exclude<FollowItem, {kind: 'failure'}>) {
     const panel = item.kind === 'panels';
     const route = panel ? item.batch.route : item.message.route;
     if (!this.byId.has(route) && !this.unbound.size) return;
@@ -191,7 +211,8 @@ export class DatedStore {
       const { seek, panels } = item.batch;
       for (const p of panels) {
         if (!this.readings.has(p.id)) continue;
-        const version = this.enqueue({ route, stamp: seek, panel, hour: p.hour - item.batch.clock, clock: item.batch.clock, apply: () => {
+        const lead = p.stepped && !p.waiting && p.panel && !sectionOf(p.panel.data)?.groups.some(g => g.follow !== undefined) ? p as Lead : undefined;
+        this.enqueue({ route, stamp: seek, panel, hour: p.hour - item.batch.clock, clock: item.batch.clock, lead, apply: () => {
           const r = this.reading(p.id, route);
           if (!r) return;
           r.offset = item.batch.clock;
@@ -222,7 +243,6 @@ export class DatedStore {
           }
           this.present(r);
         } });
-        if (version && this.reading(p.id, route)) enqueued?.(p, version);
       }
       const completed = item.batch.completed;
       const bound = this.byId.get(route);
@@ -248,7 +268,7 @@ export class DatedStore {
         const bound = this.byId.get(route);
         if (bound) bound.laneDue = axis;
       }
-      this.enqueue({ route, stamp, panel, hour: axis, clock: message.clock, reset, apply: () => {
+      this.enqueue({ route, stamp, panel, hour: axis, clock: message.clock, apply: () => {
         const stream = this.byId.get(route)!;
         if (reset) {
           stream.through = -Infinity;
@@ -356,9 +376,8 @@ export class DatedStore {
     }
     return r.stream && r.stream.through > r.shown.through ? { start: r.shown.start, through: r.stream.through } : r.shown;
   }
-  version(entry: FollowEntry) {
-    const r = this.readings.get(entry.id)!;
-    return this.routes.get(r.branch)?.version ?? r.version;
+  ahead(entry: FollowEntry): readonly Lead[] {
+    return this.readings.get(entry.id)?.ahead.map(p => p.lead!) ?? [];
   }
   receivedThrough(entry: FollowEntry) { return this.readings.get(entry.id)?.stream?.receivedThrough; }
   get stepHour() { return this.byId.values().next().value?.stepHour; }

@@ -71,6 +71,16 @@ test('a picture audit is answered once, from every lane’s records, done when e
   assert.deepEqual(heard, [{ type: 'audit', records: [{ t: 'a' }, { t: 'b' }], done: false }]);
 });
 
+test('a surface that fails during a picture audit fails the audit, and still reaches its own surface', () => {
+  const { draw, heard } = lanes(2), told: string[] = [];
+  draw.listen(4, notice => told.push(notice.type));
+  draw.post({ type: 'audit', start: false, limit: 10 });
+  draw.receive(1, { type: 'failed', page: 4, reason: 'Panel drawing surface unavailable' });
+  draw.receive(0, { type: 'audit', records: [], done: true });
+  draw.receive(1, { type: 'audit', records: [], done: true });
+  assert.deepEqual([heard, told], [[{ type: 'failed', page: 4, reason: 'Panel drawing surface unavailable' }], ['failed']]);
+});
+
 test('page-wide news comes from the first lane alone; a surface’s from any', () => {
   const { draw, heard } = lanes(2), told: string[] = [];
   draw.listen(3, notice => told.push(notice.type));
@@ -84,8 +94,8 @@ test('page-wide news comes from the first lane alone; a surface’s from any', (
 test('the page tells the lane that sent structure it has taken it, so that lane sends the next', () => {
   const { draw, heard, types } = lanes(2);
   draw.receive(0, { type: 'structure', updates: [] });
-  draw.receive(1, { type: 'structureLead', updates: [] });
-  assert.deepEqual([types(0), types(1), heard.map(message => message.type)], [['structureTaken'], [], ['structure']]);
+  draw.receive(1, { type: 'structure', updates: [] });
+  assert.deepEqual([types(0), types(1), heard.map(message => message.type)], [['structureTaken'], ['structureTaken'], ['structure']]);
 });
 
 test('what a worker says of a surface reaches that surface alone, once, however many surfaces listen', () => {

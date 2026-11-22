@@ -1,42 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, cellState, cellValue, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
-import type { FollowedAnswer } from './message.ts';
+import type { FollowItem, FollowedAnswer } from './message.ts';
 import { datedPanel, fakeTransport, manualFrames, message } from './messages.fixture.ts';
 import { BarCell, TextCell, formatAmountFast, paintArmy, paintMeasure, paintStability } from './painters.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { FollowStore } from './store.ts';
 import { Followed } from '../../draw/followed.ts';
-import type { OrderedReading } from '../../draw/followed';
+import type { FollowUpdate, PageReading } from '../../draw/followed';
 import { StructureOutbox } from '../../draw/structureOutbox.ts';
-import { StructureQueue } from './structureQueue.ts';
+import { LatestReadings } from './latest.ts';
 import { liveKey } from '../../charts/live.ts';
 import { DatedStore } from './datedStore.ts';
 import { FollowDecoder } from './decode.ts';
 import type { FollowEntry } from './store.ts';
 
 const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: [value] });
-
-test('queued row structures publish only at their hour and a reset removes abandoned rows through the next input', () => {
-  const q = new StructureQueue(), published: number[] = [];
-  let sequence = 0;
-  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour, version: { generation: 0, hour, sequence: ++sequence } });
-  const drain = (hour: number) => q.drain(hour, r => published.push(r.hour));
-  q.add(record(12)); q.add(record(30)); q.add(record(20));
-  drain(11); assert.deepEqual(published, []);
-  drain(15); assert.deepEqual(published, [12]);
-  q.discard(new Set([1]), 20);
-  q.add(record(24)); drain(40);
-  assert.deepEqual(published, [12, 24]);
-  q.add(record(48)); q.discard(new Set([1])); q.add(record(3, 6)); drain(50);
-  assert.deepEqual(published, [12, 24, 3]);
-  q.add(record(60)); q.add({ ...record(68), id: 2 }); q.add(record(72));
-  q.add({ ...record(72), through: 75 });
-  const due: number[][] = [];
-  q.drain(75, r => due.push([r.id, r.hour, r.through]));
-  assert.deepEqual(due.sort((a, b) => a[0]! - b[0]!), [[1, 72, 75], [2, 68, 68]],
-    'a delayed page frame publishes only the newest eligible structure per subscription');
-});
 
 function cell() {
   const node = { data: '' }, host = { title: '' };
@@ -666,7 +645,7 @@ test('a changing value stays in the worker until interaction requests its dated 
     followed.drain(hour);
     return [...followed.structures(true)];
   };
-  assert.equal(land(datedPanel(3, 10, { live }), 10)[0]?.values?.get(liveKey('1', 'progress')), 7);
+  assert.equal(land(datedPanel(3, 10, { live }), 10)[0]?.now.values?.get(liveKey('1', 'progress')), 7);
   const full = datedStep(11, [{ id: group, hour: 10, answer: one(1n, 8n) }], 1);
   assert.deepEqual(land(full, 11), []);
   assert.deepEqual(land(datedPanel(3, 11), 11), []);
@@ -726,176 +705,324 @@ test('a shown panel stands only until the hour a new panel waiting on its first 
   assert.equal(followed.snapshot(3)?.through, 11, 'a later waiting panel never moves the end of the shown one');
 });
 
-test('a structure the worker held for the page never replaces the newer lead the page shows, nor does an older inspection', () => {
-  const decoder = new FollowDecoder();
-  const followed = new Followed(what => decoder.release(what));
-  followed.add(3, 'branch'); followed.add(4, 'branch');
-  followed.bind('branch', 9, 1);
-  const sent: OrderedReading[][] = [], leads: OrderedReading[] = [], shown: string[] = [];
-  const outbox = new StructureOutbox(updates => sent.push(updates));
-  const page = new StructureQueue();
-  const take = (read: OrderedReading) => { if (page.take(read)) shown.push(`${read.id}@${read.hour}:${read.panel ? 'panel' : read.answer?.kind}`); };
-  const step = (hour: number, answers: Parameters<typeof message>[1]) => {
-    followed.land([decoder.item(datedStep(hour, answers, 1).slice().buffer)]);
-    followed.drain(hour);
-    outbox.add([...followed.structures(true)]);
-  };
-  step(9, [{ id: 4, answer: one(1n, 7n) }]);
-  step(10, [{ id: 3, answer: { notRecorded: 'No reading at 10' } }]);
-  assert.equal(sent.length, 1, 'the hour-10 snapshot waits in the worker until the page takes the first message');
-  followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 3, hour: 20, stepped: true, panel: { data: { rows: [20] }, refused: null } }] } }], { reset() {}, lead: updates => leads.push(...updates) });
-  for (const read of sent[0]!) take(read);
-  for (const read of leads) page.add(read);
-  page.drain(20, take);
-  const inspected = followed.snapshot(3)!;
-  outbox.taken();
-  assert.equal(sent.length, 2, 'the page took the first message, so the held hour-10 snapshot goes');
-  for (const read of sent[1]!) take(read);
-  take(inspected);
-  assert.deepEqual(shown, ['4@9:rows', '3@20:panel'], 'the late hour-10 snapshot and the hour-10 inspection are older than the hour-20 lead the page shows');
-  followed.drain(20);
-  outbox.add([...followed.structures(true)]);
-  assert.equal(sent.length, 2, 'the worker counts the hour-20 structure as sent, so nothing further comes');
-});
+type Answers = Parameters<typeof message>[1];
 
-function generations() {
+function pipeline(ids = [3]) {
   const decoder = new FollowDecoder();
   const followed = new Followed(what => decoder.release(what));
-  followed.add(3, 'branch');
+  for (const id of ids) followed.add(id, 'branch');
   followed.bind('branch', 9, 1);
-  const page = new StructureQueue(), shown: string[] = [], posted: string[][] = [], inFlight: OrderedReading[][] = [];
-  const label = (read: OrderedReading) => `${read.hour}:${read.panel?.refused ?? (read.panel ? 'panel'
-    : read.answer?.kind === 'notRecorded' ? read.answer.reason : read.answer?.kind)}`;
-  const take = (read: OrderedReading) => { if (page.take(read)) shown.push(label(read)); };
-  const outbox = new StructureOutbox(updates => { inFlight.push(updates); posted.push(updates.map(label)); });
-  let seek = 1, holding = false;
-  const deliver = () => {
-    const updates = inFlight.shift();
-    if (!updates) return;
-    for (const read of updates) take(read);
-    outbox.taken();
+  const page = new LatestReadings(), shown: string[] = [], posted: string[][] = [], showing = new Map<number, PageReading>();
+  const channel: ({ updates: FollowUpdate[] } | { update?: FollowUpdate })[] = [];
+  let seek = 1, holding = false, playing = true, hour = 0;
+  const label = (read: PageReading) => `${read.hour}:${read.panel?.refused ?? (read.panel ? 'panel'
+    : read.answer?.kind === 'notRecorded' ? read.answer.reason : read.answer?.kind ?? 'pending')}`;
+  const show = (read: PageReading) => {
+    showing.set(read.id, read);
+    shown.push(ids.length > 1 ? `${read.id}@${label(read)}` : label(read));
   };
-  const notices = (playing: boolean) => ({
-    reset(ids: ReadonlySet<number>, _route: number, _seek: number, from: number) { outbox.discard(ids, from); page.discard(ids, from); },
-    lead: playing ? (updates: OrderedReading[]) => { for (const read of updates) page.add(read); } : undefined,
+  const outbox = new StructureOutbox(() => {
+    const updates = [...followed.structures(playing)];
+    if (updates.length) { channel.push({ updates }); posted.push(updates.map(update => label(update.now))); }
+    return updates.length > 0;
   });
-  const panel = (hour: number, refused: string | null, playing = true, stepped = true) => followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek, completed: undefined,
-    panels: [{ id: 3, hour, stepped, panel: refused === null ? { data: { rows: [hour] }, refused } : { refused } }] } }], notices(playing));
-  const reset = (hour: number, answers: Parameters<typeof message>[1] = [], playing = true) =>
-    followed.land([decoder.item(datedStep(hour, answers, seek, true).slice().buffer)], notices(playing));
-  const frame = (head: number, playing = true) => {
-    followed.drain(head);
-    outbox.add([...followed.structures(playing)]);
-    if (!holding) while (inFlight.length) deliver();
+  const land = (update: FollowUpdate) => { if (update.now.seek === seek) page.land(update, hour, show); };
+  const deliver = () => {
+    const message = channel.shift();
+    if (!message) return false;
+    if ('updates' in message) { for (const update of message.updates) land(update); outbox.taken(); }
+    else if (message.update) land(message.update);
+    return true;
   };
-  return { followed, page, shown, posted, take, panel, reset, frame, deliver,
-    hold: (held: boolean) => { holding = held; },
-    seek: (next: number, retainThrough?: number) => { seek = next; page.discard(new Set([3])); followed.seek('branch', next, retainThrough); },
-    step: (hour: number, answers: Parameters<typeof message>[1]) => followed.land([decoder.item(datedStep(hour, answers, seek).slice().buffer)]) };
+  const settle = () => { if (!holding) while (deliver()); };
+  const arrive = (items: FollowItem[]) => { followed.land(items); outbox.flush(); settle(); };
+  return {
+    followed, shown, posted, showing, label,
+    panel: (at: number, refused: string | null, stepped = true, id = ids[0]!) => arrive([{ kind: 'panels', batch: { route: 9, clock: 0, seek, completed: undefined,
+      panels: [{ id, hour: at, stepped, panel: { data: { rows: [at] }, refused } }] } }]),
+    step: (at: number, answers: Answers) => arrive([decoder.item(datedStep(at, answers, seek).slice().buffer)]),
+    completed: (at: number) => arrive([{ kind: 'panels', batch: { route: 9, clock: 0, seek, completed: at, panels: [] } }]),
+    reset: (at: number, answers: Answers = []) => arrive([decoder.item(datedStep(at, answers, seek, true).slice().buffer)]),
+    fail: () => { followed.land([{ kind: 'failure', reason: 'stream closed' }]); page.forget(ids); outbox.flush(); settle(); },
+    frame: (head: number, play = true) => {
+      if (playing && !play) followed.paused();
+      playing = play;
+      followed.drain(head);
+      outbox.flush();
+      settle();
+    },
+    view: (at: number) => { hour = at; page.advance(at, show); },
+    inspect: (id = ids[0]!) => { channel.push({ update: followed.inspect(id) }); settle(); },
+    seek: (next: number, retainThrough?: number) => {
+      seek = next; page.forget(ids);
+      if (retainThrough === undefined) for (const id of ids) showing.delete(id);
+      followed.seek('branch', next, retainThrough);
+    },
+    deliver, hold: (held: boolean) => { holding = held; if (!held) settle(); },
+  };
 }
 
-test('a reset starts a new generation: the page takes the first reading after it whatever hour it holds from, and none from before it', () => {
-  const g = generations();
-  g.panel(20, null);
-  g.page.drain(20, g.take);
-  g.followed.drain(20);
-  const before = g.followed.snapshot(3)!;
-  g.reset(18);
-  g.panel(18, 'Not recorded from 18');
-  g.page.drain(20, g.take);
-  g.take(before);
-  assert.deepEqual(g.shown, ['20:panel', '18:Not recorded from 18'], 'the native reset at 18 replaces the hour-20 picture, and a reading from before the reset is refused');
+test('the page shows the reading the latest message gives for its hour, and only the newest per subscription after a late frame', () => {
+  const page = new LatestReadings(), shown: string[] = [];
+  const read = (id: number, hour: number, seek = 5) => ({ id, seek, hour, through: hour });
+  const show = (r: PageReading) => shown.push(`${r.id}@${r.hour}`);
+  page.land({ now: read(1, 10), ahead: [read(1, 12), read(1, 20), read(1, 30)] }, 11, show);
+  assert.equal(page.waiting, true);
+  page.advance(11, show); assert.deepEqual(shown, ['1@10']);
+  page.advance(15, show); assert.deepEqual(shown, ['1@10', '1@12']);
+  page.land({ now: read(1, 12), ahead: [read(1, 24)] }, 15, show);
+  page.advance(40, show);
+  assert.deepEqual(shown, ['1@10', '1@12', '1@12', '1@24'], 'a new message replaces the hours the last one gave');
+  assert.equal(page.waiting, false);
+  page.land({ now: read(1, 40), ahead: [read(1, 60), read(1, 72)] }, 40, show);
+  page.land({ now: read(2, 40), ahead: [read(2, 68)] }, 40, show);
+  page.forget([1]);
+  page.advance(75, show);
+  assert.deepEqual(shown.slice(4), ['1@40', '2@40', '2@68'], 'a forgotten subscription shows nothing more, and a late frame shows only the newest of each');
 });
 
-test('an inspection after a reset reports the generation that produced its reading, so the replacement still wins', () => {
-  const g = generations();
-  g.panel(20, 'twenty');
-  g.page.drain(20, g.take);
-  g.frame(20);
-  g.reset(18);
-  g.take(g.followed.snapshot(3)!);
-  g.panel(18, 'eighteen');
-  g.page.drain(20, g.take);
-  assert.equal(g.shown.at(-1), '18:eighteen', `the hour-18 replacement follows the old hour-20 picture an inspection reported: ${g.shown}`);
+test('the latest message wins over a held one: an older snapshot or inspection never puts the page back', () => {
+  const p = pipeline([3, 4]);
+  p.hold(true);
+  p.step(9, [{ id: 4, answer: one(1n, 7n) }]);
+  p.frame(9);
+  p.step(10, [{ id: 3, answer: { notRecorded: 'No reading at 10' } }]);
+  p.frame(10);
+  assert.equal(p.posted.length, 1, 'the hour-10 snapshot waits in the worker until the page takes the first message');
+  p.panel(20, null, true, 3);
+  p.inspect(3);
+  p.hold(false);
+  p.view(20);
+  assert.deepEqual(p.shown.slice(-1), ['3@20:panel'], `the page ends on the hour-20 panel: ${p.shown}`);
+  p.frame(20);
+  assert.equal(p.posted.length, 2, 'the worker counts the hour-20 panel as sent, so nothing further comes');
 });
 
-test('a reset while paused starts a new generation, so a correction covering the paused hour replaces the picture', () => {
-  const g = generations();
-  g.step(20, [{ id: 3, answer: one(1n, 7n) }]);
-  g.frame(20, false);
-  g.reset(20, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }], false);
-  g.frame(20, false);
-  assert.deepEqual(g.shown, ['20:rows', '18:Corrected from 18'], 'the corrected reading from 18 replaces the paused hour-20 one');
+test('readings that differ never look alike: a late panel after a route step reaches the page', () => {
+  const p = pipeline([3, 4]);
+  p.panel(10, 'A', false, 3);
+  p.step(25, [{ id: 4, answer: one(1n, 7n) }]);
+  p.view(25); p.frame(25);
+  p.panel(20, 'B', false, 3);
+  p.frame(25);
+  assert.equal(p.showing.get(3)?.panel?.refused, 'B', `the page shows the panel the worker holds: ${p.shown}`);
+});
+
+test('a shape sent ahead and then repeated reaches the page: A, B, A ends on A', () => {
+  const p = pipeline();
+  p.panel(10, 'A'); p.panel(20, 'B');
+  p.view(10); p.frame(10);
+  p.panel(30, 'A');
+  p.view(20); p.view(30); p.frame(30);
+  assert.deepEqual([p.showing.get(3)?.panel?.refused, p.followed.snapshot(3)?.panel?.refused], ['A', 'A'], `page then worker: ${p.shown}`);
+});
+
+test('a native reset changes nothing it should not: a paused panel queued behind another message still goes', () => {
+  const p = pipeline([3, 4]);
+  p.frame(20, false);
+  p.hold(true);
+  p.step(20, [{ id: 4, answer: one(1n, 7n) }]);
+  p.frame(20, false);
+  p.panel(20, 'A', false, 3);
+  p.frame(20, false);
+  p.reset(20);
+  p.frame(20, false);
+  p.hold(false);
+  assert.equal(p.showing.get(3)?.panel?.refused, 'A', `the paused hour-20 panel reaches the page: ${p.shown}`);
+});
+
+test("a reset whose answers reach later than its hour leaves the page on the worker's reading, inspected or not", () => {
+  const p = pipeline([3, 4]);
+  p.panel(10, 'old'); p.view(10); p.frame(10);
+  p.panel(20, 'abandoned', true, 3);
+  p.reset(18, [{ id: 4, hour: 25, answer: one(1n, 7n) }]);
+  p.panel(18, 'replacement', true, 3);
+  for (const at of [18, 20, 25, 26]) {
+    p.view(at); p.frame(at);
+    assert.equal(p.showing.get(3)?.panel?.refused, p.followed.snapshot(3)?.panel?.refused, `hour ${at}: ${p.shown}`);
+  }
+  p.inspect(3);
+  assert.equal(p.showing.get(3)?.panel?.refused, p.followed.snapshot(3)?.panel?.refused, `an inspection after 25: ${p.shown}`);
+});
+
+test('a paused forward seek and an inspection between it and the next frame leave the page on the current date', () => {
+  const p = pipeline();
+  p.panel(20, 'O', false);
+  p.frame(23, false);
+  p.panel(24, 'P', false);
+  p.seek(2, 24);
+  p.inspect();
+  p.frame(24, false);
+  const held = p.showing.get(3);
+  assert.deepEqual([held?.panel?.refused, held?.through], ['P', 24], `the page holds panel P dated 24: ${p.shown}`);
+});
+
+test('a stream failure drops what arrived before the subscription was bound', () => {
+  const followed = new Followed(() => {});
+  followed.add(3, 'branch');
+  followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
+    panels: [{ id: 3, hour: 10, stepped: true, panel: { data: { rows: [10] }, refused: 'before' } }] } }]);
+  followed.land([{ kind: 'failure', reason: 'stream closed' }]);
+  followed.bind('branch', 9, 1);
+  followed.drain(10);
+  assert.equal(followed.snapshot(3)?.panel, null);
+});
+
+test('a seek or a stream failure forgets what the page was sent, so the same shape after it goes again', () => {
+  for (const restart of ['seek', 'failure'] as const) {
+    const p = pipeline([3, 4]);
+    p.panel(10, 'A', false, 3);
+    p.view(10); p.frame(10);
+    p.hold(true);
+    p.panel(10, 'X', false, 4);
+    p.frame(10);
+    if (restart === 'seek') p.seek(2); else { p.fail(); p.showing.clear(); }
+    p.panel(10, 'A', false, 3);
+    p.frame(10);
+    p.hold(false);
+    assert.equal(p.showing.get(3)?.panel?.refused, 'A', `after a ${restart} the page, which forgot A, is sent A again: ${p.shown}`);
+  }
+});
+
+test('a reset starts again: the page takes the first reading after it whatever hour it holds from', () => {
+  const p = pipeline();
+  p.panel(20, null);
+  p.view(20); p.frame(20);
+  p.reset(18);
+  p.panel(18, 'Not recorded from 18');
+  p.view(20); p.frame(20);
+  assert.deepEqual([...new Set(p.shown)].filter(shown => shown !== '0:pending'), ['20:panel', '18:Not recorded from 18'], 'the native reset at 18 replaces the hour-20 picture');
+});
+
+test('an inspection after a reset is the newest message, and the replacement after it still wins', () => {
+  const p = pipeline();
+  p.panel(20, 'twenty');
+  p.view(20); p.frame(20);
+  p.reset(18);
+  p.inspect();
+  p.panel(18, 'eighteen');
+  p.view(20); p.frame(20);
+  assert.equal(p.shown.at(-1), '18:eighteen', `the hour-18 replacement follows the old hour-20 picture an inspection reported: ${p.shown}`);
+});
+
+test('a reset while paused sends its correction, which covers the paused hour', () => {
+  const p = pipeline();
+  p.step(20, [{ id: 3, answer: one(1n, 7n) }]);
+  p.frame(20, false);
+  p.reset(20, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
+  p.frame(20, false);
+  assert.equal(p.shown.at(-1), '18:Corrected from 18', `the corrected reading from 18 replaces the paused hour-20 one: ${p.shown}`);
 });
 
 test('a reset back to an earlier shape sends that shape again, so the page leaves the newer lead it shows', () => {
-  const g = generations();
-  g.panel(10, 'A');
-  g.page.drain(10, g.take);
-  g.frame(10);
-  g.panel(20, 'B');
-  g.page.drain(20, g.take);
-  g.reset(18);
-  g.panel(18, 'A');
-  g.page.drain(20, g.take);
-  g.frame(20);
-  assert.deepEqual(g.shown, ['10:A', '20:B', '18:A'], 'the first shape of the new generation reaches the page although the worker last sent the same shape');
+  const p = pipeline();
+  p.panel(10, 'A');
+  p.view(10); p.frame(10);
+  p.panel(20, 'B');
+  p.view(20);
+  p.reset(18);
+  p.panel(18, 'A');
+  p.view(20); p.frame(20);
+  assert.equal(p.showing.get(3)?.panel?.refused, 'A', `the page leaves lead B for the reset's A: ${p.shown}`);
 });
 
-test("an answer queued before a native reset keeps the generation that produced it, so the reset's correction from an earlier hour replaces it", () => {
-  const g = generations();
-  g.step(10, [{ id: 3, answer: one(1n, 7n) }]);
-  g.frame(10);
-  g.step(20, [{ id: 3, answer: { notRecorded: 'Twenty' } }]);
-  g.reset(25, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
-  g.frame(20);
-  g.frame(25);
-  assert.deepEqual(g.shown, ['10:rows', '20:Twenty', '18:Corrected from 18'], 'the page ends on the correction the reset at 25 made from 18');
+test("an answer queued before a native reset is replaced by the reset's correction from an earlier hour", () => {
+  const p = pipeline();
+  p.step(10, [{ id: 3, answer: one(1n, 7n) }]);
+  p.frame(10);
+  p.step(20, [{ id: 3, answer: { notRecorded: 'Twenty' } }]);
+  p.reset(25, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
+  p.frame(20);
+  p.frame(25);
+  assert.deepEqual(p.shown, ['10:rows', '20:Twenty', '18:Corrected from 18'], 'the page ends on the correction the reset at 25 made from 18');
 });
 
-test("a dirty reading from before a reset never stands in the shape the page was sent, so the reset's replacement still goes", () => {
-  const g = generations();
-  g.panel(10, 'A');
-  g.page.drain(10, g.take);
-  g.frame(10);
-  g.seek(2, 10);
-  g.panel(20, 'B');
-  g.page.drain(20, g.take);
-  g.reset(18);
-  g.frame(20);
-  g.panel(18, 'A');
-  g.page.drain(20, g.take);
-  g.frame(20);
-  assert.equal(g.shown.at(-1)?.split(':')[1], 'A', `the page leaves lead B for shape A after the reset at 18: ${g.shown}`);
+test('after a forward seek the shape the page held before is sent again', () => {
+  const p = pipeline();
+  p.panel(10, 'A');
+  p.view(10); p.frame(10);
+  p.seek(2, 10);
+  p.panel(20, 'B');
+  p.view(20);
+  p.reset(18);
+  p.frame(20);
+  p.panel(18, 'A');
+  p.view(20); p.frame(20);
+  assert.equal(p.showing.get(3)?.panel?.refused, 'A', `the page leaves lead B for shape A after the reset at 18: ${p.shown}`);
 });
 
-test('an inspection reports the version of the data it read, so it never outranks a newer lead for the same hour', () => {
-  const g = generations();
-  g.panel(20, 'A');
-  g.page.drain(20, g.take);
-  g.frame(20);
-  g.panel(20, 'B');
-  g.page.drain(20, g.take);
-  g.take(g.followed.snapshot(3)!);
-  g.frame(20);
-  assert.deepEqual(g.shown, ['20:A', '20:B'], 'the inspection of A from before the drain is older than lead B');
+test('an inspection read before a newer lead lands never outranks it', () => {
+  const p = pipeline();
+  p.panel(20, 'A');
+  p.view(20); p.frame(20);
+  p.hold(true);
+  p.panel(20, 'B');
+  p.inspect();
+  p.hold(false);
+  p.view(20); p.frame(20);
+  assert.equal(p.showing.get(3)?.panel?.refused, 'B', `the page ends on B: ${p.shown}`);
 });
 
-test('a reset drops the snapshots the worker holds for the page from its hour on', () => {
-  const g = generations();
-  g.hold(true);
-  g.panel(10, 'X', true, false);
-  g.frame(10);
-  g.panel(20, 'A', true, false);
-  g.frame(20);
-  g.reset(18);
-  g.panel(18, 'B');
-  g.page.drain(20, g.take);
-  g.frame(20);
-  g.deliver(); g.deliver();
-  assert.deepEqual(g.posted, [['10:X']], 'the hour-20 snapshot the worker held is not published after the reset at 18');
-  assert.deepEqual(g.shown, ['18:B']);
+test('a reset leaves nothing for the page from before it that the worker no longer holds', () => {
+  const p = pipeline();
+  p.hold(true);
+  p.panel(10, 'X', false);
+  p.frame(10);
+  p.panel(20, 'A', false);
+  p.frame(20);
+  p.reset(18);
+  p.panel(18, 'B');
+  p.frame(20);
+  p.hold(false);
+  p.view(20);
+  assert.deepEqual(p.posted, [['10:X'], ['18:B']], 'the hour-20 snapshot the reset replaced is never published');
+  assert.equal(p.shown.at(-1), '18:B');
+});
+
+test('random interleavings end with the page on what the worker holds, and a change of structure never moves the page back', () => {
+  let seed = 0x2545f491;
+  const random = (n: number) => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % n; };
+  const shape = (read: PageReading | undefined) => read && (read.panel?.refused ?? (read.answer ? read.answer.kind : 'pending'));
+  for (let run = 0; run < 400; run++) {
+    const ids = [3, 4, 5, 6], p = pipeline(ids), calm = run % 2 === 0, last = new Map<number, PageReading>();
+    let head = 0, view = 0, seek = 1, playing = true, stepped = 0;
+    p.frame(0);
+    for (let op = 0; op < 60; op++) {
+      const id = ids[random(2)]!, at = Math.max(0, head + random(12) - 2), kind = random(14);
+      if (kind < 3) p.panel(at, 'ABC'[random(3)]!, true, id);
+      else if (kind === 3) p.panel(at, 'XY'[random(2)]!, false, 5);
+      else if (kind === 4 && random(2)) p.step(stepped = Math.max(stepped, head, at), [{ id: 6, answer: random(2) ? one(1n, BigInt(op)) : { notRecorded: `none ${op}` } }]);
+      else if (kind === 4) p.completed(stepped = Math.max(stepped, head, at));
+      else if (kind < 7) { head += random(4); p.frame(head, playing); }
+      else if (kind < 9) { view = Math.max(view, Math.min(head + 2, view + random(5))); p.view(view); }
+      else if (kind === 9) p.hold(random(2) === 0);
+      else if (kind === 10) p.inspect(ids[random(4)]!);
+      else if (calm) p.frame(head, playing);
+      else if (kind === 11) p.reset(stepped = Math.max(stepped, head, at), random(2) ? [{ id: 6, hour: Math.max(0, at - random(4)), answer: { notRecorded: `reset ${op}` } }] : []);
+      else if (kind === 12) {
+        const forward = random(2) === 0;
+        seek++; head = view = forward ? head + random(6) : Math.max(0, head - random(10));
+        p.seek(seek, forward ? head : undefined); p.view(view); p.frame(head, playing);
+      } else if (random(5) === 0) p.fail();
+      else {
+        if (playing) { view = head; p.view(view); p.seek(seek, view); }
+        playing = !playing; p.frame(head, playing);
+      }
+      if (calm) for (const [shownId, read] of p.showing) {
+        const before = last.get(shownId);
+        if (before && shape(before) !== shape(read) && read.hour < before.hour)
+          assert.fail(`run ${run} op ${op}: subscription ${shownId} changed from ${p.label(before)} back to ${p.label(read)}`);
+        last.set(shownId, read);
+      }
+    }
+    p.hold(false);
+    head = Math.max(head, view); p.view(head); p.frame(head, playing); p.view(head);
+    for (const id of ids) {
+      const worker = p.followed.snapshot(id)!, held = p.showing.get(id);
+      assert.equal(shape(held) ?? 'pending', shape(worker), `run ${run}: subscription ${id} shows ${shape(held)}, the worker holds ${shape(worker)}`);
+      if (!playing && held) assert.deepEqual({ ...held, through: 0, values: null }, { ...worker, through: 0, values: null }, `run ${run}: paused subscription ${id}`);
+    }
+  }
 });
 
 test('a staged product computes its structural result only once', () => {
@@ -904,7 +1031,8 @@ test('a staged product computes its structural result only once', () => {
   let validations = 0;
   const reply = { missing: null, warnings: [], types: [], get countries() { validations++; return []; } };
   followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }], { reset() {}, lead() {} });
+    panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }]);
+  [...followed.structures(true)];
   const prepared = validations;
   followed.drain(1);
   [...followed.structures(true)];

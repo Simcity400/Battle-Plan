@@ -5,28 +5,23 @@ import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate } from '../pulled.ts';
-import { StructureQueue } from './structureQueue.ts';
-import { newer, type Version } from './version.ts';
-import type { OrderedReading } from '../../draw/followed';
+import { LatestReadings } from './latest.ts';
+import type { FollowUpdate, PageReading } from '../../draw/followed';
 
 let nextId = 1;
 const ids = () => nextId++;
-const shown = new Map<number, Version>();
+const shown = new Map<number, PageReading>();
 
 let nextInspection = 1;
-export function inspectFollow(id: number) {
+export function inspectFollow(id: number): Promise<PageReading | undefined> {
   const request = nextInspection++;
-  return new Promise<OrderedReading | undefined>(resolve => {
+  return new Promise<boolean>(resolve => {
     const off = onDraw(message => {
-      if (message.type === 'inspection' && message.request === request) {
-        off();
-        const reading = message.reading, held = reading && shown.get(reading.id);
-        resolve(reading && !(held && newer(held, reading.version)) ? reading : undefined);
-      }
-      if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(undefined); }
+      if (message.type === 'inspection' && message.request === request) { off(); resolve(true); }
+      if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(false); }
     });
     drawPost({ type: 'inspect', id, request });
-  });
+  }).then(answered => answered ? shown.get(id) : undefined);
 }
 
 const clocks = new WeakMap<PlaybackController, PerClient<Map<string, FollowStore>>>();
@@ -44,7 +39,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   const nameOf = (branch: string) => JSON.stringify([source.id, source.revision, offset, branch]);
   interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
-  const structures = new StructureQueue(shown);
+  const readings = new LatestReadings(shown);
   const ask = (product: string, params: Record<string, unknown>) => client.product({
     sourceId: source.id, revision: source.revision, product, params,
   }, new AbortController().signal);
@@ -59,7 +54,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
       const stopping = paused !== null && b.paused === null;
       b.key = key; b.sequence = s.seekSequence; b.paused = paused;
       if (sought || stopping) {
-        structures.discard(b.ids);
+        readings.forget(b.ids);
         const retainThrough = (sought && s.forwardSeek) || (!sought && stopping) ? hour : undefined;
         seek(name, retainThrough);
         b.seek = s.seekSequence;
@@ -80,7 +75,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     const owner = owners.get(id);
     if (!owner) return;
     owners.delete(id);
-    structures.forget(id);
+    readings.forget([id]);
     owner.ids.delete(id);
     drawPost({ type: 'remove', id });
     if (!owner.ids.size) {
@@ -125,28 +120,25 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     },
     listen(receive, fail) {
       let stopFrame: (() => void) | undefined;
-      const land = (r: OrderedReading) => {
-        if (owners.get(r.id)?.seek === r.seek && clock.getSnapshot().seekSequence === r.seek && structures.take(r)) receive(r);
+      const hour = () => Math.floor(clock.positionAt()) + offset;
+      const watch = () => {
+        if (readings.waiting) stopFrame ??= clock.subscribeFrame(advance);
+        else { stopFrame?.(); stopFrame = undefined; }
       };
-      const drain = () => {
-        structures.drain(Math.floor(clock.positionAt()) + offset, land);
-        if (!structures.pending) { stopFrame?.(); stopFrame = undefined; }
+      const advance = () => { readings.advance(hour(), receive); watch(); };
+      const land = (update: FollowUpdate) => {
+        const { id, seek } = update.now;
+        if (owners.get(id)?.seek === seek && clock.getSnapshot().seekSequence === seek) readings.land(update, hour(), receive);
       };
       const off = clock.subscribe(anchor), offRate = onPlaybackRate(anchor);
       const stop = onDraw(message => {
         if (message.type === 'followFailure' || (message.type === 'failed' && message.page === -1)) {
-          for (const b of branches.values()) structures.discard(b.ids);
+          readings.forget(owners.keys());
           fail(message.reason);
+          watch();
         }
-        if (message.type === 'resetStructures') {
-          for (const b of branches.values()) if (b.route === message.route && b.seek === message.seek) structures.discard(b.ids, message.from);
-        }
-        if (message.type === 'structureLead' && clock.getSnapshot().playing) {
-          for (const r of message.updates) if (owners.get(r.id)?.seek === r.seek) structures.add(r);
-          if (structures.pending) stopFrame ??= clock.subscribeFrame(drain);
-        }
-        if (message.type === 'inspection' && message.reading) land(message.reading);
-        if (message.type === 'structure') for (const update of message.updates) land(update);
+        if (message.type === 'inspection' && message.update) { land(message.update); watch(); }
+        if (message.type === 'structure') { for (const update of message.updates) land(update); watch(); }
       });
       return () => { stopFrame?.(); stop(); off(); offRate(); };
     },

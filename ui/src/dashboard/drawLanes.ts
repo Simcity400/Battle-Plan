@@ -6,7 +6,7 @@ export interface DrawLane { postMessage(message: ToWorker, transfer: Transferabl
 
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
-const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
+const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'followFailure']);
 
 export type SurfaceNotice = Extract<FromWorker, { id: number }> | { type: 'present'; surface: Present } | { type: 'failed'; page: number; reason: string };
 
@@ -29,7 +29,7 @@ export class DrawLanes {
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
   private readonly tables: number[];
-  private audit?: { waiting: number; records: DrawSample[]; done: boolean };
+  private audit?: { waiting: number; records: DrawSample[]; done: boolean; failed?: Extract<FromWorker, { type: 'failed' }> };
 
   constructor(lanes: readonly DrawLane[], emit: (message: FromWorker) => void) {
     this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0); this.tables = lanes.map(() => 0);
@@ -83,11 +83,11 @@ export class DrawLanes {
       audit.records.push(...message.records); audit.done &&= message.done;
       if (--audit.waiting > 0) return;
       this.audit = undefined;
-      this.emit({ type: 'audit', records: audit.records, done: audit.done });
+      this.emit(audit.failed ?? { type: 'audit', records: audit.records, done: audit.done });
       return;
     }
     if (message.type === 'present') { for (const surface of message.surfaces) this.surfaces.get(surface.id)?.({ type: 'present', surface }); return; }
-    if (message.type === 'failed' && message.page !== -1) { this.surfaces.get(message.page)?.(message); return; }
+    if (message.type === 'failed' && message.page !== -1) { this.surfaces.get(message.page)?.(message); if (this.audit) this.audit.failed ??= message; return; }
     if ('id' in message) { this.surfaces.get(message.id)?.(message); return; }
     if (message.type === 'structure') this.lanes[lane]!.postMessage({ type: 'structureTaken' }, []);
     if (lane !== 0 && PAGE_WIDE.has(message.type)) return;
