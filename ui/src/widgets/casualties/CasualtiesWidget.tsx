@@ -21,12 +21,13 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/store.ts';
 import { answered, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
+import { joinReadings } from '../../dashboard/follow/useFollowed.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
-import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -132,7 +133,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     useLiveFollow(store, queries[3], root, read, answered),
   ];
   const rankFollowed = top == null || followsHead(ranked);
-  const refused = followRefusal(ranked, ...measured);
+  const reading = joinReadings([ranked.reading, ...measured.map(item => item.reading)]);
+  const refused = reading.state === 'refused' ? reading.reason : null;
   const lives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined ? item.live : undefined);
   const [dealt, taken, unknown, partial] = lives.map(live => ({ live }));
   const followed = [dealt, taken, unknown, partial];
@@ -213,7 +215,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   const error = followedHead ? null : rank.error ?? states.find(state => state.error)?.error ?? null;
   const retry = () => { rank.retry(); states.forEach(state => state.retry()); };
-  const loading = following ? !followedHead : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
+  const loading = following ? reading.state === 'pending' || !followedHead : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
     if (refused) return <WidgetState kind="unavailable" message={refused} />;

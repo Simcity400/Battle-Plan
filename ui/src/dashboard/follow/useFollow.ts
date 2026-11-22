@@ -5,7 +5,8 @@ import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
 import { FollowedCard, FollowedWidgetKey, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from './store.ts';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
-import { useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './useFollowed.ts';
+import { readingOf, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './useFollowed.ts';
+import type { Reading } from './useFollowed';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
@@ -20,6 +21,7 @@ export interface Followed {
   structure: string;
   entry: FollowEntry | null;
   hidden: boolean;
+  reading: Reading | null;
 }
 
 export const followsHead = (followed: Followed) => followed.status === 'followed';
@@ -63,5 +65,6 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     status, ...entry?.reason !== undefined ? { reason: entry.reason } : {},
     structure: entry ? structureOf(entry.answer, entry) : '',
     entry, hidden: !!query && !visible,
+    reading: query ? readingOf(view) : null,
   };
 }
