@@ -2237,7 +2237,8 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
 /// once attach has published the runtime state.
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     #[cfg(feature = "worker_sampler")]
-    let sampler_callback = collector_workers::worker_sampler::callback();
+    // SAFETY: the detour is on the game thread and drops the guard before calling the original.
+    let sampler_callback = unsafe { collector_workers::worker_sampler::callback() };
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::Hourly);
     ACTIVE.fetch_add(1, Ordering::SeqCst);

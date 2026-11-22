@@ -129,7 +129,10 @@ pub struct CallbackGuard {
     entered: bool,
     _thread: std::marker::PhantomData<*mut ()>,
 }
-pub fn callback() -> CallbackGuard {
+/// # Safety
+/// Only the game's hourly callback may enter. Drop the guard before leaving that callback
+/// or entering another one.
+pub unsafe fn callback() -> CallbackGuard {
     let id = unsafe { GetCurrentThreadId() };
     if GAME_ID
         .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
@@ -322,11 +325,17 @@ fn record_stop_panic() {
 pub struct Sampler {
     control: Arc<Control>,
 }
-pub fn prepare() {
+/// # Safety
+/// Only the runtime owner may prepare the sampler. The previous sampler and its users must
+/// have stopped before this call, and this runtime's sampled workers must not have started.
+pub unsafe fn prepare() {
     EARLY_EXIT.store(false, Ordering::Release);
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
 }
-pub fn release() {
+/// # Safety
+/// Only the runtime owner may release the sampler, after it has joined and its users
+/// have quiesced.
+pub unsafe fn release() {
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
     worker_sampler_state::clear_jobs();
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
@@ -334,7 +343,10 @@ pub fn release() {
 pub fn thread_id() -> u32 {
     SAMPLER_ID.load(Ordering::Acquire)
 }
-pub fn start(
+/// # Safety
+/// Only the runtime owner may start one sampler after preparation. The acquisition IDs
+/// must be those of this runtime's workers, which participate in the sampler exit handshake.
+pub unsafe fn start(
     config: Option<&str>,
     output_dir: &Path,
     acquisition_ids: Vec<u32>,

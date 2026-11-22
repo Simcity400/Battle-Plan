@@ -292,7 +292,13 @@ pub fn hurried() -> bool {
     HURRIED.load(Ordering::SeqCst)
 }
 
-pub fn set_beside(beside: bool) {
+pub fn set_beside(thread: Option<&Thread>) {
+    set_beside_enabled(
+        thread.is_some_and(|thread| thread.handle.is_some()) && crate::command_batch::enabled(),
+    );
+}
+
+fn set_beside_enabled(beside: bool) {
     BESIDE.store(beside && !FAILED.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
@@ -770,7 +776,7 @@ pub mod tests {
         assert!(!BESIDE.load(Ordering::SeqCst));
         assert!(FAILED.load(Ordering::SeqCst));
         assert!(owed());
-        set_beside(true);
+        set_beside_enabled(true);
         assert!(!BESIDE.load(Ordering::SeqCst));
         assert!(capture_gate::begin());
         serve(|_| unreachable!("a failed capture thread reads no more"));

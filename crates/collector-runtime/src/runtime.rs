@@ -451,7 +451,10 @@ fn run(
     collector_timing::hook_timing::start();
     collector_workers::thread_cpu::register(collector_workers::thread_cpu::Role::Runtime);
     #[cfg(feature = "worker_sampler")]
-    collector_workers::worker_sampler::prepare();
+    // SAFETY: this runtime owns the sampler and is preparing it before starting workers.
+    unsafe {
+        collector_workers::worker_sampler::prepare()
+    };
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
         &fs::read(dll_path.with_file_name("collector.json"))
@@ -1376,11 +1379,14 @@ fn run(
     collector_hook_failures::workers_started();
     progress.step("workers_started", None);
     #[cfg(feature = "worker_sampler")]
-    let mut sampler = match collector_workers::worker_sampler::start(
-        sampler_config.as_deref(),
-        &sampler_output,
-        acquisition.thread_ids(),
-    ) {
+    // SAFETY: this runtime prepared the sampler and owns the registered acquisition workers.
+    let mut sampler = match unsafe {
+        collector_workers::worker_sampler::start(
+            sampler_config.as_deref(),
+            &sampler_output,
+            acquisition.thread_ids(),
+        )
+    } {
         Ok(sampler) => {
             let id = collector_workers::worker_sampler::thread_id();
             if id != 0 {
@@ -1610,9 +1616,7 @@ fn run(
     if installation_error.is_none() && !collector_memory::terminal::failed() {
         // SAFETY: the runtime has published the capture state and has not begun teardown.
         unsafe { HOURLY_ADMISSION.open() };
-        collector_capture::capture_point::set_beside(
-            capture_thread.is_some() && collector_capture::command_batch::enabled(),
-        );
+        collector_capture::capture_point::set_beside(capture_thread.as_ref());
         progress.step("ready", None);
         ready.set();
     } else {
@@ -2154,7 +2158,8 @@ fn run(
     }
     #[cfg(feature = "worker_sampler")]
     if restore_result.is_ok() {
-        collector_workers::worker_sampler::release();
+        // SAFETY: the runtime joined the sampler and quiesced its users.
+        unsafe { collector_workers::worker_sampler::release() };
     }
     if let Err(error) = spool_result
         && !collector_memory::terminal::failed()
