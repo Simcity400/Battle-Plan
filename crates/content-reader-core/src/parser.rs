@@ -242,7 +242,7 @@ pub fn is_keyword(item: &Item, keyword: &str) -> bool {
         .is_some_and(|key| key.eq_ignore_ascii_case(keyword.as_bytes()))
 }
 
-fn variable_hash(name: &[u8]) -> u32 {
+pub(crate) fn variable_hash(name: &[u8]) -> u32 {
     name.iter().fold(0x811c_9dc5, |hash, byte| {
         (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
     })

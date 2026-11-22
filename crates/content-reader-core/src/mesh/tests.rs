@@ -2250,6 +2250,7 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
 
     let unsettled = br#"
         @unused = m
+        entity = { name = early locator = { position = { @z = 1 } } name = late }
         entity = {
             game_data = { atlas_size = { @extra = overlay_only x = 4 } }
             name = @extra
@@ -2267,11 +2268,12 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
         entity = {
             name = "fourth"
             pdxmesh = "m"
-            game_data = { atlas_size = { @id = id_first x = 1 } }
-            locator = { name = "q" position = { @id = id_middle x = 1 } }
+            game_data = { atlas_size = { @liquid = id_first x = 1 } }
+            locator = { name = "q" position = { @costarring = id_middle x = 1 } }
+            locator = { name = "r" position = { @liquid = @absent x = 1 } }
         }
-        @id = id_last
-        entity = { name = @id pdxmesh = "m" }
+        @liquid = id_last
+        entity = { name = @liquid pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
@@ -2355,6 +2357,8 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert!(roster.refused_declaration("id_first").is_some());
     assert!(roster.refused_declaration("id_middle").is_some());
     assert!(roster.refused_declaration("id_last").is_some());
+    assert!(roster.refused_declaration("@absent").is_some());
+    assert!(roster.refused_declaration("early").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(

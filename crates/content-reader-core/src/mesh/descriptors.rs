@@ -1433,7 +1433,7 @@ fn recover_names(
 }
 
 fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String> {
-    let mut definitions = BTreeMap::<&[u8], Vec<&parser::Item>>::new();
+    let mut definitions = BTreeMap::<u32, Vec<&parser::Item>>::new();
     definitions_in(items, &mut definitions);
     let mut pending = Vec::new();
     let mut references = |item: &'a parser::Item| {
@@ -1443,7 +1443,7 @@ fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String
                 && let Some(raw) = field.value.scalar()
                 && raw.starts_with(b"@")
             {
-                pending.push(raw);
+                pending.push(parser::variable_hash(&raw[1..]));
             }
         }
     };
@@ -1464,13 +1464,14 @@ fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String
         if !followed.insert(reference) {
             continue;
         }
-        for definition in definitions.get(reference).into_iter().flatten() {
+        for definition in definitions.get(&reference).into_iter().flatten() {
             let Some(raw) = definition.value.scalar() else {
                 continue;
             };
             if !definition.quoted() && raw.starts_with(b"@") {
-                pending.push(raw);
-            } else if let Ok(text) = std::str::from_utf8(raw) {
+                pending.push(parser::variable_hash(&raw[1..]));
+            }
+            if let Ok(text) = std::str::from_utf8(raw) {
                 let name = unquote(text);
                 if !name.is_empty() {
                     names.insert(name);
@@ -1483,7 +1484,7 @@ fn bound_names<'a>(items: &'a [parser::Item], words: &[&str]) -> BTreeSet<String
 
 fn definitions_in<'a>(
     items: &'a [parser::Item],
-    definitions: &mut BTreeMap<&'a [u8], Vec<&'a parser::Item>>,
+    definitions: &mut BTreeMap<u32, Vec<&'a parser::Item>>,
 ) {
     for item in items {
         match &item.value {
@@ -1492,7 +1493,10 @@ fn definitions_in<'a>(
                     && let Some(key) = item.key.as_deref()
                     && key.starts_with(b"@")
                 {
-                    definitions.entry(key).or_default().push(item);
+                    definitions
+                        .entry(parser::variable_hash(&key[1..]))
+                        .or_default()
+                        .push(item);
                 }
             }
             parser::Value::Block(items) | parser::Value::Tagged { items, .. } => {
