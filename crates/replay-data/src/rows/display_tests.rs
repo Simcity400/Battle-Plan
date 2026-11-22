@@ -356,3 +356,44 @@ fn remaining_grace_keeps_the_whole_percent_the_game_shows() {
     }
     assert_eq!(crate::rows::compatibility::GRACE_PERCENT_FORMAT, 102);
 }
+
+#[test]
+fn supply_ratio_and_grace_bounds_match_exact_preimages_and_wrapping() {
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(35_000), Some(35_499)), Some([35_499, 35_499]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(None, Some(35_499)), Some([35_499, 35_499]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(35_000), None), Some([35_000, 35_999]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(0), None), Some([-999, 999]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(-1_000), None), Some([-1_999, -1_000]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(35_200), None), Some([35_200, 35_200]));
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(None, None), None);
+    for sentinel in [i64::MIN, i64::MIN + 1, i64::MAX] {
+        assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(sentinel), None), Some([sentinel, sentinel]));
+        assert_eq!(DivisionStatusRow::supply_grace_bounds(sentinel, None, 72), [sentinel, sentinel]);
+    }
+    let max_step = (i64::MAX - 1) / 1_000 * 1_000;
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(max_step), None), Some([max_step, i64::MAX - 1]));
+    let min_step = (i64::MIN + 2) / 1_000 * 1_000;
+    assert_eq!(DivisionStatusRow::supply_ratio_bounds(Some(min_step), None), Some([i64::MIN + 2, min_step]));
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(0, None, 72), [-999, 71_999]);
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(3_600_000, None, 72), [3_600_000, 3_671_999]);
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(3_600_000, Some(3_635_999), 72), [3_635_999, 3_635_999]);
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(100_000, None, 72), [100_000, 100_999]);
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(0, None, 0), [-999, 999]);
+    assert_eq!(DivisionStatusRow::supply_grace_bounds(0, None, -72), [-999, 999]);
+    assert_eq!(
+        DivisionStatusRow::effective_supply_bounds([0, 0], 7_200_000, [3_600_000, 3_671_999], 72),
+        [50_000, 50_999]
+    );
+    assert_eq!(
+        DivisionStatusRow::effective_supply_bounds([0, 0], 0, [3_600_000, 3_671_999], 72),
+        [0, 0]
+    );
+    let limit = i64::MAX / 100_000;
+    let boundary_step = limit / 1_000 * 1_000;
+    let boundary_bounds = DivisionStatusRow::supply_grace_bounds(boundary_step, None, 4);
+    assert!(boundary_bounds[0] <= limit && boundary_bounds[1] >= limit + 1);
+    assert_eq!(
+        DivisionStatusRow::effective_supply_bounds([0, 0], 100_000, boundary_bounds, 4),
+        [0, 100_000]
+    );
+}

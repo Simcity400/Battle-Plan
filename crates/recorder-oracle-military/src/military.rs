@@ -691,14 +691,13 @@ pub fn compare_division_status(
                 _ => None,
             };
             match (exact, days) {
-                (Some((Some(ratio), Some(grace))), Some(days)) if days != 0 => {
+                (Some((Some(_), Some(grace))), _) => {
                     report.scalar(
                         &label,
                         "supply_exact.grace_remaining",
                         Some(grace),
                         saved.presentation.army_current_supply_ratio.as_ref(),
                     );
-                    let _ = ratio;
                     report.scalar_checks += 1;
                     if row.supply_ratio.is_some() {
                         report.difference(
@@ -714,7 +713,7 @@ pub fn compare_division_status(
                     report.difference(
                         format!("{label}.supply_exact"),
                         format!("{exact:?}"),
-                        format!("kept only with nonzero days out of supply ({days:?})"),
+                        format!("complete exact pair, or absent only at zero days out of supply ({days:?})"),
                     );
                 }
             }

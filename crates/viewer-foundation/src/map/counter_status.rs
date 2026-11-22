@@ -58,9 +58,52 @@ pub fn stack_fill(ratios: &[i64]) -> f32 {
         .map_or(0.0, super::counter_inputs::bar_fill)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupplyRatio {
+    Exact(i64),
+    Interval([i64; 2]),
+    Missing,
+}
+
+impl Default for SupplyRatio {
+    fn default() -> Self {
+        Self::Exact(0)
+    }
+}
+
+impl SupplyRatio {
+    pub const fn exact(value: i64) -> Self {
+        Self::Exact(value)
+    }
+
+    pub const fn from_bounds(bounds: [i64; 2]) -> Self {
+        if bounds[0] == bounds[1] {
+            Self::Exact(bounds[0])
+        } else {
+            Self::Interval(bounds)
+        }
+    }
+
+    pub const fn bounds(self) -> Option<[i64; 2]> {
+        match self {
+            Self::Exact(value) => Some([value, value]),
+            Self::Interval(bounds) => Some(bounds),
+            Self::Missing => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SupplyFrame {
+    #[default]
+    Hidden,
+    Frame(u32),
+    Uncertain,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Member {
-    pub supply_ratio: i64,
+    pub supply_ratio: SupplyRatio,
     pub naval_transfer: bool,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
@@ -74,7 +117,7 @@ pub struct Member {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Glyphs {
-    pub supply: Option<u32>,
+    pub supply: SupplyFrame,
     pub digin: Option<u32>,
     pub attrition: bool,
     pub training: Option<bool>,
@@ -94,13 +137,34 @@ pub fn supply_frame(supply_ratio: i64, thresholds: SupplyThresholds) -> Option<u
     }
 }
 
-pub fn stack_supply(members: &[Member]) -> i64 {
+pub fn supply_frame_interval(bounds: [i64; 2], thresholds: SupplyThresholds) -> SupplyFrame {
+    let [low, high] = bounds;
+    let first = supply_frame(low, thresholds);
+    for threshold in [thresholds.very_low, thresholds.low, thresholds.show] {
+        if low < threshold && threshold <= high && supply_frame(threshold, thresholds) != first {
+            return SupplyFrame::Uncertain;
+        }
+    }
+    match first {
+        Some(frame) => SupplyFrame::Frame(frame),
+        None => SupplyFrame::Hidden,
+    }
+}
+
+pub fn supply_frame_for(ratio: SupplyRatio, thresholds: SupplyThresholds) -> SupplyFrame {
+    match ratio.bounds() {
+        Some(bounds) => supply_frame_interval(bounds, thresholds),
+        None => SupplyFrame::Uncertain,
+    }
+}
+
+pub fn stack_supply(members: &[Member]) -> SupplyRatio {
     members
         .iter()
         .filter(|member| !member.naval_transfer)
         .map(|member| member.supply_ratio)
         .next_back()
-        .unwrap_or(FIXED)
+        .unwrap_or(SupplyRatio::Exact(FIXED))
 }
 
 pub fn digin_frame(members: &[Member]) -> Option<u32> {
@@ -174,7 +238,9 @@ pub fn glyphs(members: &[Member], thresholds: Option<SupplyThresholds>) -> Glyph
     let training = stack_training(members);
     let (no_orders, invalid_orders) = order_glyphs(members);
     Glyphs {
-        supply: thresholds.and_then(|limits| supply_frame(stack_supply(members), limits)),
+        supply: thresholds.map_or(SupplyFrame::Hidden, |limits| {
+            supply_frame_for(stack_supply(members), limits)
+        }),
         digin: match training {
             Some(false) => digin_frame(members),
             _ => None,
@@ -212,7 +278,7 @@ mod tests {
 
     fn member(supply: i64) -> Member {
         Member {
-            supply_ratio: supply,
+            supply_ratio: SupplyRatio::exact(supply),
             ..Member::default()
         }
     }
@@ -279,16 +345,93 @@ mod tests {
 
     #[test]
     fn the_stacks_supply_is_its_last_member_that_is_not_at_sea() {
-        assert_eq!(stack_supply(&[]), FIXED);
-        assert_eq!(stack_supply(&[member(FIXED), member(10_000)]), 10_000);
-        assert_eq!(stack_supply(&[member(10_000), member(FIXED)]), FIXED);
+        assert_eq!(stack_supply(&[]), SupplyRatio::exact(FIXED));
+        assert_eq!(
+            stack_supply(&[member(FIXED), member(10_000)]),
+            SupplyRatio::exact(10_000)
+        );
+        assert_eq!(
+            stack_supply(&[member(10_000), member(FIXED)]),
+            SupplyRatio::exact(FIXED)
+        );
         let at_sea = Member {
             naval_transfer: true,
             ..member(0)
         };
-        assert_eq!(stack_supply(&[member(10_000), at_sea]), 10_000);
-        assert_eq!(stack_supply(&[at_sea]), FIXED);
-        assert_eq!(glyphs(&[at_sea], Some(VANILLA_SUPPLY)).supply, None);
+        assert_eq!(
+            stack_supply(&[member(10_000), at_sea]),
+            SupplyRatio::exact(10_000)
+        );
+        assert_eq!(stack_supply(&[at_sea]), SupplyRatio::exact(FIXED));
+        assert_eq!(
+            glyphs(&[at_sea], Some(VANILLA_SUPPLY)).supply,
+            SupplyFrame::Hidden
+        );
+    }
+
+    #[test]
+    fn supply_frame_interval_proves_every_vanilla_step_and_flags_straddling_mod_thresholds() {
+        use replay_data::rows::DivisionStatusRow;
+        for step in -2..=105 {
+            let shown = step * 1_000;
+            let bounds = DivisionStatusRow::SUPPLY_RATIO_STEP.toward_zero_bounds(shown);
+            let expected = match supply_frame(shown, VANILLA_SUPPLY) {
+                Some(frame) => SupplyFrame::Frame(frame),
+                None => SupplyFrame::Hidden,
+            };
+            assert_eq!(
+                supply_frame_interval(bounds, VANILLA_SUPPLY),
+                expected,
+                "{shown} -> {bounds:?}"
+            );
+        }
+        let off_grid = SupplyThresholds {
+            very_low: 20_500,
+            low: 35_500,
+            show: 50_500,
+        };
+        assert_eq!(
+            supply_frame_interval([34_000, 34_999], off_grid),
+            SupplyFrame::Frame(1)
+        );
+        assert_eq!(
+            supply_frame_interval([35_000, 35_999], off_grid),
+            SupplyFrame::Uncertain
+        );
+        assert_eq!(
+            supply_frame_interval([36_000, 36_999], off_grid),
+            SupplyFrame::Frame(0)
+        );
+        assert_eq!(
+            supply_frame_interval([35_499, 35_499], off_grid),
+            SupplyFrame::Frame(1)
+        );
+        assert_eq!(
+            supply_frame_interval([35_500, 35_500], off_grid),
+            SupplyFrame::Frame(0)
+        );
+        let shadowed = SupplyThresholds {
+            very_low: 40_000,
+            low: 35_500,
+            show: 50_000,
+        };
+        assert_eq!(
+            supply_frame_interval([35_000, 35_999], shadowed),
+            SupplyFrame::Frame(2)
+        );
+        let zero_boundary = SupplyThresholds {
+            very_low: 0,
+            low: 35_000,
+            show: 50_000,
+        };
+        assert_eq!(
+            supply_frame_interval([-999, 999], zero_boundary),
+            SupplyFrame::Uncertain
+        );
+        assert_eq!(
+            supply_frame_for(SupplyRatio::Missing, VANILLA_SUPPLY),
+            SupplyFrame::Uncertain
+        );
     }
 
     #[test]
@@ -335,7 +478,10 @@ mod tests {
             "the byte is clear on this member"
         );
         assert_eq!(out.digin, None);
-        assert_eq!(glyphs(&[quiet], Some(VANILLA_SUPPLY)).supply, None);
+        assert_eq!(
+            glyphs(&[quiet], Some(VANILLA_SUPPLY)).supply,
+            SupplyFrame::Hidden
+        );
         let calm = glyphs(
             &[Member {
                 exercising: Some(false),

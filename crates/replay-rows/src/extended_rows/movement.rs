@@ -1023,14 +1023,6 @@ impl DivisionStatusRow {
         })
     }
 
-    pub fn exact_supply(days: Option<i32>, ratio: i64, grace_remaining: i64) -> Option<[i64; 2]> {
-        Self::keeps_exact_supply(days).then_some([ratio, grace_remaining])
-    }
-
-    pub fn keeps_exact_supply(days: Option<i32>) -> bool {
-        days.is_some_and(|days| days != 0)
-    }
-
     pub fn supply_exact(&self) -> Option<[i64; 2]> {
         match (&self.supply_ratio_exact, &self.supply_grace_exact) {
             (Recorded::Value(Some(ratio)), Recorded::Value(Some(grace))) => Some([*ratio, *grace]),
@@ -1048,6 +1040,114 @@ impl DivisionStatusRow {
 
     pub fn displayed_supply(ratio: Option<i64>, exact: Option<i64>) -> Option<i64> {
         ratio.or_else(|| exact.map(|exact| Self::SUPPLY_RATIO_STEP.round(exact)))
+    }
+
+    pub fn supply_ratio_bounds(ratio: Option<i64>, exact: Option<i64>) -> Option<[i64; 2]> {
+        exact
+            .map(|raw| [raw, raw])
+            .or_else(|| ratio.map(|shown| Self::SUPPLY_RATIO_STEP.toward_zero_bounds(shown)))
+    }
+
+    pub fn recorded_supply_ratio_bounds(&self) -> Option<[i64; 2]> {
+        let exact = match self.supply_ratio_exact {
+            Recorded::Value(exact) => exact,
+            Recorded::NotRecorded => None,
+        };
+        Self::supply_ratio_bounds(self.supply_ratio, exact)
+    }
+
+    pub fn supply_grace_bounds(remaining: i64, exact: Option<i64>, grace_hours: i32) -> [i64; 2] {
+        if let Some(raw) = exact {
+            return [raw, raw];
+        }
+        let [low, mut high] = Self::SUPPLY_GRACE_STEP.toward_zero_bounds(remaining);
+        let limit = i64::MAX / 100_000;
+        if grace_hours > 0 && (0..=limit).contains(&remaining) {
+            let step = i64::from(grace_hours) * 1_000;
+            if remaining % step == 0 {
+                high = high.max(remaining.saturating_add(step - 1).min(limit));
+            }
+        }
+        [low, high]
+    }
+
+    pub fn recorded_supply_grace_bounds(&self, grace_hours: i32) -> Option<[i64; 2]> {
+        if let Recorded::Value(Some(raw)) = self.supply_grace_exact {
+            return Some([raw, raw]);
+        }
+        match self.supply_grace_remaining {
+            Recorded::Value(remaining) => {
+                Some(Self::supply_grace_bounds(remaining, None, grace_hours))
+            }
+            Recorded::NotRecorded => None,
+        }
+    }
+
+    pub fn effective_supply_bounds(
+        ratio: [i64; 2],
+        maximum_grace: i64,
+        grace: [i64; 2],
+        grace_hours: i32,
+    ) -> [i64; 2] {
+        if maximum_grace < 1 {
+            return [0, 0];
+        }
+        let [fraction_low, fraction_high] = Self::grace_fraction_bounds(grace, grace_hours);
+        [
+            ratio[0].max(fraction_low).clamp(0, 100_000),
+            ratio[1].max(fraction_high).clamp(0, 100_000),
+        ]
+    }
+
+    fn grace_fraction_bounds(grace: [i64; 2], grace_hours: i32) -> [i64; 2] {
+        let divisor = i64::from(grace_hours) * 100_000;
+        if divisor == 0 {
+            return [0xffff_ffff, 0xffff_ffff];
+        }
+        let [low, high] = grace;
+        if low == high && crate::display::is_sentinel(low) {
+            return [0xffff_ffff, 0xffff_ffff];
+        }
+        let mut has_sentinel = false;
+        let a = if low <= i64::MIN + 1 {
+            has_sentinel = true;
+            i64::MIN + 2
+        } else {
+            low
+        };
+        let b = if high == i64::MAX {
+            has_sentinel = true;
+            i64::MAX - 1
+        } else {
+            high
+        };
+        if a > b {
+            return [0xffff_ffff, 0xffff_ffff];
+        }
+        let eval = |x: i64| x.wrapping_mul(100_000) / divisor;
+        let period =
+            |x: i64| (i128::from(x) * 100_000 + (1_i128 << 63)).div_euclid(1_i128 << 64);
+        let (pa, pb) = (period(a), period(b));
+        let (fa, fb) = (eval(a), eval(b));
+        let (mut min_f, mut max_f) = if pa == pb {
+            (fa.min(fb), fa.max(fb))
+        } else if pb == pa + 1 {
+            let wrap = ((pa + 1) * (1_i128 << 64) - (1_i128 << 63) + 99_999)
+                .div_euclid(100_000) as i64;
+            let (before, after) = (eval(wrap - 1), eval(wrap));
+            (
+                fa.min(fb).min(before).min(after),
+                fa.max(fb).max(before).max(after),
+            )
+        } else {
+            let (lo, hi) = (i64::MIN / divisor, i64::MAX / divisor);
+            (lo.min(hi), lo.max(hi))
+        };
+        if has_sentinel {
+            min_f = min_f.min(0xffff_ffff);
+            max_f = max_f.max(0xffff_ffff);
+        }
+        [min_f, max_f]
     }
 
     pub const COMMANDER_KEYS: [&'static str; 6] = [

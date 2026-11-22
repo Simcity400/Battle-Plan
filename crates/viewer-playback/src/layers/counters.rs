@@ -556,7 +556,7 @@ impl MemberJoins for Joins<'_> {
         let fields = StatusFields {
             entrenchment: number(columns.entrenchment),
             entrenchment_cap: number(columns.entrenchment_cap),
-            supply_ratio: DivisionStatusRow::displayed_supply(native(status, columns.supply_ratio, slot).value(), native(status, columns.supply_ratio_exact, slot).value()),
+            supply_ratio: DivisionStatusRow::supply_ratio_bounds(native(status, columns.supply_ratio, slot).value(), native(status, columns.supply_ratio_exact, slot).value()),
             attrition: DivisionStatusRow::attrition(number(columns.attrition_threshold), number(columns.attrition_value)),
             exercising: byte(columns.exercising),
             has_order: byte(columns.has_order),

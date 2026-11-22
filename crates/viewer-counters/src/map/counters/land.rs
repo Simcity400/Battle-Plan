@@ -887,7 +887,7 @@ pub struct DivisionStatus {
     pub maxima: Option<[i64; 2]>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub supply_ratio: i64,
+    pub supply_ratio: counter_status::SupplyRatio,
     pub attrition: bool,
     pub exercising: Option<bool>,
     pub has_order: Option<bool>,
@@ -901,7 +901,7 @@ impl DivisionStatus {
         maxima: None,
         entrenchment: 0,
         entrenchment_cap: 0,
-        supply_ratio: counter_status::FIXED,
+        supply_ratio: counter_status::SupplyRatio::Missing,
         attrition: false,
         exercising: None,
         has_order: None,
@@ -915,7 +915,10 @@ impl DivisionStatus {
             maxima,
             entrenchment: row.entrenchment,
             entrenchment_cap: row.entrenchment_cap,
-            supply_ratio: row.supply_ratio.unwrap_or(counter_status::FIXED),
+            supply_ratio: row.supply_ratio.map_or(
+                counter_status::SupplyRatio::Missing,
+                counter_status::SupplyRatio::from_bounds,
+            ),
             attrition: row.attrition,
             exercising: Some(row.exercising != 0),
             has_order: Some(row.has_order != 0),
@@ -930,7 +933,7 @@ impl DivisionStatus {
 pub struct StatusFields {
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub supply_ratio: Option<i64>,
+    pub supply_ratio: Option<[i64; 2]>,
     pub attrition: bool,
     pub exercising: u8,
     pub has_order: u8,
@@ -1479,7 +1482,7 @@ fn status_of(
     let fields = StatusFields {
         entrenchment: row.entrenchment,
         entrenchment_cap: row.entrenchment_cap,
-        supply_ratio: row.displayed_supply_ratio(),
+        supply_ratio: row.recorded_supply_ratio_bounds(),
         attrition: row.has_attrition(),
         exercising: row.exercising,
         has_order: row.has_order,
@@ -2481,7 +2484,7 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
             organisation: 0.0,
             strength: counter_status::stack_fill(&stack.hit_points),
             glyphs: counter_status::Glyphs {
-                supply: counter_status::supply_frame(
+                supply: counter_status::supply_frame_for(
                     counter_status::stack_supply(&stack.members),
                     inputs.content.defines.supply,
                 ),
@@ -2674,12 +2677,20 @@ fn draw_land_children(
                 plate_drawn,
             },
         )?;
-        if !stack.hidden
-            && let Some(frame) = style.glyphs.supply
-            && let Some(sheet) = assets.sheet(&layout.supply.sprite)
-        {
-            batch.at_layer(u64::from(layout.supply.order));
-            draw_child(batch, sheet, &layout.supply, origin, frame, [1.0; 4]);
+        let mut refused = Vec::new();
+        if !stack.hidden {
+            match style.glyphs.supply {
+                counter_status::SupplyFrame::Frame(frame) => {
+                    if let Some(sheet) = assets.sheet(&layout.supply.sprite) {
+                        batch.at_layer(u64::from(layout.supply.order));
+                        draw_child(batch, sheet, &layout.supply, origin, frame, [1.0; 4]);
+                    }
+                }
+                counter_status::SupplyFrame::Uncertain => {
+                    refused.push(uncertain_supply_gap(&stack.members).to_owned());
+                }
+                counter_status::SupplyFrame::Hidden => {}
+            }
         }
         if stack.selected
             && let Some(sheet) = assets.sheet(&layout.selected.sprite)
@@ -2694,7 +2705,7 @@ fn draw_land_children(
                 [1.0; 4],
             );
         }
-        return Ok(Vec::new());
+        return Ok(refused);
     }
     let mut refused = Vec::new();
     let hq_sprite = stack.hq.then_some("GFX_onmap_unit_counter_empty");
@@ -2809,6 +2820,9 @@ fn draw_land_children(
             .map(|side| inputs.content.defines.type_colors.of(side)),
     );
     if !stack.hidden {
+        if style.glyphs.supply == counter_status::SupplyFrame::Uncertain {
+            refused.push(uncertain_supply_gap(&stack.members).to_owned());
+        }
         draw_glyphs(
             inputs,
             batch,
@@ -2977,7 +2991,7 @@ fn draw_gun_children(
             draw_child(batch, sheet, child, origin, frame, tint);
         }
     };
-    if let Some(frame) = style.glyphs.supply {
+    if let counter_status::SupplyFrame::Frame(frame) = style.glyphs.supply {
         draw(&layout.supply, frame, [1.0; 4]);
     }
     if stack.coarse {
@@ -3128,6 +3142,17 @@ pub(super) struct GlyphStack {
     pub(super) defending_area: bool,
 }
 
+fn uncertain_supply_gap(members: &[counter_status::Member]) -> &'static str {
+    match counter_status::stack_supply(members) {
+        counter_status::SupplyRatio::Missing => {
+            "low_supply is undecided: the stack's supply ratio (DivisionStatus) is not recorded"
+        }
+        _ => {
+            "low_supply is undecided: the stack's supply ratio (DivisionStatus) is recorded only at its display step and straddles a supply threshold"
+        }
+    }
+}
+
 pub(super) fn draw_glyphs(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,
@@ -3167,7 +3192,7 @@ pub(super) fn draw_glyphs(
     if glyphs.invalid_orders == Some(true) {
         draw_shifted(&layout.invalid_orders);
     }
-    if let Some(frame) = glyphs.supply {
+    if let counter_status::SupplyFrame::Frame(frame) = glyphs.supply {
         draw(&layout.supply, frame, [1.0; 4]);
     }
     if let Some(frame) = glyphs.digin {

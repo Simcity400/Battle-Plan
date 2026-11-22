@@ -80,7 +80,12 @@ fn health(run: &Run) -> Vec<(u32, Option<[i64; 3]>)> {
 
 #[test]
 fn supply_states_follow_the_counter_icon() {
-    let operands = |received, maximum_grace, remaining_grace, naval_transfer| Operands { received, maximum_grace, remaining_grace, naval_transfer };
+    let operands = |received, maximum_grace, remaining_grace, naval_transfer| Operands {
+        received: [received, received],
+        maximum_grace,
+        remaining_grace: [remaining_grace, remaining_grace],
+        naval_transfer,
+    };
     let cases = [
         (operands(0, 1_000_000, 1_000_000, false), IN_SUPPLY, "full grace"),
         (operands(14_999, 1_000_000, 0, false), NO_SUPPLY, "under the very-low icon"),
@@ -223,4 +228,55 @@ fn a_resumed_supply_writer_writes_the_table_of_one_never_stopped() {
     resumed.hour(&edits);
     assert_eq!(health(&unbroken), health(&resumed));
     assert_eq!(health(&resumed), [(1, Some([0, 1, 3])), (2, Some([0, 0, 1])), (3, Some([0, 1, 0]))]);
+}
+
+#[test]
+fn supply_health_preserves_off_grid_exact_thresholds_and_withholds_ambiguous_historical_rows() {
+    let mut run = Run::new(writers, INPUTS);
+    run.define(
+        Definitions::read_none()
+            .with_define(GRACE, Ok(72))
+            .with_define(LOW, Ok(50_500))
+            .with_define(VERY_LOW_ICON, Ok(15_500))
+            .with_define(LOW_ICON, Ok(35_500)),
+    );
+    let mut edits = Edits::default();
+    world(&mut edits);
+    let exact_status = |id: u64, ratio: i64, grace: i64| DivisionStatusRow {
+        division: id,
+        supply_ratio: None,
+        supply_grace_maximum: Recorded::Value(7_200_000),
+        supply_grace_remaining: Recorded::Value(DivisionStatusRow::displayed_grace(grace, Some(72))),
+        supply_ratio_exact: Recorded::Value(Some(ratio)),
+        supply_grace_exact: Recorded::Value(Some(grace)),
+        ..Default::default()
+    };
+    for (id, owner, row) in [
+        (1, 10, exact_status(1, 15_499, 0)),
+        (2, 10, exact_status(2, 15_500, 0)),
+        (3, 10, exact_status(3, 0, 3_636_000)),
+        (4, 10, exact_status(4, 0, 3_635_999)),
+        (5, 20, status(5, Some(14_000), 0)),
+        (6, 20, status(6, Some(0), 3_672_000)),
+        (7, 30, status(7, Some(15_000), 0)),
+    ] {
+        edits
+            .put(TableId::Divisions, division(id, owner, owner, 0, 7))
+            .put(TableId::DivisionLandInputs, land(id, false))
+            .put(TableId::DivisionStatus, row);
+    }
+    run.hour(&edits);
+    assert_eq!(
+        health(&run),
+        [(1, Some([2, 1, 1])), (2, Some([1, 0, 1])), (3, U)],
+        "exact operands decide off-grid thresholds; historical 15% straddles 15.5%"
+    );
+    let mut edits = Edits::default();
+    edits.put(TableId::DivisionStatus, status(7, Some(0), 3_600_000));
+    run.hour(&edits);
+    assert_eq!(health(&run)[2], (3, U), "historical 50% grace straddles 50.5% LOW_SUPPLY");
+    let mut edits = Edits::default();
+    edits.put(TableId::DivisionStatus, status(7, Some(16_000), 0));
+    run.hour(&edits);
+    assert_eq!(health(&run)[2], (3, Some([0, 1, 0])), "historical 16% is proven above 15.5% and below 50.5%");
 }
