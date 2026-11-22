@@ -37,7 +37,7 @@ import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -98,11 +98,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
-  const headFollowed = fuelHead && (!showCapacity || capacityHead);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const drillOnClock = saved ? following && storedDrill.breakdown === null || storedDrill.breakdown !== null && storedDrill.follow
     : storedDrill.breakdown !== null && storedDrill.follow;
-  const clockHour = useFallbackHour(runtime.clock, active && (following && !headFollowed && !saved || drillOnClock && !playing));
+  const clockHour = usePlaybackHour(runtime.clock, active && drillOnClock && !playing);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const heldExtent = track && saved ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
@@ -112,10 +111,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const lastHour = track?.branch.lastHour ?? 0;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const live = following && !saved;
-  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch.id, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : head, hoverHour, active && !saved,
+  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch.id, COUNTRY_FUEL, 'fuel', tags, live ? null : head, hoverHour, active && !saved,
     false, membership, lastHour, live);
   const capacity = useMeasureSeries(runtime.client, showCapacity ? track?.source : undefined, track?.branch.id, COUNTRY_FUEL, 'capacity', tags,
-    capacityHead ? null : head, hoverHour, active && !saved && showCapacity, false, membership, lastHour, live);
+    live ? null : head, hoverHour, active && !saved && showCapacity, false, membership, lastHour, live);
   const withStrip = single && options.strip !== false && !saved;
   const gain = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch.id, FUEL_DAYS, 'stripGain', tags, null, null,
     active && withStrip, false, membership, lastHour, live);
@@ -282,7 +281,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     return fitTooltip([{ title: dayLabel(at), rows }], viewport);
   };
   const legend = single ? null : tags.map((tag, row) => ({ id: tag, label: nameOf(tag), color: colourOf(tag, 'fuel'),
-    value: fuelEntry && store ? <FollowedText store={store} entry={fuelEntry} write={(entry, cell) => {
+    value: fuelEntry && store ? <FollowedText entry={fuelEntry} write={(entry, cell) => {
       const raw = rowAmount(entry.answer, row, 0);
       cell.put(raw == null ? raw === null ? 'Not recorded' : 'Loading…' : formatFuel(BigInt(Math.round(raw)), QUANTITY_SCALE, digits), '');
     }} /> : undefined }));

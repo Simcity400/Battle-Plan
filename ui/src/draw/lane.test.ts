@@ -11,8 +11,8 @@ interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-type Record = { id: number; hour: number; kind: 'data' | 'stands' | 'waiting' | 'completed'; data?: unknown; stepped?: boolean };
-function panels(records: Record[], seek = 0): Uint8Array {
+type PanelRow = { id: number; hour: number; kind: 'data' | 'stands' | 'waiting' | 'completed'; data?: unknown; stepped?: boolean };
+function panels(records: PanelRow[], seek = 0): Uint8Array {
   const parts = records.map(record => {
     const body = record.kind === 'data' ? encode(record.data) : new Uint8Array();
     const out = new Uint8Array((16 + body.length + 7) & ~7), view = new DataView(out.buffer);
@@ -35,7 +35,7 @@ function rig(views: Record<string, LaneView> = {}) {
   const lane: Lane<Fake> = new Lane<Fake>({
     lane: 0, lanes: 1,
     views: kind => views[kind] ?? fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape)),
-    crop: async sources => sources.map(source => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })),
+    crop: async sources => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })),
     present: presentation => page.offer(presentation),
     release: bytes => released.push(bytes),
     fail: reason => failures.push(reason),

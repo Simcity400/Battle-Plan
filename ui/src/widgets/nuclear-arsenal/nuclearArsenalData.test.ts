@@ -46,20 +46,19 @@ test('a held empty stockpile is dated at the displayed hour, including a later d
   const picture = new ArsenalPicture({ getContext: () => ctx } as unknown as OffscreenCanvas, () => {}, item => hits.push(item?.key));
   const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0,
     width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
-  const coverage = { since: read.hour, through: shownAt };
-  picture.draw(model, read, coverage, read.hour);
+  picture.draw(model, read, read.hour);
   assert.ok(ink.includes('No nuclear stockpile recorded on 1 Jan 1936.'));
   cleared.length = ink.length = 0;
-  picture.draw(model, read, coverage, shownAt);
+  picture.draw(model, read, shownAt);
   assert.ok(ink.includes(expected));
   assert.ok(cleared.every(([, , w, h]) => w < model.width || h < model.height), 'changing the notice keeps the rest of the plot');
   assert.deepEqual(picture.rows(), [{ row: 'empty', key: 'notice', value: expected }]);
-  picture.draw(model, REPLY, coverage, shownAt);
+  picture.draw(model, REPLY, shownAt);
   const ys = Array.from({ length: model.height }, (_, y) => y);
   const y = ys.find(y => picture.inspect({ x: 100, y })?.item)!;
   picture.hover({ x: 100, y });
-  picture.draw(model, { ...REPLY, countries: [{ ...REPLY.countries[0], tag: 'MOD' }] }, coverage, shownAt);
-  picture.draw(model, read, coverage, shownAt);
+  picture.draw(model, { ...REPLY, countries: [{ ...REPLY.countries[0], tag: 'MOD' }] }, shownAt);
+  picture.draw(model, read, shownAt);
   assert.deepEqual(hits, ['USA', 'MOD', undefined]);
 
 });

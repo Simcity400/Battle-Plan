@@ -1,5 +1,4 @@
 import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
-import { FollowDecoder } from '../../dashboard/follow/decode.ts';
 import { Profiler } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -67,7 +66,6 @@ export const details = (read: number): SpecialProjectDetails => ({ hour: read, u
 
 const stamp = { route: 9, epoch: 1, generation: 1 };
 const panels: { id: number; port?: MessagePort } = { id: -1 };
-const decoder = new FollowDecoder();
 function follow(params: { id: number; query: { panel?: string } }) {
   if (params.query.panel !== 'special-project-details') return { available: false, reason: 'not followed here' };
   panels.id = params.id;
@@ -75,7 +73,7 @@ function follow(params: { id: number; query: { panel?: string } }) {
 }
 function push(hour: number) {
   const read = hour - (hour - 4) % 24;
-  panels.port?.postMessage([decoder.item(datedPanel(panels.id, hour, details(read)).buffer)]);
+  panels.port?.postMessage({ kind: 'panels', bytes: datedPanel(panels.id, hour, details(read)) });
 }
 
 let clock: Clock;

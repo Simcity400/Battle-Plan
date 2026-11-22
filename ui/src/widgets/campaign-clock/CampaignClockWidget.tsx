@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -8,7 +8,7 @@ import { followStore } from '../../dashboard/follow/connection.ts';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -47,13 +47,11 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
     shown(shownThrough(entry));
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
-  const [headFollowed, setHeadFollowed] = useState(false);
-  useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
   const structureOf = (entry: FollowEntry | null) => clockStructure(clockHead(entry?.answer));
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null, () => structureOf(entryRef.current), woken);
   const head = headEntry ? clockHead(headEntry.answer) : null;
-  const live = useMemo(() => store && headEntry ? liveFollowed(store, headEntry, entry => {
+  const live = useMemo(() => store && headEntry ? liveFollowed(headEntry, entry => {
     const totals = clockHead(entry.answer), values = new Map<string, SortValue>();
     if (totals && !('reason' in totals)) {
       values.set(liveKey('total', 'time'), totals.recorded);
@@ -64,9 +62,9 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
     return valuesOf(values, totals && 'reason' in totals ? totals.reason : totals ? UNCLASSIFIED : 'Not read yet');
   }) : undefined, [store, headEntry]);
 
-  const hour = useFallbackHour(runtime.clock, active && following && !headFollowed);
+  const hour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, hour);
-  const request = headFollowed ? null : clockRequest(widget, track, window ?? null);
+  const request = following ? null : clockRequest(widget, track, window ?? null);
   const { data, error, retry, moment } = useFollowedProduct<CampaignClockReply>(runtime.client, request,
     ['firstHour', 'lastHour'], active, validateClock, track?.source);
   const showing = data && !error && moment ? (JSON.parse(moment) as [number, number])[1] : null;

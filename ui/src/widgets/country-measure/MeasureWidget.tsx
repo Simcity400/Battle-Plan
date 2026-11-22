@@ -35,7 +35,7 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { paintMeasureRow, rowAmount } from '../../dashboard/follow/painters.ts';
-import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
@@ -102,7 +102,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const ceilingFollowed = useFollow(store, ceilingQuery, root, NO_PAINT);
   const ceilingHead = followsHead(ceilingFollowed);
   const headFollowed = followedHead && (!showCeiling || ceilingHead);
-  const playbackHour = useFallbackHour(runtime.clock, active && following && !headFollowed);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const pinned = widget.time.mode === 'pin';
   const playhead = window && (following || pinned) ? window.lastHour : null;
@@ -113,9 +113,9 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
     [following, runtime.clock, axisOffset]);
   const membership = resolved.membership ?? undefined;
   const balances = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'country-measure', config.measure, resolved.tags,
-    followedHead ? null : head, hoverHour, active, options.spendTicks === true, membership, lastHour, following);
+    following ? null : head, hoverHour, active, options.spendTicks === true, membership, lastHour, following);
   const ceiling = useMeasureSeries(runtime.client, showCeiling ? track?.source : undefined, track?.branch.id, 'country-stability', 'maxCommandPower',
-    resolved.tags, ceilingHead ? null : head, hoverHour, active && showCeiling, false, membership, lastHour, following);
+    resolved.tags, following ? null : head, hoverHour, active && showCeiling, false, membership, lastHour, following);
   const [hoverCluster, setHoverCluster] = useChangedState<{ owner: unknown; cluster: MarkCluster | null } | null>(null);
   const [changeList, setChangeList] = useState<{ owner: unknown; id: number; tag: string; first: string; end?: string } | null>(null);
   const [changeLists, setChangeLists] = useState(0);
@@ -148,8 +148,8 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   }, [resolved.tags, styles.data, styles.error, known, groups.data, groups.error, widget.countries.kind, onDiagnostics, showCeiling, ceiling.error, config.ceiling]);
 
   const decimals = balances.decimals;
-  const readHead = !followedHead && resolved.tags.length > 0 && resolved.tags.every(tag => balances.hourLoaded(tag, Math.floor(head)));
-  useEffect(() => { if (!followedHead) shown(readHead ? head : null); }, [followedHead, readHead, head, shown]);
+  const readHead = !following && resolved.tags.length > 0 && resolved.tags.every(tag => balances.hourLoaded(tag, Math.floor(head)));
+  useEffect(() => { if (!following) shown(readHead ? head : null); }, [following, readHead, head, shown]);
   const series = useMemo(() => {
     const colours = countryLineColours(resolved.tags, known, tokens.surface, tokens.countryColours === 'fixed');
     return resolved.tags.map(tag => {
@@ -195,7 +195,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
     const raw = item.valueAt(at);
     return { id: item.tag, label: labelAt(shownAt)(item.tag).name, color: item.hex,
       value: followedEntry && store
-        ? decimals === null ? 'Loading…' : <FollowedText store={store} entry={followedEntry} write={(entry, cell) => paintMeasureRow(entry.answer, cell, row, decimals, digits)} />
+        ? decimals === null ? 'Loading…' : <FollowedText entry={followedEntry} write={(entry, cell) => paintMeasureRow(entry.answer, cell, row, decimals, digits)} />
         : raw == null || decimals === null ? balances.hourLoaded(item.tag, at) ? 'Not recorded' : 'Loading…' : formatBalance(raw, decimals, digits),
       flag: <CountryFlagUrl className="country-flag" url={legendLooks.flag(item.tag, shownAt)}
         pending={legendLooks.flagPending(item.tag, shownAt)} detail={legendLooks.flagDetail?.(item.tag, shownAt)} reason={legendLooks.flagReason(item.tag, shownAt)} /> };

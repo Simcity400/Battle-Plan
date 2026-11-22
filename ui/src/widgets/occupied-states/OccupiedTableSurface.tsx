@@ -8,7 +8,7 @@ import FamilyTable, { type FamilyColumn } from '../../draw/tables/FamilyTable.ts
 import type { TableReading, TableRowModel } from '../../draw/tables/surface.ts';
 import type { TableBuild } from '../../draw/tables/builders';
 import { encodeTableSettings, tableSettingsOf, TABLE_SETTINGS_KEY } from '../../draw/tables/settings.ts';
-import type { ExactRows } from '../../draw/tables/host.ts';
+import type { ExactRows } from '../../draw/tables/FamilyTable.tsx';
 import type { TableSettings } from '../../draw/tables/logic.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { occupationTooltipKeys, type OccupiedStatesReply } from './occupiedStatesData.ts';

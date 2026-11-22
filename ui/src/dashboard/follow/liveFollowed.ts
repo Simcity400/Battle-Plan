@@ -7,14 +7,14 @@ import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts'
 import type { FollowedAnswer } from './message';
 import type { FollowEntry, FollowQuery, FollowStore } from './store';
 
-export function liveFollowed<T>(store: Pick<FollowStore, 'watch'>, entry: FollowEntry, read: (entry: FollowEntry) => T): Live<T> {
+export function liveFollowed<T>(entry: FollowEntry, read: (entry: FollowEntry) => T): Live<T> {
   let made: { version: number; value: T } | null = null;
   return {
     read: () => {
       if (made?.version !== entry.version) made = { version: entry.version, value: read(entry) };
       return made.value;
     },
-    subscribe: changed => store.watch(entry, changed),
+    subscribe: changed => entry.subscribe(changed),
   };
 }
 
@@ -30,7 +30,7 @@ export function useLiveFollow<T>(store: FollowStore | null, query: FollowQuery |
   reading.current = read;
   const followed = useFollow(store, query, target, NO_PAINT, structureOf);
   const entry = followed.entry;
-  const live = useMemo(() => store && entry ? liveFollowed(store, entry, held => reading.current(held)) : undefined, [store, entry]);
+  const live = useMemo(() => store && entry ? liveFollowed(entry, held => reading.current(held)) : undefined, [store, entry]);
   return { ...followed, live };
 }
 

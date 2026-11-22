@@ -1,7 +1,7 @@
 import type { LiveValues } from '../../charts/live';
 import { ArsenalPicture } from '../arsenal.ts';
 import type { PanelGeometry, PanelView } from './view';
-import type { Structure } from '../followed';
+import type { Structure } from '../views/fields';
 import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';

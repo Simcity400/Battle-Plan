@@ -10,11 +10,9 @@ import { fitCountryFlag } from '../components/countryFlagPresentation.ts';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import { arsenalNotice, arsenalRows } from '../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { ArsenalSelection } from '../widgets/nuclear-arsenal/nuclearArsenalData';
-import { pictureHour } from './pictureDate.ts';
-import type { PictureInterval } from './pictureDate';
 
 export interface ArsenalFeed extends ArsenalSelection {
-  follow?: number; offset: number; fixed?: number; date?: PictureInterval; asked?: boolean; reply?: NuclearArsenalReply;
+  follow?: number; offset: number; fixed?: number; asked?: boolean; reply?: NuclearArsenalReply;
 }
 export interface ArsenalModel extends ArsenalFeed {
   widget?: string;
@@ -89,9 +87,8 @@ export class ArsenalPicture {
     return this.flags.get(url);
   }
 
-  draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, date: PictureInterval | undefined, head: number, fixed = model.fixed) {
+  draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, position: number | null) {
     this.changed = false;
-    const position = pictureHour(date, head + model.offset, fixed === undefined ? undefined : fixed + model.offset);
     if (!reply || position === null) { if (this.state) this.forget(); return null; }
     const { tokens, width, height, dpr } = model, ctx = this.ctx;
     const previous = this.state, oldLayout = this.layout;

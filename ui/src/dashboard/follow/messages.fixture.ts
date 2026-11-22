@@ -1,6 +1,4 @@
 import { encode } from '@msgpack/msgpack';
-import { parseFollowed } from './message.ts';
-import type { PageReading, Placed } from './store';
 
 export type Spec =
   | { notRecorded: string }
@@ -79,22 +77,6 @@ export function datedPanel(id: number, hour: number, data?: unknown, seek = 1) {
   words.set([0x324c4e50, 6, 1, 0, 9, seek, id, hour, data === undefined ? 3 : 1, body.length]);
   out.set(body, 40);
   return out;
-}
-
-export function fakeTransport() {
-  const sent: string[] = [];
-  let receive: ((reading: PageReading, placed: Placed) => void) | null = null;
-  return {
-    sent,
-    follow: (id: number, query: unknown) => { sent.push(`follow ${id} ${JSON.stringify(query)}`); },
-    unfollow: (id: number) => { sent.push(`unfollow ${id}`); },
-    listen: (handler: (reading: PageReading, placed: Placed) => void) => { receive = handler; return () => { receive = null; }; },
-    deliver(bytes: Uint8Array) {
-      const step = parseFollowed(bytes);
-      for (const { id, hour, answer } of step.answers) receive?.({ id, hour, answer, through: step.hour }, 'current');
-    },
-    reading: (reading: PageReading, placed: Placed = 'current') => { receive?.(reading, placed); },
-  };
 }
 
 export function manualFrames() {

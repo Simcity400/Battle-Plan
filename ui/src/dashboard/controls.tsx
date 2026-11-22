@@ -15,7 +15,6 @@ import { desktopAvailable } from '../shell/api';
 import { Popover, usePopover } from '../components/Popover';
 import { menuKeys } from '../components/ContextMenu';
 import { commitZone } from '../shell/commitCount';
-import { attachDateFace } from '../draw/dateFaceHost.ts';
 import { gapText } from '../shell/recordingNotice';
 
 export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
@@ -98,8 +97,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
-    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe,
-      face: (host: HTMLElement, date: Element, hour: Element) => attachDateFace(host, date, hour, clock, axisOffset) }, [clock, axisOffset]);
+    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe }, [clock, axisOffset]);
   const timeline = useRef<HTMLInputElement>(null);
   const previous = useRef<HTMLButtonElement>(null);
   const play = useRef<HTMLButtonElement>(null);

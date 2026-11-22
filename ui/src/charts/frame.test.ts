@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DisplayRate, PresentationRate, shownAt } from '../draw/frameRate.ts';
+import { DisplayRate } from '../draw/frameRate.ts';
 import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame.ts';
 import { hideTooltip, showTooltip, tooltipStore } from './tooltip.ts';
 import { parseAppearance, DEFAULT_APPEARANCE } from '../shell/appearance/settings.ts';
@@ -68,38 +68,12 @@ test('the pointer never shows hours after the playhead', () => {
   assert.equal(pointerHour(-5, [0, 1000], 600), 0);
 });
 
-test('the worker presents 60 frames on both a 95 Hz and a 240 Hz display and skips missed turns', () => {
-  for (const hz of [95, 240]) {
-    const cadence = new PresentationRate();
-    const times = Array.from({ length: hz }, (_, i) => 1000 * i / hz);
-    assert.equal(times.filter(at => cadence.due(at, 60)).length, 60);
-    assert.equal(cadence.due(2500, 60), true);
-    assert.equal(cadence.due(2501, 60), false);
-    assert.equal(times.filter(at => cadence.due(at, 0)).length, hz);
-  }
-});
-
-test('a frame is drawn for the first display it can reach, the next vsync after its work begins', () => {
+test('the display rate is measured from short frame intervals', () => {
   const rate = new DisplayRate();
-  assert.equal(rate.interval, 0, 'a display not yet measured gives no lead');
-  assert.equal(shownAt(100, 103, rate.interval), 103, 'and the frame draws the clock as its work begins');
+  assert.equal(rate.interval, 0, 'a display not yet measured gives no interval');
   for (let i = 0; i <= 32; i++) rate.sample(i * 10);
   assert.equal(rate.interval, 10);
   rate.sample(325);
-  assert.equal(rate.interval, 5, 'a faster display shortens the lead at its first frame');
-  assert.equal(shownAt(100, 100, 10), 110, 'begun at its vsync');
-  assert.equal(shownAt(100, 109.9, 10), 110, 'begun late within the interval');
-  assert.equal(shownAt(100, 110, 10), 110, 'begun after the vsync it expected: the clock as its work begins');
-  assert.equal(shownAt(100, 95, 10), 110, 'a clock read before the frame time');
+  assert.equal(rate.interval, 5, 'a faster display shortens the interval at its first frame');
 });
 
-test('a 60 FPS cap presents each eligible native step when the 95 Hz display starts between steps', () => {
-  const cadence = new PresentationRate(), presented = [];
-  const stepMs = 1000 / 60, origin = 4;
-  for (let i = 0; i <= 95; i++) {
-    const at = i * 1000 / 95;
-    const step = Math.floor((at - origin) / stepMs);
-    if (cadence.due(at, 60, origin + step * stepMs)) presented.push(step);
-  }
-  assert.deepEqual(presented, Array.from({ length: 61 }, (_, i) => i - 1));
-});

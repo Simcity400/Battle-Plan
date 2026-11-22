@@ -23,10 +23,11 @@ test('a followed answer gives each asked key its value, and a key without one is
 });
 
 test('a followed entry is read again only when its answer moves, and wakes its chart as answers land', () => {
-  const entry: FollowEntry = { id: 1, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
   const watchers: (() => void)[] = [];
+  const entry = { id: 1, status: 'followed' as const, answer: undefined, hour: 0, through: 0, version: 0,
+    subscribe: (changed: () => void) => { watchers.push(changed); return () => {}; } };
   let made = 0;
-  const live = liveFollowed({ watch: (_entry, changed) => { watchers.push(changed); return () => {}; } }, entry, held => { made++; return held.version; });
+  const live = liveFollowed(entry as FollowEntry, held => { made++; return held.version; });
   assert.equal(live.read(), 0);
   assert.equal(live.read(), 0);
   assert.equal(made, 1);

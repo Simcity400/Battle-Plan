@@ -43,7 +43,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import { repliedCells, reporting } from '../../dashboard/follow/liveCells';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { BREAKDOWN, OPTIONS } from './definition';
@@ -103,7 +103,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [resourceId, setResourceId] = useState<number>();
   const following = widget.time.mode === 'follow';
-  const requestHour = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
+  const requestHour = usePlaybackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
   const window = resolveWindow(widget, track, runtime.tracks, requestHour);
   const savedExtent = saved?.extent ? [track.branch.firstHour + saved.extent[0], track.branch.firstHour + saved.extent[1]] as [number, number] : null;
   const extent: [number, number] = savedExtent && savedExtent[0] >= track.branch.firstHour && savedExtent[1] <= track.branch.lastHour ? savedExtent

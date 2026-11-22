@@ -6,7 +6,7 @@ import { liveByColumn, liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { tableSortOf, tableSortToken } from '../../charts/table/options';
 import FamilyTable, { type FamilyColumn } from '../../draw/tables/FamilyTable.tsx';
-import type { ExactRows } from '../../draw/tables/host.ts';
+import type { ExactRows } from '../../draw/tables/FamilyTable.tsx';
 import { perfLog } from '../../shell/perf.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../draw/tables/settings.ts';
 import type { TableSettings } from '../../draw/tables/logic.ts';
@@ -29,7 +29,7 @@ import { stickyLimit, stickyMembers, useStickyMembers, type StickyMembers } from
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry, FollowQuery } from '../../dashboard/follow/store';
 import type { FollowedAnswer } from '../../dashboard/follow/message.ts';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
@@ -40,7 +40,6 @@ import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition';
 import { handedLive, useFollowedAll } from './followedAll.ts';
-import type { HandedSources } from './followedAll';
 import { useScoreboardColumns } from './scoreboardColumns.ts';
 import { drawnCell, followedRow, followedValues, measureCell, partialSource, rankedTags, rankingColumn, rankingDescending, replyRows, replyValues,
   scoreboardColumnNote, scoreboardParams, scoreboardSort, scoreboardTooltip, selectedColumns, validateScoreboardReply } from './scoreboardData.ts';
@@ -93,9 +92,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const rankEntry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => {
-    if (!store || !rankEntry) return undefined;
-    return store.watch(rankEntry, () => { for (const wake of [...woken]) wake(); });
-  }, [store, rankEntry, woken]);
+    if (!rankEntry) return undefined;
+    return rankEntry.subscribe(() => { for (const wake of [...woken]) wake(); });
+  }, [rankEntry, woken]);
   const stickyReset = JSON.stringify([branchId, top, rankFamily, descending, following]);
   const sticky = useRef<StickyMembers | null>(null);
   const membersAt = (hour: number) => top != null
@@ -117,24 +116,24 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && columnReads
     ? { product: 'series-state', params: { branchId, family, reads: columnReads } } : null),
   [familiesText, following, branchId, columnReadsText]);
-  const columnsFollowed = useFollowedAll(store, columnQueries, root, undefined, 'availability');
+  const columnsFollowed = useFollowedAll(store, columnQueries, root);
   const columnsNow = useRef(columnsFollowed);
   columnsNow.current = columnsFollowed;
-  const followedHead = following && !!store && !ranking.reason && !columnsFollowed.reason && (top == null || rankQuery !== null);
-  const handed = useMemo<HandedSources<LiveValues<bigint>>>(() => new Map(), [store, branchId]);
+  const followedHead = following && !!store && (top == null || rankQuery !== null);
+  const refused = following ? ranking.reason ?? columnsFollowed.reason : undefined;
   const sources = useMemo(() => {
     const out = new Map<string, Live<LiveValues<bigint>> & { entry: () => FollowEntry | null }>();
-    if (store) families.forEach((family, at) => out.set(familyKey(family), handedLive(store, () => columnsNow.current, at, handed, familyKey(family),
-      entry => liveFollowed(store, entry, (held: FollowEntry) => followedValues(held.answer)), () => NOT_READ_YET)));
+    if (store) families.forEach((family, at) => out.set(familyKey(family), handedLive(() => columnsNow.current, at,
+      entry => liveFollowed(entry, (held: FollowEntry) => followedValues(held.answer)), () => NOT_READ_YET)));
     return out;
-  }, [store, familiesText, handed]);
+  }, [store, familiesText]);
 
-  const playbackHour = useFallbackHour(runtime.clock, following && !followedHead);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const moment = Math.floor(window?.lastHour ?? lastHour);
   const askedTags = useMemo(() => top == null ? rankedCandidates(resolved, moment, resolved.tags) : [], [top, resolved, moment]);
   const asked = useMemo(() => shown.map(column => column.key), [shown]);
-  const params = !followedHead && track && registryData && !resolved.reason ? scoreboardParams(track.branch.id, moment, shown, askedTags, top, rank, descending) : null;
+  const params = !following && track && registryData && !resolved.reason ? scoreboardParams(track.branch.id, moment, shown, askedTags, top, rank, descending) : null;
   const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, asked.length), [asked]);
   const result = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour', 'tags'], active, validate, track?.source);
@@ -171,7 +170,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (!perfLog) return undefined;
     const tell = () => reportShown(shownAt.current());
     tell();
-    const stops = [...store && rankEntry ? [store.watch(rankEntry, tell)] : [], ...[...sources.values()].map(source => source.subscribe(tell))];
+    const stops = [...rankEntry ? [rankEntry.subscribe(tell)] : [], ...[...sources.values()].map(source => source.subscribe(tell))];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock, store, rankEntry, sources, reportShown, followedHead, reply]);
   const wanted = useMemo(() => followedHead ? starts.flatMap(([tag, hours]) => hours.flatMap(([hour, held]) => held ? [{ tag, hour }] : []))
@@ -266,17 +265,16 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     const absent = contentSet(options.columns).map(contentKey).filter(key => !registry.some(column => column.key === key));
     const unknown = registryData && absent.length
       ? [`${absent.length} selected ${absent.length === 1 ? 'column is' : 'columns are'} not in this recording: ${absent.join(', ')}.`] : [];
-    const unfollowed = following && !followedHead && store ? [`Values requested at the playhead: ${ranking.reason ?? columnsFollowed.reason
-      ?? 'the service does not follow them'}.`] : [];
+    const unfollowed = refused ? [`Values are not followed here: ${refused}.`] : following && !followedHead ? ['Values are not followed here: the ranked top names no measure.'] : [];
     const warnings = [...(registryData?.warnings ?? []), ...(reply?.warnings ?? []), ...(groupsWarnings ?? []), ...unknown, ...unfollowed];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [registryData, reply, groupsWarnings, options.columns, onDiagnostics, following, followedHead, store, ranking.reason, columnsFollowed.reason, registry]);
+  }, [registryData, reply, groupsWarnings, options.columns, onDiagnostics, following, followedHead, refused, registry]);
 
   const hour = followedHead ? Math.floor(headAt(structureHour) ?? lastHour) : moment;
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
-    const failure = followedHead ? ranking.failure ?? columnsFollowed.failure : undefined;
+    const failure = followedHead ? refused ?? ranking.failure ?? columnsFollowed.failure : undefined;
     if (failure) return <WidgetState kind="error" failure={asFailure(new Error(failure))} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (registryResult.error) return <WidgetState kind="error" failure={registryResult.error} onRetry={registryResult.retry} />;

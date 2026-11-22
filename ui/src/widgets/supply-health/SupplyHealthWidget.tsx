@@ -31,7 +31,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { definition } from './definition';
 import { supplyCountrySelection } from './SupplyCountryChip';
@@ -62,7 +62,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const pinned = options.show === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   const following = widget.time.mode === 'follow';
-  const playbackHour = useFallbackHour(runtime.clock, false);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const drillFollows = drill.breakdown !== null && drill.follow;
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);

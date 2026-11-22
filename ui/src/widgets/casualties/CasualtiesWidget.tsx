@@ -26,7 +26,7 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
-import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -136,11 +136,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const followed = [dealt, taken, unknown, partial];
   const followedHead = lives.every(live => live !== undefined);
 
-  const playbackHour = useFallbackHour(runtime.clock, active && following && !followedHead);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const moment = Math.floor(window?.lastHour ?? lastHour);
 
-  const asked = !followedHead && track && window;
+  const asked = !following && track && window;
   const rankRequest = asked && top != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } } : null;
   const rank = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour'], active, undefined, track?.source);

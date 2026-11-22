@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, heldPanel, momentHour, retain, watchBoundary, whenDue, withHeld } from './headProduct.ts';
+import { headRead, headSubject, momentHour, retain, watchBoundary, whenDue, withHeld } from './headProduct.ts';
 import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
 import type { HeadProduct } from './headProduct';
 import type { BoundTrack, WidgetSpec } from './model';
-import type { FollowEntry } from './follow/store';
-import { observeOnScreen, screenHolder } from './follow/useFollow.ts';
+import { observeOnScreen, screenHolder } from './follow/onScreen.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
@@ -51,27 +50,7 @@ test('an hour outside the recorded branch, or no track, asks nothing', () => {
   assert.equal(headRead(widget({ mode: 'follow' }), undefined, [], null).hourAt(200), null);
 });
 
-test('a followed panel is asked by the fallback’s clock until its first push lands, and read only from pushes after, whatever a seek empties', () => {
-  assert.equal(headSource(true, 'followed', false), 'fallback', 'a follow whose first push has not landed asks the hour sought');
-  assert.equal(headSource(true, 'followed', true), 'pushed', 'once a push has landed, a seek that empties the reading keeps the pushed source and its surface');
-  assert.equal(headSource(true, 'pending', false), 'fallback');
-  assert.equal(headSource(true, 'unavailable', true), 'fallback');
-  assert.equal(headSource(true, 'off', false), 'asked', 'not watched yet, or with no element, it is asked as rendered');
-  assert.equal(headSource(true, 'off', false, true), 'idle', 'following but seen off screen, nothing is read for it, whatever renders around it');
-  assert.equal(headSource(false, 'off', false, true), 'asked', 'not following, its own hour is asked wherever it is');
-  assert.equal(headSource(false, 'followed', true), 'asked');
-});
-
-test('a followed head reads only the panel of the hour shown, and holds the last landed one apart, only while that hour is read', () => {
-  const landed = { panel: { data: 'hour 23', refused: null }, values: new Map([['GER:total', 3]]), hour: 23, through: 23 };
-  const entry = { id: 1, status: 'followed', answer: undefined, panel: landed.panel, values: landed.values, landed, hour: 23, through: 23, version: 1 } as FollowEntry;
-  assert.equal(heldPanel(entry), undefined, 'the panel of the hour shown is the reading, nothing is held');
-  Object.assign(entry, { panel: undefined, values: undefined });
-  assert.equal(heldPanel(entry), landed, 'a step that empties the reading holds the last panel with its values and hours');
-  Object.assign(entry, { landed: null });
-  assert.equal(heldPanel(entry), undefined, 'a backward seek holds nothing');
-  assert.equal(headSource(true, 'followed', entry.landed !== undefined), 'pushed', 'and the follow keeps its pushed source');
-  assert.equal(heldPanel(null), undefined);
+test('a drawn host is handed the held reading dated at its own hours, until the hour shown lands', () => {
   const live = { read: () => ({ get: () => 3, missing: () => '' }), subscribe: () => () => {} };
   const pending = { data: undefined, at: null, atNow: () => null, shownAt: () => null, held: { data: 'hour 23', hour: 23, through: 23, live } } as unknown as HeadProduct<string>;
   const drawn = withHeld(pending);

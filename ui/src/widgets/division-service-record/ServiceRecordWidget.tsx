@@ -12,14 +12,14 @@ import { subjectHandle } from '../../dashboard/chosen';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { careersStructure, topDivision, validateDivisionCareers } from './careersData';
 import { OPTIONS } from './definition';
 import RecordView from './RecordView';
 
 export default function ServiceRecordWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  const playback = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playback = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const options = resolveOptions(OPTIONS, widget.options);

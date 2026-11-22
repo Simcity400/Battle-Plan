@@ -11,7 +11,7 @@ import { CountriesSection } from './settings/CountriesSection';
 import MapWidget from '../widgets/map/MapWidget';
 import { useIdentityHour } from './atHead.ts';
 import { askTimeline } from './countryTimeline.ts';
-import { useFallbackHour } from './follow/useFollow.ts';
+import { usePlaybackHour } from './follow/useFollow.ts';
 import { firstHourOfMonth, gameDate, monthNames } from './calendar.ts';
 import { useCountriesAt } from './useCountriesAt.ts';
 
@@ -67,7 +67,7 @@ function Identity({ of }: { of: BoundTrack }) {
 }
 
 function Fallback({ on }: { on: boolean }) {
-  return <span data-fallback>{useFallbackHour(clock, on)}</span>;
+  return <span data-fallback>{usePlaybackHour(clock, on)}</span>;
 }
 
 const host = document.body.appendChild(document.createElement('div'));

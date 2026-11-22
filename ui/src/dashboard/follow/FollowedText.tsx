@@ -1,19 +1,18 @@
 import { useLayoutEffect, useRef } from 'react';
-import type { FollowEntry, FollowStore } from './store.ts';
+import type { FollowEntry } from './store.ts';
 import { textCell } from './painters.ts';
 import type { TextCell } from './painters.ts';
-import { measuredWidget } from '../widgetPerf.ts';
 
-export function FollowedText({ store, entry, write }: { store: FollowStore; entry: FollowEntry; write: (entry: FollowEntry, cell: TextCell) => void }) {
+export function FollowedText({ entry, write }: { entry: FollowEntry; write: (entry: FollowEntry, cell: TextCell) => void }) {
   const span = useRef<HTMLSpanElement>(null);
   const writing = useRef(write);
   writing.current = write;
-  const widget = measuredWidget();
   useLayoutEffect(() => {
-    if (!span.current || !store.get(entry.id)) return;
+    if (!span.current) return;
     const cell = textCell(span.current);
-    const painter = store.painter(entry, held => writing.current(held, cell), true, widget);
-    return () => painter.dispose();
-  }, [store, entry, widget]);
+    const paint = () => { if (entry.version) writing.current(entry, cell); };
+    paint();
+    return entry.subscribe(paint);
+  }, [entry]);
   return <span ref={span}>…</span>;
 }

@@ -1,9 +1,4 @@
-[data-ink-content] { position: relative; }
-.draw-panel-ink { position: absolute; pointer-events: none; z-index: 1; }
-[data-row-ink="worker"], [data-row-ink="pending"] { -webkit-text-fill-color: transparent; }
-:is(.progress-meter > i, .research-now-meter > i, .special-project-progress > span):is([data-row-ink="worker"], [data-row-ink="pending"]) { opacity: 0; }
-[data-worker-panel] .special-project-progress > i { opacity: 0; }
-[data-ink-content] [data-paint]:not([data-prose]) { font-variant-numeric: tabular-nums; }
+[data-paint]:not([data-prose]) { font-variant-numeric: tabular-nums; }
 
 .research-now-cell > [data-paint="percent"]::after {
   content: "100%" / "";

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer } from '../../charts/TimeChart';
@@ -55,8 +55,7 @@ function tiledBin(summary: ChartSummary | undefined, hour: number): ChartBucket 
 export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const { graph, runtime, active, widget, setOption, onDiagnostics } = props;
   const [view, setView] = useChangedState<{ identity: string; from: number; to: number; width: number } | null>(null);
-  const [headFollowed, setHeadFollowed] = useState(false);
-  const query = useApm(props, graph, view, headFollowed);
+  const query = useApm(props, graph, view, widget.time.mode === 'follow' && active);
   const { data, track, options, first, last } = query;
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -78,13 +77,12 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
     shown(shownThrough(entry));
   }, [woken, shown]));
   const headEntry = followsHead(followed) ? followed.entry : null;
-  useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null && !graph, () => apmHeadStructure(entryRef.current?.answer), woken);
   const headStructure = headEntry && !graph ? apmHeadStructure(headEntry.answer) : null;
   const headRows = useMemo(() => headEntry ? apmHeadRows(headEntry.answer) : null, [headEntry, headStructure]);
   const headRefused = headEntry?.answer?.kind === 'notRecorded' ? headEntry.answer.reason : null;
-  const live = useMemo(() => store && headEntry ? liveFollowed(store, headEntry, entry => apmLiveValues(entry.answer)) : undefined, [store, headEntry]);
+  const live = useMemo(() => store && headEntry ? liveFollowed(headEntry, entry => apmLiveValues(entry.answer)) : undefined, [store, headEntry]);
   const current = (row: ApmSeries): ApmValue => (entryRef.current ? apmHeadRows(entryRef.current.answer).find(held => held.id === row.id)?.summary : undefined) ?? row.summary;
 
   const tiled = graph && headEntry !== null;
@@ -246,7 +244,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
         }} />
     </div><Legend label="eAPM" always items={lines.map(line => ({ id: line.row.id, label: label(line.row), color: line.color,
       value: headEntry && store
-        ? <FollowedText store={store} entry={headEntry} write={(entry, cell) => {
+        ? <FollowedText entry={headEntry} write={(entry, cell) => {
           const value = apmHeadRows(entry.answer).find(held => held.id === line.row.id)?.summary;
           cell.put(value ? `${apmValueText(value)} eAPM` : '—', value ? valueNote(value) : entry.answer?.kind === 'notRecorded' ? entry.answer.reason : 'Not played in the week to the head');
         }} />
