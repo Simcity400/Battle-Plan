@@ -2583,3 +2583,223 @@ fn walk_stats_carried_withholds_design_replaced_before_fresh_organisation_read()
         assert_eq!(rows[0].values[9], Some(2_400_000));
     }
 }
+
+#[test]
+fn walk_stats_carried_refusing_fresh_row_preserves_next_designs_carried_organisation() {
+    use std::cell::RefCell;
+
+    struct LiveWorld<'a> {
+        bytes: &'a RefCell<Vec<u8>>,
+        bump_on_org_bonus: &'a Cell<bool>,
+        revision: &'a Cell<u64>,
+        trigger_at: usize,
+    }
+
+    impl Memory for LiveWorld<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let bytes = self.bytes.borrow();
+            let base = bytes.as_ptr() as usize;
+            let Some(offset) = address.checked_sub(base) else {
+                return false;
+            };
+            let Some(slice) = bytes.get(offset..offset.saturating_add(output.len())) else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            if self.bump_on_org_bonus.get()
+                && (address..address.saturating_add(output.len())).contains(&self.trigger_at)
+            {
+                self.bump_on_org_bonus.set(false);
+                self.revision.set(self.revision.get() + 1);
+            }
+            true
+        }
+    }
+
+    struct RevWitness<'a> {
+        revision: &'a Cell<u64>,
+        withheld: Vec<(&'static str, &'static str)>,
+    }
+
+    impl StatWitness for RevWitness<'_> {
+        fn quiet(&self) -> Result<QuietToken, &'static str> {
+            Ok(QuietToken::new(1, self.revision.get()))
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.withheld.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    struct CarryReuseB<F: FnMut()> {
+        b_id: u64,
+        on_a_fresh: Option<F>,
+    }
+
+    impl<F: FnMut()> OrganisationCarry for CarryReuseB<F> {
+        fn fresh(&mut self, index: usize, source: &RegistryRow) -> Result<bool, &'static str> {
+            if index == 0 && source.id == self.b_id {
+                return Ok(false);
+            }
+            if let Some(mut trigger) = self.on_a_fresh.take() {
+                trigger();
+            }
+            Ok(true)
+        }
+    }
+
+    let bytes = RefCell::new(vec![0_u8; 0x2600]);
+    let base_ptr = bytes.borrow().as_ptr() as usize;
+    let var_a = 0x0;
+    let var_b = 0x600;
+    let def0 = 0xc00;
+    let bonus_a_off = 0x1800;
+    let bonus_b_off = 0x1900;
+    let base_values = [
+        100_000_000_i64,
+        1_200_000,
+        1_800_000,
+        4_500_000,
+        42_000_000,
+        80_000,
+        1_000_000,
+        1_500_000,
+        21_000,
+        2_400_000,
+    ];
+    {
+        let mut buf = bytes.borrow_mut();
+        buf[def0..def0 + 8]
+            .copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+        buf[def0 + cequipment_type::TOKEN..def0 + cequipment_type::TOKEN + 4]
+            .copy_from_slice(&77_u32.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+            let off = def0 + cequipment_type::STATS_BASE + lane.stat_index * 8;
+            buf[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        buf[bonus_a_off..bonus_a_off + 4].copy_from_slice(&11_u32.to_le_bytes());
+        buf[bonus_a_off + 8..bonus_a_off + 16].copy_from_slice(&111_000_i64.to_le_bytes());
+        buf[bonus_b_off..bonus_b_off + 4].copy_from_slice(&77_u32.to_le_bytes());
+        buf[bonus_b_off + 8..bonus_b_off + 16].copy_from_slice(&456_000_i64.to_le_bytes());
+    }
+
+    let author_a = (11_u64 << 32) | 79;
+    let author_b = (22_u64 << 32) | 79;
+    let author_replaced = (99_u64 << 32) | 79;
+    let write_variant = |buf: &mut [u8],
+                         off: usize,
+                         id: u32,
+                         author: u64,
+                         trait_count: i32,
+                         bonus_off: Option<usize>| {
+        buf[off..off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+        buf[off + TYPE..off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+        buf[off + ID..off + ID + 4].copy_from_slice(&id.to_le_bytes());
+        buf[off + EQUIPMENT_TOKEN..off + EQUIPMENT_TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+        buf[off + DEFINITION..off + DEFINITION + 8]
+            .copy_from_slice(&((base_ptr + def0) as u64).to_le_bytes());
+        buf[off + INDUSTRIAL_ORGANISATION..off + INDUSTRIAL_ORGANISATION + 8]
+            .copy_from_slice(&author.to_le_bytes());
+        buf[off + ORGANISATION_TRAIT_COUNT..off + ORGANISATION_TRAIT_COUNT + 4]
+            .copy_from_slice(&trait_count.to_le_bytes());
+        let (bonus_ptr, bonus_count) = match bonus_off {
+            Some(at) => ((base_ptr + at) as u64, 1_u32),
+            None => (0_u64, 0_u32),
+        };
+        buf[off + ORGANISATION_BONUSES..off + ORGANISATION_BONUSES + 8]
+            .copy_from_slice(&bonus_ptr.to_le_bytes());
+        buf[off + ORGANISATION_BONUSES + 8..off + ORGANISATION_BONUSES + 12]
+            .copy_from_slice(&bonus_count.to_le_bytes());
+        buf[off + ORGANISATION_BONUSES + 12..off + ORGANISATION_BONUSES + 16]
+            .copy_from_slice(&bonus_count.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+            buf[off + lane.offset..off + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        buf[off + BUILD_COST..off + BUILD_COST + 8].copy_from_slice(&base_values[9].to_le_bytes());
+    };
+
+    for refuse_by_closing_quiet in [false, true] {
+        {
+            let mut buf = bytes.borrow_mut();
+            write_variant(&mut buf, var_a, 1, author_a, 1, Some(bonus_a_off));
+            write_variant(&mut buf, var_b, 2, author_b, 2, Some(bonus_b_off));
+        }
+        let rev = Cell::new(1_u64);
+        let bump = Cell::new(false);
+        let world = LiveWorld {
+            bytes: &bytes,
+            bump_on_org_bonus: &bump,
+            revision: &rev,
+            trigger_at: base_ptr + bonus_a_off,
+        };
+        let row_a = RegistryRow::read(&world, 0, base_ptr + var_a).unwrap();
+        let row_b = RegistryRow::read(&world, 0, base_ptr + var_b).unwrap();
+
+        let mut rows = Vec::new();
+        let mut init_witness = RevWitness {
+            revision: &rev,
+            withheld: Vec::new(),
+        };
+        assert_eq!(
+            walk_stats_carried(&world, 0, &[row_b], &mut rows, &mut (), &mut init_witness),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].variant, row_b.id);
+        assert_eq!(rows[0].organisation.author, author_b);
+        assert_eq!(rows[0].organisation.trait_count, 2);
+        assert_eq!(rows[0].organisation.bonuses.len(), 1);
+        assert_eq!(
+            (
+                rows[0].organisation.bonuses[0].key,
+                rows[0].organisation.bonuses[0].value_raw,
+            ),
+            (77, 456_000)
+        );
+
+        let mut witness = RevWitness {
+            revision: &rev,
+            withheld: Vec::new(),
+        };
+        let mut carry = CarryReuseB {
+            b_id: row_b.id,
+            on_a_fresh: Some(|| {
+                if refuse_by_closing_quiet {
+                    bump.set(true);
+                } else {
+                    let mut buf = bytes.borrow_mut();
+                    write_variant(&mut buf, var_a, 99, author_replaced, 7, Some(bonus_a_off));
+                }
+            }),
+        };
+        assert_eq!(
+            walk_stats_carried(
+                &world,
+                0,
+                &[row_a, row_b],
+                &mut rows,
+                &mut carry,
+                &mut witness,
+            ),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].variant, row_b.id);
+        assert_eq!(rows[0].organisation.author, author_b);
+        assert_eq!(rows[0].organisation.trait_count, 2);
+        assert_eq!(rows[0].organisation.bonuses.len(), 1);
+        assert_eq!(
+            (
+                rows[0].organisation.bonuses[0].key,
+                rows[0].organisation.bonuses[0].value_raw,
+            ),
+            (77, 456_000)
+        );
+        let expected_refusal = if refuse_by_closing_quiet {
+            "variant stat writer crossed read"
+        } else {
+            "variant identity changed during organisation read"
+        };
+        assert!(witness
+            .withheld
+            .iter()
+            .any(|(_, reason)| *reason == expected_refusal));
+    }
+}

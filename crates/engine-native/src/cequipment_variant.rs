@@ -2007,6 +2007,7 @@ pub fn walk_stats_carried(
                 let fresh = carry.fresh(len, source)? || output[len].variant != source.id;
                 let mut row_refusal: Option<&'static str> = None;
                 if fresh {
+                    output[len].variant = 0;
                     let org_before = witness.quiet();
                     match read_organisation_verified(
                         memory,
@@ -2038,6 +2039,9 @@ pub fn walk_stats_carried(
                     }
                 }
                 if let Some(reason) = row_refusal {
+                    output[len].variant = 0;
+                    output[len].organisation.author = 0;
+                    output[len].organisation.trait_count = 0;
                     output[len].organisation.bonuses.clear();
                     for lane in 0..STAT_LANE_COUNT {
                         witness.record_withheld(lane, reason);
