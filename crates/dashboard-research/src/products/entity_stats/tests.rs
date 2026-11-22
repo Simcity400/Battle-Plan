@@ -216,3 +216,15 @@ fn a_label_whose_text_cannot_be_made_is_withheld_by_name_never_blank() {
     assert!(sheet.stats.is_empty(), "a blank label is never shown beside a value: {:?}", lines(&sheet));
     assert!(sheet.refusals.keys().any(|why| why.contains("missing_name")), "{:?}", sheet.refusals);
 }
+
+#[test]
+fn an_averaged_stat_whose_qualifier_cannot_be_made_is_withheld_whole() {
+    let localisation: Localisation = [("STAT_SOFT", "Soft Attack: "), ("STAT_SOFT_DIFF", " $VALUE|=+1$"), ("EQUIPMENT_MODULE_STAT_AVERAGED", "$missing_name$")]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+    let mut sheet = Sheet::new(&localisation);
+    sheet.module(METADATA, &StatGroup { average: vec![StatValue { index: 0, value: 100_000 }], ..Default::default() });
+    assert!(sheet.stats.is_empty(), "an averaged value is never shown without its qualifier: {:?}", lines(&sheet));
+    assert!(sheet.refusals.keys().any(|why| why.contains("missing_name")), "{:?}", sheet.refusals);
+}

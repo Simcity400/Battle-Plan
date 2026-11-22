@@ -93,7 +93,11 @@ impl<'l> Sheet<'l> {
     }
 
     fn push(&mut self, label: Result<String, String>, value: Result<String, String>) {
-        let line = label.and_then(|label| Ok(EntityStat { label: runs(&label)?, value: runs(&value?)?, source: self.source.clone() }));
+        self.push_runs(label, value.and_then(|value| runs(&value)));
+    }
+
+    fn push_runs(&mut self, label: Result<String, String>, value: Result<Vec<GameRun>, String>) {
+        let line = label.and_then(|label| Ok(EntityStat { label: runs(&label)?, value: value?, source: self.source.clone() }));
         match line {
             Ok(line) => self.stats.push(line),
             Err(why) => self.refuse(why),
@@ -122,7 +126,7 @@ impl<'l> Sheet<'l> {
         }
     }
 
-    fn stat(&mut self, metadata: &Metadata, index: usize, value: i64, formats: &[&str]) {
+    fn stat(&mut self, metadata: &Metadata, index: usize, value: i64, formats: &[&str], suffix: Option<&str>) {
         let Some(&(_, label, _)) = metadata.get(index) else {
             return self.refuse(format!("stat {index} has no game name"));
         };
@@ -131,12 +135,18 @@ impl<'l> Sheet<'l> {
             Some(format) => self.text(&format, &[("VALUE", Argument::Fixed5(value))]),
             None => Err(format!("{label} has no value format")),
         };
-        self.push(self.text(label, &[]), value);
+        let value = value.and_then(|value| runs(&value)).and_then(|mut value| {
+            if let Some(key) = suffix {
+                value.extend(runs(&self.text(key, &[])?)?);
+            }
+            Ok(value)
+        });
+        self.push_runs(self.text(label, &[]), value);
     }
 
     fn equipment(&mut self, metadata: &Metadata, stats: &[i64], withheld: &BTreeMap<usize, String>) {
         for (index, &value) in stats.iter().enumerate().filter(|(index, value)| **value != 0 && !withheld.contains_key(index)) {
-            self.stat(metadata, index, value, &["{}_VALUE"]);
+            self.stat(metadata, index, value, &["{}_VALUE"], None);
         }
         withheld.values().for_each(|why| self.refuse(why.clone()));
     }
@@ -147,22 +157,15 @@ impl<'l> Sheet<'l> {
         }
         let read = |term: &&StatValue| stats.unread.iter().all(|(index, _)| *index != term.index);
         for term in stats.add.iter().filter(read) {
-            self.stat(metadata, term.index, term.value, &["{}_DIFF"]);
+            self.stat(metadata, term.index, term.value, &["{}_DIFF"], None);
         }
         for term in stats.average.iter().filter(read) {
-            let before = self.stats.len();
-            self.stat(metadata, term.index, term.value, &["{}_DIFF"]);
-            if self.stats.len() > before {
-                match self.text("EQUIPMENT_MODULE_STAT_AVERAGED", &[]).and_then(|suffix| runs(&suffix)) {
-                    Ok(suffix) => self.stats.last_mut().expect("a pushed stat").value.extend(suffix),
-                    Err(why) => self.refuse(why),
-                }
-            }
+            self.stat(metadata, term.index, term.value, &["{}_DIFF"], Some("EQUIPMENT_MODULE_STAT_AVERAGED"));
         }
         for term in stats.multiply.iter().filter(read) {
             let positive = metadata.get(term.index).is_some_and(|(_, _, positive)| *positive);
             let fallback = if positive { "STAT_MODIFIER_DIFF" } else { "STAT_MODIFIER_DIFF_NEG" };
-            self.stat(metadata, term.index, term.value, &["{}_MOD_DIFF", fallback]);
+            self.stat(metadata, term.index, term.value, &["{}_MOD_DIFF", fallback], None);
         }
     }
 

@@ -1487,6 +1487,7 @@ fn an_unreadable_reliability_term_withholds_the_bound_of_a_convoy_whose_attack_s
          }
          equipments = {
             scaled_convoy = { type = convoy reliability = 0.5 scaled_by_reliability = { lg_attack = 1 } }
+            escort = { module_add_stats_multiplier = { lg_attack = unknown_amount } }
          }",
     )
     .unwrap();
@@ -1499,11 +1500,15 @@ fn an_unreadable_reliability_term_withholds_the_bound_of_a_convoy_whose_attack_s
             &mut frame,
             TableRows::LexicalTokens(vec![
                 LexicalTokenRow { token: 10, literal: b"scaled_convoy".to_vec() },
+                LexicalTokenRow { token: 11, literal: b"escort".to_vec() },
                 LexicalTokenRow { token: 12, literal: b"global_gun".to_vec() },
                 LexicalTokenRow { token: 13, literal: b"global_armour".to_vec() },
             ]),
         );
-        put(&mut frame, TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 70, equipment_token: 10, design: Recorded::Value(VariantDesignState::default()), ..Default::default() }]));
+        put(&mut frame, TableRows::VariantDefinitions(vec![
+            VariantDefinitionRow { id: 70, equipment_token: 10, design: Recorded::Value(VariantDesignState::default()), ..Default::default() },
+            VariantDefinitionRow { id: 71, equipment_token: 11, design: Recorded::Value(VariantDesignState::default()), ..Default::default() },
+        ]));
         put(&mut frame, TableRows::VariantUpgrades(vec![VariantUpgradeRow { variant: 70, source_ordinal: 0, definition_token: upgrade, level: 1 }]));
         put(&mut frame, TableRows::VariantModules(Vec::new()));
         put(&mut frame, TableRows::VariantBonusSnapshots(Vec::new()));
@@ -1512,5 +1517,5 @@ fn an_unreadable_reliability_term_withholds_the_bound_of_a_convoy_whose_attack_s
     let bound = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(12)).unwrap();
     assert!(bound.as_ref().is_err_and(|why| why.contains("reliability = unknown_amount is not a number")), "the reliability the attack scales with is unknown, so no bound is published: {bound:?}");
     let unrelated = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(13)).unwrap();
-    assert!(unrelated.is_ok(), "an unreadable term no bound depends on withholds nothing: {unrelated:?}");
+    assert!(unrelated.is_ok(), "an unreadable term no bound depends on, here a recorded non-convoy's own multiplier, withholds nothing: {unrelated:?}");
 }

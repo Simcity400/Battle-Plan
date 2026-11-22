@@ -1565,16 +1565,16 @@ fn convoy_weapon_bound_for_frame(
                 String::from_utf8_lossy(equipment_name)
             )));
         };
+        let is_convoy = database.category(kind) & 1 != 0 || definition.classifier_flags & 1 != 0;
+        if !is_convoy {
+            continue;
+        }
         let feeding = bound_inputs(&stats, kind);
         let unread_weapon_term = |group: &StatGroup| {
             group.unread.iter().find(|(index, _)| feeding.contains(index)).map(|(_, why)| why.clone())
         };
         if let Some((_, why)) = kind.unread_terms.iter().find(|(index, _)| feeding.contains(index)) {
             return Ok(Err(format!("convoy variant {}: {why}", definition.id)));
-        }
-        let is_convoy = database.category(kind) & 1 != 0 || definition.classifier_flags & 1 != 0;
-        if !is_convoy {
-            continue;
         }
         let state = match definition.design.require("VariantDefinitions.design") {
             Ok(state) => state,
