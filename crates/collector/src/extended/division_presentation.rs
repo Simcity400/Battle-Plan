@@ -1702,27 +1702,32 @@ impl Captured {
         self.source_required = self.source_required.max(rows.len());
         let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
         let start = qpc();
-        let probes = &self.preparation_parts;
+        let probes = &self.preparation_parts[..preparation_count.min(self.preparation_parts.len())];
         let ready = probes_ready;
-        let prepared = |index: usize| {
-            ready
-                .then(|| {
-                    probes
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
-                })
-                .flatten()
+        let probe_for = |index: usize| {
+            if !ready || probes.is_empty() {
+                return None;
+            }
+            if !rows.is_empty() {
+                let guess = (index * probes.len() / rows.len()).min(probes.len() - 1);
+                if probes[guess].range.contains(&index) {
+                    return Some(&probes[guess]);
+                }
+            }
+            let pos = probes.partition_point(|part| part.range.end <= index);
+            probes
+                .get(pos)
+                .filter(|part| part.range.contains(&index))
+                .or_else(|| probes.iter().find(|part| part.range.contains(&index)))
         };
+        let prepared = |index: usize| probe_for(index).and_then(|part| part.get(index));
         self.sources_deferred = self.owned_settlement
             && ready
             && !rows.is_empty()
             && army_stats
                 .as_deref()
                 .is_some_and(|store| store.sources.can_settle_owned())
-            && probes[..preparation_count]
-                .iter()
-                .all(|part| part.can_settle_sources());
+            && probes.iter().all(|part| part.can_settle_sources());
         let sources_ready = qpc();
         self.phase_ticks[20] = sources_ready.saturating_sub(start).max(0) as u64;
         let ordered_sources = !self.sources_deferred && army_stats.is_some();
@@ -1737,16 +1742,7 @@ impl Captured {
                     rows,
                     &mut self.attack.selected_sources,
                     |index| prepared(index).and_then(|row| row.selection),
-                    |index| {
-                        ready
-                            .then(|| {
-                                probes
-                                    .iter()
-                                    .find(|part| part.range.contains(&index))
-                                    .and_then(|part| part.source_reads())
-                            })
-                            .flatten()
-                    },
+                    |index| probe_for(index).and_then(|part| part.source_reads()),
                     |handle, pointer| {
                         ready
                             .then(|| {
@@ -1789,12 +1785,7 @@ impl Captured {
             base,
             rows,
             |index| {
-                if !ready {
-                    return None;
-                }
-                probes[..preparation_count]
-                    .iter()
-                    .find(|part| part.range.contains(&index))
+                probe_for(index)
                     .and_then(|part| part.daily_supply(index))
                     .cloned()
             },
@@ -1803,16 +1794,7 @@ impl Captured {
         self.phase_ticks[4] = certified.saturating_sub(sources_finished).max(0) as u64;
         self.phase_ticks[10..13].copy_from_slice(&self.attack.certify_ticks());
         if prepare_only {
-            let staged = |index: usize| {
-                ready
-                    .then(|| {
-                        probes[..preparation_count]
-                            .iter()
-                            .find(|part| part.range.contains(&index))
-                            .and_then(|part| part.maxima(index))
-                    })
-                    .flatten()
-            };
+            let staged = |index: usize| probe_for(index).and_then(|part| part.maxima(index));
             self.status.outcome = self.status_packet.prepare_holding_staged(
                 memory,
                 base,

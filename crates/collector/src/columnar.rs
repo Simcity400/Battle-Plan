@@ -605,7 +605,7 @@ impl Live {
 
     fn try_commit(
         &mut self,
-        hour: FrameHour,
+        mut hour: FrameHour,
         queued: bool,
         lanes: &dyn native_frame::Lanes,
     ) -> io::Result<()> {
@@ -631,7 +631,7 @@ impl Live {
                 .take()
                 .filter(|(witnessed, _)| *witnessed == hour.hour())
                 .map(|(_, witness)| witness),
-            manifest: engine_allocation::copy_vec(&hour.manifest)?,
+            manifest: std::mem::take(&mut hour.manifest),
             sections,
         };
         run.frames.commit_on(hour, lanes)?;

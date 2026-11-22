@@ -1015,8 +1015,10 @@ impl Role {
                 | Role::CountryLeaderRoles
                 | Role::AdvisorRoles
                 | Role::CharacterTraits
+                | Role::Relations
                 | Role::AirWing
                 | Role::AirStats
+                | Role::AirBases
                 | Role::Capitulation
                 | Role::Players
                 | Role::Projects
@@ -1026,12 +1028,20 @@ impl Role {
                 | Role::OrderRoots
                 | Role::DivisionInputs
                 | Role::DivisionInputParts
+                | Role::Divisions
+                | Role::PresentationPreparation
+                | Role::PresentationStatus
+                | Role::World
+                | Role::Economy
                 | Role::CharacterPortraits
                 | Role::ProvinceUnitOrder
                 | Role::AirRelations
                 | Role::AirHistories
                 | Role::ArmyIcons
+                | Role::Orders
+                | Role::OrdersPart
                 | Role::Fronts
+                | Role::ShipModels
                 | Role::Countries
                 | Role::Wars
                 | Role::States

@@ -387,4 +387,32 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(single.physical_cores, 1);
     assert_eq!(away_sets(Some(&single), Some(1)), None);
     assert!(Cores::from_sets(&[]).is_none());
+    let six = Cores::from_sets(&[
+        (0, 0, 256),
+        (1, 0, 257),
+        (2, 1, 258),
+        (3, 1, 259),
+        (4, 2, 260),
+        (5, 2, 261),
+        (6, 3, 262),
+        (7, 3, 263),
+        (8, 4, 264),
+        (9, 4, 265),
+        (10, 5, 266),
+        (11, 5, 267),
+    ])
+    .unwrap();
+    assert_eq!(six.physical_cores, 6);
+    assert_eq!(
+        background_sets(Some(&six), Some(0)),
+        Some(&[264, 265, 266, 267][..])
+    );
+    assert_eq!(
+        background_sets(Some(&six), Some(10)),
+        Some(&[262, 263, 264, 265][..])
+    );
+    assert_eq!(
+        background_sets(Some(&cores), Some(0)),
+        Some(&[258, 259][..])
+    );
 }

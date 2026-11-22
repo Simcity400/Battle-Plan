@@ -177,7 +177,7 @@ fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
     assert!(!pool.surplus_after(4));
     let mut all: Vec<_> = (0..STEADY).map(|_| pool.pop().unwrap()).collect();
     all.push(extra);
-    for _ in 0..2 {
+    for _ in 0..(SURPLUS_CAP - STEADY) {
         all.push(shared.take_frame(&mut 0).unwrap());
     }
     for _ in 0..STEADY {

@@ -20,10 +20,10 @@ pub(crate) const STEADY: usize = BUFFERS;
 
 pub(crate) const AHEAD: usize = 2;
 
-const SURPLUS_CAP: usize = STEADY + 2;
+const SURPLUS_CAP: usize = STEADY + 6;
 
 #[cfg(not(test))]
-const SURPLUS_STREAK: u32 = 64;
+const SURPLUS_STREAK: u32 = 256;
 #[cfg(test)]
 const SURPLUS_STREAK: u32 = 1;
 

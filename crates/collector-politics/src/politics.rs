@@ -10,6 +10,7 @@ use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
     collections::{HashMap, HashSet},
     io,
+    sync::Arc,
 };
 
 pub const N: usize = 5;
@@ -130,6 +131,7 @@ fn unavailable(reason: &str) -> TableView {
 fn input(rows: TableRows) -> TableInput {
     TableInput::Sampled(TableView::Complete(rows))
 }
+#[cfg(test)]
 fn rows(input: &TableInput) -> Option<&TableRows> {
     match input {
         TableInput::Sampled(TableView::Complete(rows)) => Some(rows),
@@ -154,11 +156,18 @@ pub struct Ledger {
     next: u64,
     hour: Option<i32>,
     balances: HashMap<u32, BalanceSnapshot>,
+    next_balances: HashMap<u32, BalanceSnapshot>,
     daily: HashMap<u32, CountryPowerDailyRow>,
     costs: HashMap<u32, Vec<CountryPowerDailyCostRow>>,
+    cached_daily: Option<Arc<TableRows>>,
+    cached_costs: Option<Arc<TableRows>>,
     lexical: HashMap<Vec<u8>, u32>,
+    lexical_source: Option<Arc<TableRows>>,
     pending_daily: HashMap<u32, DailyEvents>,
     invalid_daily: HashSet<u32>,
+    deltas: HashMap<(u32, u8), i128>,
+    party_ends: HashMap<u32, Option<u32>>,
+    updated_daily: HashSet<u32>,
     scratch: Option<Box<Captured>>,
 }
 impl Ledger {
@@ -272,21 +281,40 @@ impl Ledger {
                 ..Default::default()
             };
         }
-        if let Some(TableRows::LexicalTokens(tokens)) =
-            rows(&tables[TableId::LexicalTokens.index()])
-        {
-            let mut lexical = HashMap::new();
-            allocation::reserve_map(&mut lexical, tokens.len())?;
-            for row in tokens {
-                lexical.insert(allocation::copy_vec(&row.literal)?, row.token);
+        match &tables[TableId::LexicalTokens.index()] {
+            TableInput::SharedComplete(shared) => {
+                if !self
+                    .lexical_source
+                    .as_ref()
+                    .is_some_and(|prev| Arc::ptr_eq(prev, shared))
+                    && let TableRows::LexicalTokens(tokens) = &**shared
+                {
+                    let mut lexical = HashMap::new();
+                    allocation::reserve_map(&mut lexical, tokens.len())?;
+                    for row in tokens {
+                        lexical.insert(allocation::copy_vec(&row.literal)?, row.token);
+                    }
+                    self.lexical = lexical;
+                    self.lexical_source = Some(Arc::clone(shared));
+                }
             }
-            self.lexical = lexical;
+            TableInput::Sampled(TableView::Complete(TableRows::LexicalTokens(tokens))) => {
+                let mut lexical = HashMap::new();
+                allocation::reserve_map(&mut lexical, tokens.len())?;
+                for row in tokens {
+                    lexical.insert(allocation::copy_vec(&row.literal)?, row.token);
+                }
+                self.lexical = lexical;
+                self.lexical_source = None;
+            }
+            _ => {}
         }
         let drain = captured.drained.and_then(Result::ok);
         let epoch = drain.map_or(self.epoch, |d| d.epoch);
         let continuous = drain.is_some_and(|d| {
             d.epoch == self.epoch && d.first <= self.cursor && d.first + d.copied as u64 >= d.cursor
         }) && self.hour.and_then(|h| h.checked_add(1)) == Some(hour);
+        let mut daily_changed = self.cached_daily.is_none() || self.cached_costs.is_none();
         if epoch != self.epoch {
             self.cursor = 0;
             self.next = 0;
@@ -294,15 +322,21 @@ impl Ledger {
             self.costs.clear();
             self.pending_daily.clear();
             self.invalid_daily.clear();
+            self.cached_daily = None;
+            self.cached_costs = None;
+            daily_changed = true;
         }
         if drain.is_some_and(|d| d.copied < d.pending) {
             hooks::short_handoff();
         }
         let mut changes = Vec::new();
         let mut governments = Vec::new();
-        let mut deltas: HashMap<(u32, u8), i128> = HashMap::new();
-        let mut party_ends: HashMap<u32, Option<u32>> = HashMap::new();
-        let mut updated_daily = HashSet::new();
+        let mut deltas = std::mem::take(&mut self.deltas);
+        let mut party_ends = std::mem::take(&mut self.party_ends);
+        let mut updated_daily = std::mem::take(&mut self.updated_daily);
+        deltas.clear();
+        party_ends.clear();
+        updated_daily.clear();
         if let Some(drain) = drain {
             for event in &captured.events[..drain.copied] {
                 if event.epoch != epoch || event.sequence <= self.next {
@@ -421,12 +455,17 @@ impl Ledger {
                 }
             }
         }
-        for country in updated_daily {
-            self.publish_daily(country, epoch)?;
+        if !updated_daily.is_empty() {
+            daily_changed = true;
+            for &country in &updated_daily {
+                self.publish_daily(country, epoch)?;
+            }
         }
+        self.updated_daily = updated_daily;
         let mut coverage = Vec::new();
         if let Outcome::Rows { len } = captured.census {
-            let mut current = HashMap::new();
+            let mut current = std::mem::take(&mut self.next_balances);
+            current.clear();
             for now in &captured.balances[..len] {
                 let previous = self.balances.get(&now.country);
                 let mut streams = 0;
@@ -488,29 +527,41 @@ impl Ledger {
                 allocation::reserve_map(&mut current, additional)?;
                 current.insert(now.country, *now);
             }
+            let daily_before = self.daily.len();
+            let costs_before = self.costs.len();
             self.daily
                 .retain(|country, _| current.contains_key(country));
             self.costs
                 .retain(|country, _| self.daily.contains_key(country));
+            daily_changed |= self.daily.len() != daily_before || self.costs.len() != costs_before;
             self.pending_daily
                 .retain(|country, _| current.contains_key(country));
             self.invalid_daily
                 .retain(|country| current.contains_key(country));
-            self.balances = current;
+            self.next_balances = std::mem::replace(&mut self.balances, current);
         } else {
             self.balances.clear();
         }
-        let mut daily = allocation::collect_vec(self.daily.values().cloned())?;
-        daily.sort_unstable_by_key(RowCodec::key);
-        let cost_count = self
-            .costs
-            .values()
-            .try_fold(0, |count, rows| allocation::add(count, rows.len()))?;
-        let mut costs = allocation::vec(cost_count)?;
-        for row in self.costs.values().flatten() {
-            costs.push(copy_cost(row)?);
+        self.deltas = deltas;
+        self.party_ends = party_ends;
+        if daily_changed {
+            let mut daily = allocation::collect_vec(self.daily.values().cloned())?;
+            daily.sort_unstable_by_key(RowCodec::key);
+            let cost_count = self
+                .costs
+                .values()
+                .try_fold(0, |count, rows| allocation::add(count, rows.len()))?;
+            let mut costs = allocation::vec(cost_count)?;
+            for row in self.costs.values().flatten() {
+                costs.push(copy_cost(row)?);
+            }
+            costs.sort_unstable_by_key(RowCodec::key);
+            if allocation::capture_stopped() {
+                return Err(io::ErrorKind::OutOfMemory.into());
+            }
+            self.cached_daily = Some(Arc::new(TableRows::CountryPowerDaily(daily)));
+            self.cached_costs = Some(Arc::new(TableRows::CountryPowerDailyCosts(costs)));
         }
-        costs.sort_unstable_by_key(RowCodec::key);
         if allocation::capture_stopped() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -530,6 +581,12 @@ impl Ledger {
                 |reason| TableInput::Sampled(unavailable(reason)),
             )
         };
+        let publish_shared = |rows: &Option<Arc<TableRows>>| {
+            failed.map_or_else(
+                || TableInput::SharedComplete(Arc::clone(rows.as_ref().expect("cached daily"))),
+                |reason| TableInput::Sampled(unavailable(reason)),
+            )
+        };
         tables[TableId::CountryPowerChanges.index()] =
             publish(TableRows::CountryPowerChanges(changes));
         tables[TableId::GovernmentChanges.index()] =
@@ -540,9 +597,8 @@ impl Ledger {
             } else {
                 TableInput::Sampled(unavailable("politics balance census incomplete"))
             };
-        tables[TableId::CountryPowerDaily.index()] = publish(TableRows::CountryPowerDaily(daily));
-        tables[TableId::CountryPowerDailyCosts.index()] =
-            publish(TableRows::CountryPowerDailyCosts(costs));
+        tables[TableId::CountryPowerDaily.index()] = publish_shared(&self.cached_daily);
+        tables[TableId::CountryPowerDailyCosts.index()] = publish_shared(&self.cached_costs);
         Ok(())
     }
     fn stage_daily(&mut self, event: &Event, bytes: &[u8]) -> io::Result<bool> {

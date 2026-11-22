@@ -551,10 +551,37 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::ProvinceUnitOrder, _>(
             self.outcomes()[0],
             &self.rows.rows,
+            |r| ProvinceUnitOrderRow {
+                province: r.province,
+                mixed: owned_vec(copy_vec(
+                    &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]],
+                )),
+                naval: owned_vec(copy_vec(
+                    &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]],
+                )),
+            },
+        )]
+    }
+
+    pub(crate) fn table_inputs(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        [crate::projection::project_table::<tables::ProvinceUnitOrder, _>(
+            projection,
+            self.outcomes()[0],
+            &self.rows.rows,
+            |r| u128::from(r.province),
+            |r, prev| {
+                r.province == prev.province
+                    && prev.mixed.as_slice() == &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]]
+                    && prev.naval.as_slice() == &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]]
+            },
             |r| ProvinceUnitOrderRow {
                 province: r.province,
                 mixed: owned_vec(copy_vec(

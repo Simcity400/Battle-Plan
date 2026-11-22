@@ -654,6 +654,7 @@ impl Captured {
         self.wing_sources.grow(&mut capacity.wing_sources);
     }
 
+    #[cfg(test)]
     fn railway_row_at(
         &self,
         hint: usize,
@@ -684,6 +685,7 @@ impl Captured {
         self.railway_selection_at(usize::MAX, province)
     }
 
+    #[cfg(test)]
     fn railway_building_at(&self, hint: usize, province: u32) -> Option<rows::RailwayBuildingState> {
         let state = self.railway_row_at(hint, province)?.building.ok()??;
         Some(rows::RailwayBuildingState {
@@ -695,6 +697,7 @@ impl Captured {
         })
     }
 
+    #[cfg(test)]
     fn railway_selection_at(
         &self,
         hint: usize,
@@ -719,14 +722,54 @@ impl Captured {
     fn rail_cooldowns_table(&self, outcome: Outcome) -> TableView {
         let base = self.cooldowns.rows.as_ptr() as usize;
         let stride = size_of::<cprovince_railway_info::Row>();
+        let captured = self
+            .rail_buildings
+            .rows
+            .get(..self.rail_buildings.outcome.len());
+        let rail_hour = self.rail_hour;
+        let rail_levels = self.rail_levels.first.get(..self.rail_levels.len);
         table::<tables::RailCooldowns, _>(outcome, &self.cooldowns.rows, |r| {
             let hint = (r as *const cprovince_railway_info::Row as usize - base) / stride;
+            let entry = captured.and_then(|captured| {
+                if let Some(row) = captured.get(hint)
+                    && row.province == r.province
+                {
+                    return Some(row);
+                }
+                captured
+                    .binary_search_by_key(&r.province, |row| row.province)
+                    .ok()
+                    .and_then(|index| captured.get(index))
+            });
+            let building = entry.and_then(|row| row.building.ok()?).map(|state| {
+                rows::RailwayBuildingState {
+                    building: state.building.map(|health| rows::RailwayBuildingHealth {
+                        level: health.level,
+                        healthy: health.healthy,
+                        partial: health.partial,
+                    }),
+                }
+            });
+            let selection = rail_hour.and_then(|_| {
+                let selected = entry?.selection?;
+                let levels = selected.levels.ok().and_then(|span| {
+                    let end = span.first.checked_add(span.len)?;
+                    rail_levels?
+                        .get(span.first..end)
+                        .map(|values| owned_vec(copy_vec(values)))
+                });
+                Some(rows::RailwaySelectionInputs {
+                    levels,
+                    pair_count: selected.pair_count.ok(),
+                    building_level: selected.building_level.ok().flatten(),
+                })
+            });
             rows::RailCooldownRow {
                 province: r.province,
                 cooldown_ticks: r.cooldown_ticks,
-                building: rows::Recorded::Value(self.railway_building_at(hint, r.province)),
-                selection: rows::Recorded::Value(self.railway_selection_at(hint, r.province)),
-                selection_hour: rows::Recorded::Value(self.rail_hour),
+                building: rows::Recorded::Value(building),
+                selection: rows::Recorded::Value(selection),
+                selection_hour: rows::Recorded::Value(rail_hour),
                 building_bound: rows::Recorded::Value(Some(r.building_bound)),
             }
         })

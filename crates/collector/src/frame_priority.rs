@@ -139,12 +139,17 @@ impl Target {
 
 const GROUP_PROCESSORS: usize = 64;
 
+const BACKGROUND_CORES_MIN_PHYSICAL: usize = 6;
+const BACKGROUND_CORES_COUNT: usize = 2;
+
 struct Cores {
     sets: [(u8, u8, u32); GROUP_PROCESSORS],
     len: usize,
     physical_cores: usize,
     others: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
     others_len: [usize; GROUP_PROCESSORS],
+    background: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
+    background_len: [usize; GROUP_PROCESSORS],
 }
 impl Cores {
     fn read() -> Option<Self> {
@@ -194,8 +199,11 @@ impl Cores {
             physical_cores: 0,
             others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
             others_len: [0; GROUP_PROCESSORS],
+            background: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
+            background_len: [0; GROUP_PROCESSORS],
         };
         let mut seen = [false; GROUP_PROCESSORS];
+        let mut unique = [0usize; GROUP_PROCESSORS];
         let placed = entries
             .iter()
             .filter(|&&(_, core, _)| usize::from(core) < GROUP_PROCESSORS);
@@ -203,16 +211,37 @@ impl Cores {
             let core = usize::from(entry.1);
             if !seen[core] {
                 seen[core] = true;
+                unique[cores.physical_cores] = core;
                 cores.physical_cores += 1;
             }
             cores.sets[cores.len] = entry;
             cores.len += 1;
         }
+        let unique = &mut unique[..cores.physical_cores];
+        unique.sort_unstable_by(|a, b| b.cmp(a));
         for core in 0..GROUP_PROCESSORS {
+            let mut chosen = [false; GROUP_PROCESSORS];
+            let mut picked = 0;
+            if cores.physical_cores >= BACKGROUND_CORES_MIN_PHYSICAL {
+                for &candidate in unique.iter() {
+                    if candidate != core {
+                        chosen[candidate] = true;
+                        picked += 1;
+                        if picked == BACKGROUND_CORES_COUNT {
+                            break;
+                        }
+                    }
+                }
+            }
             for &(_, other, id) in &cores.sets[..cores.len] {
-                if usize::from(other) != core {
+                let other = usize::from(other);
+                if other != core {
                     cores.others[core][cores.others_len[core]] = id;
                     cores.others_len[core] += 1;
+                    if picked == 0 || chosen[other] {
+                        cores.background[core][cores.background_len[core]] = id;
+                        cores.background_len[core] += 1;
+                    }
                 }
             }
         }
@@ -226,6 +255,14 @@ impl Cores {
         let core = usize::from(core);
         Some(&self.others[core][..self.others_len[core]]).filter(|ids| !ids.is_empty())
     }
+
+    fn background_away_from(&self, processor: u32) -> Option<&[u32]> {
+        let &(_, core, _) = self.sets[..self.len]
+            .iter()
+            .find(|&&(logical, _, _)| u32::from(logical) == processor)?;
+        let core = usize::from(core);
+        Some(&self.background[core][..self.background_len[core]]).filter(|ids| !ids.is_empty())
+    }
 }
 
 static CORES: OnceLock<Option<Cores>> = OnceLock::new();
@@ -235,6 +272,10 @@ fn away_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
     cores?.away_from(processor?)
 }
 
+fn background_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
+    cores?.background_away_from(processor?)
+}
+
 fn cores() -> Option<&'static Cores> {
     CORES.get_or_init(Cores::read).as_ref()
 }
@@ -242,6 +283,11 @@ fn cores() -> Option<&'static Cores> {
 pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
+}
+
+fn background_away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
+    let processor = processor?;
+    background_sets(cores(), Some(processor))
 }
 
 pub(crate) fn physical_cores() -> Option<usize> {
@@ -395,11 +441,16 @@ impl Pipeline {
             return 0;
         }
         let word = self.applying.load(Ordering::SeqCst);
-        if word != 0 && word != NO_PROCESSOR {
+        let word = if word != 0 && word != NO_PROCESSOR {
             word
         } else {
             self.last_game.load(Ordering::Relaxed)
+        };
+        if word == 0 || word == NO_PROCESSOR {
+            return 0;
         }
+        let narrow = value == 0 || value == TICK;
+        (word << 1) | u32::from(narrow)
     }
     pub(crate) fn callback(&self) -> Callback<'_> {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
@@ -550,8 +601,16 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let mut applied = unsafe { SetThreadPriority(handle, priority(value)) != 0 };
     let away = pipeline.desired_away(value);
     if away != target.selected.load(Ordering::SeqCst) {
-        let sets = (away != 0 && away != NO_PROCESSOR)
-            .then(|| away_from_game(Some(away - 1)))
+        let processor = away >> 1;
+        let narrow = away & 1 != 0;
+        let sets = (processor != 0 && processor != NO_PROCESSOR)
+            .then(|| {
+                if narrow {
+                    background_away_from_game(Some(processor - 1))
+                } else {
+                    away_from_game(Some(processor - 1))
+                }
+            })
             .flatten();
         if sets.is_some() {
             let selected = select(handle, sets);

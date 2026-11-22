@@ -105,6 +105,9 @@ macro_rules! spool_inputs {
     (ship_models, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
+    (province_unit_order, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
     (intel, $captured:expr, $conversion:expr) => {
         $captured.table_inputs(
             $conversion.variables_baseline,

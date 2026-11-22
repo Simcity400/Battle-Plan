@@ -10,13 +10,15 @@ use std::{
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, GetThreadId, SetThreadPriority, SetThreadPriorityBoost,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
 };
 
 pub(crate) fn beside_readers() -> usize {
     let cores = crate::frame_priority::physical_cores()
         .unwrap_or_else(|| crate::acquisition::usable_cpus().div_ceil(2));
-    (cores / 2).clamp(3, 6).min(crate::acquisition::MAX_WORKERS)
+    cores
+        .saturating_sub(1)
+        .clamp(3, crate::acquisition::MAX_WORKERS)
 }
 
 const IDLE: u32 = 0;
@@ -374,9 +376,9 @@ fn beside(
         *away = crate::frame_priority::AwayFromGame::default();
     }
     let own = unsafe { GetCurrentThread() };
-    if *priority != THREAD_PRIORITY_BELOW_NORMAL {
-        unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
-        *priority = THREAD_PRIORITY_BELOW_NORMAL;
+    if *priority != THREAD_PRIORITY_NORMAL {
+        unsafe { SetThreadPriority(own, THREAD_PRIORITY_NORMAL) };
+        *priority = THREAD_PRIORITY_NORMAL;
     }
     away.follow(game);
     CONFINED.store(away.confined(), Ordering::SeqCst);

@@ -346,8 +346,8 @@ impl<'a> Projection<'a> {
                         return false;
                     }
                     if !equal(current, previous) {
-                        if indices.is_empty()
-                            && engine_allocation::reserve_exact(&mut indices, source.len()).is_err()
+                        if indices.len() == indices.capacity()
+                            && engine_allocation::reserve(&mut indices, 1).is_err()
                         {
                             allocation_failed = true;
                             return false;
@@ -478,10 +478,14 @@ impl Projection<'_> {
             let mut keys = Vec::new();
             let mut rows = Vec::new();
             let mut edit = |key: u128, row: Option<S::Row>| {
-                engine_allocation::reserve(&mut keys, 1)?;
+                if keys.len() == keys.capacity() {
+                    engine_allocation::reserve(&mut keys, 1)?;
+                }
                 keys.push(key);
                 if let Some(row) = row {
-                    engine_allocation::reserve(&mut rows, 1)?;
+                    if rows.len() == rows.capacity() {
+                        engine_allocation::reserve(&mut rows, 1)?;
+                    }
                     rows.push(row);
                 }
                 Ok::<_, std::io::Error>(())
@@ -575,8 +579,11 @@ pub struct Record<'a> {
 }
 
 impl Record<'_> {
+    #[inline]
     fn room(&mut self, len: usize) -> bool {
-        self.failed = self.failed || self.bytes.try_reserve(len).is_err();
+        if !self.failed && self.bytes.capacity() - self.bytes.len() < len {
+            self.failed = self.bytes.try_reserve(len).is_err();
+        }
         !self.failed
     }
 
@@ -847,7 +854,9 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             {
                 continue;
             }
-            engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+            if edits.len() == edits.capacity() {
+                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+            }
             edits.push((key, Some(at)));
             continue;
         } else {
@@ -920,18 +929,24 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
                 }
             }
         }
-        engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+        if edits.len() == edits.capacity() {
+            engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+        }
         edits.push((key, Some(at)));
     }
     if matched < held.keys.len() {
         if seen_active {
             for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
-                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                if edits.len() == edits.capacity() {
+                    engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                }
                 edits.push((held.keys[old], None));
             }
         } else {
             for &key in &held.keys[matched..] {
-                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                if edits.len() == edits.capacity() {
+                    engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                }
                 edits.push((key, None));
             }
         }
@@ -939,7 +954,9 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     if edits.is_empty() {
         return Ok(None);
     }
-    edits.sort_unstable_by_key(|edit| edit.0);
+    if !edits.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+        edits.sort_unstable_by_key(|edit| edit.0);
+    }
     let mut keys = Vec::new();
     let mut rows = Vec::new();
     engine_allocation::reserve(&mut keys, edits.len()).map_err(|_| ALLOCATION)?;
