@@ -3,6 +3,52 @@ use engine_native::{
     carmy, carmy::DivisionSeed, carmy_manpower_values, memory::SliceMemory, walk::Outcome,
 };
 
+struct DeniedAllocator;
+
+thread_local! {
+    static DENY_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// SAFETY: delegates to std::alloc::System except when the current test thread denies allocations.
+unsafe impl std::alloc::GlobalAlloc for DeniedAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if DENY_ALLOC.try_with(std::cell::Cell::get).unwrap_or(false) {
+            std::ptr::null_mut()
+        } else {
+            // SAFETY: layout satisfies GlobalAlloc::alloc preconditions.
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        if DENY_ALLOC.try_with(std::cell::Cell::get).unwrap_or(false) {
+            std::ptr::null_mut()
+        } else {
+            // SAFETY: pointer, layout, and size satisfy GlobalAlloc::realloc preconditions.
+            unsafe { std::alloc::System.realloc(pointer, layout, size) }
+        }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: pointer and layout were allocated by std::alloc::System.
+        unsafe { std::alloc::System.dealloc(pointer, layout) };
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: DeniedAllocator = DeniedAllocator;
+
+fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DENY_ALLOC.set(self.0);
+        }
+    }
+    let _reset = Reset(DENY_ALLOC.replace(true));
+    run()
+}
+
 fn capture(
     memory: &impl engine_native::Memory,
     base: usize,
@@ -181,10 +227,8 @@ fn failed_headers_entries_and_identity_are_unavailable() {
         Outcome::Unavailable { .. }
     ));
 }
-// quarantine: #147 the reader and the test disagree
 #[test]
-#[ignore = "quarantined under #147"]
-fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
+fn mixed_contributor_lists_grow_contributors_for_the_whole_census() {
     let (mut bytes, mut seeds) = world(1);
     let base = bytes.as_ptr() as usize;
     for (n, count) in [2u32, 3, 1].into_iter().enumerate() {
@@ -192,6 +236,10 @@ fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
         bytes[at + 16..at + 20].copy_from_slice(&count.to_le_bytes());
         bytes[at + 20..at + 24].copy_from_slice(&count.to_le_bytes());
     }
+    bytes[0x700 + 0x690..0x700 + 0x694].copy_from_slice(&42u32.to_le_bytes());
+    bytes[0x700 + 0x694..0x700 + 0x698].copy_from_slice(&123i32.to_le_bytes());
+    bytes[2 * 0x700 + 0x680..2 * 0x700 + 0x684].copy_from_slice(&99u32.to_le_bytes());
+    bytes[2 * 0x700 + 0x684..2 * 0x700 + 0x688].copy_from_slice(&(-5i32).to_le_bytes());
     carmy::capture_division_seeds(
         &SliceMemory {
             base,
@@ -212,16 +260,65 @@ fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
         &mut rows,
         &mut contributors,
     );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(walk.required_contributors, 6);
+    assert_eq!(walk.contributors, 6);
+    assert_eq!(rows[0].division, seeds[0].division);
     assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
+        [(rows[0].start, rows[0].len), (rows[1].start, rows[1].len), (rows[2].start, rows[2].len)],
+        [(0, 2), (2, 3), (5, 1)]
+    );
+    assert_eq!(
+        contributors[4],
+        land::Contributor {
+            country: 42,
+            amount: 123
         }
     );
-    assert_eq!(walk.required_contributors, 6);
-    assert_eq!(walk.contributors, 2);
-    assert_eq!(rows[0].division, seeds[0].division);
+    assert_eq!(
+        contributors[5],
+        land::Contributor {
+            country: 99,
+            amount: -5
+        }
+    );
+}
+
+#[test]
+fn contributor_growth_failure_precedes_later_seed_validation_failures() {
+    let (bytes, mut seeds) = world(1);
+    let base = bytes.as_ptr() as usize;
+    seeds[1].primary_vtable = None;
+    let memory = SliceMemory {
+        base,
+        bytes: &bytes,
+    };
+    let mut rows = vec![land::Row::default(); 2];
+    let mut contributors = Vec::new();
+    let mut pointers = vec![0; 2];
+    let mut ordinals = vec![0; 2];
+    let mut first = vec![[0; 2 * engine_deployment::manpower_value_entry::STRIDE]; 2];
+    let walk = with_allocations_denied(|| {
+        land::capture(
+            &memory,
+            0,
+            &seeds[..2],
+            Outcome::Rows { len: 2 },
+            &mut rows,
+            &mut contributors,
+            land::Scratch {
+                pointers: &mut pointers,
+                ordinals: &mut ordinals,
+                first: &mut first,
+            },
+        )
+    });
+    assert_eq!(
+        walk.outcome,
+        Outcome::Unavailable {
+            reason: "capture buffer allocation failed"
+        }
+    );
 }
 
 #[test]

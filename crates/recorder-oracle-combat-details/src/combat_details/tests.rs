@@ -933,9 +933,7 @@ fn text_suffix_limitation_preserves_nonempty_field_presence() {
     optional_text_value(&mut report, "missing field", b"\0retained suffix", None);
     assert_eq!(report.differences.len(), 1);
 }
-// quarantine: #148 the code and the test disagree on a recorded or displayed fact
 #[test]
-#[ignore = "quarantined under #148"]
 fn division_naming_follows_the_division_name_writer_and_member_template() {
     let (standard, fake) = (1_u64 << 32 | 52, 2_u64 << 32 | 52);
     let template = |group: Option<&[u8]>| save::DivisionTemplate {
