@@ -8,4 +8,4 @@ Spending groups fixed5 output by new construction or repair, building type and s
 
 Names and art are resolved with the recording's content and lexical dictionary. Use the queue's line declaration for the building sprite and repair marker. Authored GUI icon frames are one-based. Building names use their content localization keys. Cache state keys and per-type results by source and catalogue. Leave unavailable fields null and report each kind of refusal as a counted warning.
 
-[Construction index](../../crates/dashboard/src/products/construction.rs) · [Log window](../../crates/dashboard/src/products/construction/log.rs) · [Spending](../../crates/dashboard/src/products/construction/spending.rs) · [Tests](../../crates/dashboard/src/products/construction/tests.rs)
+[Construction index](../../crates/dashboard-production/src/products/construction.rs) · [Log window](../../crates/dashboard-production/src/products/construction/log.rs) · [Spending](../../crates/dashboard-production/src/products/construction/spending.rs) · [Tests](../../crates/dashboard-production/src/products/construction/tests.rs)

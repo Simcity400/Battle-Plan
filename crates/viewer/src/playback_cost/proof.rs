@@ -219,7 +219,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     }
     fs::create_dir(&options.out)?;
     let out = fs::canonicalize(&options.out)?;
-    let config = dashboard::Config::load()?;
+    let config = dashboard_core::config::Config::load()?;
     let mut resolve = config.resolve_options()?;
     resolve.cache_dir = out.join("cache/content");
     fs::create_dir_all(&resolve.cache_dir)?;

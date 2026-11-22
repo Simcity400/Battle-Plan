@@ -106,3 +106,26 @@ pub fn lifetimes(source: &Source, run: u32, table: replay_data::rows::TableId) -
 pub fn query(source: &Source, branch: u64) -> io::Result<dashboard_query::Query<'_>> {
     index(source).query(source.replay_ref(), branch)
 }
+
+pub struct RunCache<K, V>(HashMap<u32, Arc<V>>, std::marker::PhantomData<fn() -> K>);
+
+impl<K, V> Default for RunCache<K, V> {
+    fn default() -> Self {
+        Self(HashMap::new(), std::marker::PhantomData)
+    }
+}
+
+impl<K: 'static, V: Send + Sync + 'static> RunCache<K, V> {
+    pub fn forget(source: &Source) {
+        *source.state::<Self>().lock().unwrap_or_else(PoisonError::into_inner) = Self::default();
+    }
+
+    pub fn held(state: &std::sync::Mutex<Self>, run: u32, read: impl FnOnce() -> io::Result<V>) -> io::Result<Arc<V>> {
+        if let Some(found) = state.lock().unwrap_or_else(PoisonError::into_inner).0.get(&run) {
+            return Ok(Arc::clone(found));
+        }
+        let made = Arc::new(read()?);
+        state.lock().unwrap_or_else(PoisonError::into_inner).0.insert(run, Arc::clone(&made));
+        Ok(made)
+    }
+}

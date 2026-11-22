@@ -6,14 +6,14 @@ use viewer_world::map::map_mode::MapMode;
 
 const MAP: [f32; 2] = [640., 480.];
 
-fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds {
+fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds {
         x,
         y: 0,
         width: MAP[0] as u32,
         height: MAP[1] as u32,
     };
-    dashboard::protocol::DashboardMapView {
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: id.into(),
         source_id: "verified-fixture".into(),
@@ -39,7 +39,7 @@ fn left(index: usize) -> f32 {
 
 fn pass(
     viewers: &mut [Viewer; 2],
-    targets: &[dashboard::protocol::DashboardMapView; 2],
+    targets: &[dashboard_core::protocol::DashboardMapView; 2],
     ctx: &egui::Context,
     frame: &eframe::Frame,
     events: Vec<egui::Event>,
@@ -357,7 +357,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::Result<()> {
-    use dashboard::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
+    use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-scripted-hover")?;
     let document = &fixture.document;

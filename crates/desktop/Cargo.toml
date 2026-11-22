@@ -10,6 +10,8 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+dashboard-core.workspace = true
+dashboard-text.workspace = true
 replay.workspace = true
 app-update.workspace = true
 engine-executable.workspace = true

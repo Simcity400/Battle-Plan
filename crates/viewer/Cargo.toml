@@ -8,6 +8,10 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+dashboard-land.workspace = true
+dashboard-politics.workspace = true
 viewer-playback.workspace = true
 map-content.workspace = true
 foldhash = "0.2"

@@ -212,7 +212,7 @@ mod tests {
     fn the_host_s_controller_flies_the_aircraft_while_the_map_lacks_keyboard_focus()
     -> std::io::Result<()> {
         use crate::map::scene_failure_tests::Fixture;
-        use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
+        use dashboard_core::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
         use eframe::egui;
         use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
@@ -268,7 +268,7 @@ mod tests {
             draw(&mut viewer);
             std::thread::sleep(Duration::from_millis(1));
         }
-        viewer.set_camera_mode(dashboard::protocol::CameraMode::Fly, false, &ctx);
+        viewer.set_camera_mode(dashboard_core::protocol::CameraMode::Fly, false, &ctx);
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 1,

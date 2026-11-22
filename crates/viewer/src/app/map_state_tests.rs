@@ -160,9 +160,9 @@ fn viewer(hour: Hour, side: MapSide) -> Viewer {
     viewer
 }
 
-fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
-    dashboard::protocol::DashboardMapView {
+fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "map-state".into(),
         source_id: "map-state".into(),

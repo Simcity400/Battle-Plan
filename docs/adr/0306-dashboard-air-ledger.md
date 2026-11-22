@@ -8,4 +8,4 @@ Each window carries the totals before it and points for the events read in it. R
 
 Each window reaches back through contiguous observed stretches to the beginning of the proof, never before the first counted hour. It can consequently report whether its total is complete without fetching earlier windows. Cache these spans by run and family at open, sharing an in-progress read across requests. The independent full-branch test folds events and joins windows as the frontend does to check late events, open totals, contiguity and ranking across a boundary.
 
-[Air event ledger](../../crates/dashboard/src/products/air_ledger.rs) · [Standalone parity test](../../crates/dashboard/src/products/air_ledger/reference.rs)
+[Air event ledger](../../crates/dashboard-air/src/products/air_ledger.rs) · [Standalone parity test](../../crates/dashboard-air/src/products/air_ledger/reference.rs)

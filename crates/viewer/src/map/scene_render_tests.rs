@@ -177,7 +177,7 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
                 ));
             }
             for scene in &mut scenes {
-                scene.set_graphics(dashboard::protocol::MapGraphics {
+                scene.set_graphics(dashboard_core::protocol::MapGraphics {
                     samples,
                     full_resolution: frame % 8 < 4,
                     ..Default::default()

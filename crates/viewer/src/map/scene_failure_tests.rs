@@ -137,7 +137,7 @@ impl Fixture {
             device,
             queue,
             d,
-            dashboard::protocol::MapGraphics {
+            dashboard_core::protocol::MapGraphics {
                 samples,
                 ..Default::default()
             },
@@ -235,7 +235,7 @@ fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> 
         &fixture.state.device,
         &fixture.state.queue,
         &fixture.document,
-        dashboard::protocol::MapGraphics {
+        dashboard_core::protocol::MapGraphics {
             samples: 1,
             ..Default::default()
         },
@@ -351,7 +351,7 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
         control.targets = None;
         control.post.invalidate();
         for current in [&mut scene, &mut control] {
-            current.set_graphics(dashboard::protocol::MapGraphics {
+            current.set_graphics(dashboard_core::protocol::MapGraphics {
                 samples: 1,
                 full_resolution: full,
                 ..Default::default()

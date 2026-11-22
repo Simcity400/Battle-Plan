@@ -1,5 +1,5 @@
 use super::{Inner, MAX_SERIALIZED_BYTES, Request, ThreadExit};
-use crate::transport::{DataEvent, MAX_REPLY_BYTES, ReplyChunks};
+use dashboard_core::transport::{DataEvent, MAX_REPLY_BYTES, ReplyChunks};
 use std::{
     collections::VecDeque,
     sync::{
@@ -149,7 +149,7 @@ pub(super) fn deliver(
 pub(super) fn emit_error(
     inner: &Inner,
     request: &Arc<Request>,
-    error: crate::QueryError,
+    error: dashboard_core::QueryError,
     emit: &(dyn Fn(DataEvent) -> bool + Send + Sync),
 ) -> bool {
     let lease = inner

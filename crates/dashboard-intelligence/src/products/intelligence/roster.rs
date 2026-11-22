@@ -4,14 +4,7 @@ use super::{
     operative_content::{self, Art, CAPTURED, DISBANDED, KILLED, OPERATION, OPERATIVE_CATEGORY, OperativeContent},
     placements::ACTIVE,
 };
-use crate::{
-    Source,
-    products::{
-        LoadContext, Product,
-        at_hour::{At, AtHour, Owner, Read},
-        country_ids::{Names, RunLinks},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Owner, Read}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_query::identity::{Holder, Holders};
 use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::{CharacterOperativeRow, CharacterPortraitRow, OperativeMembershipRow, Recorded, TableId, tables};
@@ -494,10 +487,10 @@ impl Product for OperativesDeparted {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("Operatives roster hour is not recorded"))?;
-        let links = crate::answer::links(source, stretch.run)?;
+        let links = dashboard_base::queries::links(source, stretch.run)?;
         let keys: Vec<String> = params.countries.iter().map(|country| country.key().into_owned()).collect();
         let mut slots: HashMap<u32, &str> = HashMap::new();
         for (country, key) in params.countries.iter().zip(&keys) {
@@ -505,7 +498,7 @@ impl Product for OperativesDeparted {
                 slots.insert(slot, key);
             }
         }
-        let lives = crate::answer::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
+        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
         let roster = |key: u128, hour: i32| -> Option<&str> {
             let (raw, kind) = roster_of(key);
             (kind == ACTIVE).then(|| links.slot_at(raw, hour)).flatten().and_then(|slot| slots.get(&slot).copied())
@@ -533,7 +526,7 @@ impl Product for OperativesDeparted {
             })
             .collect();
         let leaving = leavings(&mine, &steps, params.hour);
-        crate::metadata::check_cancel(cancelled)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let format = recording.format();
         let asks: Vec<(i32, u128)> = leaving.iter().map(|leaving| (leaving.last, leaving.key)).collect();
         let mut rows: HashMap<u128, OperativeMembershipRow> = HashMap::new();
@@ -637,11 +630,11 @@ impl Product for OperativeTenures {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("Operatives roster hour is not recorded"))?;
-        let links = crate::answer::links(source, stretch.run)?;
-        let lives = crate::answer::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
+        let links = dashboard_base::queries::links(source, stretch.run)?;
+        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
         let mut tenures = Vec::new();
         for &(key, first, last) in lives.iter() {
             let (raw, kind) = roster_of(key);

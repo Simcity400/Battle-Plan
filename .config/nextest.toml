@@ -14,7 +14,7 @@ test(/5000|5_000|five_thousand/)
 priority = 60
 
 [[profile.default.overrides]]
-filter = 'package(dashboard)'
+filter = 'package(/^dashboard(?:-(?:air|economy|intelligence|land|naval|players|politics|production|research|wars|world))?$/)'
 priority = 50
 
 [profile.hosted]

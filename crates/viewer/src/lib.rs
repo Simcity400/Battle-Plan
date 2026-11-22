@@ -60,7 +60,7 @@ mod unit_scale_tests;
 use viewer_playback::visual_fallback;
 use viewer_playback::worker_pool;
 
-use dashboard::Config;
+use dashboard_core::config::Config;
 
 #[cfg(test)]
 #[global_allocator]
@@ -595,7 +595,7 @@ impl Options {
                         .ok()
                         .filter(|scale| valid(*scale))
                         .ok_or_else(|| {
-                            let range = dashboard::protocol::MAP_UI_SCALE_RANGE;
+                            let range = dashboard_core::protocol::MAP_UI_SCALE_RANGE;
                             invalid(format!(
                                 "the UI scale must be a number from {} to {}",
                                 range.start(),
@@ -1138,7 +1138,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         render::probe_dump_device()?;
         let graphics =
             engine_executable::executable_tables::or_installed(&config.game_dir, || {
-                dashboard::map_settings::read_game(&config.user_dir)
+                dashboard_core::map_settings::read_game(&config.user_dir)
             })?
             .graphics;
         let mut document = document::Document::load(
@@ -2410,7 +2410,7 @@ mod tests {
         assert_eq!(default.perspective, Choice::default());
         assert_eq!(
             default.perspective.fog,
-            dashboard::map_display::option_defaults::FOG
+            dashboard_core::map_display::option_defaults::FOG
         );
         let options = parse(&[
             "campaign.battleplan",

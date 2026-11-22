@@ -1,17 +1,17 @@
 use super::NativeHost;
-use dashboard::protocol::{DashboardMapState, NativeEvent, ViewerState};
+use dashboard_core::protocol::{DashboardMapState, NativeEvent, ViewerState};
 use std::{sync::Arc, thread};
 use tauri::{AppHandle, Emitter, WebviewWindow};
 use viewer::host::{Ending, Launch, Map, Role};
 
 fn launch_folders(
-    applied: Option<&dashboard::Config>,
-    saved: Option<&dashboard::Config>,
+    applied: Option<&dashboard_core::config::Config>,
+    saved: Option<&dashboard_core::config::Config>,
 ) -> Vec<std::ffi::OsString> {
     applied.or(saved).map(folder_arguments).unwrap_or_default()
 }
 
-fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
+fn folder_arguments(config: &dashboard_core::config::Config) -> Vec<std::ffi::OsString> {
     [
         ("--game-dir", &config.game_dir),
         ("--user-dir", &config.user_dir),
@@ -248,13 +248,13 @@ impl NativeHost {
         inner
             .pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Diagnostics {
+            .push_back(dashboard_core::protocol::MapAction::Diagnostics {
                 enabled: diagnostics,
             });
         inner
             .pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Mute { muted });
+            .push_back(dashboard_core::protocol::MapAction::Mute { muted });
         let role = if inner.popout.is_some() { Role::PopOut } else { Role::Main };
         let receiver = self.clone();
         let app = window.app_handle().clone();
@@ -303,7 +303,7 @@ impl NativeHost {
             NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
             NativeEvent::FlyAircraft { aircraft, state } => {
                 inner.status.fly_aircraft =
-                    Some(dashboard::protocol::FlyAircraftStatus { aircraft, state });
+                    Some(dashboard_core::protocol::FlyAircraftStatus { aircraft, state });
             }
             NativeEvent::ToggleDiagnostics => {
                 drop(inner);
@@ -376,7 +376,7 @@ impl NativeHost {
             NativeEvent::Ready { sample_counts, .. } => {
                 inner.status.ready = true;
                 if let Some(counts) = sample_counts {
-                    dashboard::map_settings::set_sample_counts(counts);
+                    dashboard_core::map_settings::set_sample_counts(counts);
                 }
             }
             NativeEvent::CameraMode { mode, overlays } => {
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn the_viewer_receives_only_the_folders_the_host_has() {
-        let config = |game: &str, user: &str| dashboard::Config {
+        let config = |game: &str, user: &str| dashboard_core::config::Config {
             game_dir: game.into(),
             user_dir: user.into(),
             older_game_dirs: Vec::new(),
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn a_new_viewer_starts_with_the_folders_apply_last_sent() {
-        let config = |game: &str| dashboard::Config {
+        let config = |game: &str| dashboard_core::config::Config {
             game_dir: game.into(),
             user_dir: r"C:\User".into(),
             older_game_dirs: Vec::new(),
@@ -481,7 +481,7 @@ mod tests {
             status: HostStatus {
                 running: true,
                 ready: true,
-                viewer: dashboard::protocol::ViewerState {
+                viewer: dashboard_core::protocol::ViewerState {
                     path: Some(path.into()),
                     revision: Some("v1".into()),
                     branch: Some("1".into()),
@@ -531,12 +531,12 @@ mod tests {
         let request = inner.export_requests;
         let (answer, answered) = tokio::sync::oneshot::channel();
         inner.exports.push(crate::native::Export { request, generation: inner.generation, answer });
-        inner.pending.actions.push_back(dashboard::protocol::MapAction::Export { path: path.into(), view_id: None, request });
+        inner.pending.actions.push_back(dashboard_core::protocol::MapAction::Export { path: path.into(), view_id: None, request });
         answered
     }
 
-    fn export(request: u64, answer: Result<&str, &str>) -> dashboard::protocol::NativeEvent {
-        dashboard::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
+    fn export(request: u64, answer: Result<&str, &str>) -> dashboard_core::protocol::NativeEvent {
+        dashboard_core::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
     }
 
     #[test]
@@ -568,7 +568,7 @@ mod tests {
         let mut refused = asked(&mut inner, "map.png");
         assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
         assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
+        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard_core::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
         let mut next = asked(&mut inner, "map.png");
         assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none(), "the ended map's answer");
         assert!(next.try_recv().is_err(), "is not the new map's");

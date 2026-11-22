@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["replay/test-support", "content-reader-core/test-support"]
 
 [dependencies]
 replay.workspace = true

@@ -8,4 +8,4 @@ The mission matrix supplies structure from registered regions and recorded missi
 
 Air statistics display the recorded current-year channels in each region. Schema order differs from the interface order for disruption and ground-equipment losses. Use the lowest raw country ID when several aliases of the holder have a row for the same region. If links are unavailable, retain only the holder's own ID with its limitation. Read region choices from key lifetimes over the timeline, so the user can select a region with no current row. Field values stay live and distinct from absent rows.
 
-[Air aces](../../crates/dashboard/src/products/air_aces.rs) · [Air missions](../../crates/dashboard/src/products/air_missions.rs) · [Air statistics](../../crates/dashboard/src/products/air_statistics.rs)
+[Air aces](../../crates/dashboard-air/src/products/air_aces.rs) · [Air missions](../../crates/dashboard-air/src/products/air_missions.rs) · [Air statistics](../../crates/dashboard-air/src/products/air_statistics.rs)

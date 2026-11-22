@@ -13,7 +13,7 @@ mod served_ui;
 mod updates;
 mod video;
 
-use dashboard::protocol::{DashboardMapView, ViewBounds};
+use dashboard_core::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
@@ -30,7 +30,7 @@ fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSc
     tauri::async_runtime::spawn_blocking(move || {
         let mut response = Response::new(Vec::new());
         response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, page_origin);
-        match dashboard::artwork::bytes(&name) {
+        match dashboard_text::artwork::bytes(&name) {
             Some(png) => {
                 *response.body_mut() = png.to_vec();
                 let headers = response.headers_mut();
@@ -71,9 +71,9 @@ fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<()
 fn map_action(
     host: State<'_, NativeHost>,
     popouts: State<'_, popout::PopOuts>,
-    action: dashboard::protocol::MapAction,
+    action: dashboard_core::protocol::MapAction,
 ) -> Result<(), String> {
-    if matches!(action, dashboard::protocol::MapAction::Folders { .. }) {
+    if matches!(action, dashboard_core::protocol::MapAction::Folders { .. }) {
         return Err("Set the content folders in Settings".into());
     }
     host.map_action(action.clone())?;
@@ -176,7 +176,7 @@ fn seek_map(
     revision: String,
     branch: String,
     hour: i32,
-    playback: Option<dashboard::protocol::MapPlayback>,
+    playback: Option<dashboard_core::protocol::MapPlayback>,
 ) -> Result<(), String> {
     host.seek(replay_path(&path)?, revision, branch, hour, playback)
 }
@@ -283,7 +283,7 @@ fn main() {
         viewer::host::log_map_frames(prefix);
     }
     shader_pipeline::artwork::warm();
-    if let Err(error) = dashboard::artwork::configure_desktop() {
+    if let Err(error) = dashboard_text::artwork::configure_desktop() {
         eprintln!("{error}");
     }
     let page_origin = context.config().build.dev_url.as_ref().filter(|_| tauri::is_dev())

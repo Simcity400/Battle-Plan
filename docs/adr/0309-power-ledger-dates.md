@@ -4,4 +4,4 @@ The dashboard lists changes in recorded running totals. A payment is dated to th
 
 An item's stable identity includes its holder, ordinal and first read because ordinals reset with a run. Equal category, recorded operands, and names drive presentation grouping. Names and artwork are dated to the first payment, then cached per source and catalogue. Read the country and item operands first, plus the scripted world only when text or artwork depends on it. If that hour cannot be read, name the operands that can be resolved and report the reason. An empty literal supplies no token. The recorded cause supplies a category where the content does not, and a negative net command power gain is a known deficit.
 
-[Power ledger](../../crates/dashboard/src/products/power_ledger.rs) · [Day view](../../crates/dashboard/src/products/power_ledger/day.rs) · [Naming](../../crates/dashboard/src/products/power_ledger/naming.rs)
+[Power ledger](../../crates/dashboard-politics/src/products/power_ledger.rs) · [Day view](../../crates/dashboard-politics/src/products/power_ledger/day.rs) · [Naming](../../crates/dashboard-politics/src/products/power_ledger/naming.rs)

@@ -75,8 +75,8 @@ fn run() -> io::Result<bool> {
     let cancelled = AtomicBool::new(false);
     let opened = Instant::now();
     let open = || {
-        dashboard::Source::open(
-            dashboard::SourceKey { source_id: "reply-check".into(), revision: dashboard::protocol::replay_revision(&recording)? },
+        dashboard_base::Source::open(
+            dashboard_base::SourceKey { source_id: "reply-check".into(), revision: dashboard_core::protocol::replay_revision(&recording)? },
             recording.clone(),
             &cancelled,
         )

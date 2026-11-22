@@ -1,5 +1,5 @@
 use super::pending::MAX_QUEUED_ACTIONS;
-use dashboard::protocol::NativeCommand;
+use dashboard_core::protocol::NativeCommand;
 use super::*;
 
 #[test]
@@ -48,7 +48,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
         revision: "new-version".into(),
         branch: "9".into(),
         hour: 456,
-        playback: Some(dashboard::protocol::MapPlayback {
+        playback: Some(dashboard_core::protocol::MapPlayback {
             playing: true,
             seek_sequence: 7,
             fraction: 0.375,
@@ -146,7 +146,7 @@ fn hidden_map_defers_document_work_without_spinning() {
     ));
 }
 
-use dashboard::transport::{MAP_CONTROLS_BUSY, transient_error};
+use dashboard_core::transport::{MAP_CONTROLS_BUSY, transient_error};
 
 #[test]
 fn busy_map_controls_refuse_with_a_retryable_error() {
@@ -154,12 +154,12 @@ fn busy_map_controls_refuse_with_a_retryable_error() {
     for _ in 0..MAX_QUEUED_ACTIONS - 1 {
         pending
             .actions
-            .push_back(dashboard::protocol::MapAction::Inspect);
+            .push_back(dashboard_core::protocol::MapAction::Inspect);
     }
     assert!(pending.action_room().is_ok());
     pending
         .actions
-        .push_back(dashboard::protocol::MapAction::Inspect);
+        .push_back(dashboard_core::protocol::MapAction::Inspect);
     let refusal = pending.action_room().unwrap_err();
     assert!(refusal.starts_with(MAP_CONTROLS_BUSY));
     assert!(transient_error(&refusal));
@@ -168,7 +168,7 @@ fn busy_map_controls_refuse_with_a_retryable_error() {
 #[test]
 fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
     let host = NativeHost::default();
-    let config = dashboard::Config {
+    let config = dashboard_core::config::Config {
         game_dir: r"C:\Game".into(),
         user_dir: r"C:\User".into(),
         older_game_dirs: Vec::new(),
@@ -181,7 +181,7 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
 
 #[test]
 fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
-    use dashboard::protocol::MapAction;
+    use dashboard_core::protocol::MapAction;
     let host = NativeHost::popout(1, Arc::new(|| ()));
     host.set_display(MapAction::Vsync { enabled: true });
     host.set_display(MapAction::Vsync { enabled: false });
@@ -237,7 +237,7 @@ fn moving_the_view_never_starts_a_viewer() {
 
 #[test]
 fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
-    use dashboard::protocol::MapAction;
+    use dashboard_core::protocol::MapAction;
     let host = NativeHost::default();
     let debug = |actions: &[MapAction]| format!("{actions:?}");
     let read = vec![
@@ -287,7 +287,7 @@ fn a_host_names_the_recording_it_shows_requests_and_seeks() {
 
 #[test]
 fn a_waiting_controller_message_is_sent_even_while_hidden() {
-    use dashboard::protocol::GamepadMessage;
+    use dashboard_core::protocol::GamepadMessage;
     let mut pending = Pending::default();
     assert!(!pending.can_send(true));
     pending.gamepad = Some(GamepadMessage::Release);
@@ -304,7 +304,7 @@ fn a_waiting_controller_message_is_sent_even_while_hidden() {
 
 #[test]
 fn only_the_latest_camera_mode_waits_for_the_viewer() {
-    use dashboard::protocol::{CameraMode, MapAction};
+    use dashboard_core::protocol::{CameraMode, MapAction};
     let host = NativeHost::default();
     host.shared.lock().unwrap().status.ready = true;
     for (mode, overlays) in [
@@ -334,7 +334,7 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
 #[test]
 fn the_status_carries_the_camera_mode_for_the_interface() {
     let status = HostStatus {
-        camera_mode: dashboard::protocol::CameraMode::Walk,
+        camera_mode: dashboard_core::protocol::CameraMode::Walk,
         camera_overlays: true,
         ..Default::default()
     };
@@ -350,7 +350,7 @@ fn the_status_carries_the_camera_mode_for_the_interface() {
 
 #[test]
 fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
-    use dashboard::protocol::{CameraMode, MapAction};
+    use dashboard_core::protocol::{CameraMode, MapAction};
     let host = NativeHost::default();
     host.shared.lock().unwrap().status.ready = true;
     host.map_action(MapAction::CameraMode {

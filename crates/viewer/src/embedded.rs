@@ -1,9 +1,6 @@
 
 use job_priority::SpawnCarried as _;
-use dashboard::protocol::{
-    CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent,
-    ViewBounds, ViewerState, validate_map_views,
-};
+use dashboard_core::protocol::{CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views};
 use eframe::egui;
 use std::{
     cell::{Cell, RefCell},
@@ -33,7 +30,7 @@ pub struct Seek {
     pub revision: String,
     pub branch: replay_data::BranchId,
     pub hour: i32,
-    pub playback: Option<dashboard::protocol::MapPlayback>,
+    pub playback: Option<dashboard_core::protocol::MapPlayback>,
 }
 
 impl Seek {
@@ -67,7 +64,7 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 
 #[derive(Default)]
 pub struct Pending {
-    pub actions: VecDeque<dashboard::protocol::MapAction>,
+    pub actions: VecDeque<dashboard_core::protocol::MapAction>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -100,7 +97,7 @@ impl Pending {
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
-                if let dashboard::protocol::MapAction::Unload { path } = &action {
+                if let dashboard_core::protocol::MapAction::Unload { path } = &action {
                     let path = Path::new(path);
                     if self
                         .open
@@ -217,7 +214,7 @@ impl ReportedState {
 
 #[derive(Default)]
 struct Outgoing {
-    details: Option<dashboard::protocol::MapDetails>,
+    details: Option<dashboard_core::protocol::MapDetails>,
     ready: Option<(String, Option<Vec<u32>>)>,
     state: Option<ReportedState>,
     error: Option<String>,
@@ -225,11 +222,11 @@ struct Outgoing {
     map_order: VecDeque<String>,
     toggle_diagnostics: bool,
     camera_mode: Option<(CameraMode, bool)>,
-    fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
-    view_options: BTreeMap<String, dashboard::protocol::MapOptions>,
-    view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
-    view_modes: BTreeMap<String, Vec<dashboard::protocol::MapModeChoice>>,
-    view_observes: BTreeMap<String, dashboard::protocol::ObservedCountry>,
+    fly_aircraft: Option<dashboard_core::protocol::FlyAircraftStatus>,
+    view_options: BTreeMap<String, dashboard_core::protocol::MapOptions>,
+    view_toggles: VecDeque<(String, dashboard_core::protocol::MapToggle)>,
+    view_modes: BTreeMap<String, Vec<dashboard_core::protocol::MapModeChoice>>,
+    view_observes: BTreeMap<String, dashboard_core::protocol::ObservedCountry>,
 }
 
 impl Outgoing {
@@ -313,7 +310,7 @@ impl Shared {
         self.output_ready.notify_one();
     }
 
-    fn details(&self, details: dashboard::protocol::MapDetails) {
+    fn details(&self, details: dashboard_core::protocol::MapDetails) {
         self.outgoing
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -665,7 +662,7 @@ impl Parent {
             .unwrap_or_else(|error| error.into_inner())
             .ready = Some((
             controller.window.window.hwnd().to_string(),
-            dashboard::map_settings::sample_counts(),
+            dashboard_core::map_settings::sample_counts(),
         ));
         shared.output_ready.notify_one();
         ctx.request_repaint();
@@ -736,7 +733,7 @@ impl Controller {
         self.window.placement.get().bounds.map(|bounds| [bounds.width, bounds.height])
     }
 
-    pub fn report_details(&self, details: dashboard::protocol::MapDetails) {
+    pub fn report_details(&self, details: dashboard_core::protocol::MapDetails) {
         if let Some(path) = std::env::var_os("BATTLEPLAN_MAP_DETAILS_FILE").or_else(|| std::env::var_os("HOI4_MAP_DETAILS_FILE"))
             && let Ok(bytes) = serde_json::to_vec(&serde_json::json!({
                 "at": crate::perf_log::epoch_ms(), "details": &details,
@@ -747,7 +744,7 @@ impl Controller {
         self.shared.details(details);
     }
 
-    pub fn report_fly_aircraft(&self, status: dashboard::protocol::FlyAircraftStatus) {
+    pub fn report_fly_aircraft(&self, status: dashboard_core::protocol::FlyAircraftStatus) {
         self.shared
             .outgoing
             .lock()
@@ -782,7 +779,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_options(&self, view_id: &str, options: dashboard::protocol::MapOptions) {
+    pub fn report_view_options(&self, view_id: &str, options: dashboard_core::protocol::MapOptions) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -793,7 +790,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_observe(&self, view_id: &str, country: dashboard::protocol::ObservedCountry) {
+    pub fn report_view_observe(&self, view_id: &str, country: dashboard_core::protocol::ObservedCountry) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -804,7 +801,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard::protocol::MapModeChoice>) {
+    pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard_core::protocol::MapModeChoice>) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -815,7 +812,7 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard::protocol::MapToggle) {
+    pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard_core::protocol::MapToggle) {
         let mut outgoing = self
             .shared
             .outgoing
@@ -1066,7 +1063,7 @@ mod tests {
         messages.push("Capture 1.250 ms".into());
         assert!(serde_json::to_vec(&messages).unwrap().len() > 16_000);
         let shared = shared();
-        shared.details(dashboard::protocol::MapDetails {
+        shared.details(dashboard_core::protocol::MapDetails {
             messages: messages.clone(),
             ..Default::default()
         });
@@ -1103,7 +1100,7 @@ mod tests {
 
     #[test]
     fn twenty_map_actions_queued_before_a_frame_are_all_taken_in_order() {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         let names: Vec<String> = (0..20).map(|n| format!("plane {n}")).collect();
         let mut pending = Pending::default();
         for name in &names {
@@ -1200,7 +1197,7 @@ mod tests {
     #[test]
     fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_queue() {
         let mut outgoing = Outgoing::default();
-        let choice = |token: &str| dashboard::protocol::MapModeChoice {
+        let choice = |token: &str| dashboard_core::protocol::MapModeChoice {
             token: token.into(),
             label: token.into(),
             unavailable: None,
@@ -1254,9 +1251,7 @@ mod tests {
 
     #[test]
     fn controller_messages_wait_merged_and_camera_modes_reach_the_map() {
-        use dashboard::protocol::{
-            CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction,
-        };
+        use dashboard_core::protocol::{CameraMode, GamepadButton, GamepadOwner, GamepadState, MapAction};
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 4,
@@ -1374,13 +1369,13 @@ mod tests {
         pending.push(open.clone()).unwrap();
         pending
             .push(NativeCommand::MapAction {
-                action: dashboard::protocol::MapAction::Unload { path: "B".into() },
+                action: dashboard_core::protocol::MapAction::Unload { path: "B".into() },
             })
             .unwrap();
         assert!(pending.open.is_some());
         pending
             .push(NativeCommand::MapAction {
-                action: dashboard::protocol::MapAction::Unload { path: "A".into() },
+                action: dashboard_core::protocol::MapAction::Unload { path: "A".into() },
             })
             .unwrap();
         assert!(pending.open.is_none());
@@ -1398,7 +1393,7 @@ mod tests {
                     revision: "100:10:0".into(),
                     branch: u64::MAX.to_string(),
                     hour,
-                    playback: Some(dashboard::protocol::MapPlayback {
+                    playback: Some(dashboard_core::protocol::MapPlayback {
                         playing: true,
                         seek_sequence: (hour / 100) as u64,
                         fraction: 0.375,
@@ -1415,7 +1410,7 @@ mod tests {
                 revision: "100:10:0".into(),
                 branch: u64::MAX,
                 hour: 9999,
-                playback: Some(dashboard::protocol::MapPlayback {
+                playback: Some(dashboard_core::protocol::MapPlayback {
                     playing: true,
                     seek_sequence: 99,
                     fraction: 0.375,

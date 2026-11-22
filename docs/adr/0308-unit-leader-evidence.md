@@ -6,4 +6,4 @@ Career totals read the last applicable sample of each run and subtract the previ
 
 Names and portraits come from the leader's recorded character and the content for the selected role. Conditional skill requirements without enough recorded inputs yield an unavailable ceiling.
 
-[Unit leaders](../../crates/dashboard/src/products/leaders.rs) · [Leader career](../../crates/dashboard/src/products/leaders/career.rs)
+[Unit leaders](../../crates/dashboard-land/src/products/leaders.rs) · [Leader career](../../crates/dashboard-land/src/products/leaders/career.rs)
