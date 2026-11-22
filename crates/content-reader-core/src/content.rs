@@ -495,6 +495,7 @@ struct Member {
 #[derive(Clone, Debug, Default)]
 struct LookupIndex {
     folders: BTreeMap<LayerPath, LayerPath>,
+    folder_aliases: Arc<std::sync::Mutex<BTreeMap<LayerPath, LayerPath>>>,
     archive: Option<physfs_zip::Index>,
 }
 
@@ -538,8 +539,15 @@ pub struct ContentRead {
     pub outcome: ReadOutcome,
 }
 
+static NEXT_TRACE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_trace_id() -> u64 {
+    NEXT_TRACE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Clone)]
 struct ReadTrace {
+    id: u64,
     callback: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
     purpose: String,
     product: Option<Arc<graph::Node>>,
@@ -685,6 +693,7 @@ impl ReadTrace {
     fn for_layers(&self, layers: Vec<usize>) -> Self {
         let callback = self.callback.clone();
         Self {
+            id: self.id,
             callback: std::sync::Arc::new(move |mut read: ContentRead| {
                 read.layer = read.layer.and_then(|index| layers.get(index).copied());
                 callback(read)
@@ -713,12 +722,17 @@ pub struct ResolvedLayers {
     derived: std::sync::Arc<std::sync::Mutex<Derived>>,
 }
 
+struct RetainedEntry {
+    product: Arc<graph::Product>,
+    credited: BTreeSet<u64>,
+}
+
 #[derive(Default)]
 struct RetainedProducts {
     values: std::sync::Mutex<
         BTreeMap<
             (&'static str, u32, Vec<u8>),
-            Arc<std::sync::Mutex<Option<Arc<graph::Product>>>>,
+            Arc<std::sync::Mutex<Option<RetainedEntry>>>,
         >,
     >,
 }
@@ -899,12 +913,24 @@ fn folder_opens(relative: &[u8]) -> bool {
 
 const RECORD_DIGEST_SCHEME: &str = "archive-record-digest-2";
 
+enum RecordBytes {
+    Plain(Vec<u8>),
+    Stored(Vec<u8>),
+}
+
 fn record_digest(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
 ) -> io::Result<([u8; 32], Option<Vec<u8>>, u64)> {
     record_digest_observed(archive, entry, &mut ReadObservation::default())
         .map(ReadSuccess::into_value)
+        .map(|(digest, bytes, size)| {
+            let plain = match bytes {
+                RecordBytes::Plain(bytes) => Some(bytes),
+                RecordBytes::Stored(_) => None,
+            };
+            (digest, plain, size)
+        })
         .map_err(|failure| failure.error)
 }
 
@@ -912,13 +938,22 @@ fn record_digest_observed(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
     observed: &ReadObservation,
-) -> ObservedResult<ReadSuccess<([u8; 32], Option<Vec<u8>>, u64)>> {
+) -> ObservedResult<ReadSuccess<([u8; 32], RecordBytes, u64)>> {
     #[cfg(test)]
     tests::LOADS.with(|loads| loads.set(loads.get() + 1));
-    let result = match archive.read_observed(entry, None, observed.enabled)? {
+    let plain = if entry.encrypted() {
+        None
+    } else {
+        archive.read_observed(entry, None, observed.enabled)?
+    };
+    let result = match plain {
         Some(bytes) => {
             let digest = payload_digest(&bytes);
-            observed.hashed((digest, Some(bytes), entry.size), entry.size, digest)
+            observed.hashed(
+                (digest, RecordBytes::Plain(bytes), entry.size),
+                entry.size,
+                digest,
+            )
         }
         None => {
             let stored = archive.stored_observed(entry, observed.enabled)?;
@@ -927,7 +962,10 @@ fn record_digest_observed(
             hash.update(entry.opening());
             hash.update(&stored);
             let length = stored.len() as u64;
-            observed.bytes((hash.finalize().into(), None, length), &stored)
+            let digest = hash.finalize().into();
+            observed
+                .bytes((), &stored)
+                .map(|()| (digest, RecordBytes::Stored(stored), length))
         }
     };
     Ok(result)
@@ -1636,33 +1674,49 @@ impl ResolvedLayer {
         layer_hash(&hashes)
     }
 
-    fn covered_folder_entry(&self, relative: &[u8]) -> Option<&LayerPath> {
+    fn covered_folder_entry(&self, relative: &[u8]) -> Option<LayerPath> {
         let lower = relative.to_ascii_lowercase();
         if let Some(path) = self.lookup.folders.get(&lower) {
-            return Some(path);
+            return Some(path.clone());
         }
-        #[cfg(windows)]
         if self.verifies() {
-            let text = std::str::from_utf8(relative).ok()?;
-            let trimmed: String = text
-                .split('/')
-                .map(|part| part.trim_end_matches(['.', ' ']))
-                .collect::<Vec<_>>()
-                .join("/");
-            if trimmed.as_bytes() != relative
-                && let Some(path) = self
-                    .lookup
-                    .folders
-                    .get(&trimmed.as_bytes().to_ascii_lowercase())
+            if let Some(path) = self
+                .lookup
+                .folder_aliases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&lower)
             {
-                return Some(path);
+                return Some(path.clone());
             }
-            if !trimmed.is_ascii() {
-                let folded = trimmed.to_lowercase();
-                return self.lookup.folders.values().find(|path| {
-                    std::str::from_utf8(path)
-                        .is_ok_and(|existing| existing.to_lowercase() == folded)
-                });
+            #[cfg(windows)]
+            {
+                let text = std::str::from_utf8(relative).ok()?;
+                let trimmed: String = text
+                    .split('/')
+                    .map(|part| part.trim_end_matches(['.', ' ']))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                if trimmed.as_bytes() != relative
+                    && let Some(path) = self
+                        .lookup
+                        .folders
+                        .get(&trimmed.as_bytes().to_ascii_lowercase())
+                {
+                    return Some(path.clone());
+                }
+                if !trimmed.is_ascii() {
+                    let folded = trimmed.to_lowercase();
+                    return self
+                        .lookup
+                        .folders
+                        .values()
+                        .find(|path| {
+                            std::str::from_utf8(path)
+                                .is_ok_and(|existing| existing.to_lowercase() == folded)
+                        })
+                        .cloned();
+                }
             }
         }
         None
@@ -1681,7 +1735,7 @@ impl ResolvedLayer {
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return match self.covered_folder_entry(relative) {
-                    Some(path) if self.verifies() => Err(changed(path)),
+                    Some(path) if self.verifies() => Err(changed(&path)),
                     _ => Ok(None),
                 };
             }
@@ -1702,11 +1756,18 @@ impl ResolvedLayer {
                 )));
             }
         };
-        if self.verifies()
-            && self.coverage.covered_path(&real)
-            && self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real)
-        {
-            return Err(changed(&real));
+        if self.verifies() && self.coverage.covered_path(&real) {
+            if self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real) {
+                return Err(changed(&real));
+            }
+            let lower = relative.to_ascii_lowercase();
+            if self.lookup.folders.get(&lower) != Some(&real) {
+                self.lookup
+                    .folder_aliases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(lower, real.clone());
+            }
         }
         if self.fact_path(&real) {
             return Err(fact_alias(relative, &real));
@@ -1834,25 +1895,46 @@ impl ResolvedLayer {
                 } => *digest,
             };
             let record = record.verified(self.verify(&entry.name, &digest))?;
-            if password.is_none() {
-                match &record {
-                    ReadSuccess::Untraced((digest, Some(bytes), _))
-                    | ReadSuccess::Traced {
-                        value: (digest, Some(bytes), _),
-                        ..
-                    } => {
-                        io_counts::layer_digest(self, &entry.name, *digest, bytes.len() as u64);
+            return match record {
+                ReadSuccess::Untraced((_, RecordBytes::Plain(bytes), _)) => {
+                    if password.is_some() {
+                        Ok(None)
+                    } else {
+                        io_counts::layer_digest(self, &entry.name, digest, bytes.len() as u64);
+                        Ok(Some(ReadSuccess::Untraced(bytes)))
                     }
-                    _ => {}
                 }
-                return Ok(match record {
-                    ReadSuccess::Untraced((_, bytes, _)) => bytes.map(ReadSuccess::Untraced),
-                    ReadSuccess::Traced {
-                        value: (_, bytes, _),
-                        payload,
-                    } => bytes.map(|value| ReadSuccess::Traced { value, payload }),
-                });
-            }
+                ReadSuccess::Traced {
+                    value: (_, RecordBytes::Plain(bytes), _),
+                    payload,
+                } => {
+                    if password.is_some() {
+                        Ok(None)
+                    } else {
+                        io_counts::layer_digest(self, &entry.name, digest, bytes.len() as u64);
+                        Ok(Some(ReadSuccess::Traced {
+                            value: bytes,
+                            payload,
+                        }))
+                    }
+                }
+                ReadSuccess::Untraced((_, RecordBytes::Stored(stored), _))
+                | ReadSuccess::Traced {
+                    value: (_, RecordBytes::Stored(stored), _),
+                    ..
+                } => {
+                    if password.is_none() {
+                        return Ok(None);
+                    }
+                    let bytes =
+                        physfs_zip::decode_stored(entry, &stored, password, observed.enabled)
+                            .map_err(|failure| failure.context(context))?;
+                    Ok(bytes.map(|bytes| {
+                        io_counts::layer_bytes(self, &entry.name, &bytes);
+                        observed.bytes((), &bytes).map(|()| bytes)
+                    }))
+                }
+            };
         }
         #[cfg(test)]
         tests::LOADS.with(|loads| loads.set(loads.get() + 1));
@@ -1872,7 +1954,21 @@ impl ResolvedLayer {
             Some((entry, _)) if self.fact_path(&entry.name) => {
                 Err(fact_alias(request, &entry.name))
             }
-            Some((entry, password)) => archive.opens(entry, password),
+            Some((entry, password)) => {
+                let opening = archive.opening(entry)?;
+                if self.verifies()
+                    && self.files.contains_key(&entry.name)
+                    && self
+                        .lookup
+                        .archive
+                        .as_ref()
+                        .map(|index| index.opening(&entry.name))
+                        != Some(opening.as_ref())
+                {
+                    return Err(changed(&entry.name));
+                }
+                Ok(opening.is_some_and(|opening| opening.opens(password)))
+            }
             None => Ok(false),
         }
     }
@@ -2013,6 +2109,7 @@ impl ResolvedLayers {
     ) -> Self {
         Self {
             read_trace: Some(ReadTrace {
+                id: next_trace_id(),
                 callback: trace,
                 purpose: String::new(),
                 product: self
@@ -2239,6 +2336,7 @@ impl ResolvedLayers {
             let original = self.read_trace.clone();
             let mut reader = self.clone();
             reader.read_trace = Some(ReadTrace {
+                id: next_trace_id(),
                 callback: Arc::new(move |read: ContentRead| {
                     let mut witness = read.clone();
                     if file_layer.is_some() {
@@ -2312,8 +2410,12 @@ impl ResolvedLayers {
                 .entry((parser, schema, parameters.to_vec())).or_default(),
         );
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
-        let (product, built, from_holder) = match kept.as_ref() {
-            Some(product) => (Arc::clone(product), false, true),
+        let trace_id = self.read_trace.as_ref().map(|trace| trace.id);
+        let (product, built, already_credited) = match kept.as_mut() {
+            Some(entry) => {
+                let already = trace_id.is_none_or(|id| !entry.credited.insert(id));
+                (Arc::clone(&entry.product), false, already)
+            }
             None => {
                 let (product, built) = self.product_entry_with_retry(
                     graph::Key {
@@ -2327,7 +2429,14 @@ impl ResolvedLayers {
                     build,
                 )?;
                 if cache_errors || product.successful() {
-                    *kept = Some(Arc::clone(&product));
+                    let mut credited = BTreeSet::new();
+                    if let Some(id) = trace_id {
+                        credited.insert(id);
+                    }
+                    *kept = Some(RetainedEntry {
+                        product: Arc::clone(&product),
+                        credited,
+                    });
                 }
                 (product, built, false)
             }
@@ -2336,7 +2445,7 @@ impl ResolvedLayers {
         if let Some(parent) = self.read_trace.as_ref().and_then(|trace| trace.product.as_ref()) {
             self.generation.depends(parent, &product)?;
         }
-        if from_holder {
+        if already_credited {
             product.diagnostics.credit_to(self);
         } else {
             self.credit_product(&product, built, None);
@@ -2974,8 +3083,10 @@ impl ResolvedLayers {
                 .or_default(),
         );
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(product) = kept.as_ref() {
-            let product = Arc::clone(product);
+        let trace_id = self.read_trace.as_ref().map(|trace| trace.id);
+        if let Some(entry) = kept.as_mut() {
+            let product = Arc::clone(&entry.product);
+            let already_credited = trace_id.is_none_or(|id| !entry.credited.insert(id));
             drop(kept);
             if let Some(parent) = self
                 .read_trace
@@ -2984,7 +3095,12 @@ impl ResolvedLayers {
             {
                 self.generation.depends(parent, &product)?;
             }
-            product.diagnostics.credit_to(self);
+            if already_credited {
+                product.diagnostics.credit_to(self);
+            } else {
+                let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
+                reader.credit_product(&product, false, None);
+            }
             return product.value();
         }
         let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
@@ -3013,6 +3129,7 @@ impl ResolvedLayers {
                 let mut sub = reader.clone();
                 sub.derived = Default::default();
                 sub.read_trace = Some(ReadTrace {
+                    id: next_trace_id(),
                     callback: Arc::new(move |read: ContentRead| {
                         kept_reads
                             .lock()
@@ -3043,7 +3160,14 @@ impl ResolvedLayers {
             },
         )?;
         if product.successful() {
-            *kept = Some(Arc::clone(&product));
+            let mut credited = BTreeSet::new();
+            if let Some(id) = trace_id {
+                credited.insert(id);
+            }
+            *kept = Some(RetainedEntry {
+                product: Arc::clone(&product),
+                credited,
+            });
         }
         drop(kept);
         reader.credit_product(&product, built, None);
@@ -3071,8 +3195,10 @@ impl ResolvedLayers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&("faction templates", 1, Vec::new()))?
-            .lock().unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|entry| Arc::clone(&entry.product))
     }
 
     pub fn stamped(&self, relative: &str) -> io::Result<bool> {
@@ -3130,9 +3256,17 @@ impl ResolvedLayers {
         observed.layer = hit.as_ref().map(|hit| hit.layer);
         if let Some(hit) = &hit
             && hit.fact.is_none()
-            && self.layers[hit.layer].reaches_link(&hit.path)
         {
-            return Err(unfollowed_link(&relative).into());
+            let layer = &self.layers[hit.layer];
+            if layer.reaches_link(&hit.path) {
+                return Err(unfollowed_link(&relative).into());
+            }
+            if matches!(layer.source, LayerSource::Archive(_))
+                && layer.verifies()
+                && !layer.archive_exists(&hit.path)?
+            {
+                return Err(changed(&hit.path).into());
+            }
         }
         Ok(hit.is_some())
     }

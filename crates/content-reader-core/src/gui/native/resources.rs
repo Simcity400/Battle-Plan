@@ -447,9 +447,11 @@ mod tests {
         let tiny = texture(b"gfx/mod/tiny.png", &read).unwrap().unwrap_err();
         assert!(matches!(&tiny, NoTexture::Undefined { path, .. } if path == "gfx/mod/tiny.dds"));
         assert!(!tiny.native_failure());
+        let short = texture(b"gfx/mod/short.png", &read).unwrap().unwrap_err();
+        assert!(matches!(&short, NoTexture::Undecodable { path, .. } if path == "gfx/mod/short.dds"));
+        assert!(short.native_failure());
         for (name, native) in [
-            (&b"gfx/mod/short.png"[..], "Undecodable"),
-            (b"gfx/mod/noise.dds", "Undecodable"),
+            (&b"gfx/mod/noise.dds"[..], "Undecodable"),
             (b"gfx/mod/absent.png", "Missing"),
             (b"gfx/mod/huge.dds", "TooLarge"),
         ] {

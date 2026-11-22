@@ -2220,6 +2220,117 @@ fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
 }
 
 #[test]
+fn verified_encrypted_archive_reads_verify_and_decrypt_in_a_single_read() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_zip_single_read_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let stored = root.join("stored.zip");
+    let deflated = root.join("deflated.zip");
+    let mixed = root.join("mixed.zip");
+    fs::write(&stored, covered_encrypted_descriptor()).unwrap();
+    fs::write(&deflated, include_bytes!("testdata/zipcrypto_deflated.zip")).unwrap();
+    fs::write(&mixed, include_bytes!("testdata/zipcrypto_mixed.zip")).unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[("gfx/interface/plain.dds$secret", b"lower plain")],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            base,
+            archive_layer("stored", &stored, &[]),
+            archive_layer("deflated", &deflated, &[]),
+            archive_layer("mixed", &mixed, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert!(covered_path(b"gfx/descriptor1.gfx"));
+    assert!(covered_path(b"gfx/fonts/x.fnt"));
+    assert!(covered_path(b"gfx/interface/plain.dds"));
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers
+            .read_uncovered_path(b"gfx/descriptor1.gfx$secret")
+            .unwrap(),
+        b"encrypted stored texture"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/fonts/x.fnt$secret").unwrap(),
+        b"info face=\"x\" size=12\n".repeat(20)
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers.layers[3]
+            .archive_open(b"gfx/interface/plain.dds$secret", &mut ReadObservation::default())
+            .unwrap(),
+        None
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    assert_eq!(
+        layers.read_path(b"gfx/interface/plain.dds$secret").unwrap(),
+        b"lower plain"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn uncovered_password_probe_refuses_a_changed_covered_archive_opening() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_zip_probe_opening_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("encrypted.zip");
+    fs::write(&path, covered_encrypted_descriptor()).unwrap();
+    let mut layers = password_stack(&root, &path);
+    LOADS.with(|loads| loads.set(0));
+    assert!(layers.has_file("gfx/descriptor1.gfx$secret").unwrap());
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
+    let mut header_tampered = covered_encrypted_descriptor();
+    let data_offset = 30 + b"gfx/descriptor1.gfx".len();
+    header_tampered[data_offset] ^= 0xFF;
+    fs::write(&path, &header_tampered).unwrap();
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    let error = layers
+        .has_file("gfx/descriptor1.gfx$secret")
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
+    let mut sig_tampered = covered_encrypted_descriptor();
+    sig_tampered[0] ^= 0xFF;
+    fs::write(&path, &sig_tampered).unwrap();
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    let error = layers
+        .has_file("gfx/descriptor1.gfx$secret")
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn a_password_read_of_a_removed_record_is_a_change() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_removed_{}_{:?}",
@@ -2562,10 +2673,24 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
         }
     }
     fs::remove_file(base.join(name)).unwrap();
-    assert_eq!(
-        layers.read_uncovered(&aliases[0]).unwrap_err().kind(),
-        io::ErrorKind::InvalidData
-    );
+    for alias in &aliases {
+        for error in [
+            layers.read_uncovered(alias).unwrap_err(),
+            layers.read(alias).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(name), "{alias}: {error}");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+    layers.layers[0]
+        .lookup
+        .folder_aliases
+        .lock()
+        .unwrap()
+        .insert(b"gfx/short~1.gfx".to_vec(), name.as_bytes().to_vec());
+    let short_error = layers.read_uncovered("gfx/SHORT~1.GFX").unwrap_err();
+    assert!(short_error.to_string().contains(name), "{short_error}");
+    assert_eq!(short_error.kind(), io::ErrorKind::InvalidData);
     fs::write(base.join(name), b"verified").unwrap();
     fs::write(top.join(name), b"appeared").unwrap();
     assert_eq!(

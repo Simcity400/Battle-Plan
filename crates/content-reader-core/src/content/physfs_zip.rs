@@ -78,11 +78,6 @@ impl Archive {
         })
     }
 
-    pub(super) fn opens(&mut self, entry: &Entry, password: Option<&[u8]>) -> io::Result<bool> {
-        self.open_entry(entry, password)
-            .map(|opened| opened.is_some())
-    }
-
     pub(super) fn index(&mut self, mounted: Mounted) -> io::Result<Index> {
         let mut openings = BTreeMap::new();
         for entry in &mounted.entries {
@@ -108,7 +103,7 @@ impl Archive {
         Ok(opening.keys(password))
     }
 
-    fn opening(&mut self, entry: &Entry) -> io::Result<Option<Opening>> {
+    pub(super) fn opening(&mut self, entry: &Entry) -> io::Result<Option<Opening>> {
         let Some(data) = self.local_data(entry)? else {
             return Ok(None);
         };
@@ -125,11 +120,7 @@ impl Archive {
         Ok(Some(Opening {
             data,
             header,
-            check: if entry.flags & 8 != 0 {
-                (entry.time >> 8) as u8
-            } else {
-                (entry.crc >> 24) as u8
-            },
+            check: entry.check_byte(),
         }))
     }
 
@@ -201,23 +192,7 @@ impl Archive {
         }
         io.seek(entry.local);
         let header = io.bytes(30)?;
-        let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
-        let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let agrees = |local: u32, central: u64| {
-            local == 0 || local == u32::MAX || u64::from(local) == central
-        };
-        if u32_at(0) != LOCAL_SIGNATURE
-            || u16_at(4) != entry.version_needed
-            || u16_at(8) != entry.method
-            || (u32_at(14) != 0 && u32_at(14) != entry.crc)
-            || !agrees(u32_at(18), entry.compressed)
-            || !agrees(u32_at(22), entry.size)
-        {
-            return Ok(None);
-        }
-        Ok(Some(entry.local.wrapping_add(
-            30 + u64::from(u16_at(26)) + u64::from(u16_at(28)),
-        )))
+        Ok(parse_local_header(entry, &header).map(|offset| entry.local.wrapping_add(offset)))
     }
 
     pub(super) fn stored(&mut self, entry: &Entry) -> io::Result<Vec<u8>> {
@@ -477,6 +452,18 @@ impl Archive {
 }
 
 impl Entry {
+    pub(super) fn encrypted(&self) -> bool {
+        self.flags & 1 != 0
+    }
+
+    fn check_byte(&self) -> u8 {
+        if self.flags & 8 != 0 {
+            (self.time >> 8) as u8
+        } else {
+            (self.crc >> 24) as u8
+        }
+    }
+
     pub(super) fn opening(&self) -> Vec<u8> {
         [
             &self.version_needed.to_le_bytes()[..],
@@ -498,14 +485,18 @@ pub(super) struct Mounted {
     crypto: bool,
 }
 
-#[derive(Clone, Debug)]
-struct Opening {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Opening {
     data: u64,
     header: Option<[u8; 12]>,
     check: u8,
 }
 
 impl Opening {
+    pub(super) fn opens(&self, password: Option<&[u8]>) -> bool {
+        self.keys(password).is_some()
+    }
+
     fn keys(&self, password: Option<&[u8]>) -> Option<Option<Keys>> {
         match (&self.header, password) {
             (None, None) => Some(None),
@@ -532,9 +523,163 @@ impl Index {
             .is_some_and(|(entry, password)| {
                 self.openings
                     .get(&entry.name)
-                    .is_some_and(|opening| opening.keys(password).is_some())
+                    .is_some_and(|opening| opening.opens(password))
             })
     }
+
+    pub(super) fn opening(&self, name: &[u8]) -> Option<&Opening> {
+        self.openings.get(name)
+    }
+}
+
+fn parse_local_header(entry: &Entry, header: &[u8]) -> Option<u64> {
+    let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+    let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+    let agrees = |local: u32, central: u64| {
+        local == 0 || local == u32::MAX || u64::from(local) == central
+    };
+    if u32_at(0) != LOCAL_SIGNATURE
+        || u16_at(4) != entry.version_needed
+        || u16_at(8) != entry.method
+        || (u32_at(14) != 0 && u32_at(14) != entry.crc)
+        || !agrees(u32_at(18), entry.compressed)
+        || !agrees(u32_at(22), entry.size)
+    {
+        return None;
+    }
+    Some(30 + u64::from(u16_at(26)) + u64::from(u16_at(28)))
+}
+
+pub(super) fn decode_stored(
+    entry: &Entry,
+    stored: &[u8],
+    password: Option<&[u8]>,
+    traced: bool,
+) -> ObservedResult<Option<Vec<u8>>> {
+    let mut evidence = traced.then(ReadEvidence::default);
+    if stored.len() < 30 {
+        return Ok(None);
+    }
+    let header = &stored[..30];
+    if let Some(evidence) = &mut evidence {
+        evidence.update(header);
+    }
+    let Some(data_rel) = parse_local_header(entry, header) else {
+        return Ok(None);
+    };
+    let Ok(data_rel) = usize::try_from(data_rel) else {
+        return Ok(None);
+    };
+    let (mut keys, pos) = if entry.flags & 1 != 0 {
+        let Some(end) = data_rel.checked_add(12) else {
+            return Ok(None);
+        };
+        if end > stored.len() {
+            return Ok(None);
+        }
+        let header_bytes: [u8; 12] = stored[data_rel..end].try_into().unwrap();
+        if let Some(evidence) = &mut evidence {
+            evidence.update(&header_bytes);
+        }
+        let opening = Opening {
+            data: entry.local.wrapping_add(data_rel as u64),
+            header: Some(header_bytes),
+            check: entry.check_byte(),
+        };
+        let Some(keys) = opening.keys(password) else {
+            return Ok(None);
+        };
+        (keys, end)
+    } else {
+        if password.is_some() {
+            return Ok(None);
+        }
+        (None, data_rel)
+    };
+    let payload = &stored[pos..];
+    let result = if entry.method == 0 {
+        let size = usize::try_from(entry.size).ok();
+        if size.is_none_or(|size| size > payload.len()) {
+            Err(short("its stored data ends before its uncompressed size"))
+        } else {
+            let size = size.unwrap();
+            let mut bytes = payload[..size].to_vec();
+            if let Some(evidence) = &mut evidence {
+                evidence.update(&bytes);
+            }
+            if let Some(keys) = &mut keys {
+                keys.decrypt_all(&mut bytes);
+            }
+            Ok(bytes)
+        }
+    } else {
+        inflate_slice(
+            payload,
+            entry.compressed,
+            entry.size,
+            keys.as_mut(),
+            evidence.as_mut(),
+        )
+    };
+    result.map(Some).map_err(|error| ReadFailure {
+        error,
+        payload: evidence
+            .filter(|evidence| evidence.length != 0)
+            .map(ReadEvidence::finish),
+    })
+}
+
+fn inflate_slice(
+    payload: &[u8],
+    compressed: u64,
+    size: u64,
+    mut keys: Option<&mut Keys>,
+    mut evidence: Option<&mut ReadEvidence>,
+) -> io::Result<Vec<u8>> {
+    let mut state = InflateState::new_boxed(DataFormat::Raw);
+    let mut out = Vec::new();
+    let (mut input, mut used, mut offset, mut left) = (Vec::new(), 0, 0usize, compressed);
+    let mut chunk = vec![0; 0x10000];
+    while (out.len() as u64) < size {
+        if used == input.len() && left > 0 {
+            let avail = payload.len().saturating_sub(offset) as u64;
+            let n = left.min(0x4000).min(avail) as usize;
+            if n == 0 {
+                break;
+            }
+            let slice = &payload[offset..offset + n];
+            if let Some(evidence) = evidence.as_deref_mut() {
+                evidence.update(slice);
+            }
+            input = slice.to_vec();
+            if let Some(keys) = keys.as_deref_mut() {
+                keys.decrypt_all(&mut input);
+            }
+            offset += n;
+            used = 0;
+            left -= n as u64;
+        }
+        let want = (size - out.len() as u64).min(chunk.len() as u64) as usize;
+        let result = inflate(
+            &mut state,
+            &input[used..],
+            &mut chunk[..want],
+            MZFlush::None,
+        );
+        used += result.bytes_consumed;
+        out.extend_from_slice(&chunk[..result.bytes_written]);
+        if result.status != Ok(MZStatus::Ok)
+            || (result.bytes_consumed == 0 && result.bytes_written == 0 && left == 0)
+        {
+            break;
+        }
+    }
+    if (out.len() as u64) < size {
+        return Err(short(
+            "it inflates to fewer bytes than its uncompressed size",
+        ));
+    }
+    Ok(out)
 }
 
 impl Mounted {

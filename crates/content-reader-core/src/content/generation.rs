@@ -300,20 +300,29 @@ fn metadata_in(
     };
     let (product, _) = graph.product(key, parent, |_| {
         let (result, diagnostics) = super::diagnostics::capture(|| {
-            let mut file = match file {
-                Some(file) => file,
+            let (mut file, before) = match file {
+                Some(file) => {
+                    let before = graph.witnesses.record_file_stamp(&path, &file)?;
+                    (file, Some(before))
+                }
                 None => {
                     graph.witnesses.directory(&path)?;
-                    File::open(&path)?
+                    let file = File::open(&path)?;
+                    graph.witnesses.file(&path, &file)?;
+                    (file, None)
                 }
             };
-            let before = graph.witnesses.record_file_stamp(&path, &file)?;
             #[cfg(test)]
             super::tests::LOADS.with(|loads| loads.set(loads.get() + 1));
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes)?;
-            if Stamp::file(&file)? != before {
-                return Err(changed(&path));
+            match before {
+                Some(before) => {
+                    if Stamp::file(&file)? != before {
+                        return Err(changed(&path));
+                    }
+                }
+                None => graph.witnesses.file(&path, &file)?,
             }
             let bytes = super::Bytes::from(bytes);
             super::io_counts::external_digest(&path, bytes.digest(), bytes.len() as u64);

@@ -85,16 +85,24 @@ impl std::fmt::Debug for Defines {
     }
 }
 
+struct CachedDefines {
+    defines: Defines,
+    scripts: Vec<(ScriptPath, [u8; 32])>,
+}
+
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let read = |layers: &ResolvedLayers| {
         let mut defines = Defines::new()?;
+        let mut scripts = Vec::new();
         for path in script_paths(layers)? {
-            defines.load(&path.text(), &path.read(layers)?)?;
+            let bytes = path.read(layers)?;
+            scripts.push((path.clone(), bytes.digest()));
+            defines.load(&path.text(), &bytes)?;
         }
         defines.sealed = true;
-        Ok(defines)
+        Ok(std::sync::RwLock::new(CachedDefines { defines, scripts }))
     };
-    let (defines, built) = if layers.reads_visual_defines() {
+    let (cached, built) = if layers.reads_visual_defines() {
         layers.retained_product_status("defines Lua 5.1", 1, &[], read)?
     } else {
         layers.retained_recorded_product_status("defines Lua 5.1", 1, &[], read)?
@@ -105,11 +113,40 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
         } else {
             layers.without_overlays().unwrap_or_else(|| layers.clone())
         };
-        for path in script_paths(&target)? {
-            path.read(&target)?;
+        let paths = script_paths(&target)?;
+        let mut current = Vec::with_capacity(paths.len());
+        for path in paths {
+            let bytes = path.read(&target)?;
+            current.push((path, bytes));
+        }
+        let unchanged = {
+            let guard = cached.read().unwrap_or_else(|error| error.into_inner());
+            current.len() == guard.scripts.len()
+                && current
+                    .iter()
+                    .zip(&guard.scripts)
+                    .all(|((path, bytes), (old_path, old_digest))| {
+                        path == old_path && bytes.digest() == *old_digest
+                    })
+        };
+        if !unchanged {
+            let mut defines = Defines::new()?;
+            let mut scripts = Vec::with_capacity(current.len());
+            for (path, bytes) in current {
+                scripts.push((path.clone(), bytes.digest()));
+                defines.load(&path.text(), &bytes)?;
+            }
+            defines.sealed = true;
+            let mut guard = cached.write().unwrap_or_else(|error| error.into_inner());
+            *guard = CachedDefines {
+                defines: defines.clone(),
+                scripts,
+            };
+            return Ok(defines);
         }
     }
-    Ok(defines.as_ref().clone())
+    let guard = cached.read().unwrap_or_else(|error| error.into_inner());
+    Ok(guard.defines.clone())
 }
 
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath>> {
