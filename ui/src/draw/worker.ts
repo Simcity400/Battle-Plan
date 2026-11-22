@@ -120,8 +120,8 @@ function bind(s: Surface) {
 }
 function invalidate(s: Surface) {
   if (s.kind === 'panel') {
-    s.program.clear(); s.pointer.clear(); s.date.drawn = undefined; s.reply = undefined;
-  } else if (s.kind === 'race') s.picture.clear();
+    s.pointer.clear(); s.date.drawn = undefined; s.reply = undefined;
+  } else if (s.kind === 'race') s.picture.forget();
   else {
     s.state = undefined; s.held.clear(); s.order = undefined; s.markers.clear(); s.picture = tablePicture(); s.ctx.clearRect(0, 0, s.model.width, s.model.height);
     s.painted = false; s.split = false; s.waitFrom = undefined; s.markEnds = undefined;
@@ -224,7 +224,7 @@ function paint(s: Surface, head: number) {
   }
   s.date.set(date ? date.through - m.offset : null, fixed, date ? date.since - m.offset : null);
   if (!raw || !s.date.canPaintAt(head)) {
-    if (s.date.drawn) s.program.clear();
+    s.program.clear();
     s.date.drawn = undefined; s.through = undefined; s.pointer.clear();
     return false;
   }

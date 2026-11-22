@@ -4,7 +4,7 @@ import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
-import { motionOf } from '../charts/easing.ts';
+import { heldPicture } from './held.ts';
 import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
@@ -18,13 +18,14 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   content.append(canvas);
   const offscreen = canvas.transferControlToOffscreen();
   const stopClock = drawClock(clock);
-  let owner = 0, fixed: number | undefined, closed = false, first = true, holds = -Infinity;
+  let owner = 0, fixed: number | undefined, closed = false, first = true;
   let origin = { x: 0, y: 0 };
   const visible = (show: boolean) => {
     if (canvas.hidden === !show) return;
     canvas.hidden = !show; perfLog?.ink(id, show);
   };
-  const release = () => { holds = -Infinity; visible(false); own(false, true); hit(null); };
+  const release = () => { held.drop(); visible(false); own(false, true); hit(null); };
+  const held = heldPicture(clock, canvas, content, () => fixed === undefined, release, () => hit(null));
   const measure = () => {
     const reading = model(id, owner);
     if (!reading?.cells.length) return release;
@@ -47,21 +48,21 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   const refresh = () => { if (!closed) { owner++; invalidateGeometry(measure); } };
   const off = onDraw(message => {
     if (message.type === 'failed' && (message.page === -1 || message.page === id)) release();
-    if (message.type === 'hit' && message.id === id && message.owner === owner && !canvas.hidden) hit(message.key);
+    if (message.type === 'hit' && message.id === id && message.owner === owner && !canvas.hidden && !held.stale) hit(message.key);
     if (message.type !== 'present') return;
     for (const p of message.surfaces) {
       if (p.id !== id || p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) continue;
       const clockHour = clock.positionAt(shownTime(p.shown));
       if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); continue; }
       const hour = pictureHour(p.date, clockHour, fixed);
-      holds = hour === null ? -Infinity : p.holdsThrough ?? -Infinity;
+      if (hour === null) held.drop(); else held.present(p.holdsThrough);
       visible(hour !== null);
       own(hour !== null, hour === null);
       if (hour === null) hit(null);
     }
   });
   const point = (e: PointerEvent) => {
-    if (canvas.hidden || !e.isTrusted) return;
+    if (canvas.hidden || held.stale || !e.isTrusted) return;
     const box = content.getBoundingClientRect();
     drawPost({ type: 'pointer', id, owner, point: [e.clientX - box.left - content.clientLeft + content.scrollLeft - origin.x,
       e.clientY - box.top - content.clientTop + content.scrollTop - origin.y] });
@@ -73,12 +74,9 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   const stopAnchor = clock.onDiscard(() => {
     if (fixed === undefined) { release(); refresh(); }
   });
-  const stopClockAnchor = clock.onAnchor((previous, next) => {
-    if (fixed === undefined && (motionOf(previous) !== motionOf(next) || !next.playing && next.hour > holds)) release();
-  });
   refresh();
   return { refresh, close() {
-    closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
+    closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); held.close(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');
   } };

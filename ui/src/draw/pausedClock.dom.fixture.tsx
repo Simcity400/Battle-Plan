@@ -45,14 +45,17 @@ function Race() {
   </div>;
 }
 
+function surface(canvas: HTMLCanvasElement | null, region: Element | null, visible: boolean, hour: number | null | undefined) {
+  return { visible, dim: canvas?.dataset.held === 'stale', busy: region?.getAttribute('aria-busy') === 'true', hour: hour ?? null };
+}
 function shown() {
   const ink = document.querySelector<HTMLCanvasElement>('#panel canvas.draw-panel-ink');
   const race = document.querySelector<HTMLCanvasElement>('#race canvas');
-  return { field: document.querySelector<HTMLElement>('#panel [data-paint="empty"]')?.dataset.rowInk ?? null,
-    panel: !!ink && !ink.hidden, race: !!race && race.style.visibility !== 'hidden', hour: clock.getHour(),
-    panelHour: panelPresent?.readHour ?? null, raceHour: racePresent?.hour ?? null };
+  return { field: document.querySelector<HTMLElement>('#panel [data-paint="empty"]')?.dataset.rowInk ?? null, hour: clock.getHour(),
+    panel: surface(ink, document.querySelector('#panel'), !!ink && !ink.hidden, panelPresent?.readHour),
+    race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent?.hour) };
 }
-const painted = () => { const now = shown(); return now.field === 'worker' && now.panel && now.race; };
+const painted = () => { const now = shown(); return now.field === 'worker' && now.panel.visible && !now.panel.dim && now.race.visible && !now.race.dim; };
 const current = () => {
   const generation = clockGeneration(clock), seek = clock.getSnapshot().seekSequence;
   return panelPresent?.generation === generation && panelPresent.seek === seek && racePresent?.generation === generation && racePresent.seek === seek;

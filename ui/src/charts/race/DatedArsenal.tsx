@@ -10,17 +10,18 @@ import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsena
 import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
 import { noticeMatchesAnchor, shownTime } from '../../draw/anchorGeneration.ts';
-import { motionOf } from '../easing.ts';
+import { heldPicture } from '../../draw/held.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
-  const container = useRef<HTMLDivElement>(null), extent = useRef<HTMLDivElement>(null), ranking = useRef<HTMLParagraphElement>(null);
+  const root = useRef<HTMLDivElement>(null), container = useRef<HTMLDivElement>(null), extent = useRef<HTMLDivElement>(null), ranking = useRef<HTMLParagraphElement>(null);
   const description = useRef<HTMLParagraphElement>(null), latest = useRef(props), update = useRef<() => void>(undefined);
   const owner = useId(), widget = measuredWidget();
   latest.current = props;
   useLayoutEffect(() => {
     const scroller = container.current;
-    if (!scroller || !props.active) return;
+    const region = root.current;
+    if (!scroller || !region || !props.active) return;
     const canvas = document.createElement('canvas');
     canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-describedby', owner + '-ranking');
     canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
@@ -28,15 +29,17 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const offscreen = canvas.transferControlToOffscreen(), id = surfaceId(), clock = props.clock;
     const stopClock = drawClock(clock);
     let point: { x: number; y: number } | undefined;
-    let version = 0, ready = false, first = true, selected = -1, ticket = 0, holds = -Infinity;
+    let version = 0, ready = false, first = true, selected = -1, ticket = 0;
     let resolve: ((p?: RaceInspection) => void) | undefined;
     const visible = (show: boolean) => {
       canvas.style.visibility = show ? '' : 'hidden';
       if (ready !== show) perfLog?.ink(id, show);
       ready = show;
     };
-    const clear = () => { holds = -Infinity; visible(false); point = undefined; selected = -1; resolve?.(); resolve = undefined; hideTooltip(owner);
+    const settle = () => { resolve?.(); resolve = undefined; hideTooltip(owner); };
+    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; settle();
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
+    const held = heldPicture(clock, canvas, region, () => latest.current.model.fixed === undefined, clear, settle);
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
       if (!width || !height) { clear(); return; }
@@ -68,7 +71,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
           (m.type === 'racePresent' && !noticeMatchesAnchor(m.generation, clockGeneration(clock)))) return;
       if (m.type === 'raceHover') {
         if (!point) return;
-        const content = m.item && latest.current.tooltip?.(m.item.key, m.item);
+        const content = !held.stale && m.item && latest.current.tooltip?.(m.item.key, m.item);
         if (content && m.item) showTooltip(owner, content, point.x, point.y, m.item.key);
         else hideTooltip(owner);
         if (description.current) description.current.textContent = content ? tooltipText(content) : '';
@@ -78,10 +81,10 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const clockHour = clock.positionAt(shownTime(m.shown));
       if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour)) ||
         m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
-      else { holds = m.holdsThrough ?? -Infinity; visible(true); }
+      else { held.present(m.holdsThrough); visible(true); }
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
-      resolve?.(); if (!ready) { done(undefined); return; }
+      resolve?.(); if (!ready || held.stale) { done(undefined); return; }
       resolve = done; drawPost({ type: 'inspectRace', id, owner: version, request: ++ticket, target });
     });
     const act = async (target: RaceTarget | undefined, action: string, x: number, y: number) => {
@@ -120,19 +123,16 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       e.preventDefault(); void act({ index }, action, b.right, b.top + b.height / 2);
     };
     const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
-    const stopClockAnchor = clock.onAnchor((previous, next) => {
-      if (latest.current.model.fixed === undefined && (motionOf(previous) !== motionOf(next) || !next.playing && next.hour > holds)) clear();
-    });
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);
     canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
     clear(); send();
-    return () => { clear(); stop(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
+    return () => { clear(); stop(); stopClock(); anchor(); held.close(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
       drawPost({ type: 'closeRace', id }); update.current = undefined; };
   }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);
-  return <div className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
+  return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>
     <p ref={ranking} id={owner + '-ranking'} className="sr-only">{raceText(props.items, props.name) || props.empty}</p>
     <p ref={description} className="sr-only" aria-live="polite" /></div>;

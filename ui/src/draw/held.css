@@ -1,0 +1,2 @@
+[data-held] { transition: opacity var(--t-fast) var(--ease); }
+[data-held='stale'], :where([aria-busy='true'][data-ink-content] [data-row-ink='worker']) { opacity: var(--muted-row-opacity); }

@@ -100,8 +100,12 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
     model: { widget: 'projects', view: 'special-projects', offset: 0, clocked: true, reply, structure: currentKey(reply, 10), cells: [cell] } });
   now += 17; frame();
   assert.equal(clears.length, 0, 'remeasuring the same slots keeps their dated picture while the next rows are pending');
-  clock(0, 2); frame();
-  assert.ok(clears.length > 0, 'rewind erases the retained picture');
+  sent.length = 0;
+  clock(0, 2);
+  assert.equal(clears.length, 0, 'a rewind leaves the picture to the next frame');
+  frame();
+  assert.ok(sent.some(m => m.type === 'present' && m.surfaces.some(s => s.id === 1 && s.seek === 2 && s.readHour === 0)),
+    'the next frame presents the rewound hour');
 
   const painted: string[] = [];
   const ink = { getContext: () => ({ fillText: (value: string) => painted.push(value), clearRect() {}, setTransform() {} }) } as unknown as OffscreenCanvas;
@@ -117,17 +121,30 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   const paused = sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 2).at(-1);
   assert.ok(paused && !paused.date, 'a paused hour outside the confirmed interval clears the previous picture');
 
-  const retainedClears: number[][] = [];
+  const retainedClears: number[][] = [], raceClears: number[][] = [];
   const retained = { getContext: () => ({ fillText() {}, clearRect: (...args: number[]) => retainedClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
-  clock(10, 10);
+  const raceInk = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }), clearRect: (...args: number[]) => raceClears.push(args) },
+    { get: (o, k) => Reflect.get(o, k) ?? (() => {}) });
+  const step = (position: number, seek: number) => post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position,
+    seek, lastHour: 100, playing: false, speed: 1, generation: 0, forwardSeek: true } });
+  step(10, 10);
   post({ type: 'surface', id: 3, owner: 1, canvas: retained, width: 100, height: 20, dpr: 1,
     model: { widget: 'projects', view: 'special-projects', offset: 0, date: { since: 0, through: 10 }, reply,
       structure: currentKey(reply, 10), cells: [cell] } });
+  post({ type: 'race', id: 3, owner: 1, canvas: { width: 500, height: 180, getContext: () => raceInk } as unknown as OffscreenCanvas,
+    model: { view: 'nuclear-arsenal', offset: 0, date: { since: 0, through: 10 }, reply: { types: [], countries: [], missing: null, warnings: [] },
+      top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(), scroll: 0, width: 500, height: 180, slots: 10, dpr: 1,
+      tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } as never } });
   now += 17; frame();
-  retainedClears.length = 0;
-  clock(11, 11);
-  assert.ok(retainedClears.length > 0, 'an uncovered forward seek clears the old picture before the next frame');
-  post({ type: 'detach', id: 3 });
+  const raced = (seek: number) => sent.flatMap(m => m.type === 'racePresent' && m.id === 3 && m.seek === seek ? [m] : []).at(-1);
+  assert.equal(raced(10)?.hour, 10, 'the race is painted at the covered hour');
+  retainedClears.length = raceClears.length = 0;
+  step(11, 11);
+  assert.deepEqual([retainedClears.length, raceClears.length], [0, 0], 'an uncovered paused step keeps the old pictures until the worker paints');
+  now += 17; frame();
+  assert.ok(retainedClears.length > 0 && raceClears.length > 0, 'the next frame erases the pictures the step left uncovered');
+  assert.equal(raced(11)?.hour, null, 'the uncovered race is presented without a picture');
+  post({ type: 'detach', id: 3 }); post({ type: 'closeRace', id: 3 });
 
   const coveredClears: number[][] = [];
   const covered = { getContext: () => ({ fillText() {}, clearRect: (...args: number[]) => coveredClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
