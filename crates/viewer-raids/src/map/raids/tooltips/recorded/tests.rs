@@ -431,7 +431,7 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
             "[ROOT.GetTag]/[FROM.GetID]/[THIS.GetTag]/[PREV.GetTag]",
         ),
         ("scoped_NOT", "negative [FROM.GetID]"),
-        ("scoped_inner", "[ROOT.GetTag]/[THIS.GetTag]/[PREV.GetTag]/[?target_province|0]"),
+        ("scoped_inner", "[ROOT.GetTag]/[THIS.GetTag]/[PREV.GetTag]/[PREV.FROM.GetTag]/[?target_province|0]"),
         ("chain", "[FROM.ROOT.GetTag]/[ROOT.FROM.PREV.GetTag]"),
     ]
     .into_iter()
@@ -667,7 +667,7 @@ fn custom_tooltip_chains_follow_the_raid_scopes_links() {
         assert_eq!(scoped.len(), 1);
         assert_eq!(
             scoped[0].1.as_deref(),
-            Ok("-\u{11}YTarget country\u{11}!: GER/ENG/GER/9\n")
+            Ok("-\u{11}YTarget country\u{11}!: GER/ENG/GER/ENG/9\n")
         );
     });
 }

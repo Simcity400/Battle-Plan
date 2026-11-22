@@ -201,10 +201,59 @@ pub fn hit_rectangle(
     )
 }
 
+pub fn hit_rectangles(
+    control: &native::Element,
+    layout: &Layout,
+    origin: [i32; 2],
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+) -> Vec<HitRectangle> {
+    observer_hit_rectangles(
+        control,
+        layout,
+        origin,
+        resources,
+        notes,
+        HitMode::DrawBounds,
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HitMode {
     DrawBounds,
     NativeGeometry,
+}
+
+pub fn observer_hit_rectangles(
+    control: &native::Element,
+    layout: &Layout,
+    origin: [i32; 2],
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+    mode: HitMode,
+) -> Vec<HitRectangle> {
+    if let Some(container) = control.container() {
+        if mode == HitMode::NativeGeometry
+            && layout
+                .regions
+                .iter()
+                .any(|region| region.path == control.path && region.hit.is_some())
+        {
+            return observer_hit_rectangle(control, layout, origin, resources, notes, mode)
+                .into_iter()
+                .collect();
+        }
+        return container
+            .backgrounds
+            .iter()
+            .filter_map(|background| {
+                observer_hit_rectangle(background, layout, origin, resources, notes, mode)
+            })
+            .collect();
+    }
+    observer_hit_rectangle(control, layout, origin, resources, notes, mode)
+        .into_iter()
+        .collect()
 }
 
 pub fn observer_hit_rectangle(
@@ -278,34 +327,6 @@ pub fn observer_hit_rectangle(
             geometry: Some(geometry),
         });
     }
-    if let Some(container) = control.container() {
-        let mut combined: Option<HitRectangle> = None;
-        for background in &container.backgrounds {
-            let Some(hit) =
-                observer_hit_rectangle(background, layout, origin, resources, notes, mode)
-            else {
-                continue;
-            };
-            combined = Some(match combined {
-                None => hit,
-                Some(current) => {
-                    let left = current.rect[0].min(hit.rect[0]);
-                    let top = current.rect[1].min(hit.rect[1]);
-                    let right = (current.rect[0] + current.rect[2]).max(hit.rect[0] + hit.rect[2]);
-                    let bottom =
-                        (current.rect[1] + current.rect[3]).max(hit.rect[1] + hit.rect[3]);
-                    HitRectangle {
-                        rect: [left, top, right - left, bottom - top],
-                        order: current.order.max(hit.order),
-                        supported: current.supported && hit.supported,
-                        geometry: None,
-                        disabled: current.disabled && hit.disabled,
-                    }
-                }
-            });
-        }
-        return combined;
-    }
     let (order, part) = layout.parts.iter().enumerate().find(|(_, part)| {
         part.path == control.path && native_gui::part_rect(&part.kind).is_some()
     })?;
@@ -359,4 +380,36 @@ pub fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
         && point[1] >= rect[1]
         && point[0] < rect[0] + rect[2]
         && point[1] < rect[1] + rect[3]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::{native_gui::lifecycle::Instance, test_support::gui};
+
+    #[test]
+    fn separated_container_backgrounds_return_individual_hit_rectangles() {
+        content_reader_core::test_game::enter();
+        let windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = split_panel size = { width = 80 height = 20 } clipping = no
+                background = { name = Left position = { x = 0 y = 0 } spriteType = GFX_even }
+                background = { name = Right position = { x = 40 y = 0 } spriteType = GFX_even }
+                background = { name = Ghost position = { x = 20 y = 0 } spriteType = GFX_even alwaystransparent = yes } } }"#,
+        );
+        let resources = gui::fixture();
+        let root = windows.gui_type(b"split_panel").unwrap();
+        let mut instance = Instance::construct(root, [200, 100], &resources).unwrap();
+        instance.gui_show(root, root).unwrap();
+        let layout = instance.layout(root, &resources, None).unwrap().unwrap();
+        let mut notes = BTreeMap::new();
+        let hits = hit_rectangles(root, &layout, [10, 5], &resources, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        let rects: Vec<[f32; 4]> = hits.iter().map(|hit| hit.rect).collect();
+        assert_eq!(rects, [[10.0, 5.0, 20.0, 10.0], [50.0, 5.0, 20.0, 10.0]]);
+        let blocked = |point: [f32; 2]| rects.iter().any(|rect| contains(*rect, point));
+        assert!(blocked([20.0, 10.0]));
+        assert!(blocked([60.0, 10.0]));
+        assert!(!blocked([40.0, 10.0]));
+    }
 }

@@ -295,8 +295,8 @@ impl PreparedRaids {
             {
                 let layer = sprites::layer(priority, ordinal as u32, 1);
                 batch.at_layer(layer);
-                if let Some((panel, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
-                    if let Some(rect) = panel {
+                if let Some((panels, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
+                    for rect in panels {
                         hits.push(tooltips::Hit {
                             origin: [rect[0], rect[1]],
                             size: [rect[2], rect[3]],

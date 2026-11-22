@@ -915,7 +915,12 @@ mod tests {
                 ),
                 (
                     "raid launchable: FROM".into(),
-                    Ok("-\u{11}YSource country\u{11}!:\n   never\n   at war with GER (Viewer country)\n".into()),
+                    Ok("-\u{11}YSource country\u{11}!:\n".into()),
+                ),
+                ("raid launchable: always".into(), Ok("   never\n".into())),
+                (
+                    "raid launchable: has_war_with".into(),
+                    Ok("   at war with GER (Viewer country)\n".into()),
                 ),
             ]
         );
@@ -946,17 +951,256 @@ mod tests {
             partial[1],
             (
                 "raid launchable: FROM".into(),
-                Ok("-\u{11}YSource country\u{11}!:\n   never\n".into()),
+                Ok("-\u{11}YSource country\u{11}!:\n".into()),
             )
         );
-        assert_eq!(partial[2].0, "raid launchable: FROM");
+        assert_eq!(
+            partial[2],
+            ("raid launchable: always".into(), Ok("   never\n".into()))
+        );
+        assert_eq!(partial[3].0, "raid launchable: synthetic_unported_trigger");
         assert!(
-            partial[2]
+            partial[3]
                 .1
                 .as_ref()
                 .unwrap_err()
                 .contains("synthetic_unported_trigger"),
             "{partial:?}"
+        );
+    }
+
+    #[test]
+    fn shared_trigger_descriptions_handle_leaders_nested_refusals_hidden_temps_and_malformed_logic()
+    {
+        content_reader_core::test_game::enter_viewer();
+        use replay_data::rows::UnitLeaderRow;
+        let assets = assets();
+        let loc: Localisation = [
+            ("GER", "Viewer country"),
+            ("ENG", "Source country"),
+            ("captured_general", "Captured General"),
+            ("raid_tooltip_trigger_title", "$TITLE$"),
+            ("TRIGGER_FULLFILLED_PREFIX", "+"),
+            ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
+            ("TRIGGER_ALWAYS_FALSE", "never"),
+            ("TRIGGER_ALWAYS_TRUE", "always"),
+            ("TRIGGER_HAS_WAR_WITH", "at war with $TAG$ ($COUNTRY$)"),
+            ("TRIGGER_OR_STARTS", "either"),
+            ("TRIGGER_AND_STARTS", "both"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let scripted_content = Err("no scripted content in this test".into());
+        let reference = (5_u64 << 32) | 7;
+        let scopes = Scopes {
+            from: Some(Scope::Country(1)),
+            target_leader: Some(reference),
+            ..Scopes::of(Scope::Country(2))
+        };
+        let mut kind = assets.catalog.types[0].clone();
+        kind.show_target = Vec::new();
+
+        let mut named_frame = frame();
+        put::<tables::UnitLeaders>(
+            &mut named_frame,
+            vec![UnitLeaderRow {
+                id: 5,
+                reference_type: 7,
+                character_id: 5,
+                owner: 10,
+                inherited_text_a: b"captured_general".to_vec(),
+                ..Default::default()
+            }],
+        );
+        let named_world = World::new(&named_frame, assets.trigger_content.facts()).unwrap();
+        let named_context = Context {
+            assets: &assets,
+            world: &named_world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(
+                &named_frame,
+                &loc,
+            ),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        kind.launchable = parse("var:target_leader = { always = no }");
+        let (result, leader_lines) =
+            named_context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            leader_lines,
+            vec![
+                ("raid_tooltip_trigger_title".into(), Ok("Viewer country".into())),
+                (
+                    "raid launchable: var:target_leader".into(),
+                    Ok("-\u{11}YCaptured General\u{11}!: never\n".into()),
+                ),
+            ]
+        );
+
+        let or_lines = named_context.trigger_text(
+            &parse("OR = { always = no synthetic_unported_trigger = yes }"),
+            scopes,
+            "raid launchable",
+        );
+        assert_eq!(or_lines.len(), 3, "{or_lines:?}");
+        assert_eq!(or_lines[0].0, "raid launchable: OR");
+        assert!(
+            or_lines[0]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("synthetic_unported_trigger"),
+            "{or_lines:?}"
+        );
+        assert_eq!(
+            or_lines[1],
+            ("raid launchable: always".into(), Ok("   never\n".into()))
+        );
+        assert_eq!(or_lines[2].0, "raid launchable: synthetic_unported_trigger");
+        assert!(
+            or_lines[2]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("synthetic_unported_trigger"),
+            "{or_lines:?}"
+        );
+
+        kind.launchable = parse(
+            "hidden_trigger = { set_temp_variable = { x = 7 } } if = { limit = { check_variable = { temp_var:x = 7 } } always = no }",
+        );
+        let (result, hidden_lines) =
+            named_context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            hidden_lines,
+            vec![
+                ("raid_tooltip_trigger_title".into(), Ok("Viewer country".into())),
+                ("raid launchable: always".into(), Ok("-never\n".into())),
+            ]
+        );
+
+        let malformed = named_context.trigger_text(
+            &parse("always = no NOT = yes AND = yes OR = yes"),
+            scopes,
+            "raid launchable",
+        );
+        assert_eq!(malformed.len(), 4, "{malformed:?}");
+        assert_eq!(
+            malformed[0],
+            ("raid launchable: always".into(), Ok("-never\n".into()))
+        );
+        for (entry, expected_key) in malformed[1..].iter().zip([
+            "raid launchable: NOT",
+            "raid launchable: AND",
+            "raid launchable: OR",
+        ]) {
+            assert_eq!(entry.0, expected_key);
+            assert!(
+                entry
+                    .1
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("logical trigger requires block"),
+                "{malformed:?}"
+            );
+        }
+
+        let mut unnamed_frame = frame();
+        put::<tables::UnitLeaders>(
+            &mut unnamed_frame,
+            vec![UnitLeaderRow {
+                id: 5,
+                reference_type: 7,
+                character_id: 5,
+                owner: 10,
+                ..Default::default()
+            }],
+        );
+        let unnamed_world = World::new(&unnamed_frame, assets.trigger_content.facts()).unwrap();
+        let unnamed_context = Context {
+            assets: &assets,
+            world: &unnamed_world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(
+                &unnamed_frame,
+                &loc,
+            ),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        kind.launchable = parse("var:target_leader = { always = no }");
+        let (result, unnamed_lines) =
+            unnamed_context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(unnamed_lines.len(), 3, "{unnamed_lines:?}");
+        assert_eq!(unnamed_lines[1].0, "raid launchable: var:target_leader");
+        assert!(
+            unnamed_lines[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("no recorded name"),
+            "{unnamed_lines:?}"
+        );
+        assert_eq!(
+            unnamed_lines[2],
+            ("raid launchable: always".into(), Ok("   never\n".into()))
+        );
+
+        let mut missing_from_frame = base_frame();
+        put::<tables::CountryAppearance>(
+            &mut missing_from_frame,
+            vec![CountryAppearanceRow {
+                country: 10,
+                ..Default::default()
+            }],
+        );
+        put::<tables::Politics>(
+            &mut missing_from_frame,
+            vec![PoliticsRow {
+                country: 10,
+                ..Default::default()
+            }],
+        );
+        let missing_world =
+            World::new(&missing_from_frame, assets.trigger_content.facts()).unwrap();
+        let missing_context = Context {
+            assets: &assets,
+            world: &missing_world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(
+                &missing_from_frame,
+                &loc,
+            ),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        kind.launchable = parse("AND = { has_war_with = FROM always = no }");
+        let (result, nested_lines) =
+            missing_context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(nested_lines.len(), 3, "{nested_lines:?}");
+        assert_eq!(nested_lines[1].0, "raid launchable: has_war_with");
+        assert!(nested_lines[1].1.is_err(), "{nested_lines:?}");
+        assert_eq!(
+            nested_lines[2],
+            ("raid launchable: always".into(), Ok("-never\n".into()))
         );
     }
 }

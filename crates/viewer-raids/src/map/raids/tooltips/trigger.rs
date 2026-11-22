@@ -31,6 +31,10 @@ impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
         self.context.state_name(state)
     }
 
+    fn leader_name(&self, reference: u64) -> Result<String> {
+        self.context.leader_name(reference)
+    }
+
     fn scripted_text(&self) -> Result<&dashboard_text::scripted_text::ScriptedText<'a>> {
         self.context.scripted_text()
     }
@@ -53,12 +57,40 @@ impl<'a> Host<'a> for RaidHost<'_, 'a, '_> {
 
 impl Context<'_, '_> {
     pub(super) fn trigger_text(&self, triggers: &[Item], scopes: Scopes, name: &str) -> Lines {
-        let evaluator = Evaluator::new(self.world, None);
+        let graph = std::rc::Rc::new(std::cell::RefCell::new(event_scopes(scopes)));
+        let evaluator = Evaluator::new(self.world, None).with_event_scopes(graph);
+        let start = match evaluator.event_scopes(0) {
+            Ok(projected) => Scopes {
+                bare: scopes.bare,
+                ..projected
+            },
+            Err(_) => scopes,
+        };
         let host = RaidHost { context: self };
-        description::describe_lines(triggers, &evaluator, &host, self.loc, scopes, 0, 1)
+        description::describe_lines(triggers, &evaluator, &host, self.loc, start, 0, 1)
             .into_iter()
             .map(|(key, text)| (format!("{name}: {key}"), text))
             .collect()
+    }
+
+    fn leader_name(&self, reference: u64) -> Result<String> {
+        let leaders = self
+            .world
+            .frame()
+            .complete::<tables::UnitLeaders>()
+            .map_err(|e| e.to_string())?;
+        let leader = leaders
+            .iter()
+            .find(|r| (u64::from(r.id) << 32 | u64::from(r.reference_type)) == reference)
+            .ok_or_else(|| format!("unit leader {reference:#x} is absent from UnitLeaders"))?;
+        if leader.inherited_text_a.is_empty() {
+            return Err(format!("unit leader {reference:#x} has no recorded name"));
+        }
+        localise(
+            self.loc,
+            std::str::from_utf8(&leader.inherited_text_a).map_err(|e| e.to_string())?,
+            &[],
+        )
     }
 
     fn project_name(&self, name: &str, country: u32) -> Result<String> {

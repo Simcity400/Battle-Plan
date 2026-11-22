@@ -1,7 +1,7 @@
 
 use content_reader_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
-use std::{cell::RefCell, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 use super::{
     Evaluator, Scope, Scopes,
@@ -18,6 +18,9 @@ pub trait Host<'a> {
     fn country_name(&self, country: u32) -> Result<String, String>;
     fn country_tag(&self, country: u32) -> Result<String, String>;
     fn state_name(&self, state: u32) -> Result<String, String>;
+    fn leader_name(&self, reference: u64) -> Result<String, String> {
+        Err(format!("unit leader {reference:#x} name is not reproduced"))
+    }
     fn scripted_text(&self) -> Result<&ScriptedText<'a>, String>;
     fn expand(
         &self,
@@ -65,13 +68,6 @@ impl<'a> Host<'a> for ScriptedHost<'_, 'a> {
         scopes: Scopes,
         evaluator: &Evaluator<'_, 'a>,
     ) -> Result<String, String> {
-        if let Some(at) = scopes.cursor
-            && let Some(graph) = evaluator.event_graph.borrow().as_ref()
-        {
-            return self
-                .text
-                .expand_in_session(text, &graph.borrow(), at, evaluator);
-        }
         let graph = default_graph(scopes)?;
         self.text.expand_in_session(text, &graph, 0, evaluator)
     }
@@ -82,6 +78,40 @@ impl<'a> Host<'a> for ScriptedHost<'_, 'a> {
 
     fn tactic_name(&self, stored: &[u8]) -> Result<Vec<u8>, String> {
         (self.tactic_name)(stored)
+    }
+}
+
+enum Sink<'r> {
+    Text {
+        out: String,
+        refusals: &'r mut BTreeMap<String, usize>,
+    },
+    Lines(&'r mut Vec<(String, Result<String, String>)>),
+}
+
+impl Sink<'_> {
+    fn push_ok(&mut self, key: String, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        match self {
+            Self::Text { out, .. } => out.push_str(&text),
+            Self::Lines(lines) => lines.push((key, Ok(text))),
+        }
+    }
+
+    fn push_err(&mut self, key: String, why: String) {
+        match self {
+            Self::Text { refusals, .. } => *refusals.entry(why).or_default() += 1,
+            Self::Lines(lines) => lines.push((key, Err(why))),
+        }
+    }
+
+    fn push_entry(&mut self, key: String, entry: Result<String, String>) {
+        match entry {
+            Ok(text) => self.push_ok(key, text),
+            Err(why) => self.push_err(key, why),
+        }
     }
 }
 
@@ -124,19 +154,30 @@ pub fn describe_at<'a>(
         tactic_name,
     };
     evaluator.begin_description_in(scopes);
-    let result = Formatter {
+    let mut sink = Sink::Text {
+        out: String::new(),
+        refusals,
+    };
+    Formatter {
         evaluator,
         host: &host,
         localisation,
-        refusals: RefCell::new(refusals),
     }
-    .and(&evaluator.units(items), scopes, false, indent, mode);
+    .and(
+        "trigger",
+        &evaluator.units(items),
+        scopes,
+        false,
+        indent,
+        mode,
+        &mut sink,
+    );
     let ended = evaluator.end_description(scopes);
-    match (result, ended) {
-        (Err(why), _) => Err(why),
-        (_, Err(why)) => Err(why.to_string()),
-        (Ok(text), Ok(())) => Ok(text),
-    }
+    let out = match sink {
+        Sink::Text { out, .. } => out,
+        Sink::Lines(_) => unreachable!(),
+    };
+    ended.map(|()| out).map_err(|why| why.to_string())
 }
 
 pub fn describe_lines<'a>(
@@ -149,41 +190,22 @@ pub fn describe_lines<'a>(
     mode: u8,
 ) -> Vec<(String, Result<String, String>)> {
     evaluator.begin_description_in(scopes);
-    let units = evaluator.units(items);
     let mut out = Vec::new();
-    for unit in &units {
-        let label = unit_key(unit);
-        let mut refusals = BTreeMap::new();
-        let mut text = String::new();
-        let result = {
-            let formatter = Formatter {
-                evaluator,
-                host,
-                localisation,
-                refusals: RefCell::new(&mut refusals),
-            };
-            formatter.describe_unit(unit, scopes, false, indent, mode, &mut text)
-        };
-        match result {
-            Ok(()) => {
-                if !text.is_empty() {
-                    out.push((label.clone(), Ok(text)));
-                }
-                for (why, count) in refusals {
-                    for _ in 0..count {
-                        out.push((label.clone(), Err(why.clone())));
-                    }
-                }
-            }
-            Err(why) => {
-                evaluator.taint_temps(
-                    crate::triggers::Failure::from(why.clone())
-                        .context(|why| format!("trigger tooltip session is uncertain: {why}")),
-                );
-                out.push((label, Err(why)));
-            }
-        }
+    let mut sink = Sink::Lines(&mut out);
+    Formatter {
+        evaluator,
+        host,
+        localisation,
     }
+    .and(
+        "trigger",
+        &evaluator.units(items),
+        scopes,
+        false,
+        indent,
+        mode,
+        &mut sink,
+    );
     if let Err(why) = evaluator.end_description(scopes) {
         out.push(("trigger".into(), Err(why.to_string())));
     }
@@ -241,7 +263,6 @@ struct Formatter<'r, 'e, 'a> {
     evaluator: &'r Evaluator<'e, 'a>,
     host: &'r dyn Host<'a>,
     localisation: &'r Localisation,
-    refusals: RefCell<&'r mut BTreeMap<String, usize>>,
 }
 
 impl<'a> Formatter<'_, '_, 'a> {
@@ -261,7 +282,23 @@ impl<'a> Formatter<'_, '_, 'a> {
         if !text.contains('[') {
             return Ok(text);
         }
+        if let Some(at) = scopes.cursor
+            && let Some(graph) = self.evaluator.event_graph.borrow().as_ref()
+        {
+            return self
+                .host
+                .scripted_text()?
+                .expand_in_session(&text, &graph.borrow(), at, self.evaluator);
+        }
         self.host.expand(&text, scopes, self.evaluator)
+    }
+
+    fn taint_and_push_err(&self, sink: &mut Sink<'_>, key: String, why: String) {
+        self.evaluator.taint_temps(
+            crate::triggers::Failure::from(why.clone())
+                .context(|why| format!("trigger tooltip session is uncertain: {why}")),
+        );
+        sink.push_err(key, why);
     }
 
     fn prefix(
@@ -287,36 +324,45 @@ impl<'a> Formatter<'_, '_, 'a> {
         Ok(text)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Trigger conjunction formatting keeps key, inversion, indentation, display mode and output sink separate"
+    )]
     fn and(
         &self,
+        key: &str,
         units: &[Unit<'_, 'a>],
         scopes: Scopes,
         inverted: bool,
         indent: usize,
         mode: u8,
-    ) -> Result<String, String> {
-        let mut text = String::new();
+        sink: &mut Sink<'_>,
+    ) {
         let grouped = indent != 0 && units.len() >= 2;
         if grouped {
-            text.push_str(&"   ".repeat(indent));
-            text.push_str(&self.localised(
+            match self.localised(
                 if inverted {
                     b"TRIGGER_OR_STARTS"
                 } else {
                     b"TRIGGER_AND_STARTS"
                 },
                 &[],
-            )?);
-            text.push_str(":\n");
+            ) {
+                Ok(label) => sink.push_ok(
+                    key.to_owned(),
+                    format!("{}{label}:\n", "   ".repeat(indent)),
+                ),
+                Err(why) => sink.push_err(key.to_owned(), why),
+            }
         }
-        text.push_str(&self.body(
+        self.body(
             units,
             scopes,
             inverted,
             indent + usize::from(grouped),
             if grouped { 0 } else { mode },
-        )?);
-        Ok(text)
+            sink,
+        );
     }
 
     fn body(
@@ -326,26 +372,18 @@ impl<'a> Formatter<'_, '_, 'a> {
         inverted: bool,
         indent: usize,
         mode: u8,
-    ) -> Result<String, String> {
-        let mut text = String::new();
+        sink: &mut Sink<'_>,
+    ) {
         for unit in units {
-            let start = text.len();
-            let result = self.describe_unit(unit, scopes, inverted, indent, mode, &mut text);
-            if let Err(why) = result {
-                text.truncate(start);
-                self.evaluator.taint_temps(
-                    crate::triggers::Failure::from(why.clone())
-                        .context(|why| format!("trigger tooltip session is uncertain: {why}")),
-                );
-                *self.refusals.borrow_mut().entry(why).or_default() += 1;
+            if let Err(why) = self.describe_unit(unit, scopes, inverted, indent, mode, sink) {
+                self.taint_and_push_err(sink, unit_key(unit), why);
             }
         }
-        Ok(text)
     }
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Trigger unit formatting keeps independent inversion, indentation, display mode and output buffer"
+        reason = "Trigger unit formatting keeps independent inversion, indentation, display mode and output sink"
     )]
     fn describe_unit(
         &self,
@@ -354,7 +392,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         inverted: bool,
         indent: usize,
         mode: u8,
-        text: &mut String,
+        sink: &mut Sink<'_>,
     ) -> Result<(), String> {
         match unit {
             Unit::Unknown(why) => return Err(why.clone().to_string()),
@@ -365,13 +403,15 @@ impl<'a> Formatter<'_, '_, 'a> {
                     }
                     let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
                     if selected {
-                        text.push_str(&self.and(
+                        self.and(
+                            "if",
                             &branch.body,
                             scopes,
                             inverted,
                             indent,
                             if mode == 2 { 2 } else { 0 },
-                        )?);
+                            sink,
+                        );
                         break;
                     }
                 }
@@ -385,87 +425,134 @@ impl<'a> Formatter<'_, '_, 'a> {
                     if let Some(why) = self.evaluator.enter_frame(frame) {
                         return Err(why);
                     }
-                    let result =
-                        template
-                            .body
-                            .as_ref()
-                            .map_err(Clone::clone)
-                            .and_then(|body| {
-                                self.and(
-                                    &self.evaluator.units(body),
-                                    scopes,
-                                    inverted
-                                        == trigger_boolean(item)
-                                            .map_err(|why| why.to_string())?,
-                                    indent,
-                                    if mode == 2 { 2 } else { 0 },
-                                )
-                            });
-                    self.evaluator.leave_frame();
-                    text.push_str(&result?);
+                    let prepared = template.body.as_ref().map_err(Clone::clone).and_then(|body| {
+                        let flip = trigger_boolean(item).map_err(|why| why.to_string())?;
+                        Ok((body, inverted == flip))
+                    });
+                    match prepared {
+                        Ok((body, child_inverted)) => {
+                            self.and(
+                                &key_text(item),
+                                &self.evaluator.units(body),
+                                scopes,
+                                child_inverted,
+                                indent,
+                                if mode == 2 { 2 } else { 0 },
+                                sink,
+                            );
+                            self.evaluator.leave_frame();
+                        }
+                        Err(why) => {
+                            self.evaluator.leave_frame();
+                            return Err(why);
+                        }
+                    }
                 }
-                Child::Scope(parsed) => text.push_str(
-                    &self.scope(unit, item, parsed, scopes, inverted, indent, mode)?,
-                ),
-                Child::Coded(_, name) if name == "hidden_trigger" => {}
-                Child::Coded(_, name) if name == "and" => text.push_str(&self.and(
-                    &self.evaluator.units(children(item)),
-                    scopes,
-                    inverted,
-                    indent,
-                    if mode == 2 { 2 } else { 0 },
-                )?),
-                Child::Coded(_, name) if name == "not" => text.push_str(&self.body(
-                    &self.evaluator.units(children(item)),
-                    scopes,
-                    !inverted,
-                    indent,
-                    if mode == 2 { 2 } else { 0 },
-                )?),
+                Child::Scope(parsed) => {
+                    self.scope(unit, item, parsed, scopes, inverted, indent, mode, sink)?;
+                }
+                Child::Coded(_, name) if name == "hidden_trigger" => {
+                    let Some(items) = item.value.items() else {
+                        return Err("hidden_trigger requires block".into());
+                    };
+                    if let Err(why) = self.evaluator.evaluate(items, scopes).decided() {
+                        self.evaluator.taint_temps(
+                            crate::triggers::Failure::from(why).context(|why| {
+                                format!("trigger tooltip session is uncertain: {why}")
+                            }),
+                        );
+                    }
+                }
+                Child::Coded(_, name) if name == "and" => {
+                    let Some(items) = item.value.items() else {
+                        return Err("logical trigger requires block".into());
+                    };
+                    self.and(
+                        &key_text(item),
+                        &self.evaluator.units(items),
+                        scopes,
+                        inverted,
+                        indent,
+                        if mode == 2 { 2 } else { 0 },
+                        sink,
+                    );
+                }
+                Child::Coded(_, name) if name == "not" => {
+                    let Some(items) = item.value.items() else {
+                        return Err("logical trigger requires block".into());
+                    };
+                    self.body(
+                        &self.evaluator.units(items),
+                        scopes,
+                        !inverted,
+                        indent,
+                        if mode == 2 { 2 } else { 0 },
+                        sink,
+                    );
+                }
                 Child::Coded(_, name) if name == "or" => {
-                    text.push_str(&self.prefix(
+                    let Some(items) = item.value.items() else {
+                        return Err("logical trigger requires block".into());
+                    };
+                    let label = key_text(item);
+                    let prefix = self.prefix(
                         unit,
                         scopes,
                         inverted,
                         indent,
                         if mode == 2 { 2 } else { 0 },
-                    )?);
-                    text.push_str(&self.localised(
+                    );
+                    let starts = self.localised(
                         if inverted {
                             b"TRIGGER_AND_STARTS"
                         } else {
                             b"TRIGGER_OR_STARTS"
                         },
                         &[],
-                    )?);
-                    text.push_str(":\n");
-                    text.push_str(&self.body(
-                        &self.evaluator.units(children(item)),
+                    );
+                    match (prefix, starts) {
+                        (Ok(prefix), Ok(starts)) => {
+                            sink.push_ok(label, format!("{prefix}{starts}:\n"));
+                        }
+                        (prefix, starts) => {
+                            if let Err(why) = prefix {
+                                self.taint_and_push_err(sink, label.clone(), why);
+                            }
+                            if let Err(why) = starts {
+                                sink.push_err(label, why);
+                            }
+                        }
+                    }
+                    self.body(
+                        &self.evaluator.units(items),
                         scopes,
                         inverted,
                         indent + 1,
                         if mode == 2 { 2 } else { 0 },
-                    )?);
+                        sink,
+                    );
                 }
                 _ => {
                     let own = self.own(item, child, scopes, inverted)?;
                     if !own.is_empty() {
-                        text.push_str(&self.prefix(unit, scopes, inverted, indent, mode)?);
-                        text.push_str(&own);
+                        let mut line = self.prefix(unit, scopes, inverted, indent, mode)?;
+                        line.push_str(&own);
                         if !own.ends_with('\n') {
-                            text.push('\n');
+                            line.push('\n');
                         }
+                        sink.push_ok(key_text(item), line);
                     }
                     if !item.keyword_is("custom_trigger_tooltip")
                         && !item.keyword_is("custom_override_tooltip")
                     {
-                        text.push_str(&self.body(
+                        self.body(
                             &self.evaluator.units(children(item)),
                             scopes,
                             inverted,
                             indent,
                             if mode == 2 { 2 } else { 0 },
-                        )?);
+                            sink,
+                        );
                     }
                 }
             },
@@ -475,7 +562,7 @@ impl<'a> Formatter<'_, '_, 'a> {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Scope tooltip inputs keep independent inversion, indentation and display mode"
+        reason = "Scope tooltip inputs keep independent inversion, indentation, display mode and output sink"
     )]
     fn scope(
         &self,
@@ -486,7 +573,8 @@ impl<'a> Formatter<'_, '_, 'a> {
         inverted: bool,
         indent: usize,
         mode: u8,
-    ) -> Result<String, String> {
+        sink: &mut Sink<'_>,
+    ) -> Result<(), String> {
         let entered = self
             .evaluator
             .enter_scope(parsed, scopes)
@@ -512,54 +600,93 @@ impl<'a> Formatter<'_, '_, 'a> {
                     _ => unreachable!(),
                 },
                 &[],
-            )?,
-            _ if entered.this == Scope::Combat => String::new(),
-            _ => {
-                let name = match entered.this {
-                    Scope::Country(country) | Scope::CountryLeader { country, .. } => {
-                        self.host.country_name(country)?
-                    }
-                    Scope::State(state) => self.host.state_name(state)?,
-                    _ => {
-                        return Err(format!(
-                            "trigger scope {} name is not reproduced",
-                            key_text(item)
-                        ));
-                    }
-                };
-                format!("\u{11}Y{name}\u{11}!")
+            ),
+            _ if entered.this == Scope::Combat => Ok(String::new()),
+            _ => match entered.this {
+                Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                    self.host.country_name(country)
+                }
+                Scope::State(state) => self.host.state_name(state),
+                Scope::Leader(reference) => self.host.leader_name(reference),
+                _ => Err(format!(
+                    "trigger scope {} name is not reproduced",
+                    key_text(item)
+                )),
             }
+            .map(|name| format!("\u{11}Y{name}\u{11}!")),
         };
-        let units = self.evaluator.units(children(item));
-        let mut text = self.prefix(
+        let prefix = self.prefix(
             unit,
             scopes,
             inverted,
             indent,
             if mode == 2 { 2 } else { 0 },
-        )?;
-        let inner = if units.len() < 2 {
-            self.body(&units, entered, inverted, 0, 2)?
-        } else {
-            self.body(
-                &units,
-                entered,
-                inverted,
-                indent + 1,
-                if mode == 2 { 2 } else { 0 },
-            )?
-        };
-        if inner.is_empty() {
-            return Ok(String::new());
+        );
+        let units = self.evaluator.units(children(item));
+        let label = key_text(item);
+        match (prefix, heading) {
+            (Ok(prefix), Ok(heading)) => {
+                let mut inner = Vec::new();
+                let mut child_sink = Sink::Lines(&mut inner);
+                if units.len() < 2 {
+                    self.body(&units, entered, inverted, 0, 2, &mut child_sink);
+                } else {
+                    self.body(
+                        &units,
+                        entered,
+                        inverted,
+                        indent + 1,
+                        if mode == 2 { 2 } else { 0 },
+                        &mut child_sink,
+                    );
+                }
+                if units.len() < 2 {
+                    if let Some(first_ok) = inner.iter().position(|(_, entry)| entry.is_ok()) {
+                        for (index, (child_key, entry)) in inner.into_iter().enumerate() {
+                            if index == first_ok {
+                                let line = entry.expect("checked ok above");
+                                sink.push_ok(
+                                    label.clone(),
+                                    format!("{prefix}{heading}: {line}"),
+                                );
+                            } else {
+                                sink.push_entry(child_key, entry);
+                            }
+                        }
+                    } else {
+                        for (child_key, entry) in inner {
+                            sink.push_entry(child_key, entry);
+                        }
+                    }
+                } else if inner.iter().any(|(_, entry)| entry.is_ok()) {
+                    sink.push_ok(label, format!("{prefix}{heading}:\n"));
+                    for (child_key, entry) in inner {
+                        sink.push_entry(child_key, entry);
+                    }
+                } else {
+                    for (child_key, entry) in inner {
+                        sink.push_entry(child_key, entry);
+                    }
+                }
+            }
+            (prefix, heading) => {
+                if let Err(why) = prefix {
+                    self.taint_and_push_err(sink, label.clone(), why);
+                }
+                if let Err(why) = heading {
+                    sink.push_err(label, why);
+                }
+                self.body(
+                    &units,
+                    entered,
+                    inverted,
+                    indent + 1,
+                    if mode == 2 { 2 } else { 0 },
+                    sink,
+                );
+            }
         }
-        text.push_str(&heading);
-        if units.len() < 2 {
-            text.push_str(": ");
-        } else {
-            text.push_str(":\n");
-        }
-        text.push_str(&inner);
-        Ok(text)
+        Ok(())
     }
 
     fn own(
