@@ -360,6 +360,20 @@ pub fn with_content_files<T>(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
+    let bitmap_path = content.0.join("map/unused.bmp");
+    if !bitmap_path.exists() {
+        let mut bmp = vec![0_u8; 58];
+        bmp[..2].copy_from_slice(b"BM");
+        for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+            bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+        if province_count >= 1 {
+            bmp[54..57].copy_from_slice(&[0, 0, 1]);
+        }
+        std::fs::write(bitmap_path, bmp).unwrap();
+    }
     let layers = content_reader_core::ResolvedLayers::from_folders(&[(&content.0, &[])]).unwrap();
     read(&layers)
 }

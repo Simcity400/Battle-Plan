@@ -371,6 +371,25 @@ struct MapPresented {
     reopened: bool,
 }
 
+fn overlay_matches_continuity(
+    overlay: (u64, replay_data::BranchId, i32, u32),
+    presented: (replay_data::BranchId, i32, Option<&str>),
+    current_generation: Option<u64>,
+    gaps: &[replay_frame::branches::Gap],
+) -> bool {
+    let (ov_gen, ov_branch, ov_hour, ov_ours) = overlay;
+    let (branch, hour, viewing) = presented;
+    current_generation.is_none_or(|generation| ov_gen == generation)
+        && ov_branch == branch
+        && viewing.is_none_or(|viewing| viewing == ov_ours.to_string())
+        && !viewer_foundation::map::presentation::crosses_gap(
+            gaps,
+            branch,
+            ov_hour.min(hour),
+            ov_hour.max(hour),
+        )
+}
+
 fn overlay_rect(clip: egui::Rect, points: f32) -> egui::Rect {
     let inset = 8.0 * points;
     egui::Rect::from_min_size(
@@ -788,6 +807,8 @@ pub struct Viewer {
     overlay_head_before: Option<viewer_foundation::map::anchored::Head>,
     overlay_counted: viewer_foundation::map::overlay_count::Watch,
     overlay_unpainted: bool,
+    overlay_generation: Option<u64>,
+    overlay_clock_unavailable: bool,
     overlay_drawn_fraction: Option<f32>,
     overlay_lookups: Option<(usize, u64, u64)>,
     overlay_installed: u64,
@@ -1324,6 +1345,8 @@ impl Viewer {
             overlay_head_before: None,
             overlay_counted: Default::default(),
             overlay_unpainted: false,
+            overlay_generation: None,
+            overlay_clock_unavailable: false,
             overlay_shifts: Default::default(),
             overlay_camera_before: None,
             overlay_placed: None,
@@ -1753,7 +1776,7 @@ impl Viewer {
             return;
         }
         if let Some(mut document) = self.document.take() {
-            let result = self.map(ui, frame, &mut document);
+            let result = self.map(ui, frame, &mut document, Some(target.id.as_str()));
             self.after_frame_with_visual_mods(&document, result.as_ref().err());
             if let Err(error) = result {
                 self.refuse_capture(&error, ui.ctx());
@@ -1935,8 +1958,32 @@ impl Viewer {
         self.held_within(hour, given_up, what, ctx).map(drop)
     }
 
-    fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made) {
-        let crate::playhead_host::overlay::Made { hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
+    fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made, gaps: &[replay_frame::branches::Gap]) {
+        let crate::playhead_host::overlay::Made { generation, hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
+        let current_epoch = self
+            .counter_view
+            .presentation
+            .movement()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .continuity();
+        let current_generation = live_of(&self.playhead_map)
+            .and_then(|side| side.products().overlay_generation);
+        let matches_continuity = self.presented.seek.is_none()
+            && self.presented.last.as_ref().is_none_or(|(shown_branch, shown_hour, shown_viewing)| {
+                overlay_matches_continuity(
+                    (generation, rows.branch, rows.hour, tables.ours()),
+                    (*shown_branch, *shown_hour, shown_viewing.as_deref()),
+                    current_generation,
+                    gaps,
+                )
+            });
+        prepared.set_motion_continuity(if matches_continuity {
+            current_epoch
+        } else {
+            current_epoch.saturating_sub(1)
+        });
+        self.overlay_generation = Some(generation);
         self.overlay_moved = moved;
         if let Some(old) = self.prepared_overlay.as_mut()
             && self.overlay_view.as_ref() == Some(&view)
@@ -2129,6 +2176,8 @@ impl Viewer {
         self.overlay_shifts.clear();
         self.overlay_placed_view = None;
         (self.overlay_shown, self.overlay_view, self.overlay_hour, self.overlay_drawn_fraction, self.overlay_lookups) = (None, None, None, None, None);
+        self.overlay_generation = None;
+        self.overlay_clock_unavailable = false;
         self.overlay_layered = None;
         self.overlay_loading.clear();
         self.overlay_missed.clear();
@@ -2140,6 +2189,7 @@ impl Viewer {
         }
         self.free_overlay = Batch::default();
         self.overlay_written += 1;
+        self.overlay_clock_unavailable = false;
         self.overlay_shifts.clear();
         self.counter_report = CounterReport::default();
         self.overlay_hits = Default::default();
@@ -2270,7 +2320,32 @@ impl Viewer {
         let (continuity, restart) = (continuity(previous, shown, sought, gaps), unit_restart(previous, shown, sought));
         if continuity == Continuity::Reset {
             self.day_night = Default::default();
-            self.counter_view.presentation.movement().lock().unwrap_or_else(|error| error.into_inner()).clear();
+            let epoch = self
+                .counter_view
+                .presentation
+                .movement()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            let current_generation = live_of(&self.playhead_map)
+                .and_then(|side| side.products().overlay_generation);
+            if let (Some(generation), Some(prepared), Some(rows), Some(tables)) = (
+                self.overlay_generation,
+                self.prepared_overlay.as_mut(),
+                self.overlay_frame.as_ref(),
+                self.overlay_tables.as_ref(),
+            ) && overlay_matches_continuity(
+                (generation, rows.branch, rows.hour, tables.ours()),
+                (next.0, next.1, next.2.as_deref()),
+                current_generation,
+                gaps,
+            ) {
+                prepared.set_motion_continuity(epoch);
+                if !self.overlay_unpainted {
+                    self.overlay_unpainted = true;
+                    self.overlay_fraction = None;
+                }
+            }
         }
         if continuity == Continuity::Reset || restart != UnitRestart::Keep {
             self.audio_reset = true;
@@ -3636,11 +3711,12 @@ impl Viewer {
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        self.map_with_state(ui, state, document)
+        self.map_with_state(ui, state, document, view_id)
     }
 
     pub(crate) fn window_frame(
@@ -3653,7 +3729,7 @@ impl Viewer {
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 let result = match state {
-                    Some(state) => self.map_with_state(ui, state, document),
+                    Some(state) => self.map_with_state(ui, state, document, None),
                     None => Err("WGPU renderer is unavailable".to_owned()),
                 };
                 self.after_frame_with_visual_mods(document, result.as_ref().err());
@@ -3674,10 +3750,11 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let tables = document.content.tables;
         let result = engine_executable::executable_tables::scope(tables, || {
-            self.draw_map(ui, state, document)
+            self.draw_map(ui, state, document, view_id)
         });
         if !self.drew_frame {
             self.silence_unshown();
@@ -3690,6 +3767,7 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
@@ -3869,7 +3947,7 @@ impl Viewer {
                 self.forget_overlay();
             }
             if let Some(made) = installed {
-                self.install_overlay(made);
+                self.install_overlay(made, &document.playback.replay().gaps);
             }
             if let Some(side) = live_of(&self.playhead_map) {
                 self.overlay_hour = side.products().overlay_hour;
@@ -4514,10 +4592,23 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
         }
+        let pending_camera = crate::suite_input::take_camera(view_id).filter(|command| !command.is_cancelled());
+        if let Some(command) = &pending_camera {
+            self.zoom.reset();
+            self.orbit.reset();
+            self.camera_manual = crate::suite_input::apply_camera(camera, command.target, pixels, &floor);
+            ui.ctx().request_repaint();
+        }
         let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {
             camera.center[0] += shift;
             self.zoom.shift([shift, 0.0]);
+        }
+        if let Some(command) = pending_camera {
+            command.finish(Ok(crate::suite_input::ResolvedCamera {
+                center: camera.center,
+                height: camera.height,
+            }));
         }
         self.camera = Some(camera.placement());
         let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {
@@ -4902,7 +4993,20 @@ impl Viewer {
                 self.overlay_loading.extend(loading);
             }
             let at = shown_head.unwrap_or_default();
-            let moved_now = self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
+            let head = head_rows::head(live_of(&self.playhead_map));
+            let clock_speed = self
+                .head_rows
+                .map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed)
+                .flatten();
+            let clock_lost = clock_speed.is_none()
+                && (self.overlay.as_ref().is_some_and(Batch::moves)
+                    || (self.overlay.is_some() && !self.overlay_clock_unavailable));
+            let clock_recovered = clock_speed.is_some() && self.overlay_clock_unavailable;
+            if clock_lost || clock_recovered {
+                self.overlay_fraction = None;
+            }
+            let moved_now = !(clock_lost || clock_recovered)
+                && self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
             let placed_now = !moved_now
                 && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);
             if let Some(side) = live_of(&self.playhead_map)
@@ -4962,7 +5066,6 @@ impl Viewer {
                         self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
                     }
                 }
-                let clock_speed = self.head_rows.map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed).flatten();
                 scene
                     .apply(
                         &state.device,
@@ -4988,7 +5091,10 @@ impl Viewer {
                                 time: animation_time,
                                 hour: movement_hour,
                                 head: at,
-                                overlay_hour: now.frame.hour,
+                                overlay_layout: self
+                                    .prepared_overlay
+                                    .as_ref()
+                                    .and_then(|prepared| prepared.motion_layout().cloned()),
                                 clock_speed,
                                 speeds: document.content.counters.defines.movement_speeds,
                                 steady: self.options.window_dump,
@@ -4998,20 +5104,6 @@ impl Viewer {
                                     .then_some(province)
                             }),
                         );
-                }
-                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
-                    live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
-                if let Some(positions) = positions {
-                    scene
-                        .apply(
-                            &state.device,
-                            &state.queue,
-                            SceneInput::SetUnitMovement {
-                                positions,
-                                history: presentation.movement(),
-                            },
-                        )
-                        .map_err(|error| error.to_string())?;
                 }
             }
             drop(scene_span);
@@ -5091,7 +5183,7 @@ impl Viewer {
                             }
                             Err(_) => break,
                         };
-                        self.install_overlay(made);
+                        self.install_overlay(made, &document.playback.replay().gaps);
                         installed = true;
                         rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
                     }
@@ -5103,10 +5195,39 @@ impl Viewer {
                     self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                     self.overlay_shifts.clear();
                     self.overlay_unpainted = false;
+                    self.overlay_clock_unavailable = clock_speed.is_none();
                     self.place_painting(overlay_camera, pixels, ui_scale, at)?;
                 }
                 self.overlay_fraction = Some(document.hour_fraction);
                 self.overlay_drawn_fraction = Some(document.hour_fraction);
+            }
+            if let Some(scene) = self.scene.as_mut() {
+                let movement_span = viewer_foundation::profiling::span("overlay_unit_movement");
+                let presentation = &self.counter_view.presentation;
+                presentation
+                    .movement()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .set_overlay_layout(
+                        self.prepared_overlay
+                            .as_ref()
+                            .and_then(|prepared| prepared.motion_layout().cloned()),
+                    );
+                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
+                    live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
+                if let Some(positions) = positions {
+                    scene
+                        .apply(
+                            &state.device,
+                            &state.queue,
+                            SceneInput::SetUnitMovement {
+                                positions,
+                                history: presentation.movement(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                drop(movement_span);
             }
             let rows = self.overlay_frame.clone().unwrap_or_else(|| Arc::clone(&rows));
             let tables = self.overlay_tables.clone().unwrap_or_else(|| Arc::clone(&tables));

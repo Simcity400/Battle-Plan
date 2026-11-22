@@ -312,12 +312,14 @@ impl TableReader {
         let (restored, entry, first) = self.restore_before(recording, block)?;
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (cells, meta) = unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns).map_err(|error| self.damaged(restored, error))?;
+        let (cells, meta) = if self.keyed {
+            unit::reader::restore_keyed(source, &entry, &self.kinds[..self.held], &self.columns)
+        } else {
+            unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns)
+        }
+        .map_err(|error| self.damaged(restored, error))?;
         self.cells = cells;
         self.restores += 1;
-        if self.keyed {
-            self.cells.index_keys();
-        }
         self.strings = Strings::default();
         for (id, text) in meta.strings {
             self.strings.pin(id, &text)?;
@@ -331,7 +333,7 @@ impl TableReader {
             if self.entry.packed {
                 self.cells.pack()?;
                 if self.keyed {
-                    self.cells.index_keys();
+                    self.cells.try_index_keys()?;
                 }
             }
             at += 1;
@@ -383,7 +385,7 @@ impl TableReader {
             if self.entry.packed {
                 self.cells.pack()?;
                 if self.keyed {
-                    self.cells.index_keys();
+                    self.cells.try_index_keys()?;
                 }
                 self.changes.anew = true;
             }
@@ -435,7 +437,7 @@ impl TableReader {
             if self.entry.packed {
                 self.cells.pack()?;
                 if self.keyed {
-                    self.cells.index_keys();
+                    self.cells.try_index_keys()?;
                 }
             }
             self.open_block(recording, self.block + 1, 0)?;
@@ -477,7 +479,7 @@ impl TableReader {
             if self.entry.packed {
                 self.cells.pack()?;
                 if self.keyed {
-                    self.cells.index_keys();
+                    self.cells.try_index_keys()?;
                 }
             }
             self.open_block(recording, block, 0)?;
@@ -635,7 +637,7 @@ impl TableReader {
         let listed: Vec<u64> = state.listed().ok_or_else(|| self.damaged(restored, invalid("A log's restore holds no live set")))?.ones().collect();
         self.cells = TableState::new(&self.kinds[..self.held]);
         if self.keyed {
-            self.cells.index_keys();
+            self.cells.try_index_keys()?;
         }
         self.strings = Strings::default();
         for (id, text) in meta.strings {

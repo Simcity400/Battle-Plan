@@ -320,14 +320,14 @@ impl HourTables {
             equipment,
             vision: &self.vision,
             native: &self.native,
-            country_ids: &self.country_ids,
+            country_ids: self.country_ids(),
             aggression: &[],
             ideology: &ideology,
         };
         let context = NavalContext::cached(frame, sources, &self.naval)?;
         let land = self.land();
         let bases: BTreeSet<u32> = rows::<tables::NavalBases>(frame)?.rows().iter().map(|base| base.province).collect();
-        let owner = |raw: u32| self.links.get(&raw).copied();
+        let owner = |raw: u32| self.links().get(&raw).copied();
         let members = context
             .forces
             .iter()

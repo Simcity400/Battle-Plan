@@ -471,6 +471,17 @@ fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &super::Frame
     panic!("the map side never reached what the test waits for");
 }
 
+fn step_frame(side: &mut MapSide, head: i32) -> super::Frame {
+    for _ in 0..50_000_000u64 {
+        let frame = side.frame(head).unwrap();
+        if frame.steps > 0 {
+            return frame;
+        }
+        std::thread::yield_now();
+    }
+    panic!("no frame consumed steps through hour {head}: applied {:?}", side.applied());
+}
+
 fn sum_layer(side: &MapSide, at: usize) -> &Sum {
     side.parts().unwrap().1[at].any().downcast_ref::<Sum>().unwrap()
 }
@@ -1252,8 +1263,9 @@ fn mirror_slot_lookup_time_over_real_key_shapes() {
 #[test]
 fn real_key_shapes_do_not_collide_into_long_chains() {
     use std::hash::BuildHasher;
+    let _: fn() -> foldhash::fast::RandomState = super::mirror::Keys::default;
     let keys = real_key_shapes();
-    let hasher = super::mirror::Keys::default();
+    let hasher = foldhash::fast::FixedState::with_seed(0x243f_6a88_85a3_08d3);
     let buckets = keys.len().next_power_of_two();
     let mut load = vec![0u32; buckets];
     let mut control = [0u32; 128];
@@ -1266,6 +1278,98 @@ fn real_key_shapes_do_not_collide_into_long_chains() {
     assert!(longest <= 12, "{longest} keys share a bucket of {buckets}");
     let expected = keys.len() as f64 / 128.0;
     assert!(control.iter().all(|&count| (count as f64) < expected * 1.5 && (count as f64) > expected * 0.5), "control bytes {control:?}");
+}
+
+fn fixed_state_colliding_keys(count: usize, bucket_mask: u64) -> Vec<u128> {
+    use std::hash::BuildHasher;
+    let fixed = foldhash::fast::FixedState::default();
+    let mut keys = Vec::with_capacity(count);
+    let mut candidate = 1u128;
+    while keys.len() < count {
+        if fixed.hash_one(candidate) & bucket_mask == 0 {
+            keys.push(candidate);
+        }
+        candidate += 1;
+    }
+    keys
+}
+
+#[test]
+fn mirror_key_hasher_randomizes_instances_and_bounds_adversarial_keys() {
+    use std::hash::BuildHasher;
+    let _: std::collections::HashMap<u128, u32, foldhash::fast::RandomState> = std::collections::HashMap::with_hasher(super::mirror::Keys::default());
+
+    let count = 512usize;
+    let buckets = count.next_power_of_two();
+    let adversarial = fixed_state_colliding_keys(count, (buckets - 1) as u64);
+    let fixed = foldhash::fast::FixedState::default();
+    assert!(adversarial.iter().all(|&key| fixed.hash_one(key) as usize & (buckets - 1) == 0));
+
+    let alternate = foldhash::fast::FixedState::with_seed(0x9e37_79b9_7f4a_7c15);
+    let mut load = vec![0u32; buckets];
+    for &key in &adversarial {
+        load[alternate.hash_one(key) as usize & (buckets - 1)] += 1;
+    }
+    let longest = *load.iter().max().unwrap();
+    assert!(longest <= 12, "{longest} adversarial FixedState keys shared a bucket of {buckets}");
+
+    let settings = Writing { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Writing::at(3) };
+    let held = adversarial.clone();
+    let (recording, _) = record_with(settings, 1, 2 * BLOCK, move |at, table, store| {
+        store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
+        let mut changes = store.table(table).unwrap();
+        if at == 0 {
+            for (slot, &key) in held.iter().take(256).enumerate() {
+                changes.insert_at(slot as u32, key).unwrap();
+                changes.write(slot as u32, 0, Cell::I32(slot as i32)).unwrap();
+            }
+        } else if at == 10 {
+            for slot in 0..200u32 {
+                changes.delete(slot).unwrap();
+            }
+        } else if at == 20 {
+            for (offset, &key) in held.iter().skip(256).take(64).enumerate() {
+                let slot = 256 + offset as u32;
+                changes.insert_at(slot, key).unwrap();
+                changes.write(slot, 0, Cell::I32(slot as i32)).unwrap();
+            }
+        }
+    });
+    assert!(recording.runs[0].pages[0].tables[0].packed, "the adversarial fixture packs its first block's end");
+    let pages: Arc<dyn Pages> = recording;
+    let columns = [0];
+    let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();
+    lane.seek(0).unwrap();
+    let mut mirror = Mirror::rebuild(&lane, &columns);
+    for (slot, &key) in adversarial.iter().take(256).enumerate() {
+        assert_eq!(mirror.slot(key), Some(slot as u32));
+        assert_eq!(mirror.key(slot as u32), Some(key));
+    }
+    assert_eq!(mirror.slot(adversarial[256]), None);
+    let mut changes = Changes::default();
+    let (mut to, mut renumbered) = (99, 0);
+    while to < 2 * BLOCK as i32 {
+        lane.fetch_through(to).unwrap();
+        let head = lane.step(to, &mut changes).unwrap();
+        mirror.apply(&changes);
+        assert_eq!(differ(&mirror, lane.cells(), &columns), None, "after step to hour {head}");
+        if changes.renumber().is_some() {
+            renumbered += 1;
+            let live: Vec<u32> = mirror.rows().collect();
+            assert_eq!(live, (0..120u32).collect::<Vec<_>>());
+            for &key in &adversarial[..200] {
+                assert_eq!(mirror.slot(key), None);
+            }
+            for (new_slot, &key) in adversarial[200..320].iter().enumerate() {
+                assert_eq!(mirror.slot(key), Some(new_slot as u32));
+                assert_eq!(mirror.key(new_slot as u32), Some(key));
+            }
+        }
+        if head == to {
+            to += 100;
+        }
+    }
+    assert_eq!(renumbered, 1);
 }
 
 
@@ -1429,7 +1533,7 @@ fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playi
             }
             std::thread::yield_now();
         }
-        let frame = side.frame(head).unwrap();
+        let frame = step_frame(&mut side, head);
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head - 4), "the worker holds the step: drawn at its product's hour, not the {head} applied");
         let frame = side.frame(head).unwrap();
@@ -1494,7 +1598,7 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
             }
             std::thread::yield_now();
         }
-        let frame = side.frame(head).unwrap();
+        let frame = step_frame(&mut side, head);
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head), "the window clock is not held by a layer of rows at the head");
         assert_eq!(frame.oldest, Some(head - lag), "the oldest hour on screen counts it {lag} hours behind");
@@ -1671,7 +1775,7 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
         }
         std::thread::yield_now();
     }
-    let frame = side.frame(head).unwrap();
+    let frame = step_frame(&mut side, head);
     assert_eq!(frame.applied, Some(head), "the step to the held hour is applied");
     assert_ne!(frame.drawn, Some(head), "the worker has not shown it yet");
     let frame = side.frame(head).unwrap();
@@ -1872,10 +1976,13 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
     let deadline = Instant::now() + Duration::from_secs(120);
+    let (mut first_reset, mut second_reset) = (false, false);
     loop {
         let head = entry.playhead().newest().unwrap_or(0);
         let (one, other) = (first.frame(head).unwrap(), second.frame(head).unwrap());
-        if one.resets > 0 && other.resets > 0 {
+        first_reset |= one.resets > 0;
+        second_reset |= other.resets > 0;
+        if first_reset && second_reset {
             break;
         }
         assert!(Instant::now() < deadline, "the maps did not take the reset within two minutes");
@@ -2192,7 +2299,7 @@ fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
     for _ in 0..10 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        let frame = side.frame(next).unwrap();
+        let frame = step_frame(&mut side, next);
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "one step a frame");
         assert_eq!(frame.layers[0].ready_at_hour, Some(true), "the product of hour {next} was ready in the frame that applied it");
         assert_eq!(ahead(&side).published(), crate::layers::Published::Current);
@@ -2213,13 +2320,13 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     }
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 4).unwrap();
+    let frame = step_frame(&mut side, from + 4);
     assert_eq!(frame.applied, Some(from + 4));
     assert_eq!(ahead(&side).shown.map(|(_, hour, _)| hour), Some(Some(from + 4)), "the product of {} is made; not shown before its hour", from + 8);
     assert_eq!(frame.drawn, Some(from + 4));
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.drawn, frame.layers[0].ready_at_hour), (Some(from + 8), Some(true)));
-    let frame = side.frame(from + 12).unwrap();
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(frame.layers[0].ready_at_hour, Some(false), "the step to {} is not folded", from + 12);
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
@@ -2243,8 +2350,8 @@ fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     }
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    side.frame(from + 8).unwrap();
-    let frame = side.frame(from + 12).unwrap();
+    step_frame(&mut side, from + 8);
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
     assert_eq!(
@@ -2263,7 +2370,7 @@ fn two_steps_taken_in_one_frame_show_the_seconds_product() {
     let (mut side, _entry, _permits) = ahead_side("ahead two", None);
     let from = side.applied().unwrap();
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.applied, frame.steps), (Some(from + 8), 2));
     assert_eq!(frame.layers[0].ready_at_hour, Some(true));
     assert_eq!(ahead(&side).shown.map(|(_, hour, sum)| (hour, sum)), Some((Some(from + 8), mirrored(&side))));
@@ -2283,7 +2390,7 @@ fn a_seek_shows_none_of_the_products_made_ahead_before_it() {
     for _ in 0..6 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let shown = ahead(&side).shown.unwrap();
         assert_eq!(shown.0, epoch, "a product made before the seek was shown at hour {next}");
         assert_eq!((shown.1, shown.2), (Some(next), mirrored(&side)));
@@ -2296,7 +2403,7 @@ fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     for _ in 0..5 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let hears = side.parts().unwrap().1[1].any().downcast_ref::<Hears>().unwrap();
         let (stepped, heard) = hears.heard.last().unwrap();
         assert_eq!(*stepped, Some(next), "the dependent settled in the frame that applied {next}");

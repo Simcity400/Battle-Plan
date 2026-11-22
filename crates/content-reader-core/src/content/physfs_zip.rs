@@ -78,11 +78,6 @@ impl Archive {
         })
     }
 
-    pub(super) fn opens(&mut self, entry: &Entry, password: Option<&[u8]>) -> io::Result<bool> {
-        self.open_entry(entry, password)
-            .map(|opened| opened.is_some())
-    }
-
     pub(super) fn index(&mut self, mounted: Mounted) -> io::Result<Index> {
         let mut openings = BTreeMap::new();
         for entry in &mounted.entries {
@@ -108,7 +103,7 @@ impl Archive {
         Ok(opening.keys(password))
     }
 
-    fn opening(&mut self, entry: &Entry) -> io::Result<Option<Opening>> {
+    pub(super) fn opening(&mut self, entry: &Entry) -> io::Result<Option<Opening>> {
         let Some(data) = self.local_data(entry)? else {
             return Ok(None);
         };
@@ -125,11 +120,7 @@ impl Archive {
         Ok(Some(Opening {
             data,
             header,
-            check: if entry.flags & 8 != 0 {
-                (entry.time >> 8) as u8
-            } else {
-                (entry.crc >> 24) as u8
-            },
+            check: entry.check_byte(),
         }))
     }
 
@@ -182,9 +173,9 @@ impl Archive {
         &mut self,
         entry: &Entry,
         traced: bool,
-    ) -> ObservedResult<Vec<u8>> {
+    ) -> ObservedResult<Stored> {
         self.io.evidence = traced.then(ReadEvidence::default);
-        let result = self.stored(entry);
+        let result = self.stored_record(entry);
         let evidence = self.io.evidence.take();
         result.map_err(|error| ReadFailure {
             error,
@@ -201,43 +192,48 @@ impl Archive {
         }
         io.seek(entry.local);
         let header = io.bytes(30)?;
-        let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
-        let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let agrees = |local: u32, central: u64| {
-            local == 0 || local == u32::MAX || u64::from(local) == central
-        };
-        if u32_at(0) != LOCAL_SIGNATURE
-            || u16_at(4) != entry.version_needed
-            || u16_at(8) != entry.method
-            || (u32_at(14) != 0 && u32_at(14) != entry.crc)
-            || !agrees(u32_at(18), entry.compressed)
-            || !agrees(u32_at(22), entry.size)
-        {
-            return Ok(None);
-        }
-        Ok(Some(entry.local.wrapping_add(
-            30 + u64::from(u16_at(26)) + u64::from(u16_at(28)),
-        )))
+        Ok(parse_local_header(entry, &header).map(|offset| entry.local.wrapping_add(offset)))
     }
 
+    #[cfg(test)]
     pub(super) fn stored(&mut self, entry: &Entry) -> io::Result<Vec<u8>> {
+        let mut stored = self.stored_record(entry)?;
+        stored.bytes.truncate(stored.digest_len);
+        Ok(stored.bytes)
+    }
+
+    fn stored_record(&mut self, entry: &Entry) -> io::Result<Stored> {
         let len = self.io.len;
         let start = entry.local.min(len);
-        let end = if entry.local.checked_add(30).is_some_and(|end| end <= len) {
+        let (digest_end, decode_end) = if entry.local.checked_add(30).is_some_and(|end| end <= len)
+        {
             self.io.seek(entry.local);
             let header = self.io.bytes(30)?;
             let lengths = u64::from(u16::from_le_bytes([header[26], header[27]]))
                 + u64::from(u16::from_le_bytes([header[28], header[29]]));
-            entry
-                .local
-                .saturating_add(30 + lengths)
-                .saturating_add(entry.compressed)
-                .min(len)
+            let data = entry.local.saturating_add(30 + lengths);
+            let digest_end = data.saturating_add(entry.compressed).min(len);
+            let extra = u64::from(entry.encrypted()) * 12;
+            let header_end = data.saturating_add(extra).min(len);
+            let decode_end = if entry.method == 0 {
+                header_end.max(digest_end)
+            } else {
+                data.saturating_add(extra)
+                    .saturating_add(entry.compressed)
+                    .max(digest_end)
+                    .min(len)
+            };
+            (digest_end, decode_end)
         } else {
-            len
+            (len, len)
         };
         self.io.seek(start);
-        self.io.bytes(end - start)
+        let bytes = self.io.bytes(decode_end - start)?;
+        Ok(Stored {
+            bytes,
+            digest_len: (digest_end - start) as usize,
+            file_len: len,
+        })
     }
 
     fn end_of_central_directory(&mut self) -> io::Result<Directory> {
@@ -477,6 +473,18 @@ impl Archive {
 }
 
 impl Entry {
+    pub(super) fn encrypted(&self) -> bool {
+        self.flags & 1 != 0
+    }
+
+    fn check_byte(&self) -> u8 {
+        if self.flags & 8 != 0 {
+            (self.time >> 8) as u8
+        } else {
+            (self.crc >> 24) as u8
+        }
+    }
+
     pub(super) fn opening(&self) -> Vec<u8> {
         [
             &self.version_needed.to_le_bytes()[..],
@@ -498,14 +506,18 @@ pub(super) struct Mounted {
     crypto: bool,
 }
 
-#[derive(Clone, Debug)]
-struct Opening {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Opening {
     data: u64,
     header: Option<[u8; 12]>,
     check: u8,
 }
 
 impl Opening {
+    pub(super) fn opens(&self, password: Option<&[u8]>) -> bool {
+        self.keys(password).is_some()
+    }
+
     fn keys(&self, password: Option<&[u8]>) -> Option<Option<Keys>> {
         match (&self.header, password) {
             (None, None) => Some(None),
@@ -532,9 +544,210 @@ impl Index {
             .is_some_and(|(entry, password)| {
                 self.openings
                     .get(&entry.name)
-                    .is_some_and(|opening| opening.keys(password).is_some())
+                    .is_some_and(|opening| opening.opens(password))
             })
     }
+
+    pub(super) fn opening(&self, name: &[u8]) -> Option<&Opening> {
+        self.openings.get(name)
+    }
+}
+
+fn parse_local_header(entry: &Entry, header: &[u8]) -> Option<u64> {
+    let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+    let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+    let agrees = |local: u32, central: u64| {
+        local == 0 || local == u32::MAX || u64::from(local) == central
+    };
+    if u32_at(0) != LOCAL_SIGNATURE
+        || u16_at(4) != entry.version_needed
+        || u16_at(8) != entry.method
+        || (u32_at(14) != 0 && u32_at(14) != entry.crc)
+        || !agrees(u32_at(18), entry.compressed)
+        || !agrees(u32_at(22), entry.size)
+    {
+        return None;
+    }
+    Some(30 + u64::from(u16_at(26)) + u64::from(u16_at(28)))
+}
+
+pub(super) struct Stored {
+    bytes: Vec<u8>,
+    digest_len: usize,
+    file_len: u64,
+}
+
+impl Stored {
+    pub(super) fn digest_bytes(&self) -> &[u8] {
+        &self.bytes[..self.digest_len]
+    }
+}
+
+pub(super) fn decode_stored(
+    entry: &Entry,
+    stored: &Stored,
+    password: Option<&[u8]>,
+    traced: bool,
+) -> ObservedResult<Option<Vec<u8>>> {
+    let raw = &stored.bytes;
+    let mut evidence = traced.then(ReadEvidence::default);
+    if raw.len() < 30 {
+        return Ok(None);
+    }
+    let header = &raw[..30];
+    if let Some(evidence) = &mut evidence {
+        evidence.update(header);
+    }
+    let Some(data_rel) = parse_local_header(entry, header) else {
+        return Ok(None);
+    };
+    let Ok(data_rel) = usize::try_from(data_rel) else {
+        return Ok(None);
+    };
+    let (mut keys, pos) = if entry.flags & 1 != 0 {
+        let Some(end) = data_rel.checked_add(12) else {
+            return Ok(None);
+        };
+        if end > raw.len() {
+            return Ok(None);
+        }
+        let header_bytes: [u8; 12] = raw[data_rel..end].try_into().unwrap();
+        if let Some(evidence) = &mut evidence {
+            evidence.update(&header_bytes);
+        }
+        let opening = Opening {
+            data: entry.local.wrapping_add(data_rel as u64),
+            header: Some(header_bytes),
+            check: entry.check_byte(),
+        };
+        let Some(keys) = opening.keys(password) else {
+            return Ok(None);
+        };
+        (keys, end)
+    } else {
+        if password.is_some() {
+            return Ok(None);
+        }
+        (None, data_rel)
+    };
+    let verified_payload = if pos <= stored.digest_len {
+        Some(&raw[pos..stored.digest_len])
+    } else {
+        None
+    };
+    let result = if entry.method == 0 {
+        if entry
+            .local
+            .checked_add(pos as u64)
+            .and_then(|start| start.checked_add(entry.size))
+            .is_none_or(|end| end > stored.file_len)
+        {
+            Err(short("its stored data ends before its uncompressed size"))
+        } else if let Some(verified) = verified_payload
+            && usize::try_from(entry.size).is_ok_and(|size| size <= verified.len())
+        {
+            let size = entry.size as usize;
+            let mut bytes = verified[..size].to_vec();
+            if let Some(evidence) = &mut evidence {
+                evidence.update(&bytes);
+            }
+            if let Some(keys) = &mut keys {
+                keys.decrypt_all(&mut bytes);
+            }
+            Ok(bytes)
+        } else {
+            Err(invalid(
+                "the archive member reads past its verified stored range",
+            ))
+        }
+    } else {
+        let verified = verified_payload.and_then(|slice| {
+            let mut verified_keys = keys.clone();
+            inflate_slice(
+                slice,
+                entry.compressed.min(slice.len() as u64),
+                entry.size,
+                verified_keys.as_mut(),
+                None,
+            )
+            .ok()
+        });
+        if let Some(bytes) = verified {
+            Ok(bytes)
+        } else {
+            match inflate_slice(
+                &raw[pos..],
+                entry.compressed,
+                entry.size,
+                keys.as_mut(),
+                evidence.as_mut(),
+            ) {
+                Ok(_) => Err(invalid(
+                    "the archive member reads past its verified stored range",
+                )),
+                Err(error) => Err(error),
+            }
+        }
+    };
+    result.map(Some).map_err(|error| ReadFailure {
+        error,
+        payload: evidence
+            .filter(|evidence| evidence.length != 0)
+            .map(ReadEvidence::finish),
+    })
+}
+
+fn inflate_slice(
+    payload: &[u8],
+    compressed: u64,
+    size: u64,
+    mut keys: Option<&mut Keys>,
+    mut evidence: Option<&mut ReadEvidence>,
+) -> io::Result<Vec<u8>> {
+    let mut state = InflateState::new_boxed(DataFormat::Raw);
+    let mut out = Vec::new();
+    let (mut input, mut used, mut offset, mut left) = (Vec::new(), 0, 0usize, compressed);
+    let mut chunk = vec![0; 0x10000];
+    while (out.len() as u64) < size {
+        if used == input.len() && left > 0 {
+            let avail = payload.len().saturating_sub(offset) as u64;
+            let n = left.min(0x4000).min(avail) as usize;
+            if n == 0 {
+                break;
+            }
+            let slice = &payload[offset..offset + n];
+            if let Some(evidence) = evidence.as_deref_mut() {
+                evidence.update(slice);
+            }
+            input = slice.to_vec();
+            if let Some(keys) = keys.as_deref_mut() {
+                keys.decrypt_all(&mut input);
+            }
+            offset += n;
+            used = 0;
+            left -= n as u64;
+        }
+        let want = (size - out.len() as u64).min(chunk.len() as u64) as usize;
+        let result = inflate(
+            &mut state,
+            &input[used..],
+            &mut chunk[..want],
+            MZFlush::None,
+        );
+        used += result.bytes_consumed;
+        out.extend_from_slice(&chunk[..result.bytes_written]);
+        if result.status != Ok(MZStatus::Ok)
+            || (result.bytes_consumed == 0 && result.bytes_written == 0 && left == 0)
+        {
+            break;
+        }
+    }
+    if (out.len() as u64) < size {
+        return Err(short(
+            "it inflates to fewer bytes than its uncompressed size",
+        ));
+    }
+    Ok(out)
 }
 
 impl Mounted {
@@ -552,6 +765,19 @@ impl Mounted {
     }
 }
 
+#[cfg(test)]
+pub(super) fn encrypt_zipcrypto(password: &[u8], plain: &[u8]) -> Vec<u8> {
+    let mut keys = Keys::new(password);
+    let mut out = Vec::with_capacity(plain.len());
+    for &byte in plain {
+        let key = (keys.0[2] & 0xFFFF) | 2;
+        out.push(byte ^ ((key * (key ^ 1)) >> 8) as u8);
+        keys.update(byte);
+    }
+    out
+}
+
+#[derive(Clone)]
 struct Keys([u32; 3]);
 
 impl Keys {

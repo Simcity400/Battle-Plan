@@ -258,10 +258,14 @@ pub fn emit(
             &label_height,
         ) {
             Ok(Some(placed)) => {
-                let glyphs = placed
-                    .glyphs
-                    .iter()
-                    .map(|glyph| (glyph.corners, glyph.uv, glyph.page));
+                let glyphs = placed.glyphs.iter().map(|glyph| {
+                    (
+                        glyph.corners,
+                        glyph.uv,
+                        glyph.page,
+                        glyph.color.unwrap_or([1.0; 4]),
+                    )
+                });
                 if let Some(name) = super::WorldName::from_glyphs(
                     format!("{}:{}:child:{}", key.0, key.1, child.slot),
                     placed.text,

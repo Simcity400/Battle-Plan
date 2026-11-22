@@ -37,47 +37,7 @@ use viewer_world::map::{
 
 const NONE: u32 = u32::MAX;
 
-#[derive(Clone, Copy, Default)]
-struct Fast(u64);
-
-impl Fast {
-    #[inline]
-    fn add(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-}
-
-impl std::hash::Hasher for Fast {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
-            let mut word = [0; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            self.add(u64::from_le_bytes(word));
-        }
-    }
-
-    fn write_u8(&mut self, value: u8) {
-        self.add(u64::from(value));
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.add(u64::from(value));
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.add(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.add(value as u64);
-    }
-}
-
-type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fast>>;
+type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 pub trait Ground: Send + Sync {
     fn anchor(&self, province: u32, slot: u32) -> Option<[f32; 3]>;
@@ -239,12 +199,13 @@ struct Member {
     read_at: u32,
     seen: bool,
     stale: bool,
-    pick: Option<(PickRoute, Option<u32>)>,
+    roster: Option<u32>,
+    pick: Option<PickRoute>,
 }
 
 impl Default for Member {
     fn default() -> Self {
-        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, pick: None }
+        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, roster: None, pick: None }
     }
 }
 
@@ -550,11 +511,11 @@ impl Units {
         for slot in slots {
             let Some(member) = self.members.get(slot as usize) else { continue };
             let Some((province, owner)) = member.sighted else { continue };
-            let (route, roster) = member.pick.unzip();
+            let route = member.pick;
             divisions.entry(province).or_default().push(PickDivision {
                 id: member.id,
                 owner,
-                roster: roster.flatten(),
+                roster: member.roster,
                 kind: route.and_then(|route| route.kind),
                 hop: route.and_then(|route| route.hop),
                 unrouted: route.map(|route| route.unrouted),
@@ -655,7 +616,8 @@ impl Units {
             }
             self.deferred = deferred;
         }
-        let held: Vec<u32> = self.by_key.values().copied().collect();
+        let mut held: Vec<u32> = self.by_key.values().copied().collect();
+        held.sort_unstable();
         for stack in held {
             let admitted = self.admits(self.stacks[stack as usize].key.0);
             let at = stack as usize;
@@ -859,7 +821,8 @@ impl Units {
         }
         let old = std::mem::replace(&mut self.combat, combat);
         let divisions = mirrors.get(TableId::Divisions);
-        let changed: Vec<u64> = old.iter().filter(|(id, side)| self.combat.get(id) != Some(side)).map(|(&id, _)| id).chain(self.combat.keys().filter(|id| !old.contains_key(id)).copied()).collect();
+        let mut changed: Vec<u64> = old.iter().filter(|(id, side)| self.combat.get(id) != Some(side)).map(|(&id, _)| id).chain(self.combat.keys().filter(|id| !old.contains_key(id)).copied()).collect();
+        changed.sort_unstable();
         for id in changed {
             if let Some(slot) = divisions.and_then(|divisions| divisions.slot(u128::from(id))) {
                 self.mark_stack_of(slot);
@@ -954,7 +917,7 @@ impl Units {
                 Some(owner_slot) => {
                     let (signature, route) = self.signature(mirrors, id, province);
                     let roster = roster.and_then(|raw| self.links.get(&raw).copied());
-                    self.members[at].pick = route.map(|route| (route, roster));
+                    (self.members[at].pick, self.members[at].roster) = (route, roster);
                     let member = &self.members[at];
                     if member.id != id || member.sighted != Some((province, owner_slot)) || member.read_at == NONE {
                         let (seen, read_at) = seer.sees(id, owner_slot, province);
@@ -969,6 +932,7 @@ impl Units {
             _ => None,
         };
         if key.is_none() {
+            (self.members[at].pick, self.members[at].roster) = (None, None);
             self.index(slot, NONE);
         }
         self.members[at].stale = true;
@@ -1620,8 +1584,8 @@ impl Layer for Units {
             }
             match table {
                 TableId::Divisions => {
-                    let keyed = [columns.province.column, columns.owner.column];
-                    let selected = [columns.template.column, columns.roster.column, columns.expeditionary.column];
+                    let keyed = [columns.province.column, columns.owner.column, columns.roster.column];
+                    let selected = [columns.template.column, columns.expeditionary.column];
                     let mut moved = |slot: u32| {
                         if self.moved.mark(slot, frame) {
                             self.marked[0] += 1;

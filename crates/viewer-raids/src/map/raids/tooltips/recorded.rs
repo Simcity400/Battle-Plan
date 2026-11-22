@@ -166,14 +166,14 @@ fn detail_order(types: &[(usize, Result<bool>)]) -> (Result<Option<usize>>, Resu
 
 struct Context<'a, 'w> {
     assets: &'a RaidAssets,
-    world: &'a World<'w>,
+    world: &'w World<'a>,
     loc: &'a Localisation,
     recorded_language: &'a str,
     scripted_content: &'a Result<dashboard_text::scripted_text::ScriptedContent>,
     ours: u32,
     nato: bool,
     countries: content_reader_country_names::country_names::CountryNames<'a>,
-    flag_exists: &'a dyn Fn(&str) -> bool,
+    flag_exists: &'w dyn Fn(&str) -> bool,
     scripted: OnceCell<dashboard_text::scripted_text::ScriptedText<'a>>,
 }
 
@@ -261,14 +261,10 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
     graph
 }
 
-impl Context<'_, '_> {
-    fn scoped_text(&self, key: &str, scopes: Scopes) -> Result<String> {
-        let text = localise(self.loc, key, &[])?;
-        if !text.contains('[') {
-            return Ok(text);
-        }
+impl<'a> Context<'a, '_> {
+    fn scripted_text(&self) -> Result<&dashboard_text::scripted_text::ScriptedText<'a>> {
         let content = self.scripted_content.as_ref().map_err(Clone::clone)?;
-        let scripted = self.scripted.get_or_init(|| {
+        Ok(self.scripted.get_or_init(|| {
             dashboard_text::scripted_text::ScriptedText::new(
                 self.world.frame(),
                 self.loc,
@@ -277,8 +273,15 @@ impl Context<'_, '_> {
             )
             .viewing(self.ours)
             .with_nato_counters(self.nato)
-        });
-        scripted.expand_in(&text, &event_scopes(scopes))
+        }))
+    }
+
+    fn scoped_text(&self, key: &str, scopes: Scopes) -> Result<String> {
+        let text = localise(self.loc, key, &[])?;
+        if !text.contains('[') {
+            return Ok(text);
+        }
+        self.scripted_text()?.expand_in(&text, &event_scopes(scopes))
     }
 
     fn type_of(&self, token: u32) -> Result<&RaidType> {

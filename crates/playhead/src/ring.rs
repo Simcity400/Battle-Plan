@@ -279,6 +279,11 @@ impl Ring {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn asked(&self, id: usize) -> bool {
+        self.consumers.get(id).and_then(Option::as_ref).is_some_and(|seat| seat.asks)
+    }
+
     pub(crate) fn reader_of(&self, id: usize) -> Option<Reader> {
         self.consumers.get(id)?.as_ref().map(|seat| seat.reader)
     }
@@ -372,6 +377,19 @@ impl Ring {
             self.trim();
         }
         taken
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn has_ready(&self, id: usize, head: Hour) -> bool {
+        let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else {
+            return false;
+        };
+        if let Some((before, step)) = seat.own.front()
+            && *before <= seat.next
+        {
+            return step.last <= head;
+        }
+        self.built.get(next_of(&self.built, seat.next)).is_some_and(|step| step.last <= head)
     }
 
     pub(crate) fn ahead(&self, id: usize, out: &mut Vec<Arc<Step>>) {
