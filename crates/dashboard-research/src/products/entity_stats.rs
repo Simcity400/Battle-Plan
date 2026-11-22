@@ -81,10 +81,7 @@ impl<'l> Sheet<'l> {
     }
 
     fn text(&self, key: &str, args: &[(&str, Argument<'_>)]) -> Result<String, String> {
-        if self.localisation.get(key).is_none() {
-            return Err(format!("localisation {key} is not defined"));
-        }
-        self.localisation.localise_with(key.as_bytes(), args).map_err(|why| why.to_string())
+        localised(self.localisation, key, args)
     }
 
     fn refuse(&mut self, why: String) {
@@ -214,15 +211,23 @@ fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-fn named(localisation: &Localisation, key: &str, token: &str) -> String {
-    if localisation.get(key).is_some()
-        && let (Ok(name), notes) = localisation.localise_with_fallbacks(key.as_bytes(), &[])
-        && notes.is_empty()
-        && !name.trim().is_empty()
-    {
-        return name;
+fn localised(localisation: &Localisation, key: &str, args: &[(&str, Argument<'_>)]) -> Result<String, String> {
+    if localisation.get(key).is_none() {
+        return Err(format!("localisation {key} is not defined"));
     }
-    format!("{token} (name unavailable)")
+    let (text, notes) = localisation.localise_with_fallbacks(key.as_bytes(), args);
+    let text = text.map_err(|why| why.to_string())?;
+    if !notes.is_empty() {
+        return Err(notes.join("; "));
+    }
+    if text.trim().is_empty() {
+        return Err(format!("localisation {key} gives no text"));
+    }
+    Ok(text)
+}
+
+fn named(localisation: &Localisation, key: &str, token: &str) -> String {
+    localised(localisation, key, &[]).unwrap_or_else(|_| format!("{token} (name unavailable)"))
 }
 
 fn missions(localisation: &Localisation, missions: &[Vec<u8>]) -> String {

@@ -519,12 +519,9 @@ struct PieceRows {
     history_available: Vec<(i32, i32)>,
 }
 
-fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece, only: Option<u32>) -> io::Result<PieceRows> {
+fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<PieceRows> {
     let recording = query.replay.recording();
-    let mut owners = owner_ids(links, piece.slot, piece.reach(), piece.last);
-    if let Some(owner) = only {
-        owners.retain(|&raw, _| raw == owner);
-    }
+    let owners = owner_ids(links, piece.slot, piece.reach(), piece.last);
     let mut projects = Vec::new();
     let mut histories = Vec::new();
     for &raw in owners.keys() {
@@ -674,7 +671,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             })
             .collect();
         if projects_read.len() != linked.len() {
-            fold.absent(piece.possession(), first, |raw| projects_read.contains_key(&raw), &shown);
+            fold.absent(piece.possession(), first, last, |raw| projects_read.contains_key(&raw), &shown);
             continue;
         }
         fold.observe(piece.possession(), first, last, &shown);
@@ -803,34 +800,26 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
 fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
     let (pieces, holding) = pieces(&query, &params.country, query.timeline.first, through);
     let mut fold = Fold::new(query.timeline.first);
-    let mut observed: Vec<(i32, i32)> = Vec::new();
-    let mut partial: Vec<(i32, i32)> = Vec::new();
-    let mut links: HashMap<u32, RunLinks> = HashMap::new();
-    for piece in &pieces {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let run_links = links_of(&query, &mut links, piece.run)?;
-        let read = read_piece(&query, run_links, piece, None)?;
-        fold_piece(&mut fold, piece, &read, &mut observed, &mut partial, cancelled)?;
-    }
+    let (observed, partial) = fold_pieces(&query, &mut fold, &pieces, cancelled)?;
     let tag = query.holders.name(&params.country, through);
     present(&query, params, content, &fold, Observation { observed, partial }, holding, &tag, cancelled, &mut None)
 }
 
-fn one_episode(query: &Query<'_>, country: &Country, project: (u32, u32, u32), first: i32, last: i32) -> io::Result<bool> {
-    let (owner, local, definition) = project;
-    let mut fold = Fold::new(query.timeline.first);
+fn fold_pieces(query: &Query<'_>, fold: &mut Fold, pieces: &[Piece], cancelled: &AtomicBool) -> io::Result<(Vec<(i32, i32)>, Vec<(i32, i32)>)> {
     let (mut observed, mut partial, mut links) = (Vec::new(), Vec::new(), HashMap::new());
-    for piece in pieces(query, country, first, last).0 {
-        let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece, Some(owner))?;
-        fold_piece(&mut fold, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false))?;
+    for piece in pieces {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let read = read_piece(query, links_of(query, &mut links, piece.run)?, piece)?;
+        fold_piece(fold, piece, &read, &mut observed, &mut partial, cancelled)?;
     }
-    let at = |hour: i32| {
-        fold.episodes.iter().position(|episode| {
-            (episode.owner, episode.local) == (owner, local)
-                && episode.runs.iter().any(|run| run.first_hour <= hour && hour <= run.last_hour && fold.looks[run.presentation as usize].definition == definition)
-        })
-    };
-    Ok(at(first).is_some_and(|episode| at(last) == Some(episode)))
+    Ok((observed, partial))
+}
+
+fn one_episode(query: &Query<'_>, country: &Country, project: fold::Key, first: i32, last: i32) -> io::Result<bool> {
+    let mut fold = Fold::new(query.timeline.first);
+    fold.watch(project);
+    fold_pieces(query, &mut fold, &pieces(query, country, query.timeline.first, last).0, &AtomicBool::new(false))?;
+    Ok(fold.assigned(first).is_some_and(|episode| fold.assigned(last) == Some(episode)))
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);

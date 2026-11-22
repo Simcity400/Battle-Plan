@@ -1,4 +1,4 @@
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, ProjectContent, Reads, branch, context, definition, effect_tables, held_since, owner_read, owners_of, project_slices, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, ProjectContent, Reads, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -90,7 +90,7 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
     }
     let run = query.timeline.at(read).ok_or_else(|| dashboard_core::refused("The read listing this iteration is not recorded"))?.run;
     let reads = Reads { query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: read };
-    if !held_since(query, &params.country, holder, at.hour, read) {
+    if !super::super::held_from(query, &params.country, holder.slot, holder.id, read).is_some_and(|since| since <= at.hour) {
         return Ok(Err("This iteration's choice was listed after this country stopped holding the tag".into()));
     }
     let project = u128::from(params.owner) << 32 | u128::from(params.project);

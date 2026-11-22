@@ -248,7 +248,7 @@ fn folded(id: &str, first: i32, last: i32, frame: impl Fn(i32) -> replay_frame::
     let mut direct = Fold::new(first);
     let (mut observed, mut partial) = (Vec::new(), Vec::new());
     for piece in pieces(&query, &country, query.timeline.first, last).0 {
-        let read = read_piece(&query, links_of(&query, &mut links, piece.run).unwrap(), &piece, None).unwrap();
+        let read = read_piece(&query, links_of(&query, &mut links, piece.run).unwrap(), &piece).unwrap();
         fold_piece(&mut direct, &piece, &read, &mut observed, &mut partial, &AtomicBool::new(false)).unwrap();
     }
     [(direct, observed, partial), incremental::followed(&query, &country, first, last).unwrap()]
@@ -495,7 +495,7 @@ fn a_restart_read_while_another_owner_is_unstamped_ends_the_completed_episode() 
     let mut fold = Fold::new(START);
     observe(&mut fold, 1_020, 1_020, &[(done(1), None, Person::Unassigned)]);
     let restarted = running(1, 5);
-    fold.absent(HOLDER, 1_021, |raw| raw == restarted.owner, &[Observed { row: &restarted, read: 1_021, history: None, person: Person::Unassigned }]);
+    fold.absent(HOLDER, 1_021, 1_021, |raw| raw == restarted.owner, &[Observed { row: &restarted, read: 1_021, history: None, person: Person::Unassigned }]);
     observe(&mut fold, 1_022, 1_030, &[(done(1), None, Person::Unassigned)]);
     let completions: Vec<_> = fold.episodes.iter().map(|episode| episode.runs.last().and_then(|run| run.completion.clone())).collect();
     assert_eq!(
@@ -570,7 +570,7 @@ fn a_fall_in_choices_read_while_another_owner_is_unstamped_ends_the_episode_in_t
     let frame = |hour| counted_frame(hour, choices, stamped);
     for (fold, ..) in folded("special-projects-reset-unstamped", FIRST, LAST, frame) {
         let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
-        assert_eq!(starts, [FIRST, RESET.end], "the owner's complete history read with fewer choices is a replacement, whatever another owner's stamps");
+        assert_eq!(starts, [FIRST, RESET.start], "the owner's complete history read with fewer choices starts a replacement there, whatever another owner's stamps");
     }
     let source = synthetic("special-projects-reset-lookup", FIRST, LAST, frame);
     let query = dashboard_base::queries::query(&source, 1).unwrap();
@@ -605,4 +605,93 @@ fn a_completion_seen_again_after_an_unknown_holder_hour_is_the_same_completion()
         let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
         assert_eq!(starts, [FIRST, UNKNOWN + 1], "a running project is never joined across an hour whose holder is unknown");
     }
+}
+
+struct FoldStep {
+    hour: i32,
+    row: Row,
+    history: Option<Vec<Entry>>,
+}
+
+fn fold_step(hour: i32, row: Row, history: Option<Vec<Entry>>) -> FoldStep {
+    FoldStep { hour, row, history }
+}
+
+fn unknown(local: u32) -> Row {
+    Row { offset: 0x99, ..done(local) }
+}
+
+fn marked(choices: u32, date: i32) -> Option<Vec<Entry>> {
+    let mut out: Vec<Entry> = (0..choices).map(|ordinal| Entry { ordinal, completion: false, date: START }).collect();
+    out.push(Entry { ordinal: choices, completion: true, date });
+    Some(out)
+}
+
+fn assignments(steps: &[FoldStep], partial: bool) -> Vec<usize> {
+    let mut fold = Fold::new(START);
+    fold.watch((11, 1, 40));
+    for (at, step) in steps.iter().enumerate() {
+        let shown = [Observed { row: &step.row, read: step.hour, history: step.history.as_deref().map(|entries| (step.hour, entries)), person: Person::Unassigned }];
+        if partial && at != 0 && at + 1 != steps.len() {
+            fold.absent(HOLDER, step.hour, step.hour, |owner| owner == 11, &shown);
+        } else {
+            fold.observe(HOLDER, step.hour, step.hour, &shown);
+        }
+    }
+    steps.iter().map(|step| fold.assigned(step.hour).expect("every read is assigned")).collect()
+}
+
+#[test]
+fn one_rule_assigns_every_read_to_an_episode_from_everything_it_established_whether_or_not_every_owner_was_read() {
+    let completed_at = |hour, history| fold_step(hour, done(1), history);
+    let cases: [(&str, Vec<FoldStep>, bool); 9] = [
+        ("a marker after a completion seen before an unknown state is a second completion", vec![completed_at(1_100, None), fold_step(1_101, unknown(1), None), completed_at(1_102, marked(0, 1_102))], true),
+        ("a marker after a completion seen while another owner was unread is a second completion", vec![fold_step(1_100, running(1, 50), None), completed_at(1_101, None), completed_at(1_103, marked(0, 1_102))], true),
+        ("a marker at or before the known completion dates it", vec![completed_at(1_100, None), completed_at(1_101, None), completed_at(1_102, marked(0, 1_100))], false),
+        ("a marker after an exact completion is a second completion", vec![completed_at(1_100, marked(0, 1_099)), fold_step(1_101, unknown(1), None), completed_at(1_102, marked(0, 1_101))], true),
+        ("a known end then a restart", vec![completed_at(1_100, None), fold_step(1_101, running(1, 5), None), fold_step(1_102, running(1, 6), None)], true),
+        ("an unknown state is no evidence the end was undone", vec![completed_at(1_100, None), fold_step(1_101, unknown(1), None), fold_step(1_102, running(1, 5), None)], true),
+        ("a fall in choices", vec![fold_step(1_100, running(1, 5), Some(entries(2, None))), fold_step(1_101, running(1, 6), Some(entries(0, None))), fold_step(1_102, running(1, 7), Some(entries(2, None)))], true),
+        ("more choices continue", vec![fold_step(1_100, running(1, 5), Some(entries(1, None))), fold_step(1_101, running(1, 6), Some(entries(2, None))), fold_step(1_102, running(1, 7), Some(entries(3, None)))], false),
+        ("a completion read and confirmed continues", vec![fold_step(1_100, running(1, 90), Some(entries(3, None))), completed_at(1_101, Some(entries(3, None))), completed_at(1_102, marked(3, 1_101))], false),
+    ];
+    for (name, steps, splits) in cases {
+        let full = assignments(&steps, false);
+        assert_eq!(full.first() != full.last(), splits, "{name}: {full:?}");
+        assert_eq!(assignments(&steps, true), full, "{name}: a read while another owner was unread is the same evidence");
+    }
+}
+
+#[test]
+fn the_iteration_lookup_assigns_a_choice_to_the_episode_the_list_does() {
+    use replay_data::rows::{ProjectHistoryRow, TableRows};
+    use replay_frame::frame::TableView;
+    const FIRST: i32 = 20;
+    const CHOICE: i32 = 21;
+    const LISTED: i32 = 22;
+    const LAST: i32 = 25;
+    let frame = |hour: i32| {
+        let mut frame = project_frame(hour, |_| (0xe8, 0), |_, hour| Some(hour));
+        let entry = |ordinal, completion: bool| ProjectHistoryRow {
+            owner: 9001,
+            project: 1,
+            ordinal,
+            prototype_reward_handle: if completion { COMPLETION_MARKER } else { 3 },
+            option_handle: if completion { COMPLETION_MARKER } else { 4 },
+            date: CHOICE,
+            ..Default::default()
+        };
+        let history = if hour >= LISTED { vec![entry(0, false), entry(1, true)] } else { Vec::new() };
+        *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(history));
+        frame
+    };
+    for (fold, ..) in folded("special-projects-lookup-agrees", FIRST, LAST, frame) {
+        let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+        assert_eq!(starts, [FIRST, LISTED], "a completion dated after the one known since the first hour is a second completion");
+    }
+    let source = synthetic("special-projects-lookup-agrees-lookup", FIRST, LAST, frame);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
+    assert!(!one_episode(&query, &country, (9001, 1, 40), CHOICE, LISTED).unwrap(), "the choice hour belongs to the predecessor the list ends, so its values are never the replacement's");
+    assert!(one_episode(&query, &country, (9001, 1, 40), LISTED, LAST).unwrap());
 }

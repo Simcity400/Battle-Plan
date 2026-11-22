@@ -134,7 +134,7 @@ impl Episodes {
 
     fn enter(&mut self, q: &Query<'_>, piece: Piece, last: bool, cancelled: &AtomicBool, count: &mut u64) -> io::Result<()> {
         let links = links_of(q, &mut self.links, piece.run)?;
-        let read = read_piece(q, links, &piece, None)?;
+        let read = read_piece(q, links, &piece)?;
         fold_piece(&mut self.fold, &piece, &read, &mut self.observed, &mut self.partial, cancelled)?;
         self.current = if last {
             let known: BTreeSet<_> = read.owners.keys().copied().collect();
@@ -218,7 +218,7 @@ impl Episodes {
                     if observable {
                         self.fold.observe(piece.possession(), next, next, &shown);
                     } else {
-                        self.fold.absent(piece.possession(), next, |raw| reads.contains_key(&raw), &shown);
+                        self.fold.absent(piece.possession(), next, next, |raw| reads.contains_key(&raw), &shown);
                     }
             } else if observable { self.fold.extend(before, next); }
             if observable {

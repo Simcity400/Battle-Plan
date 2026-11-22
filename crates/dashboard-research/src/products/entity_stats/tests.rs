@@ -207,3 +207,12 @@ fn a_request_without_a_token_is_refused() {
     assert_eq!(EntityStatsAt::validate(&params), Err("Entity stats need a content token"));
     assert!(EntityStatsAt::tables(&params).is_empty(), "a stats sheet is recorded content alone, so playback never reads or recomputes it");
 }
+
+#[test]
+fn a_label_whose_text_cannot_be_made_is_withheld_by_name_never_blank() {
+    let localisation: Localisation = [("DESIGNER_MANPOWER", "$missing_name$")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+    let mut sheet = Sheet::new(&localisation);
+    sheet.costs(Some(&Ok(50_000_000)), &Vec::new());
+    assert!(sheet.stats.is_empty(), "a blank label is never shown beside a value: {:?}", lines(&sheet));
+    assert!(sheet.refusals.keys().any(|why| why.contains("missing_name")), "{:?}", sheet.refusals);
+}

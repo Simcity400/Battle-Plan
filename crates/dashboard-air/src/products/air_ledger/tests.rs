@@ -367,8 +367,8 @@ mod windows {
             })
             .collect();
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-        let source = Source::from_replay(crate::SourceKey { source_id: "air-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-        let query = crate::answer::query(&source, 1).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
         let (context, running) = (LoadContext { content: None }, AtomicBool::new(false));
         let reply = window_reply(&source, &query, &asked(MilitaryAirFamily::AirLosses, &[], &[], Some(FIRST), None), (AT, AT), &context, &running).unwrap();
         assert_eq!(reply.observed, vec![HourSpan { first_hour: FIRST, last_hour: AT }], "the reads before and after the read in part are one stretch");

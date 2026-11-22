@@ -70,11 +70,33 @@ pub fn completion_date(history: &[Entry], observed: i32, campaign_start: i32) ->
 
 pub type Possession = (u32, u32, i32);
 
+pub type Key = (u32, u32, u32);
+
 pub struct Observed<'a> {
     pub row: &'a Row,
     pub read: i32,
     pub history: Option<(i32, &'a [Entry])>,
     pub person: Person,
+}
+
+#[derive(Clone, Debug)]
+struct Track {
+    id: usize,
+    episode: Option<usize>,
+    start: i32,
+    since: i32,
+    ended: bool,
+    completion: Option<ProjectDate>,
+    cancellation: Option<ProjectDate>,
+    choices: Option<i32>,
+    gap: bool,
+}
+
+struct Assigned<'h> {
+    key: Key,
+    state: ProjectState,
+    history: Option<(i32, &'h [Entry])>,
+    iterations: Option<i32>,
 }
 
 #[derive(Default)]
@@ -83,12 +105,16 @@ pub struct Fold {
     pub episodes: Vec<ProjectEpisode>,
     pub looks: Vec<Look>,
     look_ids: HashMap<Look, u32>,
-    open: BTreeMap<(u32, u32, u32), usize>,
-    ended: BTreeSet<(u32, u32, u32)>,
+    open: BTreeMap<Key, Track>,
+    tracks: usize,
     holder: Option<Possession>,
-    last_iterations: HashMap<usize, i32>,
-    since: HashMap<usize, i32>,
+    watched: Option<Key>,
+    seen: Vec<(i32, i32, usize)>,
     pub warnings: BTreeMap<String, usize>,
+}
+
+fn choices(entries: &[Entry]) -> i32 {
+    entries.iter().filter(|entry| !entry.completion).count() as i32
 }
 
 impl Fold {
@@ -96,13 +122,26 @@ impl Fold {
         Self { campaign_start, ..Self::default() }
     }
 
+    pub fn watch(&mut self, key: Key) {
+        self.watched = Some(key);
+    }
+
+    pub fn assigned(&self, hour: i32) -> Option<usize> {
+        self.seen.iter().rev().find(|&&(first, last, _)| first <= hour && hour <= last).map(|&(_, _, id)| id)
+    }
+
     pub fn open_episodes(&self) -> impl Iterator<Item = usize> + '_ {
-        self.open.values().copied()
+        self.open.values().filter_map(|track| track.episode)
     }
 
     pub fn extend(&mut self, before: i32, last: i32) {
-        for index in self.open.values() {
-            if let Some(run) = self.episodes[*index].runs.last_mut().filter(|run| run.last_hour == before) { run.last_hour = last; }
+        for track in self.open.values() {
+            if let Some(run) = track.episode.and_then(|index| self.episodes[index].runs.last_mut()).filter(|run| run.last_hour == before) {
+                run.last_hour = last;
+            }
+        }
+        if let Some(seen) = self.seen.last_mut().filter(|seen| seen.1 == before) {
+            seen.1 = last;
         }
     }
 
@@ -118,110 +157,108 @@ impl Fold {
 
     pub fn hold(&mut self, holder: Possession) {
         match self.holder {
-            Some(held) if (held.0, held.1) != (holder.0, holder.1) => {
-                self.open.clear();
-                self.ended.clear();
-            }
-            Some(held) if held != holder => {
-                let ended = &self.ended;
-                self.open.retain(|key, _| ended.contains(key));
-            }
+            Some(held) if (held.0, held.1) != (holder.0, holder.1) => self.open.clear(),
+            Some(held) if held != holder => self.open.values_mut().for_each(|track| track.gap = true),
             _ => {}
         }
         self.holder = Some(holder);
     }
 
-    fn evidence<'h>(&mut self, key: (u32, u32, u32), state: ProjectState, observed: &Observed<'h>, hour: i32) -> Evidence<'h> {
-        if resumed(state) && self.ended.contains(&key) {
-            self.open.remove(&key);
+    fn continues(&self, track: &Track, state: ProjectState, observed: &Observed<'_>, hour: i32) -> bool {
+        if track.ended && resumed(state) {
+            return false;
         }
-        let mut held = self.open.get(&key).map(|index| (*index, self.since[index]));
-        let since = held.map_or(observed.read, |(_, since)| since);
-        let mut history = observed.history.filter(|&(read, _)| read >= since);
-        if state == ProjectState::Completed
-            && let Some((index, _)) = held
-            && let Some(known) = self.episodes[index].runs.last().and_then(|run| run.completion.as_ref())
-            && history.and_then(|(_, entries)| completion_date(entries, hour, self.campaign_start)).is_some_and(|marker| marker.hour > known.hour)
+        if track.gap && !(track.ended && terminal(state)) {
+            return false;
+        }
+        let history = observed.history.filter(|&(read, _)| read >= track.since);
+        if let (Some(known), Some((_, entries))) = (track.choices, history)
+            && choices(entries) < known
         {
-            self.open.remove(&key);
-            held = None;
-            history = observed.history.filter(|&(read, _)| read >= observed.read);
+            return false;
         }
-        let iterations = history.map(|(_, entries)| entries.iter().filter(|entry| !entry.completion).count() as i32);
-        if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
-            self.open.remove(&key);
-        }
-        let ended = terminal(state) || (!resumed(state) && self.open.contains_key(&key) && self.ended.contains(&key));
-        Evidence { history, iterations, ended }
+        let marker = history.and_then(|(_, entries)| completion_date(entries, hour, self.campaign_start));
+        !(state == ProjectState::Completed && track.completion.as_ref().zip(marker).is_some_and(|(known, marker)| marker.hour > known.hour))
     }
 
-    pub fn absent(&mut self, holder: Possession, hour: i32, proven: impl Fn(u32) -> bool, present: &[Observed<'_>]) {
-        self.hold(holder);
-        let mut seen = Vec::with_capacity(present.len());
-        for observed in present {
-            let row = observed.row;
-            let key = (row.owner, row.local, row.definition);
-            let evidence = self.evidence(key, state(row), observed, hour);
-            if let Some(&index) = self.open.get(&key) {
-                if let Some(count) = evidence.iterations {
-                    self.last_iterations.insert(index, count);
-                }
-                if evidence.ended { self.ended.insert(key); } else { self.ended.remove(&key); }
-            } else {
-                self.ended.remove(&key);
-            }
-            seen.push(key);
+    fn assign<'h>(&mut self, observed: &Observed<'h>, first: i32, last: i32) -> Option<Assigned<'h>> {
+        let row = observed.row;
+        let state = state(row);
+        let key = (row.owner, row.local, row.definition);
+        let open = self.open.get(&key);
+        if !visible(row, open.is_some()) {
+            return None;
         }
+        if !open.is_some_and(|track| self.continues(track, state, observed, first)) {
+            let id = self.tracks;
+            self.tracks += 1;
+            self.open.insert(key, Track { id, episode: None, start: first, since: observed.read, ended: false, completion: None, cancellation: None, choices: None, gap: false });
+        }
+        let campaign_start = self.campaign_start;
+        let track = self.open.get_mut(&key).expect("an open track");
+        let history = observed.history.filter(|&(read, _)| read >= track.since);
+        let iterations = history.map(|(_, entries)| choices(entries));
+        if terminal(state) {
+            track.ended = true;
+        } else if resumed(state) {
+            track.ended = false;
+        }
+        if iterations.is_some() {
+            track.choices = iterations;
+        }
+        if state == ProjectState::Completed {
+            let marker = history.and_then(|(_, entries)| completion_date(entries, first, campaign_start));
+            track.completion = match (track.completion.take(), marker) {
+                (Some(known), Some(marker)) if !known.exact => Some(marker),
+                (Some(known), _) => Some(known),
+                (None, marker) => Some(marker.unwrap_or(ProjectDate { hour: first, exact: false })),
+            };
+        }
+        if state == ProjectState::Cancelled && track.cancellation.is_none() {
+            track.cancellation = Some(ProjectDate { hour: first, exact: false });
+        }
+        track.gap = false;
+        if self.watched == Some(key) {
+            self.seen.push((first, last, track.id));
+        }
+        Some(Assigned { key, state, history, iterations })
+    }
+
+    pub fn absent(&mut self, holder: Possession, first: i32, last: i32, proven: impl Fn(u32) -> bool, present: &[Observed<'_>]) {
+        self.hold(holder);
+        let seen: Vec<Key> = present.iter().filter_map(|observed| self.assign(observed, first, last).map(|assigned| assigned.key)).collect();
         self.open.retain(|key, _| !proven(key.0) || seen.contains(key));
-        let open = &self.open;
-        self.ended.retain(|key| open.contains_key(key));
     }
 
     pub fn observe(&mut self, holder: Possession, first: i32, last: i32, projects: &[Observed<'_>]) {
         self.hold(holder);
-        let mut next = BTreeMap::new();
-        let mut ended = BTreeSet::new();
+        let mut next = BTreeSet::new();
         for observed in projects {
+            let Some(Assigned { key, state, history, iterations }) = self.assign(observed, first, last) else { continue };
+            next.insert(key);
             let row = observed.row;
-            let state = state(row);
-            let key = (row.owner, row.local, row.definition);
-            if !visible(row, self.open.contains_key(&key)) {
-                continue;
-            }
-            let done = state == ProjectState::Completed;
-            let Evidence { history, iterations, ended: terminal_seen } = self.evidence(key, state, observed, first);
-            let iterations_read = history.and_then(|(read, entries)| (!(done && entries.iter().any(|entry| entry.completion))).then_some(read));
-            let index = match self.open.get(&key) {
-                Some(&index) => index,
+            let track = &self.open[&key];
+            let completion = track.completion.clone().filter(|_| state == ProjectState::Completed);
+            let cancellation = track.cancellation.clone().filter(|_| state == ProjectState::Cancelled);
+            let (episode, start) = (track.episode, track.start);
+            let index = match episode {
+                Some(index) => index,
                 None => {
                     let index = self.episodes.len();
-                    self.episodes.push(ProjectEpisode { id: format!("{}:{first}:{index}", row.local), owner: row.owner, local: row.local, start: ProjectDate { hour: first, exact: false }, runs: Vec::new() });
-                    self.since.insert(index, history.map_or(observed.read, |(read, _)| read.min(observed.read)));
+                    self.episodes.push(ProjectEpisode { id: format!("{}:{start}:{index}", row.local), owner: row.owner, local: row.local, start: ProjectDate { hour: start, exact: false }, runs: Vec::new() });
+                    self.open.get_mut(&key).expect("an open track").episode = Some(index);
                     index
                 }
             };
-            next.insert(key, index);
-            if terminal_seen {
-                ended.insert(key);
-            }
-            let previous = self.episodes[index].runs.last().cloned();
-            let completion = done.then(|| {
-                history
-                    .and_then(|(_, entries)| completion_date(entries, first, self.campaign_start))
-                    .or_else(|| previous.as_ref().and_then(|run| run.completion.clone()))
-                    .unwrap_or(ProjectDate { hour: first, exact: false })
-            });
-            let cancellation = (state == ProjectState::Cancelled).then(|| previous.as_ref().and_then(|run| run.cancellation.clone()).unwrap_or(ProjectDate { hour: first, exact: false }));
+            let done = state == ProjectState::Completed;
+            let iterations_read = history.and_then(|(read, entries)| (!(done && entries.iter().any(|entry| entry.completion))).then_some(read));
             let mut look = Look { definition: row.definition, person: observed.person.clone(), as_of: None };
-            if done && let Some(before) = previous.as_ref().filter(|run| run.last_hour.checked_add(1) == Some(first)) {
+            if done && let Some(before) = self.episodes[index].runs.last().filter(|run| run.last_hour.checked_add(1) == Some(first)) {
                 let held = &self.looks[before.presentation as usize];
                 if matches!(held.person, Person::Character(_)) {
                     look.person = held.person.clone();
                     look.as_of = Some(held.as_of.unwrap_or(before.last_hour));
                 }
-            }
-            if let Some(count) = iterations {
-                self.last_iterations.insert(index, count);
             }
             if state == ProjectState::Unknown {
                 *self.warnings.entry(format!("Project {} is in a state the replay does not know ({:#x})", row.local, row.offset)).or_default() += 1;
@@ -234,15 +271,8 @@ impl Fold {
                 _ => runs.push(run),
             }
         }
-        self.open = next;
-        self.ended = ended;
+        self.open.retain(|key, _| next.contains(key));
     }
-}
-
-struct Evidence<'h> {
-    history: Option<(i32, &'h [Entry])>,
-    iterations: Option<i32>,
-    ended: bool,
 }
 
 fn terminal(state: ProjectState) -> bool {

@@ -533,7 +533,7 @@ fn a_scoped_page_and_its_counts_number_only_the_rows_kept() {
 
 #[test]
 fn two_projects_completing_in_one_hour_are_two_rows() {
-    use crate::products::special_projects::ProjectCompletion;
+    use dashboard_research::products::special_projects::ProjectCompletion;
     let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
     let ids: std::collections::BTreeSet<String> =
         [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();

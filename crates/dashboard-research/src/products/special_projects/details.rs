@@ -282,9 +282,6 @@ fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
     std::str::from_utf8(content_reader_core::parser::c_string(&row.literal)).map(str::to_owned).map_err(|_| format!("Token {id} is not UTF-8"))
 }
 
-fn held_since(query: &Query<'_>, tag: &Country, holder: Owner, read: i32, hour: i32) -> bool {
-    super::held_from(query, tag, holder.slot, holder.id, hour).is_some_and(|since| since <= read)
-}
 
 struct Coverage {
     block: u32,
@@ -321,7 +318,7 @@ impl Reads<'_, '_> {
     }
 
     fn supplies(&self, read: i32) -> bool {
-        super::current(read, self.hour) && held_since(self.query, self.tag, self.holder, read, self.hour)
+        super::current(read, self.hour) && super::held_from(self.query, self.tag, self.holder.slot, self.holder.id, self.hour).is_some_and(|since| since <= read)
     }
 
     fn owned(&self, owner: u32, read: i32) -> Result<(), String> {

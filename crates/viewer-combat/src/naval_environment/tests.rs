@@ -1467,3 +1467,50 @@ fn an_unreadable_weapon_term_of_an_explicit_default_module_withholds_the_convoy_
     );
     assert!(bound.as_ref().is_err_and(|why| why.contains("lg_attack = unknown_amount is not a number")), "{bound:?}");
 }
+
+#[test]
+fn an_unreadable_reliability_term_withholds_the_bound_of_a_convoy_whose_attack_scales_with_reliability() {
+    use replay_data::rows::{LexicalTokenRow, Recorded, TableRows, VariantDefinitionRow, VariantDesignState, VariantUpgradeRow};
+    use std::fs;
+    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+
+    content_reader_core::test_game::enter();
+    let root = std::env::temp_dir().join(format!("hoi4_viewer_convoy_reliability_{}_{:?}", std::process::id(), std::thread::current().id()));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("common/units/equipment/convoys.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "upgrades = {
+            global_gun = { add_stats = { lg_attack = 1 reliability = unknown_amount } }
+            global_armour = { add_stats = { build_cost_ic = unknown_amount } }
+         }
+         equipments = {
+            scaled_convoy = { type = convoy reliability = 0.5 scaled_by_reliability = { lg_attack = 1 } }
+         }",
+    )
+    .unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let database = content_reader_core::equipment::Database::load(&layers).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let frame = |upgrade| {
+        let mut frame = test_frame(1);
+        put(
+            &mut frame,
+            TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 10, literal: b"scaled_convoy".to_vec() },
+                LexicalTokenRow { token: 12, literal: b"global_gun".to_vec() },
+                LexicalTokenRow { token: 13, literal: b"global_armour".to_vec() },
+            ]),
+        );
+        put(&mut frame, TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 70, equipment_token: 10, design: Recorded::Value(VariantDesignState::default()), ..Default::default() }]));
+        put(&mut frame, TableRows::VariantUpgrades(vec![VariantUpgradeRow { variant: 70, source_ordinal: 0, definition_token: upgrade, level: 1 }]));
+        put(&mut frame, TableRows::VariantModules(Vec::new()));
+        put(&mut frame, TableRows::VariantBonusSnapshots(Vec::new()));
+        frame
+    };
+    let bound = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(12)).unwrap();
+    assert!(bound.as_ref().is_err_and(|why| why.contains("reliability = unknown_amount is not a number")), "the reliability the attack scales with is unknown, so no bound is published: {bound:?}");
+    let unrelated = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(13)).unwrap();
+    assert!(unrelated.is_ok(), "an unreadable term no bound depends on withholds nothing: {unrelated:?}");
+}
