@@ -320,12 +320,12 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
         let cancelled = AtomicBool::new(false);
         match kind {
             SERIES => {
-                let params: ApmHeadParams = serde_json::from_value(params)?;
+                let params: ApmHeadParams = dashboard_query::named::named(&params)?;
                 let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
                 Ok(Head::new(ApmHead::new(index(source, branch, &cancelled)?, &params)?))
             }
             "campaign-clock" => {
-                let params: ClockHeadParams = serde_json::from_value(params)?;
+                let params: ClockHeadParams = dashboard_query::named::named(&params)?;
                 let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
                 Ok(Head::new(ClockHead { index: index(source, branch, &cancelled)?, branch_id: params.branch_id, first: params.first_hour, last: params.last_hour }))
             }
@@ -361,8 +361,8 @@ struct TileAsk {
 
 pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) -> io::Result<SeriesTileReply> {
     let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_owned());
-    let family: TileFamily = serde_json::from_value(params.get("family").cloned().ok_or_else(|| invalid("A tile names no family"))?)?;
-    let ask: TileAsk = serde_json::from_value(params.clone())?;
+    let family: TileFamily = dashboard_query::named::named(params.get("family").ok_or_else(|| invalid("A tile names no family"))?)?;
+    let ask: TileAsk = dashboard_query::named::named(params)?;
     if family.value != "apm" && family.value != "pausedOrders" {
         return Err(invalid("No eAPM tile value"));
     }

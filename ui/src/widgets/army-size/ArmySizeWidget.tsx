@@ -61,6 +61,7 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 import { useDrill } from '../../charts/drill/useDrill';
 import type { PartsRaceDrillAction, PartsRaceDrillState } from '../../charts/race/partsRaceDrill';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((warning, at) => warning === b[at]);
 
@@ -208,10 +209,10 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => ({
+  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => (productRequest({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, resolved, measure, countFor, byType, window),
-  }), () => windowsAt(runtime.clock.getHour()).wanted, subscribeClock, active && offersMeasure(metadata.data, measure),
+  })), () => windowsAt(runtime.clock.getHour()).wanted, subscribeClock, active && offersMeasure(metadata.data, measure),
   value => validateArmyWindow(value, metadata.data!), track?.source);
   windowsCheck.current = history.check;
   missingKey.current = hour => windowsAt(hour).required.filter(window => !history.holds(window)).join(',');

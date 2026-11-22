@@ -52,14 +52,10 @@ fn the_contract_names_the_refusals_a_reader_may_try_again() {
 fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_it() {
     use dashboard_query::fields::{Leaf, Walk};
     use std::collections::BTreeMap;
-    const OPAQUE: &[&str] = &["faction-state"];
     let table = crate::request_fields();
     let mut wrong = Vec::new();
     for product in crate::products::PRODUCTS {
         let walk = (product.params)();
-        if walk.heads.is_none() && OPAQUE.contains(&product.key) {
-            continue;
-        }
         wrong.extend(walk.problems(product.fields).into_iter().map(|problem| format!("{}: {problem}", product.key)));
         assert!(!(product.read_hour && product.fields.iter().any(|(path, _)| *path == "hour")), "{}: an hourly product's hour is its own", product.key);
         assert!(table.contains_key(product.key), "{} is missing from the contract", product.key);
@@ -68,7 +64,7 @@ fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_i
         .join(dashboard_query::tile::params_walk())
         .nest("family", crate::products::player_apm::head::tile_family_walk())
         .nest("family", crate::products::army::tile_family_walk())
-        .join(Walk { heads: Some(vec!["least"]), leaves: BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() });
+        .join(Walk { heads: Some(vec!["least".to_owned()]), leaves: BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() });
     wrong.extend(series.problems(dashboard_query::series::FIELDS).into_iter().map(|problem| format!("series: {problem}")));
     for key in crate::answer::SERIES_PRODUCTS {
         assert!(table.contains_key(*key), "{key} is missing from the contract");
@@ -84,7 +80,7 @@ fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_i
         let row = if roles.is_empty() { format!("  {key:?}: {{}},") } else { format!("  {key:?}: {{ {roles} }},") };
         assert!(contract.contains(&row), "the contract carries {key}'s roles");
     }
-    assert_eq!(table["production-line-breakdown"], [("hour", "bucket")]);
+    assert_eq!(table["production-line-breakdown"], [("hour", "bucket"), ("within[].firstHour", "start"), ("within[].lastHour", "end")]);
     assert_eq!(table["equipment-produced"], [("rankHour", "read")]);
     assert_eq!(table["series-state"].iter().find(|(path, _)| *path == "reads[].hour"), Some(&("reads[].hour", "read")));
     assert!(table["research-breakdown"].contains(&("parts[].firstObservedHour", "read")));

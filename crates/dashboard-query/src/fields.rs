@@ -42,7 +42,7 @@ pub enum Leaf {
 
 #[derive(Clone, Debug, Default)]
 pub struct Walk {
-    pub heads: Option<Vec<&'static str>>,
+    pub heads: Option<Vec<String>>,
     pub leaves: BTreeMap<String, Leaf>,
     pub interiors: BTreeSet<String>,
     pub failed: Option<String>,
@@ -90,7 +90,7 @@ impl Walk {
     pub fn problems(&self, declared: Fields) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(path) = &self.failed {
-            out.push(format!("{path} cannot be walked"));
+            out.push(format!("{} cannot be walked", if path.is_empty() { "the request" } else { path.as_str() }));
         }
         let Some(heads) = &self.heads else {
             out.push("its request fields cannot be listed".to_owned());
@@ -98,7 +98,7 @@ impl Walk {
         };
         let roles: BTreeMap<&str, HourRole> = declared.iter().copied().collect();
         let declared_heads: BTreeSet<&str> = declared.iter().map(|(path, _)| field_head(path)).collect();
-        let asked: BTreeSet<&str> = heads.iter().copied().collect();
+        let asked: BTreeSet<&str> = heads.iter().map(String::as_str).collect();
         if declared_heads != asked {
             out.push(format!("declares {declared_heads:?}, asks {asked:?}"));
         }
@@ -136,15 +136,13 @@ impl de::Error for Stop {
 }
 
 const DEEPEST: usize = 12;
-const MOST_WALKS: usize = 256;
+const MOST_WALKS: usize = 512;
 
 #[derive(Default)]
 struct State {
     walk: Walk,
-    error: Option<String>,
     choices: BTreeMap<String, usize>,
     variants: BTreeMap<String, usize>,
-    skipped: BTreeSet<String>,
 }
 
 struct Walker<'s> {
@@ -284,7 +282,7 @@ impl<'de> de::Deserializer<'de> for Walker<'_> {
     fn deserialize_struct<V: Visitor<'de>>(self, _name: &'static str, fields: &'static [&'static str], visitor: V) -> Result<V::Value, Stop> {
         self.interior()?;
         if self.path.is_empty() {
-            self.state.borrow_mut().walk.heads = Some(fields.to_vec());
+            self.state.borrow_mut().walk.heads = Some(fields.iter().map(|field| (*field).to_owned()).collect());
         }
         visitor.visit_map(Entries { walker: self, fields, at: 0 })
     }
@@ -320,9 +318,6 @@ impl<'de> MapAccess<'de> for Entries<'_> {
     type Error = Stop;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Stop> {
-        while self.fields.get(self.at).is_some_and(|field| self.walker.state.borrow().skipped.contains(&joined(&self.walker.path, field))) {
-            self.at += 1;
-        }
         self.fields.get(self.at).map(|field| seed.deserialize(BorrowedStrDeserializer::new(*field))).transpose()
     }
 
@@ -373,53 +368,37 @@ impl<'de> VariantAccess<'de> for Variant<'_> {
     }
 }
 
-fn walk_once<T: DeserializeOwned>(choices: BTreeMap<String, usize>, skipped: &BTreeSet<String>) -> State {
-    let state = RefCell::new(State { choices, skipped: skipped.clone(), ..State::default() });
-    if let Err(Stop(error)) = T::deserialize(Walker { path: String::new(), depth: 0, state: &state }) {
-        let mut held = state.borrow_mut();
-        held.walk.failed.get_or_insert_with(|| "the request".to_owned());
-        held.error = Some(error);
+fn walk_once<T: DeserializeOwned>(choices: &BTreeMap<String, usize>) -> State {
+    let state = RefCell::new(State { choices: choices.clone(), ..State::default() });
+    if T::deserialize(Walker { path: String::new(), depth: 0, state: &state }).is_err() {
+        state.borrow_mut().walk.failed.get_or_insert_with(String::new);
     }
-    let mut state = state.into_inner();
-    let missing = state.error.as_deref().is_some_and(|error| error.starts_with("missing field"));
-    if missing && !state.skipped.is_empty() {
-        state.walk.failed = None;
-    }
-    state
-}
-
-fn walk_skipping<T: DeserializeOwned>(choices: BTreeMap<String, usize>, skipped: &mut BTreeSet<String>) -> State {
-    loop {
-        let state = walk_once::<T>(choices.clone(), skipped);
-        match &state.walk.failed {
-            Some(path) if skipped.len() < MOST_WALKS && path != "the request" && skipped.insert(path.clone()) => continue,
-            _ => return state,
-        }
-    }
+    state.into_inner()
 }
 
 pub fn walk<T: DeserializeOwned>() -> Walk {
-    let mut skipped = BTreeSet::new();
-    let first = walk_skipping::<T>(BTreeMap::new(), &mut skipped);
-    let mut pending: Vec<(String, usize)> = first.variants.iter().flat_map(|(path, count)| (1..*count).map(move |choice| (path.clone(), choice))).collect();
-    let mut walked: BTreeSet<(String, usize)> = BTreeSet::new();
-    let mut out = first.walk;
-    while let Some((path, choice)) = pending.pop() {
-        if walked.len() >= MOST_WALKS {
-            out.failed.get_or_insert(path);
-            break;
-        }
-        if !walked.insert((path.clone(), choice)) {
-            continue;
-        }
-        let next = walk_skipping::<T>(BTreeMap::from([(path, choice)]), &mut skipped);
-        for (seen, count) in &next.variants {
-            pending.extend((1..*count).map(|other| (seen.clone(), other)).filter(|key| !walked.contains(key)));
+    let mut pending = vec![BTreeMap::new()];
+    let mut walked: BTreeSet<BTreeMap<String, usize>> = BTreeSet::from([BTreeMap::new()]);
+    let mut out = Walk::default();
+    while let Some(choices) = pending.pop() {
+        let next = walk_once::<T>(&choices);
+        for (path, count) in &next.variants {
+            if choices.contains_key(path) {
+                continue;
+            }
+            for other in 1..*count {
+                let mut more = choices.clone();
+                more.insert(path.clone(), other);
+                if walked.len() >= MOST_WALKS {
+                    out.failed.get_or_insert_with(|| path.clone());
+                } else if walked.insert(more.clone()) {
+                    pending.push(more);
+                }
+            }
         }
         out = out.join(next.walk);
     }
-    let opaque = Walk { leaves: skipped.into_iter().map(|path| (path, Leaf::Opaque)).collect(), ..Walk::default() };
-    out.join(opaque)
+    out
 }
 
 #[cfg(test)]
@@ -450,11 +429,19 @@ mod tests {
     }
 
     #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", tag = "kind")]
+    #[serde(rename_all = "camelCase")]
     #[allow(dead_code, reason = "only the field names are read")]
-    enum View {
+    struct View {
+        kind: ViewKind,
+        month: Option<i32>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code, reason = "only the field names are read")]
+    enum ViewKind {
         All,
-        Month { month: i32 },
+        Month,
     }
 
     #[derive(serde::Deserialize)]
@@ -495,16 +482,43 @@ mod tests {
     enum Key {
         Home,
         At { hour: i32 },
+        Nested(Inner),
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code, reason = "only the field names are read")]
+    enum Inner {
+        Plain,
+        Deep { hour: i32 },
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code, reason = "only the field names are read")]
+    struct Hidden {
+        branch_id: String,
+        view: Tagged,
+        after: i32,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", tag = "kind")]
+    #[allow(dead_code, reason = "only the field names are read")]
+    enum Tagged {
+        Rules { branch: String },
+        Manpower { hours: Vec<i32> },
     }
 
     #[test]
     fn a_request_walk_names_every_nested_field_that_can_carry_a_number() {
         let walk = walk::<Asked>();
         assert_eq!(walk.failed, None);
-        assert_eq!(walk.heads.as_deref(), Some(&["branchId", "firstHour", "to", "parts", "family", "pairs", "country", "key", "view", "after", "page"][..]));
+        assert_eq!(walk.heads, Some(["branchId", "firstHour", "to", "parts", "family", "pairs", "country", "key", "view", "after", "page"].map(str::to_owned).to_vec()));
         let numbers: Vec<&str> = walk.leaves.iter().filter(|(_, kind)| **kind != Leaf::Text).map(|(path, _)| path.as_str()).collect();
         assert_eq!(numbers, ["after", "country", "family.membership[].firstHour", "family.membership[].lastHour", "firstHour", "key.at.hour",
-            "pairs[].1[].firstHour", "pairs[].1[].lastHour", "parts[].firstObservedHour", "parts[].slot", "to", "view"], "a field the walk cannot enter is opaque and its siblings are still walked");
+            "key.nested.deep.hour", "pairs[].1[].firstHour", "pairs[].1[].lastHour", "parts[].firstObservedHour", "parts[].slot", "to", "view.month"],
+            "a variant reachable only through another non-default variant is still walked");
         assert!(walk.interiors.contains("family") && walk.interiors.contains("parts[]") && walk.interiors.contains("key"));
         assert_eq!(field_head("reads[].hour"), "reads");
         assert_eq!(field_head("members.spans"), "members");
@@ -516,16 +530,24 @@ mod tests {
         use HourRole::{End, Read, Start, Undated};
         let complete: Fields = &[("branchId", Undated), ("firstHour", Start), ("to", End), ("parts[].firstObservedHour", Read), ("parts[].slot", Undated),
             ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("pairs[].1[].firstHour", Start), ("pairs[].1[].lastHour", End),
-            ("country", Undated), ("key.at.hour", Read), ("view", Undated), ("after", Undated), ("page", Undated)];
+            ("country", Undated), ("key.at.hour", Read), ("key.nested.deep.hour", Read), ("view", Undated), ("view.month", Undated), ("after", Undated), ("page", Undated)];
         assert_eq!(walk.problems(complete), Vec::<String>::new());
         let undated_family: Fields = &[("branchId", Undated), ("firstHour", Start), ("to", End), ("parts[].firstObservedHour", Start), ("parts[].slot", Undated),
-            ("family", Undated), ("pairs[].1[].firstHour", Start), ("pairs[].1[].lastHour", End), ("country", Undated), ("key", Read), ("parts[].started", Read), ("view", Undated), ("after", Undated), ("page", Undated)];
+            ("family", Undated), ("pairs[].1[].firstHour", Start), ("pairs[].1[].lastHour", End), ("country", Undated), ("key", Read), ("parts[].started", Read), ("key.nested.deep.hour", Read), ("view", Undated), ("after", Undated), ("page", Undated)];
         assert_eq!(walk.problems(undated_family), [
             "family.membership[].firstHour can carry a number and declares no role",
             "family.membership[].lastHour can carry a number and declares no role",
             "key.at.hour can carry a number and declares no role",
+            "view.month can carry a number and declares no role",
             "key cannot hold an hour",
             "parts[].started cannot hold an hour",
         ]);
+    }
+
+    #[test]
+    fn a_field_the_walk_cannot_enter_fails_the_walk_by_name() {
+        let walk = walk::<Hidden>();
+        assert_eq!(walk.failed.as_deref(), Some("view"), "an internally tagged enum hides its variants' fields, so it is refused, not skipped");
+        assert_eq!(walk.problems(&[("branchId", HourRole::Undated), ("view", HourRole::Undated), ("after", HourRole::Undated)])[0], "view cannot be walked");
     }
 }

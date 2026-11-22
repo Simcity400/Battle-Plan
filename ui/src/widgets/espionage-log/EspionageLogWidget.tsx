@@ -39,6 +39,7 @@ import { completionRow, endedRows, endedThrough, filteredPages, jumpHours, opera
 import type { OperationDetail, OperationFilter, OperationItem } from './espionageData';
 import { useEspionageTypes, useEspionageTypeTokens } from './useEspionageTypes';
 import './espionageLog.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 function SectionNote({ text, detail, failure, retry, loading }: { text?: string; detail?: string | null; failure?: Failure; retry?: () => void; loading?: boolean }) {
   if (failure) return <span className="espionage-note is-error" data-tooltip={failure.message}>{failureText(failure, text ?? 'Couldn’t load operations.')}
@@ -111,8 +112,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const endedTo = live || widget.time.mode === 'campaign' ? lastHour : pinned ?? lastHour;
   const endedAt = gate.within(endedTo);
   const endedFrom = from === null ? null : gate.within(from);
-  const ended = useProduct<EspionageEndedReply>(runtime.client, track && endedAt !== null && (from === null || endedFrom !== null) ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
-    params: { branchId: track.branch.id, from: endedFrom, to: endedAt } } : null, active, validateEnded, track?.source);
+  const ended = useProduct<EspionageEndedReply>(runtime.client, track && endedAt !== null && (from === null || endedFrom !== null) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
+    params: { branchId: track.branch.id, from: endedFrom, to: endedAt } }) : null, active, validateEnded, track?.source);
   const offset = track?.axisOffset ?? 0;
   const endedHours = useMemo(() => ended.data ? ended.data.operations.map(operation => operation.byHour).reverse() : [], [ended.data]);
   const endedEnd = useCallback((clockHour: number) => {
@@ -144,8 +145,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     if (!active || !track || !tipRow?.item.id || detailHour === null || !detailKey) return;
     const controller = new AbortController();
     const id = tipRow.item.id;
-    loadTransientProduct<unknown>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-operation',
-      params: { branchId: track.branch.id, id, hour: detailHour } }, controller.signal)
+    loadTransientProduct<unknown>(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'espionage-operation',
+      params: { branchId: track.branch.id, id, hour: detailHour } }), controller.signal)
       .then(value => { if (!controller.signal.aborted) setDetail({ key: detailKey, value: { reply: validateOperation(value, id) } }); })
       .catch(error => { if (!controller.signal.aborted) setDetail({ key: detailKey, value: { failure: failureText(asFailure(error), 'Couldn’t load the operation.') } }); });
     return () => controller.abort();

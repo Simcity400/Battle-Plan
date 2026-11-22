@@ -12,6 +12,7 @@ import { useProduct } from '../../dashboard/products';
 import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
@@ -20,8 +21,8 @@ const formatValue = (value: number) => Math.round(value).toLocaleString('en-US')
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode> }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'factory-parts',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-parts',
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour } }) : null;
   const parts = useProduct<FactoryPartsReply>(runtime.client, request, active, validateFactoryParts, track?.source);
   return <MeasureDetails title={`${tag}, ${dayLabel(hour)}`} rows={parts.data ? partRows(parts.data, types, mode) : undefined}
     error={parts.error} onRetry={parts.retry} />;
@@ -33,8 +34,8 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
   const mode = countMode(options.count);
   const types = useMemo(() => contentSet(options.types), [options.types]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const named = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups',
-    params: { branchId: track.branch.id } } : null, active, validateFactoryGroups, track?.source);
+  const named = useProduct(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups',
+    params: { branchId: track.branch.id } }) : null, active, validateFactoryGroups, track?.source);
   const measure = useMemo(() => ({ kind: 'country-factories', measure: factoryMeasure(mode, types) }), [mode, types]);
   const parts = useMemo(() => factoryParts(mode, types, named.data), [mode, types, named.data]);
   const onWarnings = useCallback((warnings: readonly string[]) => {

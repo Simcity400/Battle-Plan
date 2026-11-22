@@ -36,6 +36,7 @@ import { countryLicences, groupReasonAt, licencePairs, licenceRevision, licences
 import type { LicenceRow, LicenceWidth, PickedCountry } from './licencesData';
 import './productionLicences.css';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
@@ -134,8 +135,8 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   };
   const drillHour = drillControl.hour;
   const drillAt = drillHour ?? hour;
-  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track && drillHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillHour } } : null;
+  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track && drillHour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillHour } }) : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
   const drillData = ownDay ? own.data : data;
   const drillTag = drillData && picked ? pickedTag(drillData, picked) : null;

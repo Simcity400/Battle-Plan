@@ -62,6 +62,10 @@ pub struct LineHistory {
 pub struct ProductionLinesParams {
     pub branch_id: String,
     pub country: Country,
+    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub within: Option<Vec<crate::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -93,6 +97,10 @@ pub struct ProductionDetailParams {
     pub branch_id: String,
     pub country: Country,
     pub window: i32,
+    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub within: Option<Vec<crate::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -255,7 +263,7 @@ impl Product for ProductionLines {
     const KEY: &'static str = "production-lines";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionLinesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLinesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -292,7 +300,7 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     let recording = query.replay.recording();
     let index = index_of(source);
     let (from, to) = (query.timeline.first, query.timeline.last);
-    let found = appearances(query, &params.country, from, to, &index)?;
+    let found = appearances(query, &params.country, params.within.as_deref(), from, to, &index)?;
     let mut warnings = Vec::new();
     if !query.holders.named(&params.country) {
         warnings.push(query.holders.say(&params.country, to, |name| format!("{name} is held by no country in this branch")));
@@ -493,7 +501,7 @@ impl Product for ProductionLineDetail {
     const KEY: &'static str = "production-line-detail";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ProductionDetailParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLineDetailReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -519,7 +527,7 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
     let (first, last) = window_hours(params.window).ok_or_else(|| dashboard_core::invalid("Invalid production window"))?;
     let recording = query.replay.recording();
     let index = index_of(source);
-    let found: Vec<Appearance> = appearances(query, &params.country, query.timeline.first, query.timeline.last, &index)?
+    let found: Vec<Appearance> = appearances(query, &params.country, params.within.as_deref(), query.timeline.first, query.timeline.last, &index)?
         .into_iter()
         .filter(|appearance| appearance.pieces.iter().any(|piece| piece.first <= last && piece.last >= first))
         .collect();

@@ -1583,7 +1583,11 @@ endedBy: number | null,
  * It ran at the first recorded hour of its country: it began before recording.
  */
 beforeRecording: boolean, };
-export type ProductionLinesParams = { branchId: string, country: CountryRef, };
+export type ProductionLinesParams = { branchId: string, country: CountryRef,
+/**
+ * The held identity's own runs: lines are read only while the country holds them.
+ */
+within?: Array<HourSpan>, };
 export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
 /**
  * Every line of the country in the branch, in the order first seen.
@@ -1644,7 +1648,11 @@ key: string, runs: Array<LineRun>,
  * Its output rows over the window, where recorded.
  */
 output: Array<OutputRun>, };
-export type ProductionDetailParams = { branchId: string, country: CountryRef, window: number, };
+export type ProductionDetailParams = { branchId: string, country: CountryRef, window: number,
+/**
+ * The held identity's own runs: lines are read only while the country holds them.
+ */
+within?: Array<HourSpan>, };
 export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
 /**
  * The window's hours, both included.
@@ -1662,7 +1670,11 @@ key: string,
 /**
  * The factor shown in full; the others carry only their totals.
  */
-group: string, hour: number, };
+group: string, hour: number,
+/**
+ * The held identity's own runs: lines are read only while the country holds them.
+ */
+within?: Array<HourSpan>, };
 export type ProductionLineBreakdownReply = { branchId: string, tag: string, key: string,
 /**
  * The window's hours, both included.
@@ -6102,9 +6114,9 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "power-day": { "hour": "read" },
   "power-spending": { "from": "start", "to": "end" },
   "production-licences": { "hour": "read" },
-  "production-line-breakdown": { "hour": "bucket" },
-  "production-line-detail": {},
-  "production-lines": {},
+  "production-line-breakdown": { "hour": "bucket", "within[].firstHour": "start", "within[].lastHour": "end" },
+  "production-line-detail": { "within[].firstHour": "start", "within[].lastHour": "end" },
+  "production-lines": { "within[].firstHour": "start", "within[].lastHour": "end" },
   "production-lines-at": { "hour": "read" },
   "production-spending": {},
   "raid-log": { "from": "start", "to": "end" },
@@ -6153,193 +6165,193 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
 };
 /** Each product's dated request fields, with E an exact read's hour and B a range bound's. */
 export type RequestParams<E, B> = {
-  "agency-comparison": { readonly "hour"?: E | null };
-  "air-ace-portraits": { readonly "hour"?: E | null };
-  "air-aces": { readonly "hour"?: E | null };
+  "agency-comparison": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "air-ace-portraits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "air-aces": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-force-size": {};
-  "air-mission-wings": { readonly "hour"?: E | null };
-  "air-missions": { readonly "hour"?: E | null };
-  "air-statistics": { readonly "hour"?: E | null };
+  "air-mission-wings": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "air-missions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "air-statistics": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-statistics-regions": {};
-  "air-superiority": { readonly "hour"?: E | null };
+  "air-superiority": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-superiority-choices": {};
-  "air-superiority-ranking": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "air-superiority-timeline": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "air-superiority-ranking": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "air-superiority-timeline": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "aircraft-catalogue": {};
-  "army-losses": { readonly "hour"?: E | null };
+  "army-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "army-size": {};
-  "campaign-clock": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "casualty-breakdown": {};
   "casualty-labels": {};
   "casualty-pairs": {};
   "civil-wars": {};
-  "combat-log-history": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
+  "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
   "construction-log": {};
   "construction-log-manifest": {};
   "construction-spending": {};
-  "convoy-health": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "country-experience": { readonly "hour"?: E | null };
+  "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "country-experience": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-facts": {};
   "country-flags": {};
-  "country-fuel": { readonly "hour"?: E | null };
-  "country-fuel-award-history": { readonly "hour"?: E | null };
-  "country-fuel-awards": { readonly "hour"?: E | null };
-  "country-fuel-demand": { readonly "hour"?: E | null };
-  "country-fuel-demand-history": { readonly "hour"?: E | null };
+  "country-fuel": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-fuel-award-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-fuel-awards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-fuel-demand": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-fuel-demand-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-groups": {};
   "country-identities": {};
-  "country-people": { readonly "hour"?: E | null };
-  "country-stability-breakdown": { readonly "hour"?: E | null };
-  "country-styles": { readonly "hour"?: E | null };
-  "decisions": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
-  "decryption": { readonly "hour"?: E | null };
+  "country-people": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-stability-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "country-styles": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "decisions": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "decryption": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-pacts": {};
-  "diplomatic-relations": { readonly "hour"?: E | null };
-  "division-careers": { readonly "hour"?: E | null };
-  "division-equipment": { readonly "hour"?: E | null };
-  "division-log": { readonly "from"?: B | null; readonly "to"?: B | null };
+  "diplomatic-relations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "division-careers": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "division-equipment": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "division-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "division-log-manifest": {};
-  "division-record": { readonly "hour"?: E | null };
-  "division-templates": { readonly "hour"?: E | null };
-  "doctrine-mastery": { readonly "hour"?: E | null };
-  "doctrine-rewards": { readonly "hour"?: E | null };
-  "doctrines": { readonly "hour"?: E | null };
+  "division-record": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "division-templates": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "doctrine-mastery": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "doctrine-rewards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "doctrines": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-designs": {};
-  "equipment-loss-head": { readonly "hour"?: E | null };
-  "equipment-losses": { readonly "from"?: B | null; readonly "reads"?: readonly (E)[] | null; readonly "to"?: B | null };
-  "equipment-produced": { readonly "rankHour"?: E | null };
-  "equipment-produced-at": { readonly "hour"?: E | null };
+  "equipment-loss-head": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "equipment-losses": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "reads"?: readonly (E)[] | null; readonly "to"?: B | null };
+  "equipment-produced": { readonly [key: string]: unknown; readonly "rankHour"?: E | null };
+  "equipment-produced-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-produced-country": {};
   "equipment-produced-types": {};
-  "equipment-stockpile-at": { readonly "hour"?: E | null };
-  "equipment-stockpile-catalogue": { readonly "holders"?: readonly ({ readonly "within"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "equipment-stockpile-chart": { readonly "from"?: B | null; readonly "holders"?: readonly ({ readonly "within"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "to"?: B | null };
-  "espionage-ended": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "espionage-log": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "espionage-operation": { readonly "hour"?: E | null };
-  "espionage-operations": { readonly "hour"?: E | null };
+  "equipment-stockpile-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "equipment-stockpile-catalogue": { readonly [key: string]: unknown; readonly "holders"?: readonly ({ readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "equipment-stockpile-chart": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "holders"?: readonly ({ readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "to"?: B | null };
+  "espionage-ended": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "espionage-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "espionage-operation": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "espionage-operations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "espionage-type-tokens": {};
   "espionage-types": {};
-  "event-choices": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
-  "event-feed": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
-  "event-feed-span": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "events-page": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "faction-details": { readonly "hour"?: E | null };
-  "faction-goal-rewards": { readonly "hour"?: E | null };
-  "faction-lines": { readonly "from"?: B | null; readonly "members"?: readonly ({ readonly "spans"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null })[] | null; readonly "to"?: B | null; readonly "unread"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null };
-  "faction-rosters": { readonly "hour"?: E | null };
+  "event-choices": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-feed": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-feed-span": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "events-page": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "faction-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "faction-goal-rewards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "faction-lines": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "members"?: readonly ({ readonly [key: string]: unknown; readonly "spans"?: readonly ({ readonly [key: string]: unknown; readonly "0"?: B | null; readonly "1"?: B | null })[] | null })[] | null; readonly "to"?: B | null; readonly "unread"?: readonly ({ readonly [key: string]: unknown; readonly "0"?: B | null; readonly "1"?: B | null })[] | null };
+  "faction-rosters": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "faction-state": {};
   "factory-groups": {};
-  "factory-parts": { readonly "hour"?: E | null };
-  "focus-artwork": { readonly "hour"?: E | null };
+  "factory-parts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "focus-artwork": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "focus-completions": {};
-  "focus-hour": { readonly "hour"?: E | null };
-  "focus-order-page": { readonly "hour"?: E | null };
-  "focus-unavailable": { readonly "hour"?: E | null };
-  "fuel-branches": { readonly "hour"?: E | null };
-  "game-score": { readonly "hour"?: E | null };
-  "head:campaign-clock": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "head:player-apm": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "focus-hour": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "focus-order-page": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "focus-unavailable": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "fuel-branches": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "game-score": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "head:campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "head:player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "idea-history": {};
-  "industrial-organisations": { readonly "hour"?: E | null };
-  "intel-details": { readonly "hour"?: E | null };
-  "intel-network-coverage": { readonly "hour"?: E | null };
+  "industrial-organisations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "intel-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "intel-network-coverage": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "land-battle-course": {};
   "land-battle-terrain": {};
   "land-battles": {};
   "land-battles-manifest": {};
-  "land-battles-ranking": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "land-battles-ranking": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "land-owners": {};
-  "lend-lease-balance": { readonly "hour"?: E | null };
+  "lend-lease-balance": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "lend-lease-history": {};
-  "lend-lease-partners": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "log-counts": { readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
-  "log-page": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "market-ledger": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "market-lendlease": { readonly "hour"?: E | null };
-  "military-air-ledger": { readonly "fromHour"?: B | null };
-  "minefield-history": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "minefield-reports": { readonly "hour"?: E | null };
-  "minefields": { readonly "hour"?: E | null };
+  "lend-lease-partners": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "log-counts": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "log-page": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "market-ledger": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "market-lendlease": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "military-air-ledger": { readonly [key: string]: unknown; readonly "fromHour"?: B | null };
+  "minefield-history": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "minefield-reports": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "minefields": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "national-focus": {};
-  "naval-battle-details": { readonly "battles"?: readonly ({ readonly "hour"?: E | null })[] | null };
+  "naval-battle-details": { readonly [key: string]: unknown; readonly "battles"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
   "naval-battles": {};
   "naval-battles-manifest": {};
-  "naval-battles-ranking": { readonly "countries"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "naval-battles-ranking": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "naval-losses": {};
-  "naval-management": { readonly "hour"?: E | null };
-  "naval-refits": { readonly "hour"?: E | null };
-  "naval-repairs": { readonly "hour"?: E | null };
+  "naval-management": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "naval-refits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "naval-repairs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-supremacy": {};
   "navy-size": {};
-  "nuclear-arsenal": { readonly "hour"?: E | null };
-  "occupation-at": { readonly "hour"?: E | null };
+  "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "occupation-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-reserve-history": {};
-  "occupation-reserve-manpower": { readonly "hour"?: E | null };
-  "occupied-states": { readonly "hour"?: E | null };
-  "operative-placements": { readonly "hour"?: E | null };
-  "operative-tenures": { readonly "hour"?: E | null };
-  "operatives-departed": { readonly "hour"?: E | null };
-  "operatives-roster": { readonly "hour"?: E | null };
+  "occupation-reserve-manpower": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "occupied-states": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "operative-placements": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "operative-tenures": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "operatives-departed": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "operatives-roster": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "party-history": {};
   "peace-deals": {};
-  "place-names": { readonly "places"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "states"?: readonly ({ readonly "hour"?: E | null })[] | null };
-  "player-apm": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
-  "politics-state": { readonly "hour"?: E | null };
+  "place-names": { readonly [key: string]: unknown; readonly "places"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "states"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
+  "player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "politics-state": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "politics-state-history": {};
-  "power-day": { readonly "hour"?: E | null };
-  "power-spending": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "production-licences": { readonly "hour"?: E | null };
-  "production-line-breakdown": { readonly "hour"?: E | null };
-  "production-line-detail": {};
-  "production-lines": {};
-  "production-lines-at": { readonly "hour"?: E | null };
+  "power-day": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "power-spending": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "production-licences": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "production-line-detail": { readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "production-lines": { readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "production-lines-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-spending": {};
-  "raid-log": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "regional-weather": { readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "regional-weather-provinces": { readonly "hour"?: E | null };
+  "raid-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "regional-weather": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "regional-weather-provinces": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "research": {};
-  "research-breakdown": { readonly "parts"?: readonly ({ readonly "firstObservedHour"?: E | null; readonly "lastHour"?: B | null })[] | null };
-  "research-slots": { readonly "hour"?: E | null };
-  "resource-balance": { readonly "hour"?: E | null };
-  "resource-sizes": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "scoreboard": { readonly "hour"?: E | null };
+  "research-breakdown": { readonly [key: string]: unknown; readonly "parts"?: readonly ({ readonly [key: string]: unknown; readonly "firstObservedHour"?: E | null; readonly "lastHour"?: B | null })[] | null };
+  "research-slots": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "resource-balance": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "resource-sizes": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "scoreboard": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "scoreboard-columns": {};
-  "series-next-change": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "series-parts": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "series-state": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "series-summary": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "series-tiles": { readonly "family"?: { readonly "membership"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-next-change": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-parts": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-state": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-summary": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "series-tiles": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
   "ships-sunk": {};
   "ships-sunk-manifest": {};
-  "special-project-details": { readonly "hour"?: E | null };
-  "special-project-effects": { readonly "hour"?: E | null };
-  "special-projects": { readonly "hour"?: E | null };
+  "special-project-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "special-project-effects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "special-projects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "sprite-artwork": {};
-  "stability-part-names": { readonly "hour"?: E | null };
-  "stability-reads": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "stockpile-artwork": { readonly "hour"?: E | null };
+  "stability-part-names": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "stability-reads": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "stockpile-artwork": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "subjects": {};
   "technology-artwork": {};
-  "template-roster": { readonly "hour"?: E | null };
-  "territory-breakdown": { readonly "hour"?: E | null };
-  "territory-share": { readonly "hour"?: E | null };
+  "template-roster": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "territory-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "territory-share": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "threat-events": {};
-  "trade-flows": { readonly "from"?: B | null; readonly "to"?: B | null };
-  "training-queue": { readonly "hour"?: E | null };
+  "trade-flows": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "training-queue": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leader-career": {};
   "unit-leader-choices": {};
-  "unit-leader-hour": { readonly "hour"?: E | null };
-  "unit-leader-portraits": { readonly "hour"?: E | null };
-  "unit-leaders": { readonly "hour"?: E | null };
+  "unit-leader-hour": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "unit-leader-portraits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "unit-leaders": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "volunteers-expeditionaries": {};
-  "war-contributions": { readonly "hour"?: E | null };
-  "war-losses": { readonly "hour"?: E | null };
-  "wargoals": { readonly "hour"?: E | null };
+  "war-contributions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "war-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "wargoals": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "wars": {};
-  "world-tension": { readonly "hour"?: E | null };
+  "world-tension": { readonly [key: string]: unknown; readonly "hour"?: E | null };
 };
 /** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */
-export type AnyRequestParams<E, B> = { readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "fromHour"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "rankHour"?: E | null; readonly "to"?: B | null };
+export type AnyRequestParams<E, B> = { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "fromHour"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "rankHour"?: E | null; readonly "to"?: B | null };
 /** Each map option until the user chooses: the game's own default for those it saves in settings.txt, the app's for the rest. */
 export const MAP_OPTION_DEFAULTS = { dayNight: true, alliedPlans: false, fog: true, countryCounterColours: false, playerCounters: false, radar: false } as const;

@@ -1,6 +1,8 @@
+import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reachedKeys, reachedView } from './reachedState.ts';
+import { productRequest } from './request.ts';
 
 test('a failed request never makes an earlier answer current', () => {
   assert.deepEqual(reachedView({ data: 'as of hour 10', viewKey: 'hour 10' }, 'hour 10'), { data: 'as of hour 10', current: true, error: undefined });
@@ -14,7 +16,7 @@ test('a failed request never makes an earlier answer current', () => {
 });
 
 test('changing only the choice, while its country holds the same tag, asks again', () => {
-  const request = { sourceId: 's', revision: '1', product: 'training-queue', params: { branchId: '1', hour: 200, tag: 'DEU' } };
+  const request = productRequest({ sourceId: 's', revision: '1', product: 'training-queue', params: { branchId: '1', hour: gatedHour(200), tag: 'DEU' } });
   const before = reachedKeys(request, JSON.stringify(['1', 'GER']), 0), after = reachedKeys(request, JSON.stringify(['1', 'DEU']), 0);
   assert.notEqual(before.key, after.key, 'the same parameters under another choice are another request');
   assert.notEqual(before.owner, after.owner, 'another choice reads in another lane, which drops the earlier answer');

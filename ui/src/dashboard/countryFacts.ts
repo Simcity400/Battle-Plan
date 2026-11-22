@@ -10,6 +10,7 @@ import { inFrame } from './frameUpdates.ts';
 import { askTimeline } from './countryTimeline.ts';
 import type { HeldLookup } from './countryTimeline';
 import { busyWait } from '../shell/busy.ts';
+import { productRequest } from './request.ts';
 
 export interface NameAt { hour: number; tag: string }
 
@@ -417,8 +418,8 @@ async function readBatch<V>(client: DashboardClient, source: FactSource, spec: B
   }
   let data: unknown;
   try {
-    data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product,
-      params: labelParams(spec.params(source.branchId, plan)) }, signal, recording);
+    data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product,
+      params: labelParams(spec.params(source.branchId, plan)) }), signal, recording);
   } catch (error) {
     if (signal.aborted) return;
     const message = asFailure(error).message;
@@ -490,7 +491,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
       let failure: Failure | undefined;
       try {
         const params = spec.params(source.branchId, hour, tags);
-        const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }, signal, recording);
+        const data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }), signal, recording);
         found = await spec.extract(data, params, source);
       } catch (error) {
         retryable = transientError(error);
@@ -505,7 +506,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
   const facts = sharedFacts<V>(client, source.sourceId, scope, spec, () => async (hour, tags, asked) => {
     try {
       const params = spec.params(source.branchId, hour, tags);
-      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }, asked, recording);
+      const data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }), asked, recording);
       return await spec.extract(data, params, source);
     } catch (error) {
       return { failed: { retryable: transientError(error), error: asFailure(error) } };

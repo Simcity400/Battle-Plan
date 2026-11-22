@@ -4,6 +4,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import type { FactSource } from './countryFacts';
 import { loadTransientProduct } from './products.ts';
 import { PerClient } from './prepare.ts';
+import { productRequest } from './request.ts';
 
 export type HeldStyle = CountryStyle & { warnings: readonly string[] };
 
@@ -78,8 +79,8 @@ export function askTimeline(client: DashboardClient, source: FactSource, recordi
   }
   const controller = new AbortController();
   setEntry(client, entries, key, { content, timeline: current, controller });
-  void loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: 'country-facts',
-    params: { branchId: source.branchId } }, controller.signal, recording).then(data => {
+  void loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: 'country-facts',
+    params: { branchId: source.branchId } }), controller.signal, recording).then(data => {
     const reply = validateCountryFacts(data);
     if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, askAt: Date.now() + GROWING_MS,
       timeline: { reply, runs: new Map(reply.countries.map(country => [country.tag, country.runs as Run[]])), final: true,

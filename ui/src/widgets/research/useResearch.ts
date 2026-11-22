@@ -15,6 +15,7 @@ import { panelFeed } from '../../dashboard/panelFeed';
 import type { RefObject } from 'react';
 import { researchFolderList, researchFolderLooks, validateResearchReply, validateResearchSlots } from './researchData';
 import type { ResearchUse } from './researchData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function historyTokens(history: ResearchHistory): ResearchUse[] {
   const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
@@ -33,7 +34,7 @@ export function researchTarget(widget: WidgetSpec, runtime: WidgetRuntime) {
 
 export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, covered = true) {
   const { track, tag } = researchTarget(widget, runtime);
-  const request = track && tag && covered ? { sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag && covered ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   return { track, tag, ...useProduct<ResearchData>(runtime.client, request, active, validateResearchReply, track?.source) };
 }
 

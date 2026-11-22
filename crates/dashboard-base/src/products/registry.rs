@@ -1,7 +1,6 @@
 use super::{Envelope, LoadContext, Product, ReplyWarnings};
 use crate::Source;
 use dashboard_core::transport::{MAX_REPLY_BYTES, bounded_json};
-use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
 
 #[macro_export]
@@ -106,7 +105,7 @@ fn load_json<P: Product>(
     cancelled: &AtomicBool,
 ) -> Result<String, dashboard_core::QueryError> {
     let request = params;
-    let params = P::Params::deserialize(&request)
+    let params = dashboard_query::named::named::<P::Params>(&request)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     reply_json(

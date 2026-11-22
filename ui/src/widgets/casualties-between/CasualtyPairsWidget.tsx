@@ -58,6 +58,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import {  regionHour, axisAt, recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const SORT = { column: 'value', direction: 'descending' } as const;
 const pairKey = (flow: PairFlow) => flow.id;
@@ -113,8 +114,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const segmentCache = useMemo(() => new CasualtyChordSegmentCache(), []);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
-    params: { branchId: track.branch.id, countries: [], between: false, window: null } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
+    params: { branchId: track.branch.id, countries: [], between: false, window: null } }) : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
   const drillFollows = drill.breakdown !== null && drill.follow;
   const headWindow = useCallback((at: number) => String(casualtyPairWindows(manifest.data, at, false)[0] ?? -1), [manifest.data]);

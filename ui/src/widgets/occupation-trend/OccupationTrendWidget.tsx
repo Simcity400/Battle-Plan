@@ -24,6 +24,7 @@ import type { DetailAt, OccupationMeasure, ShownMeasure } from './occupationTren
 import type { OccupationDetailReply } from '../../generated/dashboard';
 import '../../charts/race/countryRace.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -52,8 +53,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   if (!playing) held.current = settled;
   const choiceHour = held.current;
   const choiceAt = gate.recorded(choiceHour);
-  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track && choiceAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceAt, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
+  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track && choiceAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceAt, countries: [], collaboration: false } }) : null, active, validateOccupationDetail, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const candidates = useMemo(() => choiceHour === null ? [] : (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
@@ -77,8 +78,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     queueMicrotask(() => setDetailHour(at));
   }, []);
   const detailAt = gate.recorded(detailHour);
-  const request = track && detailAt !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
-    params: { branchId: track.branch.id, hour: detailAt, countries: [], collaboration } } : null;
+  const request = track && detailAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
+    params: { branchId: track.branch.id, hour: detailAt, countries: [], collaboration } }) : null;
   const read = useProduct<OccupationDetailReply>(runtime.client, request, active, validateOccupationDetail, track?.source);
   const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
     [read.data, detailHour]);

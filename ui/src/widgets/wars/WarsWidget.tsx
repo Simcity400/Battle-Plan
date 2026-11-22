@@ -39,6 +39,7 @@ import {
 import type { CountryResolver, WarsColour, WarsLaneInfo, WarsView } from './warsData';
 import { warTooltip } from './warsTooltip';
 import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const pendingCountry = () => ({ name: NAME_WORDS.pending });
@@ -53,8 +54,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const following = widget.time.mode === 'follow';
   const gate = useGate(runtime, widget, SPEC, active);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const product = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
+  const product = useProduct<WarsReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'wars',
+    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, validateWarsReply, track?.source);
   const data = product.data;
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
@@ -93,10 +94,10 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hoverAt = gate.recorded(hoverHour);
   const hourParams = track && hoverAt !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverAt } : null;
-  const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-losses', params: hourParams } : null, active, validateWarLosses, track?.source);
-  const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-contributions', params: hourParams } : null, active, validateWarContributions, track?.source);
+  const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'war-losses', params: hourParams }) : null, active, validateWarLosses, track?.source);
+  const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'war-contributions', params: hourParams }) : null, active, validateWarContributions, track?.source);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { setExpanded(new Set()); }, [track?.source.id, track?.branch.id, viewpointTag]);
   useEffect(() => {

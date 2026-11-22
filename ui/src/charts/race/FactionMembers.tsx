@@ -25,6 +25,7 @@ import type { FactionGroup, HourSpan, SeriesStateReply } from '../../generated/d
 import { useMeasureSeries } from '../../widgets/country-measure/measureSeries';
 import { partColours } from './countryRace';
 import { factionMembersAt, factionMemberSpans, stateValues } from './factionTotalsData.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface FactionMembersProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
@@ -53,8 +54,8 @@ export default function FactionMembers({ runtime, gate, at: askAt, track, active
   const lines = useMeasureSeries(runtime.client, gate, track.source, track.branch, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colours = useMemo(() => partColours(tags.map(tag => ({ id: tag, label: tag })), tokens.categories), [tags, tokens.categories]);
-  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length && askAt !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } } : null, active, validateStates, track.source);
+  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length && askAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track.source);
   const summaries = useCallback((): ChartSummary[] | null => {
     const out: ChartSummary[] = [];
     for (const tag of tags) {

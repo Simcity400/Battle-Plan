@@ -177,7 +177,7 @@ fn line<'q, 'a>(query: &'q Query<'a>, measure: ArmyMeasure, attribution: ArmyAtt
 }
 
 pub(crate) fn tile_line<'q, 'a>(query: &'q Query<'a>, params: &Value) -> io::Result<Line<'q, 'a>> {
-    let family: Family = serde_json::from_value(params.get("family").cloned().unwrap_or(Value::Null)).map_err(|error| invalid(format!("Invalid army tile request: {error}")))?;
+    let family: Family = dashboard_query::named::named(params.get("family").unwrap_or(&Value::Null)).map_err(|error| invalid(format!("Invalid army tile request: {error}")))?;
     if family.top.is_some() {
         return Err(invalid("A ranked army chart is not served as tiles"));
     }
@@ -755,7 +755,7 @@ fn hour(value: Option<f64>, name: &str) -> io::Result<i32> {
 }
 
 pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value, _context: &LoadContext) -> io::Result<Value> {
-    let params: SeriesParams = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
+    let params: SeriesParams = dashboard_query::named::named(params).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
     let _ = &params.branch_id;
     let line = line(query, params.family.measure, params.family.count_for)?;
     let (from, to) = match product {

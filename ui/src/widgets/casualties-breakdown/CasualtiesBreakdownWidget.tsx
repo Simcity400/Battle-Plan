@@ -47,6 +47,7 @@ import { trackHourOf } from '../../dashboard/settledHour';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';
 import { regionHour, axisAt, recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
@@ -68,8 +69,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const drillControl = useDrill(runtime, useRegion(widget), options.show === DETAIL.id ? DETAIL.id : null);
   const drill = drillControl.state;
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } }) : null;
   const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
   const drillFollows = drill.breakdown !== null && !drill.spec && drillControl.following;
   const drillRows = useRef<() => string>(() => '');

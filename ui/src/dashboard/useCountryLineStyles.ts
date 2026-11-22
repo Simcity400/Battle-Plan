@@ -8,6 +8,7 @@ import type { BoundTrack } from './model';
 import { useProducts } from './products';
 import { STYLES } from './useCountriesAt';
 import type { Gate } from './regionGate';
+import { productRequest } from './request.ts';
 
 export function useCountryLineStyles(client: DashboardClient, gate: Pick<Gate, 'recorded'>, track: BoundTrack | undefined, keys: string[], at: number, active: boolean) {
   const moment = track ? Math.floor(Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, at))) : 0;
@@ -36,7 +37,7 @@ export function useCountryLineStyles(client: DashboardClient, gate: Pick<Gate, '
   }, [asked]);
   const requests = track ? plan.flatMap(({ hour, tags }) => {
     const asked = gate.recorded(hour);
-    return asked === null ? [] : [{ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product, params: { branchId: track.branch.id, hour: asked, tags } }];
+    return asked === null ? [] : [productRequest({ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product, params: { branchId: track.branch.id, hour: asked, tags } })];
   }) : [];
   const styles = useProducts<CountryStyleReply>(client, requests, active);
   const data = useMemo<CountryStyleReply | undefined>(() => styles.data?.length ? {

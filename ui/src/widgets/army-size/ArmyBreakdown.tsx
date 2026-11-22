@@ -41,6 +41,7 @@ import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWi
 import type { armyCountrySelection } from './ArmyCountryChip';
 import { useFrameProduct } from './frameProduct.ts';
 import { useHeadHour } from './headHour.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 type Roster = { sections: string[]; warnings: string[] };
 const sameSections = (a: Roster, b: Roster) => JSON.stringify(a.sections) === JSON.stringify(b.sections);
@@ -113,10 +114,10 @@ export default function ArmyBreakdown({ runtime, gate, track, active, options, c
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => ({
+  const history = useFrameWindows<ArmySizeReply>(runtime.client, identity, window => (productRequest({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, { tags: [tag!] }, measure, countFor, measure === 'battalions', window),
-  }), () => windowsAt(live ? hourNow() : givenHour).wanted, subscribeClock, active && !!tag, value => validateArmyWindow(value, manifest!), track?.source);
+  })), () => windowsAt(live ? hourNow() : givenHour).wanted, subscribeClock, active && !!tag, value => validateArmyWindow(value, manifest!), track?.source);
   windowsCheck.current = history.check;
   const incomingData = useMemo(() => manifest ? mergeArmyWindows(manifest, history.data, [...history.data.keys()]) : undefined,
     [manifest, history.data]);
@@ -133,8 +134,8 @@ export default function ArmyBreakdown({ runtime, gate, track, active, options, c
   const selected = useMemo(() => data && tag ? armyDrillIdentityReply(data, tag, originHour) : null, [data, tag, originHour]);
   const identitySpans = useMemo(() => countryDrillSpans(data?.series ?? [], tag ?? '', originHour), [data, tag, originHour]);
   const actor = countryDrillTagAt(identitySpans, hour);
-  const rosterAt = (at: GatedHour, of: string) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
-    params: { branchId: track!.branch.id, country: countryFromKey(of), hour: at } });
+  const rosterAt = (at: GatedHour, of: string) => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
+    params: { branchId: track!.branch.id, country: countryFromKey(of), hour: at } }));
   const heldAt = gate.recorded(hour);
   const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor && heldAt !== null ? rosterAt(heldAt, actor) : null, active, rosterReply, track?.source);
   const [rosterElement, setRosterElement] = useState<HTMLElement | null>(null);

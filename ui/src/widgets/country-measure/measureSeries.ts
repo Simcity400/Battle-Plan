@@ -17,12 +17,14 @@ import { useViewRead } from '../../dashboard/viewRead';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import type { CoveredBranch, GatedHour, GatedParams } from '../../dashboard/regionTime';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
+import { productRequest } from '../../dashboard/request.ts';
 
 export type MeasureFamily = string;
 
 export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
   family: MeasureFamily, measure: string, tags: readonly string[], headHour: GatedHour | null, hoverHour: GatedHour | null, active: boolean,
-  withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean) {
+  withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean,
+  readable: (tag: string, hour: number) => boolean = () => true) {
   const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, family, measure, tags, within && [...within]]);
@@ -37,8 +39,8 @@ export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, sour
     if (view.to < view.from) return;
     tileView(view);
   }, [tileView]);
-  const request = (product: string, params: GatedParams) => ({ sourceId: source!.id, revision: source!.revision, product,
-    params: { branchId, family: { kind: family, measure }, ...params } });
+  const request = (product: string, params: GatedParams) => (productRequest({ sourceId: source!.id, revision: source!.revision, product,
+    params: { branchId, family: { kind: family, measure }, ...params } }));
   const content = useContentRevision(client);
   const readLines = tiles.read;
   const lineOf = useCallback((tag: string): ChartSummary | undefined => readLines()?.get(tag)?.summary, [readLines]);
@@ -50,7 +52,7 @@ export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, sour
   }, [readLines]);
   const tileDecimals = tiles.lines?.values().next().value?.decimals;
   const hours = [...new Set([headHour, hoverHour].filter(hour => hour !== null))];
-  const member = (tag: string, hour: number) => !within || (within.get(tag) ?? []).some(span => span.firstHour <= hour && hour <= span.lastHour);
+  const member = (tag: string, hour: number) => (!within || (within.get(tag) ?? []).some(span => span.firstHour <= hour && hour <= span.lastHour)) && readable(tag, hour);
   const reads = tags.flatMap(tag => hours.filter(hour => member(tag, hour)).map(hour => ({ country: countryFromKey(tag), hour })));
   const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),

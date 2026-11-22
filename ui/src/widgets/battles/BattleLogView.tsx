@@ -42,6 +42,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useDistinctState } from '../../dashboard/useDistinctState';
 import { useWhyCommit } from '../../dashboard/widgetPerf';
+import { productRequest } from '../../dashboard/request.ts';
 
 interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
 interface ManifestReply { windows: BattleWindow[]; available: boolean; unavailable: string | null; contentWarnings: string[] }
@@ -130,8 +131,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const manifestRequest = track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-manifest`, params: { branchId: track.branch.id } } : null;
+  const manifestRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: `${adapter.product}-manifest`, params: { branchId: track.branch.id } }) : null;
   const manifest = useProduct<ManifestReply>(runtime.client, manifestRequest, active, adapter.validateManifest);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const windows = manifest.data?.windows;
@@ -157,8 +158,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const inBranch = !!track && playheadWindow >= 0;
   const wantedWindows = inBranch && view === 'log' ? battleWindows(manifest.data, windows?.[playheadWindow]?.firstHour ?? first, live,
     [...visibleIndices, ...(browsing ? [browseIndex] : [])], first) : [];
-  const history = useProductWindows<Window>(runtime.client, identity, index => ({ sourceId: track!.source.id,
-    revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index }, asksFrom: windows?.[index]?.firstHour }),
+  const history = useProductWindows<Window>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index }, asksFrom: windows?.[index]?.firstHour })),
   wantedWindows, active && inBranch && manifest.data?.available === true, adapter.validateWindow, track?.source, true);
   const all = widget.countries.kind === 'all';
   const from = widget.time.mode === 'range' ? first : null;
@@ -181,9 +182,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const rankingSpan = hour !== null ? gate.span(Math.min(first, hour), hour) : null;
-  const rankingRequest = track && rankingSpan && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
+  const rankingRequest = track && rankingSpan && inBranch ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
-      countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
+      countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } }) : null;
   const ranking = useProduct<Ranking>(runtime.client, rankingRequest,
     active && inBranch && view === 'biggest' && match.ready && !match.reason && manifest.data?.available === true, adapter.validateRanking);
   const shown = useMemo(() => !inBranch || hour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, hour)
@@ -220,8 +221,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const windowPlaces = useMemo(() => ahead && adapter.windowPlaces ? placesLeadingWith(leading, adapter.windowPlaces(history.data)) : null,
     [ahead, adapter, history.data, leading]);
   const drawnPlaces = useMemo(() => ahead ? NO_PLACES : battlePlaceRequests(drawn), [ahead, drawn]);
-  const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, { sourceId: track!.source.id,
-    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id, places, states: [], land: adapter.landPlaceNames === true } },
+  const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id, places, states: [], land: adapter.landPlaceNames === true } }),
   signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
   [runtime.client, track, adapter.landPlaceNames]);
   const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces);
@@ -237,8 +238,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const details = adapter.details;
   const detailWanted = useMemo(() => !details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
     : drawn.map(row => details.ask(row, false)), [details, ahead, history.data, drawn, leading]);
-  const readDetails = useCallback((battles: readonly BattleDetailAsk[], signal: AbortSignal) => loadProduct(runtime.client, { sourceId: track!.source.id,
-    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id, battles } }, signal, details!.validate, track?.source)
+  const readDetails = useCallback((battles: readonly BattleDetailAsk[], signal: AbortSignal) => loadProduct(runtime.client, productRequest({ sourceId: track!.source.id,
+    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id, battles } }), signal, details!.validate, track?.source)
     .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details]);
   const detailReads = useKeyedReads<BattleDetailAsk, BattleDetailAsk>(details && track && identity !== null ? JSON.stringify([identity, content, details.product]) : null,
     detailWanted, active, detailKey, readDetails);

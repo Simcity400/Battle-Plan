@@ -17,6 +17,7 @@ import { validateArmySizeReply } from './armySizeData';
 import { countryValueAt, countryValuesModel } from '../../charts/race/countryValues';
 import { liveSummaries, useTiles } from '../../dashboard/tiles/useTiles';
 import { unrecordedReason } from '../../dashboard/tiles/view.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 type ArmyLine = { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] };
 
@@ -77,9 +78,9 @@ export function usePreparedArmy(client: DashboardClient, gate: Pick<Gate, 'span'
     (at, signal) => {
       const range = gate.span(at.from, at.to);
       if (!range) return Promise.reject(new Error(OUTSIDE_MESSAGE));
-      return loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
+      return loadProduct(client, productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
       params: { branchId: params!.branchId, family: { kind: 'army-size', measure: params!.measure, countFor: params!.countFor, top: params!.top },
-        countries: params!.countries, from: range.firstHour, to: range.lastHour, width: at.width } }, signal, (value: unknown) => {
+        countries: params!.countries, from: range.firstHour, to: range.lastHour, width: at.width } }), signal, (value: unknown) => {
       const lines = (value as { series?: unknown } | null)?.series;
       const keyed = Array.isArray(lines) ? lines.map(line => line && typeof line === 'object' && (typeof line.country === 'string' || typeof line.country === 'number')
         ? (({ country, ...rest }) => ({ ...rest, tag: countryKey(country) }))(line) : line) : lines;
@@ -108,8 +109,8 @@ export function usePreparedArmy(client: DashboardClient, gate: Pick<Gate, 'span'
     if (!track || !params || !active || window < 0) return null;
     const controller = new AbortController(); pending.current.add(controller);
     try {
-      const reply = await loadProduct(client, { sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
-        params: { ...params, window } }, controller.signal, validateArmySizeReply, track.source);
+      const reply = await loadProduct(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
+        params: { ...params, window } }), controller.signal, validateArmySizeReply, track.source);
       if (controller.signal.aborted || alive.current !== owner) return null;
       const model = countryValuesModel(reply);
       return model.tags.filter(tag => countryValueAt(model, tag, Math.floor(hour))?.total != null);
@@ -125,9 +126,9 @@ export function usePreparedArmy(client: DashboardClient, gate: Pick<Gate, 'span'
     const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
     const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
     if (!range) return;
-    void loadTransientProduct<{ hour: number | null }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change', params: { branchId: params.branchId,
+    void loadTransientProduct<{ hour: number | null }>(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change', params: { branchId: params.branchId,
       family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, countries: params.countries,
-      key: action, from: gate.within(from), ...range } }, controller.signal).then(value => {
+      key: action, from: gate.within(from), ...range } }), controller.signal).then(value => {
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: value.hour, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); }).finally(() => pending.current.delete(controller));
   }, [owner, active]);

@@ -1,6 +1,7 @@
 import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { productRequest } from './request.ts';
 
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 
@@ -78,9 +79,9 @@ async function openSources(...ids: string[]) {
   }) as unknown as typeof fetch;
   try { for (const id of ids) await client.openSource(id, new AbortController().signal); } finally { globalThis.fetch = previous; }
 }
-const query = (product: string, sourceId = 'scheduler-source'): import('./client').ProductRequest => ({
+const query = (product: string, sourceId = 'scheduler-source'): import('./client').ProductRequest => (productRequest({
   sourceId, revision: 'v1', product, params: { branchId: '1', tag: 'Synthetic country', hour: gatedHour(100), tokens: ['synthetic-focus'] },
-});
+}));
 
 test('actual browser transport reserves focus capacity while five histories wait and eventually returns every history', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');

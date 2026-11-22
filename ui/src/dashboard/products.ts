@@ -19,6 +19,7 @@ import { perfLog } from '../shell/perf.ts';
 import { countRead, countWork, measuredWidget } from './widgetPerf.ts';
 import { keepDigest } from './replyDigest.ts';
 import { askedByPage, baseClient, noteRead } from './prepare.ts';
+import { productRequest } from './request.ts';
 
 export const replyLengths = new WeakMap<object, number>();
 
@@ -159,7 +160,7 @@ export function unpinProducts(client: DashboardClient, owner: object): void {
 
 export function loadCountryGroups(client: DashboardClient, source: import('./client').DashboardSource, branchId: string, signal: AbortSignal, restart = false,
   publish?: (data: import('../generated/dashboard').CountryGroupReply) => void): Promise<import('../generated/dashboard').CountryGroupReply> {
-  const request = { sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId } };
+  const request = productRequest({ sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId } });
   return loadProduct(client, request, signal, validateCountryGroupReply, source, restart, publish);
 }
 

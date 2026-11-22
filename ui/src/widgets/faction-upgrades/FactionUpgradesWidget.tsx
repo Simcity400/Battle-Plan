@@ -29,6 +29,7 @@ import type { LaneInfo } from './upgradesData';
 import type { FactionRulesReply } from '../../generated/dashboard';
 import { SPEC, axisAt } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_EVENTS: number[] = [];
@@ -40,8 +41,8 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const { groups, pick, tag: viewpointTag, hour: chosenAt } = useChosenFaction(widget, runtime, track, active);
   const displayNames = useFactionDisplayNames(track?.source);
   const faction = pick?.faction ?? null;
-  const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
-    params: { view: 'rules', branchId: track.branch.id, faction: faction.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, undefined, track?.source);
+  const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
+    params: { view: 'rules', branchId: track.branch.id, faction: faction.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, undefined, track?.source);
   const data = reply.data;
   const following = widget.time.mode === 'follow';
   const { hourAt } = headRead({ widget, action: SPEC }, track, runtime.tracks);

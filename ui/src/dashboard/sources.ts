@@ -5,6 +5,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import type { LandOwners } from '../generated/dashboard';
 import { forgetProducts, loadProduct } from './products.ts';
 import { EffectLifetime } from './effectLifetime';
+import { productRequest } from './request.ts';
 
 export interface SourceBinding { source: DashboardSource | null; loading: boolean; error: Failure | null }
 
@@ -54,7 +55,7 @@ export function useSourceRoles(client: DashboardClient) {
       if (!mounted.current || controller.signal.aborted || controllers.current.get(roleId) !== controller) { release(source); return null; }
       sources.current.set(roleId, source);
       setBindings((previous) => ({ ...previous, [roleId]: { source, loading: false, error: null } }));
-      void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal, undefined, source)
+      void loadProduct<LandOwners>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }), controller.signal, undefined, source)
         .then(result => { if (!controller.signal.aborted) observeCountries(source.id, source.revision, result.countries); }, () => {});
       return source;
     } catch (cause) {

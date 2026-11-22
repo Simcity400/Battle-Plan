@@ -29,6 +29,7 @@ import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import { regionHour, axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
 import { useGate } from '../../dashboard/regionGate';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const LANE_WORDS = { since: (hour: number) => `s${hour}`, before: (hour: number) => `b${hour}`, ended: (hour: number) => `e${hour}`,
   endedBy: (hour: number) => `y${hour}`, lastSeen: (hour: number) => `l${hour}` };
@@ -68,8 +69,8 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const limit = playhead === null ? Math.floor(extent[1]) : limitAt(playhead);
   const saved = typeof options.balance === 'string' ? options.balance : '';
 
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } }) : null;
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
   const branchFirst = track?.branch.firstHour ?? 0;
   const unknown = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),

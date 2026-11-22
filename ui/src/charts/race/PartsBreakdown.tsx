@@ -82,7 +82,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
   const keyedFamily = parts.kind === 'keyed' ? parts.family as unknown as Record<string, unknown> : null;
   const owner = useMemo(() => seriesOwner(gate.country, tag), [gate.country?.history, tag]);
-  const held = useSeriesParts(runtime.client, track.source, track.branch.id, keyedFamily, keyedFamily ? owner?.key ?? null : null, keyedFamily ? span : null, active);
+  const held = useSeriesParts(runtime.client, gate, track.source, track.branch.id, keyedFamily, keyedFamily ? owner : null, keyedFamily ? span : null, active);
   const { keys, within } = useMemo(() => ownerKeys(keyedFamily ? owner : null, (held.data?.parts ?? []).map(part => part.part)), [keyedFamily, held.data, owner]);
   const root = useRef<HTMLDivElement>(null);
   const keyed = useKeyedSeries(runtime.client, runtime.clock, gate, keyedFamily && keys.length ? { source: track.source, branch: track.branch, family: keyedFamily,

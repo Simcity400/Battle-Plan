@@ -12,6 +12,7 @@ import WidgetState from '../../components/WidgetState';
 import type { DoctrineReply, DoctrineReward } from '../../generated/dashboard';
 import { validateDoctrines, masteryText } from './doctrineData';
 import './doctrines.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function ResearchWithDoctrines({ body: Body, ...props }: WidgetProps & { body: ComponentType<WidgetProps> }) {
   const [researchWarnings, setResearchWarnings] = useState<string[]>([]);
@@ -34,9 +35,9 @@ function DoctrinePanel({ widget, runtime, active, onDiagnostics }: WidgetProps) 
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track);
   const gate = useGate(runtime, widget, SPEC, active && open);
   const hour = widget.time.mode === 'follow' ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
-  const request = track && tag && hour !== null ? {
+  const request = track && tag && hour !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'doctrines', params: { branchId: track.branch.id, country: countryFromKey(tag), hour },
-  } : null;
+  }) : null;
   const { data, error, retry } = useProduct<DoctrineReply>(runtime.client, request, active && open, validateDoctrines, track?.source);
   const diagnostics = useMemo(() => data?.warnings ?? [], [data]);
   useDiagnostics(onDiagnostics, diagnostics);

@@ -15,6 +15,7 @@ import { useHeadHour } from '../army-size/headHour.ts';
 import type { CombatLogReply as Reply, LogDetailTable } from '../../generated/dashboard';
 import { validateCombatLog } from './combatLogData.ts';
 import './combatLog.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 const EQUIPMENT_KINDS = ['Combat losses', 'Other attrition', 'Combat attrition', 'Training attrition', 'Recovered', 'Enemy losses'];
 type View = 'manpower' | 'equipment' | 'battles';
@@ -42,8 +43,10 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const gate = useGate(runtime, widget, SPEC, active);
   const at = gate.recorded(hour);
-  const request = track && inBranch && at !== null && match.ready && !match.reason ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'combat-log-history', params: { branchId: track.branch.id, hour: at, countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
+  const request = track && inBranch && at !== null && match.ready && !match.reason ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'combat-log-history', params: { branchId: track.branch.id, hour: at, countries: { countries: countries.tags?.map(countryFromKey) ?? null,
+      membership: countries.membership?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) ?? null,
+      unobserved: countries.unobserved.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } } }) : null;
   const state = useProduct<Reply>(runtime.client, request, active, validateCombatLog, track?.source);
   const shown = useShownHour();
   shown(state.data?.hour ?? null);

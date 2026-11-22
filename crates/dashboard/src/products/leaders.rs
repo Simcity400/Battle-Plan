@@ -63,10 +63,36 @@ impl LeaderKinds {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", tag = "kind", try_from = "SelectionAsked")]
 pub enum LeaderSelection {
     All,
     Countries { countries: Vec<dashboard_base::products::Country> },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionAsked {
+    kind: SelectionKind,
+    countries: Option<Vec<dashboard_base::products::Country>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum SelectionKind {
+    All,
+    Countries,
+}
+
+impl TryFrom<SelectionAsked> for LeaderSelection {
+    type Error = &'static str;
+
+    fn try_from(asked: SelectionAsked) -> Result<Self, Self::Error> {
+        match (asked.kind, asked.countries) {
+            (SelectionKind::All, _) => Ok(Self::All),
+            (SelectionKind::Countries, Some(countries)) => Ok(Self::Countries { countries }),
+            (SelectionKind::Countries, None) => Err("A leader selection of countries names them"),
+        }
+    }
 }
 
 impl LeaderSelection {
@@ -616,7 +642,7 @@ impl AtHour for UnitLeaders {
     const TITLE: &'static str = "Generals leaderboard";
     const CONTENT_DEPENDENT: bool = true;
     type Params = UnitLeadersParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders, "selection.countries[]"];
     type Reply = UnitLeadersReply;
     type Context = LeadersContext;
 

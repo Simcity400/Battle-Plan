@@ -16,6 +16,7 @@ import type { StockpileView } from './stockpileCatalogue';
 import { validateStockpileChart } from './stockpileData';
 import type { StockpileCatalogueReply } from './types';
 import type { StockpileAtReply, StockpileHolder, StockpileMeasure } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface StockpileLineRequest { key: string; group: string; measure: StockpileMeasure }
 
@@ -41,15 +42,15 @@ export function useStockpileChart(client: DashboardClient, gate: Pick<Gate, 'spa
       const keyed = (summaries: readonly ChartSummary[]) => new Map(lines.map((line, index) => [line.key, summaries[index]]));
       const range = gate.span(at.from, at.to);
       if (!range) throw new Error(OUTSIDE_MESSAGE);
-      return keyed(await loadProduct(client, { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-chart',
-        params: { branchId: track.branch.id, holders, included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: range.firstHour, to: range.lastHour, width: at.width } },
+      return keyed(await loadProduct(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-chart',
+        params: { branchId: track.branch.id, holders, included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: range.firstHour, to: range.lastHour, width: at.width } }),
       signal, value => validateStockpileChart(value, lines.length), track.source, restart, summaries => publish(keyed(summaries))));
     }, client);
   const [hover, setHover] = useState<number | null>(null);
   const tag = hover === null ? null : holderAt(holders, hover);
   const hoverAt = gate.recorded(hover);
-  const pointed = useProduct<StockpileAtReply>(client, tag && hoverAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } } : null, active, validateStockpileAt, track.source);
+  const pointed = useProduct<StockpileAtReply>(client, tag && hoverAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } }) : null, active, validateStockpileAt, track.source);
   const data = useMemo(() => catalogue && pointed.data && hover !== null
     ? stockpileView(catalogue, atReply(pointed.data, repliedCells(pointed.data).read(), hover, track.branch.id), hover) : undefined,
   [catalogue, pointed.data, hover, track.branch.id]);

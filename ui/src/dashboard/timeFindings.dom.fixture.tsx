@@ -46,10 +46,13 @@ const followLog: string[] = [];
 const state = {
   asks: [] as Ask[], options: [] as [string, unknown][], pins: [] as unknown[], replies: {} as Record<string, Reply>, failures: new Set<string>(),
   groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: false, route: 0,
+  shown: [] as (number | null)[],
 };
+const reportShown = (hour: number | null) => { state.shown.push(hour); };
 const capture = (name: string) => (props: Record<string, unknown>) => { state.props[name] = props; return createElement('p', { 'data-stub': name }, String(props.label ?? props.title ?? name)); };
 Object.assign(globalThis, { __finding: {
   capture,
+  useShownHour: () => reportShown,
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
@@ -122,7 +125,7 @@ const read = () => {
   const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-popout:has(.drill-body)');
   return { text: element?.textContent ?? '', drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
     asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
-    follows: [...follows.values()], followLog: followLog.splice(0),
+    follows: [...follows.values()], followLog: followLog.splice(0), shown: state.shown.splice(0),
     buttons: [...element?.querySelectorAll('button') ?? []].map(button => button.getAttribute('aria-label') ?? button.textContent ?? ''), errors: errors.splice(0) };
 };
 
@@ -155,7 +158,7 @@ Object.assign(window, { findings: {
     follows.clear(); followLog.length = 0;
     forgetProducts(client as never, 'findings');
     document.body.replaceChildren();
-    Object.assign(state, { asks: [], options: [], pins: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
+    Object.assign(state, { asks: [], options: [], pins: [], shown: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
       failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? false });
     clock.setPlaying(false);
     clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });

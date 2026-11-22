@@ -54,6 +54,7 @@ import type { ForceSizeReply, MissingSpan } from '../../generated/dashboard';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface PartsRaceViewConfig {
   product: string; title: string; subject: string; icon: IconName;
@@ -107,8 +108,8 @@ function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<stri
     if (!active || !ranked || !totals || !bound || !asked || !shown || !viewKey || !range) return;
     const controller = new AbortController();
     const { branchId, top } = asked;
-    void loadProduct(runtime.client, { sourceId: bound.source.id, revision: bound.source.revision, product: 'series-summary',
-      params: { branchId, family: { kind: totals.kind, measure: totals.measure }, top, from: range.firstHour, to: range.lastHour, width: shown.width } },
+    void loadProduct(runtime.client, productRequest({ sourceId: bound.source.id, revision: bound.source.revision, product: 'series-summary',
+      params: { branchId, family: { kind: totals.kind, measure: totals.measure }, top, from: range.firstHour, to: range.lastHour, width: shown.width } }),
     controller.signal, (value: unknown) => {
       const lines = chartSummaryLines<{ tag: string; summary: ChartSummary; missing: MissingSpan[] }>((value as { lines?: unknown } | null)?.lines,
         line => typeof line.tag === 'string' && Array.isArray(line.missing));
@@ -161,8 +162,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [widget.countries, fallback, groups.data, lastHour]);
   const params = track && (resolved.top || resolved.tags.length) ? config.request(track.branch.id, resolved, options) : null;
   const validate = useCallback((value: unknown) => validateForceReply(value, config.referenced), [config.referenced]);
-  const manifest = useProduct<ForceSizeReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
-    product: config.product, params: { ...params, window: null } } : null, active, validate, track?.source);
+  const manifest = useProduct<ForceSizeReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: config.product, params: { ...params, window: null } }) : null, active, validate, track?.source);
   const identity = track && params && manifest.data ? JSON.stringify([track.source.id, track.source.revision, config.product, params]) : null;
   const viewport = useRef<{ key: string; range: Span } | null>(null);
   const viewportKey = JSON.stringify([identity, view, extent, options.playback, options.windowDays, options.afterPlayhead]);
@@ -181,8 +182,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: config.product, params: { ...params!, window: index } }), () => windowsAt(runtime.clock.getHour()), subscribeClock, active && identity !== null,
+  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: config.product, params: { ...params!, window: index } })), () => windowsAt(runtime.clock.getHour()), subscribeClock, active && identity !== null,
   validate, track?.source);
   missingKey.current = hour => windowsAt(hour).filter(index => !history.holds(index)).join(',');
   const onViewChange = useCallback((x: readonly [number, number]) => {

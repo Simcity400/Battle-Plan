@@ -26,6 +26,7 @@ import { followedEnd, mergeSupremacy, runOn, supremacyDays, supremacyRows, supre
 import type { Control } from './navalSupremacyData';
 import { OPTIONS } from './definition';
 import './navalSupremacy.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: 'Enemy control', neither: 'Contested' };
 
@@ -47,8 +48,8 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const shown = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1]) : [], [extent?.[0], extent?.[1]]);
   const wanted = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1], following) : [], [extent?.[0], extent?.[1], following]);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
-  const held = useProductWindows(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
-    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } }), wanted, active, validateSupremacy, track?.source);
+  const held = useProductWindows(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
+    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } })), wanted, active, validateSupremacy, track?.source);
   const error = shown.map(index => held.errors.get(index)).find(failure => failure !== undefined);
   const retry = held.retry;
   const complete = shown.length > 0 && shown.every(index => held.data.has(index));

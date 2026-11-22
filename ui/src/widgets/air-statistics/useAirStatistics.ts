@@ -11,6 +11,7 @@ import { OPTIONS } from './definition';
 import type { AirStatisticsReply } from './airStatisticsData';
 import { choicesAt } from '../air-missions/airMissionsData';
 import type { AirStatisticsRegionsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const structure = (reply: AirStatisticsReply) => JSON.stringify([reply.channels, reply.regions, reply.missing, reply.warnings, reply.readHour, reply.theatres, reply.theatresMissing]);
 
@@ -35,8 +36,8 @@ const validateRegions = (value: unknown): AirStatisticsRegionsReply => {
 
 export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data, options, track, tag } = useAirStatistics(widget, runtime, true);
-  const regions = useProduct<AirStatisticsRegionsReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-statistics-regions', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, true, validateRegions, track?.source);
+  const regions = useProduct<AirStatisticsRegionsReply>(runtime.client, track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-statistics-regions', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null, true, validateRegions, track?.source);
   const picked = new Set(contentSet(options.regions).map(contentKey));
   const listed = regions.data?.regions ?? data?.regions ?? [];
   return {

@@ -11,6 +11,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { intelTooltip, intelValues, validateIntelDetails } from './intelData';
 import type { IntelDetail, IntelDetailsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const keyOf = (row: IntelDetail) => row.key;
 const SORT = { column: 'group', direction: 'ascending' } as const;
@@ -32,8 +33,8 @@ export default function IntelSection({ widget, runtime, active, hour, playing }:
     if (data.hour !== at || (country !== null && data.country !== country) || (viewer !== null && data.viewer !== viewer)) throw new Error('The intel reply belongs to another selection.');
     return data;
   }, [at, country, viewer]);
-  const read = useProduct<IntelDetailsReply>(runtime.client, track && at !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'intel-details',
-    params: { branchId: track.branch.id, hour: at, country, viewer } } : null, active, validate, track?.source);
+  const read = useProduct<IntelDetailsReply>(runtime.client, track && at !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'intel-details',
+    params: { branchId: track.branch.id, hour: at, country, viewer } }) : null, active, validate, track?.source);
   const held = useRef<IntelDetailsReply | undefined>(undefined);
   if (read.data) held.current = read.data;
   const data = read.data ?? held.current;

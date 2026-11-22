@@ -1,4 +1,4 @@
-import { countryFromKey, countryKey } from './countryKey.ts';
+import { countryFromKey } from './countryKey.ts';
 import { useMemo } from 'react';
 import type { HourSpan, PowerSpendingReply } from '../generated/dashboard';
 import type { OptionChoices, WidgetRuntime } from './definitions';
@@ -12,6 +12,7 @@ import type { PowerCurrency, SpendingSelection } from './powerSpending';
 import { useCountryGroups } from './useCountryGroups.ts';
 import { useGate } from './regionGate.ts';
 import { SPEC } from './regionTime.ts';
+import { productRequest } from './request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 
@@ -38,18 +39,19 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
     [match.ready, selected, resolved.tags]);
   const gate = useGate(runtime, widget, SPEC, active);
   const span = track && gate.open ? spendingSpan(widget, track, runtime.tracks) : null;
-  const requests = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).flatMap(([from, to]) => {
+  const asked = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).flatMap(([from, to]) => {
     const chunk = gate.span(from, to);
-    return chunk ? [{ sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
-      params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from: chunk.firstHour, to: chunk.lastHour } }] : [];
+    return chunk ? [{ tag, request: productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
+      params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from: chunk.firstHour, to: chunk.lastHour } }) }] : [];
   })) : [],
   [track?.source.id, track?.source.revision, track?.branch.id, tags, currency, span?.firstHour, span?.lastHour, gate.span]);
+  const requests = useMemo(() => asked.map(({ request }) => request), [asked]);
   const replies = useProducts<PowerSpendingReply>(runtime.client, requests, active, validatePowerSpending, track?.source);
   const ledgers = useMemo(() => {
     if (!replies.data) return undefined;
     const byTag = new Map<string, PowerSpendingReply[]>();
     replies.data.forEach((reply, at) => {
-      const tag = countryKey(requests[at].params.country);
+      const tag = asked[at].tag;
       const held = byTag.get(tag); if (held) held.push(reply); else byTag.set(tag, [reply]);
     });
     return tags.map(tag => ledgerOf(tag, currency, byTag.get(tag) ?? []));

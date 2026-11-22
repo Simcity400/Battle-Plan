@@ -34,6 +34,7 @@ import './subjects.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import { recordedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -46,7 +47,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
   const root = useRef<HTMLDivElement>(null);

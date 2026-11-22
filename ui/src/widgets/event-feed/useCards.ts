@@ -15,6 +15,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { FEED_PAGE_SIZE, kindsRequest, pageNotes, pagesNoted, spanNotes, validateSpan } from './eventFeedData';
 import { cardFacets, cardsKey, cutPages, recordingBreaks } from './scriptOccurrences';
 import type { RecordingBreak } from './scriptOccurrences';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_NOTES: string[] = [];
 
@@ -36,8 +37,8 @@ export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const offset = track?.axisOffset ?? 0;
   const cut: LogCut = follow ? { follow: true, offset } : { follow: false, hour: widget.time.mode === 'campaign' ? null : window?.lastHour ?? null };
-  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [] } } : null, active, validateSpan, track?.source);
+  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
+    params: { branchId: track.branch.id, categories: [] } }) : null, active, validateSpan, track?.source);
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const openersKey = list.openers.join(',');

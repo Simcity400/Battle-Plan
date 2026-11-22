@@ -242,7 +242,7 @@ pub fn link_slots(recording: &Recording, run: u32, hour: i32) -> io::Result<BTre
     Ok(snapshot.rows.iter().filter_map(|&(key, row)| Some((key as u32, view.number(slot, row)? as u32))).collect())
 }
 
-pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
+pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
     let recording = query.replay.recording();
     let mut pieces: BTreeMap<u64, Vec<Piece>> = BTreeMap::new();
     for stretch in query.timeline.within(from, to) {
@@ -254,15 +254,21 @@ pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: 
         let slots = link_slots(recording, stretch.run, stretch.last)?;
         for run in &held {
             let Holder::Found { slot, .. } = run.holder else { continue };
-            for life in &index.lines {
-                if slots.get(&life.country) != Some(&slot) {
-                    continue;
+            let spans: Vec<(i32, i32)> = match within {
+                None => vec![(run.first, run.last)],
+                Some(within) => within.iter().map(|span| (run.first.max(span.first_hour), run.last.min(span.last_hour))).filter(|(first, last)| first <= last).collect(),
+            };
+            for (held_from, held_to) in spans {
+                for life in &index.lines {
+                    if slots.get(&life.country) != Some(&slot) {
+                        continue;
+                    }
+                    let (first, last) = (life.first.max(held_from), life.last.min(held_to));
+                    if first > last {
+                        continue;
+                    }
+                    pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to });
                 }
-                let (first, last) = (life.first.max(run.first), life.last.min(run.last));
-                if first > last {
-                    continue;
-                }
-                pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from: run.first, held_to: run.last });
             }
         }
     }

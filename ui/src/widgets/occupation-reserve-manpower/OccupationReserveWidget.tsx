@@ -32,6 +32,7 @@ import './occupationReserve.css';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
 import {  SPEC } from '../../dashboard/regionTime';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime';
+import { productRequest } from '../../dashboard/request.ts';
 
 const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
@@ -148,8 +149,8 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
 }) {
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track && holder ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-reserve-history',
-    params: { branchId: track.branch.id, holder: holder.id } } : null;
+  const request = track && holder ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'occupation-reserve-history',
+    params: { branchId: track.branch.id, holder: holder.id } }) : null;
   const { data, error, retry } = useProduct<ReserveHistoryReply>(runtime.client, request, active, validateReserveHistory, track?.source);
   const sources = useMemo(() => data ? historySources(data) : [], [data]);
   const bands = useMemo(() => data ? holderBands(data, sources) : [], [data, sources]);

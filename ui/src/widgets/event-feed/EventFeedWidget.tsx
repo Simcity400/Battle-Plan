@@ -40,6 +40,7 @@ import './eventFeed.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useDistinctState } from '../../dashboard/useDistinctState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly LogRow<FeedEvent>[] = [];
 const sameKeys = (held: readonly LogRow<FeedEvent>[], next: readonly LogRow<FeedEvent>[]) => held.length === next.length
@@ -68,8 +69,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [...categories] } } : null, active, validateSpan, track?.source);
+  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
+    params: { branchId: track.branch.id, categories: [...categories] } }) : null, active, validateSpan, track?.source);
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const facets = useMemo(() => kinds ? feedFacets(kinds, categories) : null, [kinds, categories]);

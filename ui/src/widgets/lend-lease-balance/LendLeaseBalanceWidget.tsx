@@ -36,6 +36,7 @@ import './lendLeaseBalance.css';
 import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../generated/dashboard';
 import { drillAction } from '../../charts/drill/drillState.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 type BalanceItem = ButterflyItem & { row: BalanceRow };
@@ -136,8 +137,8 @@ function Partners({ widget, runtime, active, tag, name, hour, measure, following
   const viewport = useViewportHeight();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
-  const asked = useProduct<LendLeasePartnersReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_PARTNERS,
-    params: { branchId: track.branch.id, holder: countryFromKey(tag), measure } }, active, validateLendLeasePartners, track.source);
+  const asked = useProduct<LendLeasePartnersReply>(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_PARTNERS,
+    params: { branchId: track.branch.id, holder: countryFromKey(tag), measure } }), active, validateLendLeasePartners, track.source);
   const data = asked.data;
   const rows = useMemo(() => data ? partnersAt(data, hour) : [], [data, measure, hour]);
   const items = useItems(runtime, track, rows, hour, active);

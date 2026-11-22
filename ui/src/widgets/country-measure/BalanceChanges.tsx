@@ -11,6 +11,7 @@ import WidgetState from '../../components/WidgetState';
 import { validateMeasureDrops } from './measureSeriesData';
 import { loadTransientProduct } from '../../dashboard/products';
 import { netSpend } from './measureData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const DROP_LIST_PAGE = 32n;
 export function dropListRange(first: bigint, total: bigint, end: bigint | null): { last: bigint; count: number } {
@@ -36,8 +37,8 @@ export default function BalanceChanges({ client, gate, source, branchId, measure
     const count = end === null ? Number(DROP_LIST_PAGE) : Number(end - first < DROP_LIST_PAGE ? end - first : DROP_LIST_PAGE);
     const to = gate.within(visibleThrough);
     if (to === null) return () => controller.abort();
-    void loadTransientProduct<unknown>(client, { sourceId: source.id, revision: source.revision, product: 'events-page',
-      params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to } }, controller.signal)
+    void loadTransientProduct<unknown>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'events-page',
+      params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to } }), controller.signal)
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: asFailure(error) } : { owner, error: asFailure(error) }); });
     return () => controller.abort();

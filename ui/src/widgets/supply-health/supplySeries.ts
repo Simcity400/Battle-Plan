@@ -22,6 +22,7 @@ import { followAtHead } from '../../dashboard/tiles/head.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 import { DIVISIONS, SHARE_MEASURES, STATES, SUPPLY_FAMILY, liveShareRuns, mostDivisions, shareRunsFromLines, supplyAt } from './supplyHealthData';
 import type { SupplyAt } from './supplyHealthData';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_RUNS: ShareRun[] = [];
 
@@ -69,8 +70,8 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const missing = useMemo(() => new Map(tags.map(tag => [tag, none.lines?.get(tag)?.missing ?? [] as MissingSpan[]])), [tags, none.lines]);
   const drawn = none.lines !== null && strained.lines !== null && held.lines !== null && total.lines !== null;
   const divisions = useMemo(() => new Map(tags.map(tag => [tag, mostDivisions(total.lines?.get(tag)?.summary)])), [tags, total.lines]);
-  const request = (product: string, measure: string, params: GatedParams) => ({ sourceId: source!.id, revision: source!.revision,
-    product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } });
+  const request = (product: string, measure: string, params: GatedParams) => (productRequest({ sourceId: source!.id, revision: source!.revision,
+    product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } }));
   const content = useContentRevision(client);
   const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read] as const)).values()], [JSON.stringify(reads)]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,

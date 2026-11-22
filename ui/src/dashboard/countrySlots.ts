@@ -4,6 +4,7 @@ import { countryFromKey } from './countryKey.ts';
 import type { BoundTrack } from './model';
 import { useProduct } from './products.ts';
 import type { Failure } from './queryError';
+import { productRequest } from './request.ts';
 
 export type { CountryRef } from '../generated/dashboard';
 
@@ -79,7 +80,7 @@ const slotTagsOf = (reply: CountryIdentitiesReply) => {
 export function useSlotTagsState(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true)
   : { slots: SlotTags | undefined; error: Failure | undefined; retry: () => void } {
   const request: ProductRequest | null = track && active
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-identities', params: { branchId: track.branch.id } }
+    ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-identities', params: { branchId: track.branch.id } })
     : null;
   const { data, error, retry } = useProduct<CountryIdentitiesReply>(client, request, active && !!track, undefined, track?.source);
   return { slots: data && request ? slotTagsOf(data) : undefined, error: data || !request ? undefined : error, retry };

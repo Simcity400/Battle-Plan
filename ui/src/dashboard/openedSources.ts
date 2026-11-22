@@ -1,4 +1,4 @@
-import type { DashboardSource, ProductRequest } from './client';
+import type { DashboardSource } from './client';
 import { followedProduct, hourFields, refusedHours } from './regionTime.ts';
 
 const ENVELOPES = new Set(['follow-clock', 'unfollow', 'follow-close']);
@@ -20,14 +20,17 @@ export class OpenedSources {
   add(source: DashboardSource): DashboardSource { this.sources.set(source.id, source); return source; }
   delete(sourceId: string): void { this.sources.delete(sourceId); }
 
-  refusal(request: Pick<ProductRequest, 'sourceId' | 'product' | 'params'>): string | null {
+  refusal(request: { readonly sourceId: string; readonly product: string; readonly params: unknown }): string | null {
     if (ENVELOPES.has(request.product)) return null;
     const params = request.params as Readonly<Record<string, unknown>> | null | undefined;
     const followed = request.product === 'follow';
     const asked = followed ? followedProduct(params?.query) : { product: request.product, params };
     if (!asked) return `${request.product} names no followed product`;
-    let dated = false;
-    if (!hourFields(asked.product, asked.params, () => { dated = true; })) return `${request.product}: ${asked.product} is not a declared product`;
+    let dated = false, shape: string | null = null;
+    if (!hourFields(asked.product, asked.params, () => { dated = true; }, (path, expected) => { shape ??= `${path} is not ${expected}, as the contract declares`; })) {
+      return `${request.product}: ${asked.product} is not a declared product`;
+    }
+    if (shape !== null) return `${request.product}: ${shape}`;
     const branchId = params?.branchId;
     const other = otherBranch(asked.params, branchId);
     if (other !== null) return `${request.product} names branch ${other}, not the ${followed ? 'followed ' : ''}branch ${String(branchId)}`;

@@ -63,6 +63,7 @@ import type { CountryFuelReply } from '../../generated/dashboard';
 import { axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
 import { useGate } from '../../dashboard/regionGate';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const STRIP_SHARE = 0.28;
 const DAY_HOURS = 24;
@@ -199,8 +200,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
   const hoverTags = useMemo(() => hoverAt === null ? [] : tags.filter(tag => isMember(membership?.get(tag), hoverAt)), [tags, membership, hoverAt]);
-  const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? hoverTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } })) : [], [track, hoverAt, hoverTags, saved]);
+  const hoverRequests = useMemo(() => track && hoverAt !== null && !saved ? hoverTags.map(tag => (productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } }))) : [], [track, hoverAt, hoverTags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null || single ? [] : tags.map(tag => ({ tag, hour: Math.floor(hoverHour) })), active);
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };

@@ -25,6 +25,7 @@ import { motionOf } from '../../charts/easing.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { recordedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -44,8 +45,8 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, last + 1)];
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryKey(track);
-  const reply = useProduct<DiplomacyPactsReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'diplomatic-pacts', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, active, validatePacts, track?.source);
+  const reply = useProduct<DiplomacyPactsReply>(runtime.client, track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'diplomatic-pacts', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null, active, validatePacts, track?.source);
   const data = reply.data;
   const axisOffset = track?.axisOffset ?? 0;
   const changes = useMemo(() => data ? changeHours(data) : [], [data]);

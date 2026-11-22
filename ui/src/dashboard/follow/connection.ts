@@ -8,6 +8,7 @@ import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate }
 import { StructureQueue } from './structureQueue.ts';
 import type { PageReading } from '../../draw/followed';
 import type { GatedParams } from '../regionTime';
+import { productRequest } from '../request.ts';
 
 let nextId = 1;
 const ids = () => nextId++;
@@ -28,9 +29,9 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
   const structures = new StructureQueue();
-  const ask = (product: string, params: Record<string, unknown>) => client.product({
+  const ask = (product: string, params: Record<string, unknown>) => client.product(productRequest({
     sourceId: source.id, revision: source.revision, product, params: params as GatedParams,
-  }, new AbortController().signal);
+  }), new AbortController().signal);
   const pausedAt = (s: PlaybackSnapshot) => s.playing ? null : Math.floor(s.position) + offset;
   const anchor = () => {
     const s = clock.getSnapshot();

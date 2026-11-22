@@ -43,6 +43,7 @@ import type { BalanceRow } from './balanceOfPowerData';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly BalanceRow[] = [];
 const PARAMS = { view: 'balances' } as const;
@@ -124,11 +125,11 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
     setOpened({ owner, tag: member.tag, token: row.token });
     itemDrill.attach(row.token);
   }, [owner, choiceAt, match]);
-  const request = track && open ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } } : null;
+  const request = track && open ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } }) : null;
   const history = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
-  const membershipRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'memberships' } } : null;
+  const membershipRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'memberships' } }) : null;
   const memberships = useProduct<PoliticsHistoryReply>(runtime.client, membershipRequest, active, validateMemberships, track?.source);
   const openHolder = useMemo(() => open && history.data ? countryHolder(history.data, open.tag, hour) : null, [open, history.data, hour]);
   const openTag = openHolder ? tagAt(openHolder.tags, hour) ?? open!.tag : null;

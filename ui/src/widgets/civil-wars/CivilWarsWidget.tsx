@@ -41,6 +41,7 @@ import './civilWars.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { CivilWarsReply } from '../../generated/dashboard';
 import { recordedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
@@ -62,7 +63,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<CivilWarsReply>(runtime.client, request, active, validateCivilWarsReply, track?.source);
   const data = product.data;
   const branchFirst = track?.branch.firstHour ?? 0;

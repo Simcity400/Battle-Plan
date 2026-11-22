@@ -9,6 +9,7 @@ import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
+import { productRequest } from './request.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
@@ -45,8 +46,8 @@ export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const gate = useGate(runtime, widget, SPEC, active);
   const ranged = !catalogue && widget.time.mode === 'range';
   const range = ranged ? gate.window : null;
-  const request = track && (!ranged || range) ? { sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
-    params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } } : null;
+  const request = track && (!ranged || range) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
+    params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } }) : null;
   return { track, ...useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source) };
 }
 

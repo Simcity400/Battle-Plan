@@ -44,6 +44,7 @@ import './volunteers.css';
 import type { VolunteersExpeditionariesReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TAGS: readonly string[] = [];
@@ -73,8 +74,8 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const tags = useMemo(() => requestTags(all, chosen.membership), [all, chosen.membership]);
   const requestable = all || (match.ready && !match.reason && !!tags?.length);
   const drillControl = useDrill(runtime, useRegion(widget));
-  const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && (gate.open || drillControl.gate.open) && requestable ? { sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
-    params: { branchId: track.branch.id, kind, countries: tags?.map(countryFromKey) ?? null } } : null, active, undefined, track?.source);
+  const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && (gate.open || drillControl.gate.open) && requestable ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
+    params: { branchId: track.branch.id, kind, countries: tags?.map(countryFromKey) ?? null } }) : null, active, undefined, track?.source);
   const keep = useMemo(() => linkFilter(all ? null : match.matches, options.between === 'between'), [all, match, options.between]);
   const current = useMemo(() => reply.data ? linksAt(reply.data, at, keep) : { links: [], unknown: 0 }, [reply.data, at, keep]);
   linksKey.current = hour => {

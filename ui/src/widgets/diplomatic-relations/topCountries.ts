@@ -15,6 +15,7 @@ import { useScoreboardColumns } from '../scoreboard/scoreboardColumns.ts';
 import { rankedTags, rankingColumn, scoreboardParams, validateScoreboardReply } from '../scoreboard/scoreboardData.ts';
 import type { ScoreboardReply } from '../../generated/dashboard';
 import { replyTopTags } from './relationsData.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const UNRANKED = { column: '', direction: 'descending' } as const;
 
@@ -53,7 +54,7 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const playbackHour = useFallbackHour(runtime.clock, following && !followed);
   const moment = widget.time.mode === 'follow' ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
   const params = !followed && track && rank && moment !== null ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
-  const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
+  const request = params && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params }) : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, 1), []);
   const reply = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour'], active, validate, track?.source);
 

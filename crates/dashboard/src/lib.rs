@@ -256,7 +256,7 @@ impl ParamNode {
 
     fn object(&self) -> String {
         let fields = self.fields.iter().map(|(name, node)| format!("readonly {name:?}?: {} | null", node.render())).collect::<Vec<_>>();
-        if fields.is_empty() { "{}".to_owned() } else { format!("{{ {} }}", fields.join("; ")) }
+        if fields.is_empty() { "{}".to_owned() } else { format!("{{ readonly [key: string]: unknown; {} }}", fields.join("; ")) }
     }
 }
 

@@ -15,11 +15,12 @@ import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
 import type { ApmReply } from '../../generated/dashboard';
 import { GRAPH_OPTIONS, TABLE_APM_OPTIONS } from './definition';
 import { playerNames, validateApm } from './apmData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function useApmRegistry(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
-    params: { branchId: track.branch.id, group: 'player', registry: true, firstHour: null, lastHour: null, tags: null, membership: null, players: [], buckets: 1 } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
+    params: { branchId: track.branch.id, group: 'player', registry: true, firstHour: null, lastHour: null, tags: null, membership: null, players: [], buckets: 1 } }) : null;
   return useProduct<ApmReply>(runtime.client, request, active, validateApm, track?.source);
 }
 
@@ -74,8 +75,8 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
     membership,
     buckets: graph ? Math.max(1, Math.min(4096, Math.ceil(view?.width ?? 1024))) : 1,
   } : null;
-  const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'player-apm', params } : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
+  const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'player-apm', params }) : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
   const answered = useMemo(() => {
     if (!product.moment) return null;
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];

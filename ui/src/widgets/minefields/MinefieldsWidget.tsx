@@ -42,6 +42,7 @@ import './minefields.css';
 import type { MineReport, MinefieldReportsReply } from '../../generated/dashboard';
 import {  type RegionAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
 
@@ -153,8 +154,8 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const tags = region.owners.map(owner => owner.tag);
   const gate = useGate(runtime, widget, time);
   const span = gate.span(track.branch.firstHour, track.branch.lastHour);
-  const history = useProduct(runtime.client, tags.length && span ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
-    params: { branchId: track.branch.id, region: Number(region.region), countries: tags, ...span } } : null,
+  const history = useProduct(runtime.client, tags.length && span ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
+    params: { branchId: track.branch.id, region: Number(region.region), countries: tags, ...span } }) : null,
   active, validateHistory, track.source);
   const reports = useHeadProduct<MinefieldReportsReply>(runtime, gate, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
   const namedAt = reports.at;

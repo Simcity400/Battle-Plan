@@ -12,6 +12,7 @@ import { battleValueText } from '../battles/battleRows';
 import { battleOutcome, courseDivisions, courseEquipment, courseExtent, courseManpower, exactEquipment, lengthText, peakText, validateLandBattleCourse, wholeEquipment } from './landBattleCourse';
 import type { DesignLoss, SideLook } from './landBattleCourse';
 import type { LandBattleRow } from './landBattlesData';
+import { productRequest } from '../../dashboard/request.ts';
 
 const SIDES = ['Attackers', 'Defenders'] as const;
 const DESIGNS = 6;
@@ -64,7 +65,7 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain,
   heldAt?: number | null;
 }) {
   const { track, runtime, active, shownHour } = context;
-  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'land-battle-course', params: { branchId: track.branch.id, id: row.id } };
+  const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'land-battle-course', params: { branchId: track.branch.id, id: row.id } });
   const course = useProduct(runtime.client, request, active, validateLandBattleCourse);
   const at = Math.min(shownHour, row.end && 'hour' in row.end ? row.end.hour : shownHour);
   const start = row.start?.hour ?? row.place.hour;

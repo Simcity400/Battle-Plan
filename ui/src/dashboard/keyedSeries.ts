@@ -9,7 +9,7 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client'
 import { validateProductReply } from './client.ts';
 import { useContentRevision } from './contentRevision.ts';
 import { useHeldFailure } from './heldFailures.ts';
-import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
+import { loadProduct, loadTransientProduct, useProducts } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
 import type { BoundWindow, CoveredBranch, GatedHour, GatedParams } from './regionTime.ts';
@@ -37,6 +37,7 @@ import { TileView, tileCache, unrecordedReason } from './tiles/view.ts';
 import type { TiledLine, TileViewport } from './tiles/view';
 import { followedRow, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
 import type { KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
+import { productRequest } from './request.ts';
 
 export interface KeyedSeriesSpec {
   source: DashboardSource;
@@ -62,8 +63,8 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const latest = useRef(spec); latest.current = spec;
-  const request = (product: string, params: GatedParams): ProductRequest => ({ sourceId: spec!.source.id, revision: spec!.source.revision,
-    product, params: { branchId: spec!.branch.id, family: spec!.family, ...params } });
+  const request = (product: string, params: GatedParams): ProductRequest => (productRequest({ sourceId: spec!.source.id, revision: spec!.source.revision,
+    product, params: { branchId: spec!.branch.id, family: spec!.family, ...params } }));
 
   const tileKey = spec ? JSON.stringify([ownerKey, spec.lastHour, spec.marks === true]) : null;
   const [tiles, setTiles] = useState<{ key: string; lines: ReadonlyMap<string, TiledLine> | null; error: unknown }>();
@@ -170,10 +171,24 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     unrecorded, error, retry };
 }
 
-export function useSeriesParts(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
-  family: Readonly<Record<string, unknown>> | null, tag: string | null, span: BoundWindow | null, active: boolean) {
-  const request = source && branchId && family && tag && span ? { sourceId: source.id, revision: source.revision, product: 'series-parts',
-    params: { branchId, family, countries: [countryFromKey(tag)], from: span.firstHour, to: span.lastHour } } : null;
-  const validate = useCallback((value: unknown) => validateSeriesParts(value, tag ?? ''), [tag]);
-  return useProduct<SeriesParts>(client, request, active, validate, source);
+export function useSeriesParts(client: DashboardClient, gate: Pick<Gate, 'span'>, source: DashboardSource | undefined, branchId: string | undefined,
+  family: Readonly<Record<string, unknown>> | null, owner: SeriesOwner | null, span: BoundWindow | null, active: boolean) {
+  const key = owner?.key ?? null;
+  const windows = useMemo(() => !owner || !span ? [] : owner.spans === null ? [span]
+    : owner.spans.flatMap(held => gate.span(Math.max(held.firstHour, span.firstHour), Math.min(held.lastHour, span.lastHour)) ?? []),
+  [owner, span?.firstHour, span?.lastHour, gate.span]);
+  const requests = useMemo(() => source && branchId && family && key ? windows.map(window => productRequest({ sourceId: source.id, revision: source.revision,
+    product: 'series-parts', params: { branchId, family, countries: [countryFromKey(key)], from: window.firstHour, to: window.lastHour } })) : [],
+  [source, branchId, family, key, windows]);
+  const validate = useCallback((value: unknown) => validateSeriesParts(value, key ?? ''), [key]);
+  const read = useProducts<SeriesParts>(client, requests, active && requests.length > 0, validate, source);
+  const data = useMemo<SeriesParts | undefined>(() => key === null || !owner || !span ? undefined : !requests.length ? { tag: key, parts: [], missing: [], partBits: 1 }
+    : read.data && { tag: key, partBits: read.data[0]?.partBits ?? 1,
+      parts: read.data.flatMap((reply, at) => reply.parts.flatMap(part => {
+        const first = Math.max(part.firstHour, windows[at].firstHour), last = Math.min(part.lastHour, windows[at].lastHour);
+        return first <= last ? [{ ...part, firstHour: first, lastHour: last }] : [];
+      })),
+      missing: read.data.flatMap(reply => reply.missing) },
+  [key, owner, span, requests.length, read.data, windows]);
+  return { ...read, data };
 }

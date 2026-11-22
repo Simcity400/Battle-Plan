@@ -233,7 +233,7 @@ struct Step {
 }
 
 pub fn next_change(query: &Query<'_>, params: &serde_json::Value) -> io::Result<serde_json::Value> {
-    let step: Step = serde_json::from_value(params.clone()).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid world tension step: {error}")))?;
+    let step: Step = dashboard_query::named::named(params).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid world tension step: {error}")))?;
     let bounds = (series::hour_of(step.first_hour, "firstHour")?, series::hour_of(step.last_hour, "lastHour")?);
     let origin = step.from.map(|from| series::hour_of(Some(from), "from")).transpose()?;
     let forward = matches!(step.key, NavigationKey::ArrowRight | NavigationKey::Home);

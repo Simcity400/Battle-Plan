@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
+import type { AskedRequest, ProductRequest } from './request';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
 import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
   SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
@@ -20,10 +21,13 @@ const roles: readonly boolean[] = [
   true satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: GatedHour; id: number }[] }>,
   false satisfies Takes<ParamsFor<string>, { rankHour: BoundHour }>,
   true satisfies Takes<ParamsFor<string>, { windowHour: number }>,
+  false satisfies Takes<ProductRequest, { sourceId: string; revision: string; product: string; params: Record<string, never> }>,
+  false satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: number }[] } }>,
+  true satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: GatedHour }[] } }>,
 ];
 
 test('request params are typed from the contract’s roles: an exact read, nested ones included, takes only a gated hour, and a name decides nothing', () => {
-  assert.deepEqual(roles, [false, true, false, false, true, false, true]);
+  assert.deepEqual(roles, [false, true, false, false, true, false, true, false, false, true]);
 });
 const early = track('early', 0, 9, 0);
 const tracks = [late, early];
@@ -162,6 +166,9 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a bucket’s representative hour is recorded');
   assert.match(refusedHours('faction-lines', { from: 100, to: 109, members: [{ tag: 'GER', spans: [[90, 104]] }] }, GAPPED) ?? '', /members\[0\]\.spans\[0\]\[0\] names hour 90/);
   assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);
+  assert.match(refusedHours('series-tiles', { within: [[1, [[100, 120]]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\] is not an object naming its fields/,
+    'a positional span is refused, never passed unchecked');
+  assert.match(refusedHours('naval-battle-details', ['1', [{ hour: 105 }]], GAPPED) ?? '', /params is not an object naming its fields/);
   assert.match(refusedHours('series-tiles', { family: { kind: 'player-apm', membership: [{ tag: 'GER', firstHour: 95, lastHour: 104 }] } }, GAPPED) ?? '',
     /family\.membership\[0\]\.firstHour names hour 95/, 'a nested family field is dated by the contract');
   assert.match(refusedHours('research-breakdown', { parts: [{ slot: 0, firstObservedHour: 105, lastHour: 106 }] }, GAPPED) ?? '',
@@ -173,6 +180,8 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'player-apm', params: { branchId: '1', firstHour: 90, lastHour: 109 } } } }) ?? '', /firstHour names hour 90/);
   assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'campaign-clock', params: { branchId: '2', firstHour: 100, lastHour: 109 } } } }),
     'follow names branch 2, not the followed branch 1', 'a followed head reads the subscription branch, never another');
+  assert.equal(opened.refusal({ sourceId: 's', product: 'follow', params: { id: 1, branchId: '1', clock: 0, query: { head: 'campaign-clock', params: ['2', 100, 109] } } }),
+    'follow: params is not an object naming its fields, as the contract declares', 'a positional head cannot hide its branch');
   const wide = { branchId: '1', hour: 95 };
   const narrow: { branchId: string } = wide;
   assert.match(opened.refusal({ sourceId: 's', product: 'country-fuel', params: narrow }) ?? '', /country-fuel: params\.hour names hour 95/);

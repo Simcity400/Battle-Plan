@@ -30,6 +30,7 @@ import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validat
 import { OPTIONS } from './definition';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import './airSuperiorityTimeline.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_SIDES: AirSide[] = [];
 const RANKING_MOVES = ['lastHour'] as const;
@@ -54,8 +55,8 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const span = !beforeBranch ? gate.span(firstHour, lastHour) : null;
   const params = useMemo(() => track && window && span && !needsViewpoint ? { branchId: track.branch.id, ...span, ...airParams(mode),
     ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, span?.firstHour, span?.lastHour, needsViewpoint, mode, options.regionCount]);
-  const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-superiority-ranking', params } : null, RANKING_MOVES, active, validateAirRanking, track?.source);
+  const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-ranking', params }) : null, RANKING_MOVES, active, validateAirRanking, track?.source);
   const regionsKey = ranking.data ? JSON.stringify(ranking.data.rows.map(row => [row.region, regionLabel({ id: row.region, name: row.name })])) : null;
   const regions = useMemo(() => regionsKey === null ? [] : (JSON.parse(regionsKey) as [number, string][]).map(([id, name]) => ({ id, name })), [regionsKey]);
   const regionNames = useMemo(() => regions.map(region => String(region.id)), [regions]);
@@ -66,11 +67,11 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const tileParams = useMemo(() => track && params && span && regionIds.length ? { branchId: track.branch.id, firstHour: span.firstHour, ...airParams(mode), regions: regionIds } : null,
     [track, params, regionIds, span?.firstHour, mode]);
   const identity = track && tileParams ? JSON.stringify([track.source.id, track.source.revision, tileParams]) : null;
-  const tileRequest = useCallback((tile: number) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
-    params: { ...tileParams!, lastHour: gate.within(tile * STEP + STEP - 1)!, tile } }), [track, tileParams, gate.within]);
+  const tileRequest = useCallback((tile: number) => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
+    params: { ...tileParams!, lastHour: gate.within(tile * STEP + STEP - 1)!, tile } })), [track, tileParams, gate.within]);
   const tiles = useProductWindows<AirTimelineReply>(runtime.client, identity, tileRequest, tiling.whole, active, validateAirTimeline, track?.source);
-  const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-superiority-timeline', params: { ...tileParams, lastHour: span!.lastHour, tile: tiling.cut } } : null, active, validateAirTimeline, track?.source);
+  const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-timeline', params: { ...tileParams, lastHour: span!.lastHour, tile: tiling.cut } }) : null, active, validateAirTimeline, track?.source);
   const order = useMemo(() => [...tiling.whole, ...(tiling.cut === null ? [] : [tiling.cut])], [tiling]);
   const replies = useMemo(() => order.map(tile => tile === tiling.cut ? cut.data : tiles.data.get(tile)), [order, tiling.cut, cut.data, tiles.data]);
   const spans = useMemo(() => order.map(tile => ({ firstHour: Math.max(firstHour, tile * STEP), lastHour: Math.min(lastHour, tile * STEP + STEP - 1) })), [order, firstHour, lastHour]);

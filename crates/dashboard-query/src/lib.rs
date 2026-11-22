@@ -6,6 +6,7 @@ pub mod fields;
 mod fixture;
 pub mod identity;
 pub mod log;
+pub mod named;
 pub mod pieces;
 pub mod read;
 pub mod series;

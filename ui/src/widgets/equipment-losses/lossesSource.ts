@@ -9,6 +9,7 @@ import { stretchSince } from '../../dashboard/stretch.ts';
 import { nearest, stepHours, validateLossesReply, withEdges } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import type { LossSource, LossesParams, LossesReply, NavigationKey } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const SERIES = { kind: 'equipment-losses', measure: 'total' };
 const PART_BITS = 41n;
@@ -54,8 +55,8 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
     .filter(hour => Number.isInteger(hour) && hour >= view.first - 1 && hour <= view.end).sort((a, b) => a - b)
     .flatMap(hour => { const read = gate.recorded(hour); return read === null ? [] : [read]; }) : [];
   const fromAt = gate.within(from), toAt = gate.within(to);
-  const request = track && selection && view && fromAt !== null && toAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-losses', params: { ...selection, from: fromAt, to: toAt, width: Math.max(1, Math.round(geometry?.width ?? 64)), reads } } : null;
+  const request = track && selection && view && fromAt !== null && toAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'equipment-losses', params: { ...selection, from: fromAt, to: toAt, width: Math.max(1, Math.round(geometry?.width ?? 64)), reads } }) : null;
   const read = useProduct(client, request, active, validateLossesReply, track?.source);
   const exactAt = useCallback(async (hour: number) => {
     if (!active || !track || !request) return null;
@@ -63,7 +64,7 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
     try {
       const asked = gate.recorded(hour);
       const reply = await loadProduct(client, { ...request, params: { ...request.params,
-        reads: [...new Set([...request.params.reads, ...(asked === null ? [] : [asked])])].sort((a, b) => a - b) } }, controller.signal, validateLossesReply, track.source);
+        reads: [...new Set([...request.params.reads ?? [], ...(asked === null ? [] : [asked])])].sort((a, b) => a - b) } }, controller.signal, validateLossesReply, track.source);
       return controller.signal.aborted || alive.current !== owner ? null : reply;
     } catch (failure) {
       if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) });
@@ -86,9 +87,9 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
     if (!leaves.length) { land(ships); return; }
     const firstAt = gate.within(firstHour), lastAt = gate.within(lastHour);
     if (firstAt === null || lastAt === null) { land(ships); return; }
-    void loadTransientProduct<{ hour: unknown }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
+    void loadTransientProduct<{ hour: unknown }>(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
       params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ country: selection.country, part: leafPart(leaf) })),
-        key, from: gate.within(origin), firstHour: firstAt, lastHour: lastAt } }, controller.signal).then(reply => {
+        key, from: gate.within(origin), firstHour: firstAt, lastHour: lastAt } }), controller.signal).then(reply => {
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The equipment-loss navigation is malformed.');
       land(nearest(key, reply.hour as number | null, ships));
     }).catch(failure => { if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) }); });

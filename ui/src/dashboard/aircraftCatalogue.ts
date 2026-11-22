@@ -5,6 +5,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import { useContentRevision } from './contentRevision.ts';
 import { loadTransientProduct } from './products.ts';
 import { busyWait } from '../shell/busy.ts';
+import { productRequest } from './request.ts';
 
 export const AIRCRAFT_PAGE = 100;
 export const AIRCRAFT_QUERY_DELAY = 150;
@@ -131,7 +132,7 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
     const controller = new AbortController();
     controllers.set(controller, page);
     const params: AircraftCatalogueParams = { scope, query: asked.trim(), first: page * pages.size, count: pages.size };
-    void loadTransientProduct<AircraftCatalogueReply>(client, { sourceId: source.id, revision: source.revision, product: 'aircraft-catalogue', params }, controller.signal, source)
+    void loadTransientProduct<AircraftCatalogueReply>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'aircraft-catalogue', params }), controller.signal, source)
       .then(reply => { if (!controller.signal.aborted) pages.accept(page, reply); },
         error => { if (!controller.signal.aborted) pages.fail(page, asFailure(error)); })
       .finally(() => {

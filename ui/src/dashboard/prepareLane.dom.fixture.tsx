@@ -16,6 +16,7 @@ import { forgetProducts } from './products.ts';
 import { useFollow } from './follow/useFollow.ts';
 import type { FollowStore } from './follow/store.ts';
 import { PreparingPage } from './preparing.ts';
+import { productRequest } from './request.ts';
 
 const START = 30_000;
 
@@ -56,7 +57,7 @@ const client = {
   },
 } as unknown as DashboardClient;
 
-const ask = (product: string, hour: number): ProductRequest => ({ sourceId: 'fixture', revision: '1', product, params: { hour: gatedHour(hour) } });
+const ask = (product: string, hour: number): ProductRequest => (productRequest({ sourceId: 'fixture', revision: '1', product, params: { hour: gatedHour(hour) } }));
 
 function ShownPage() {
   const blockOf = () => Math.floor(clock.getHour() / 2880) * 2880;

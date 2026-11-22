@@ -23,6 +23,7 @@ import type { FuelBasis, FuelRecipientSelection } from './fuelDrill';
 import { useFuelAt, usePartSeries } from './fuelReads';
 import type { CountryFuelReply, FuelAwardHistoryReply, FuelAwardPart, FuelAwardsReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 type HistoryChart = Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>;
 export interface DrillChart extends HistoryChart { detailHours: number }
@@ -76,8 +77,8 @@ export default function FuelBreakdown({ runtime, gate, widget, track, tag, measu
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hoverAt = gate.recorded(hoverHour);
   const hoverAlias = hoverAt === null ? null : gate.country?.aliasAt(hoverAt) ?? null;
-  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null && hoverAlias !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(hoverAlias), hour: hoverAt } } : null, chart.active, validateCountryFuel, track.source);
+  const hovered = useProduct<CountryFuelReply>(runtime.client, hoverAt !== null && hoverAlias !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(hoverAlias), hour: hoverAt } }) : null, chart.active, validateCountryFuel, track.source);
   const amountAt = useCallback((id: string, transfer: boolean) => (when: number) => {
     const held = hovered.data && hoverHour === Math.floor(when) ? hovered.data : reply && hour === Math.floor(when) ? reply : null;
     if (!held?.read) return held ? held.missing ?? 'Not recorded' : 'Loading…';
@@ -95,8 +96,8 @@ export default function FuelBreakdown({ runtime, gate, widget, track, tag, measu
   }), [ids, series.summaries, reply, rows, color, tokens.muted, amountAt, measure]);
   const own = parts.filter(part => !part.transfer && part.summary), incoming = parts.filter(part => part.transfer && part.summary);
   const basisAt = gate.recorded(basis?.hour);
-  const awards = useProduct<FuelAwardsReply>(runtime.client, basis && basisAt !== null && measure === 'burn' && consumer !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt } } : null,
+  const awards = useProduct<FuelAwardsReply>(runtime.client, basis && basisAt !== null && measure === 'burn' && consumer !== null ? productRequest({ sourceId: track.source.id,
+    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt } }) : null,
   chart.active, validateFuelAwards, track.source);
   const recipients = awards.data && basis && awards.data.readHour === basis.hour && awards.data.tag === basis.tag ? awards.data : null;
   const recipient = selected && recipients?.recipients.find(part => part.key === selected.key);
@@ -165,8 +166,8 @@ function RecipientHistory({ runtime, gate, track, basis, recipientKey, name, hou
   const wanted = detailWindows(chart.extent, visible, hour, detailHours);
   const basisAt = gate.recorded(basis.hour);
   const windows = useProductWindows<FuelAwardHistoryReply>(runtime.client, basisAt === null ? null : JSON.stringify([track.source.id, track.source.revision, basis, recipientKey]),
-    window => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-award-history',
-      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, recipientKey } }),
+    window => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-award-history',
+      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, recipientKey } })),
     wanted, chart.active, validateFuelAwardHistory, track.source);
   const runs = useMemo(() => joinedRuns([...windows.data.values()].map(reply => reply.runs)), [windows.data]);
   const amount = (at: number) => {

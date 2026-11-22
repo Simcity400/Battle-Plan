@@ -27,6 +27,7 @@ import { useDetailView } from './FuelBreakdown';
 import type { DrillChart } from './FuelBreakdown';
 import { useFuelAt, usePartSeries } from './fuelReads';
 import type { CountryFuelReply, FuelDemandHistoryReply, FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 type HistoryChart = Omit<DrillChart, 'detailHours'>;
 const GAIN = 100000n;
@@ -63,8 +64,8 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const demandHour = gate.recorded(follows ? (playing ? null : at.live.read()?.read?.readHour ?? null) : hour);
   const demandTag = demandHour === null ? null : gate.country?.aliasAt(demandHour) ?? null;
-  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null && demandTag !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(demandTag), hour: demandHour } } : null, chart.active, validateFuelDemand, track.source);
+  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null && demandTag !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(demandTag), hour: demandHour } }) : null, chart.active, validateFuelDemand, track.source);
   const data = demand.data && answersKey(demand.data.asked, demandTag) ? demand.data : undefined;
   const basis = data ? demandBasis(track.branch.id, data) : null;
   const levelName = level && data && level.basis.country === data.country && level.basis.countryInstance === data.countryInstance ? level.level : level ? null : 'all';
@@ -153,8 +154,8 @@ function DemandHistory({ runtime, gate, track, basis, keys, names, colors, hour,
   const wanted = detailWindows(chart.extent, visible, hour, detailHours);
   const basisAt = gate.recorded(basis.hour);
   const windows = useProductWindows<FuelDemandHistoryReply>(runtime.client, basisAt === null ? null : JSON.stringify([track.source.id, track.source.revision, basis, keys]),
-    window => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-demand-history',
-      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, keys } }),
+    window => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-demand-history',
+      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, keys } })),
     wanted, chart.active, validateFuelDemandHistory, track.source);
   const runs = useMemo(() => new Map(keys.map(key => [key, joinedRuns([...windows.data.values()].map(reply => reply.parts.find(part => part.key === key)?.runs ?? []))])),
     [windows.data, keys]);

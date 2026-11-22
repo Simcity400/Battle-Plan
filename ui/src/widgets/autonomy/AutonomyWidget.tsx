@@ -21,7 +21,7 @@ import { motionOf } from '../../charts/easing.ts';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { worldFilterQuery } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -45,6 +45,7 @@ import type { AutonomyLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
 import type { HourSpan, SubjectReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: HourSpan[] = [];
@@ -108,17 +109,21 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const head = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
-    [widget.countries, fallback, groups.data, head, lastHour]);
+  const selection = useMemo(() => worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const filter = useMemo(() => selection.at(head), [selection, head]);
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
   const gate = useGate(runtime, widget, SPEC, active);
+  const selectedAt = useCallback((tag: string, hour: number) => {
+    const at = selection.at(hour);
+    return at.reason === null && (at.tags === null || at.tags.has(tag));
+  }, [selection]);
   const series = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, 'autonomy', 'progress', tags,
-    following && !followsClock ? gate.recorded(head) : null, gate.recorded(hoverHour), active, false, within, lastHour, followsClock);
+    following && !followsClock ? gate.recorded(head) : null, gate.recorded(hoverHour), active, false, within, lastHour, followsClock, selectedAt);
   const axisOffset = track?.axisOffset ?? 0;
   const tilesLanded = series.subscribe;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => {
@@ -139,9 +144,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }, [entry, places, tags, series.head]);
   useShownEachFrame(clock, () => data ? liveHead ? Math.min(liveHead.read(), lastHour) : head : null);
   const hovered = gate.recorded(hoverHour);
-  const hoverTags = hovered === null ? [] : tags.filter(tag => within.get(tag)?.some(span => span.firstHour <= hovered && hovered <= span.lastHour));
-  const scoreRequest = (measure: string) => track && hovered !== null && hoverTags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: hoverTags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
+  const hoverTags = hovered === null ? [] : tags.filter(tag => selectedAt(tag, hovered) && within.get(tag)?.some(span => span.firstHour <= hovered && hovered <= span.lastHour));
+  const scoreRequest = (measure: string) => track && hovered !== null && hoverTags.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: hoverTags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } }) : null;
   const scores = useProduct<MeasureStates>(runtime.client, scoreRequest('score'), active, validateMeasureStates, track?.source);
   const lowers = useProduct<MeasureStates>(runtime.client, scoreRequest('lower'), active, validateMeasureStates, track?.source);
   const uppers = useProduct<MeasureStates>(runtime.client, scoreRequest('upper'), active, validateMeasureStates, track?.source);

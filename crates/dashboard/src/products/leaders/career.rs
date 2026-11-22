@@ -616,7 +616,7 @@ impl Product for LeaderChoices {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = LeaderChoicesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, "selection.countries[]"];
     type Reply = LeaderChoicesReply;
 
     #[cfg(any(test, feature = "export-types"))]

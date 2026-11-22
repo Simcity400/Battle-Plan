@@ -14,6 +14,7 @@ import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { measureOf, namesAt, partsAtStates, partsFromLines, validateStabilityPartNames } from './partsData';
 import type { Measure } from './stabilityData';
 import type { MeasureParts, StabilityPartName, StabilityPartNamesReply } from './types';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const PARTS_FAMILY = { kind: 'stability-parts', measure: 'value' } as const;
 
@@ -24,11 +25,11 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
   const branchId = branch?.id;
   const tag = owner?.key ?? null;
   const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
-  const listed = useSeriesParts(client, source, branchId, PARTS_FAMILY, tag, span, active);
+  const listed = useSeriesParts(client, gate, source, branchId, PARTS_FAMILY, owner, span, active);
   const all = useMemo(() => [...new Set((listed.data?.parts ?? []).map(part => part.part))], [listed.data]);
   const namesRequests = useMemo(() => source && branchId && tag && span ? namesAt(listed.data?.parts ?? [], span.lastHour).flatMap(([at, parts]) => {
     const hour = gate.recorded(at);
-    return hour === null ? [] : [{ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, country: countryFromKey(tag), parts, hour } }];
+    return hour === null ? [] : [productRequest({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, country: countryFromKey(tag), parts, hour } })];
   }) : [], [source, branchId, tag, listed.data, span, gate.recorded]);
   const namedAll = useProducts<StabilityPartNamesReply>(client, namesRequests, active, validateStabilityPartNames, source);
   const named = useMemo(() => ({ ...namedAll, data: namedAll.data && span && { tag: tag ?? '', hour: span.lastHour, parts: namedAll.data.flatMap(reply => reply.parts),

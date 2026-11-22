@@ -16,13 +16,14 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { decodeTrade, mergeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
 import type { TradeFlowsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function tradeFlowsRequest(gate: Pick<Gate, 'span'>, track: Pick<BoundTrack, 'source' | 'branch'>, tags: readonly string[] | null, from: number, to: number,
   window: number): ProductRequest | null {
   const first = window * WINDOW_HOURS;
   const span = gate.span(Math.max(from, first), Math.min(to, first + WINDOW_HOURS - 1));
-  return span ? { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows',
-    params: { branchId: track.branch.id, countries: tags?.map(countryFromKey) ?? null, window, from: span.firstHour, to: span.lastHour } } : null;
+  return span ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows',
+    params: { branchId: track.branch.id, countries: tags?.map(countryFromKey) ?? null, window, from: span.firstHour, to: span.lastHour } }) : null;
 }
 
 export function useTradeWindows(client: DashboardClient, gate: Pick<Gate, 'span'>, track: BoundTrack | undefined, tags: readonly string[] | null, from: number, to: number,

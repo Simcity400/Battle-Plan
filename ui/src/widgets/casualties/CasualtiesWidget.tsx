@@ -45,6 +45,7 @@ import { OPTIONS } from './definition';
 import './casualties.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
+import { productRequest } from '../../dashboard/request.ts';
 
 type CasualtyItem = ButterflyItem & { data: CountryCasualties };
 const UNKNOWN_FALLBACK = 'Unknown attacker';
@@ -54,7 +55,7 @@ const NO_TAGS: string[] = [];
 
 function useUnknownLabel(props: WidgetProps): { label: string; warnings: readonly string[] } {
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-labels', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'casualty-labels', params: { branchId: track.branch.id } }) : null;
   const reply = useProduct<CasualtyLabelsReply>(props.runtime.client, request, props.active);
   return { label: reply.data?.unknownLabel ?? UNKNOWN_FALLBACK, warnings: reply.data?.warnings ?? [] };
 }
@@ -144,12 +145,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const moment = gate.hour;
 
   const asked = !followedHead && track && gate.open && moment !== null;
-  const rankRequest = asked && top != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } } : null;
+  const rankRequest = asked && top != null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } }) : null;
   const rank = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour'], active, undefined, track?.source);
   const askedTags = useMemo(() => top != null ? (rank.data?.states ?? []).filter(state => state.run).map(state => countryKey(state.country)) : tags, [top, rank.data, tags]);
-  const stateRequests = MEASURES.map(measure => asked && askedTags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: family(measure), reads: askedTags.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null);
+  const stateRequests = MEASURES.map(measure => asked && askedTags.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: family(measure), reads: askedTags.map(tag => ({ country: countryFromKey(tag), hour: moment })) } }) : null);
   const states = [
     useFollowedProduct<SeriesStateReply>(runtime.client, stateRequests[0], ['reads'], active, undefined, track?.source),
     useFollowedProduct<SeriesStateReply>(runtime.client, stateRequests[1], ['reads'], active, undefined, track?.source),

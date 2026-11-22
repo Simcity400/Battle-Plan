@@ -80,6 +80,7 @@ import { busyWait } from '../../shell/busy.ts';
 import { axisAt, SPEC, FOLLOW, at as pickAt, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useGate, useHeldEdges, useRegionGate } from '../../dashboard/regionGate';
 import { coverageOf, useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
@@ -226,8 +227,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const singleSlots = useSlotTags(runtime.client, track, active && single !== null && isSlotKey(single));
   const markerName = markerTag && track ? keyNameAt(singleSlots, markerTag, track.branch.lastHour) : null;
   const factionOverrides = campaignSettings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
-  const markerRequest = (product: string, used: boolean) => track && markerTag && used ? { sourceId: track.source.id, revision: track.source.revision,
-    product, params: { branchId: track.branch.id, country: countryFromKey(markerTag) } } : null;
+  const markerRequest = (product: string, used: boolean) => track && markerTag && used ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product, params: { branchId: track.branch.id, country: countryFromKey(markerTag) } }) : null;
   const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, markerRequest('idea-history', kinds.has('government')), active, validateIdeaHistoryReply, track?.source);
   const markerParties = useProduct<PartyHistoryReply>(runtime.client, markerRequest('party-history', kinds.has('government')), active, validatePartyHistoryReply, track?.source);
   const markerFocus = useProduct<FocusReply>(runtime.client, markerRequest('national-focus', kinds.has('focus')), active, validateFocusReply, track?.source);
@@ -255,8 +256,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     } }, kinds),
   [markerSources, namesAt, focusText.read, kinds]);
 
-  const breakdownRequest = (hour: GatedHour | null) => track && single && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour } } : null;
+  const breakdownRequest = (hour: GatedHour | null) => track && single && hour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour } }) : null;
   const hovered = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(!pinnedMeasure ? hoverAt : null), active, validateBreakdown, track?.source);
   const retries = useRef(0);
   useEffect(() => { retries.current = 0; }, [hoverHour, single]);
@@ -266,8 +267,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     return busyWait(() => { retries.current += 1; retryHovered.current(); }, BREAKDOWN_RETRY_MS * 2 ** retries.current);
   }, [hovered.error, hoverHour, active]);
   const readsSpan = gate.span(extent[0], extent[1]);
-  const readsRequest = track && lines.length > 1 && readsSpan ? { sourceId: track.source.id, revision: track.source.revision, product: 'stability-reads',
-    params: { branchId: track.branch.id, from: readsSpan.firstHour, to: readsSpan.lastHour } } : null;
+  const readsRequest = track && lines.length > 1 && readsSpan ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'stability-reads',
+    params: { branchId: track.branch.id, from: readsSpan.firstHour, to: readsSpan.lastHour } }) : null;
   const inputReads = useProduct<StabilityReadsReply>(runtime.client, readsRequest, active, validateStabilityReads, track?.source);
   const [spokenAt, setSpokenAt] = useState<number | null>(null);
   useEffect(() => {

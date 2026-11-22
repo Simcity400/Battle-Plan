@@ -39,6 +39,7 @@ import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
 import './lendLeaseAgreements.css';
 import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly AgreementRow[] = [];
 const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributed: 0, membership: null };
@@ -62,8 +63,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: 'agreements' } : null, [track, tags]);
   const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
   const showEnded = options.ended !== 'hidden';
-  const history = useProduct<LendLeaseHistoryReply>(runtime.client, track && showEnded ? { sourceId: track.source.id, revision: track.source.revision,
-    product: LEASE_HISTORY, params: { branchId: track.branch.id } } : null, active, validateLeaseHistory, track?.source);
+  const history = useProduct<LendLeaseHistoryReply>(runtime.client, track && showEnded ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: LEASE_HISTORY, params: { branchId: track.branch.id } }) : null, active, validateLeaseHistory, track?.source);
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),

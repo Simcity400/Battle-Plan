@@ -41,6 +41,7 @@ import './equipmentProduced.css';
 import type { EquipmentProducedReply, ProducedCountryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const same = <T,>(reply: T) => reply;
 
@@ -101,8 +102,8 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const windows = useFrameWindows<EquipmentProducedReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'equipment-produced', params: { ...params!, window: index } }), () => windowsAt(runtime.clock.getHour()), subscribeClock, active,
+  const windows = useFrameWindows<EquipmentProducedReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'equipment-produced', params: { ...params!, window: index } })), () => windowsAt(runtime.clock.getHour()), subscribeClock, active,
   validateProducedWindow, track?.source);
   const windowsCheck = useRef(windows.check);
   windowsCheck.current = windows.check;

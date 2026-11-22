@@ -41,6 +41,7 @@ import type { BranchAt } from './fuelBranchesData';
 import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const UNNAMED = 'Country name unavailable';
@@ -195,10 +196,10 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
     [following, runtime.clock, axisOffset]);
   const gate = useGate(runtime, widget, SPEC, active);
   const span = gate.span(extent[0], extent[1]);
-  const parts = useSeriesParts(runtime.client, track.source, track.branch.id, SHARE, tag, span, active);
+  const parts = useSeriesParts(runtime.client, gate, track.source, track.branch.id, SHARE, useMemo(() => ({ key: tag, spans: within ?? null }), [tag, within]), span, active);
   const namesAt = gate.recorded(extent[1]);
-  const names = useProduct<FuelBranchesReply>(runtime.client, namesAt === null ? null : { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: namesAt } }, active, validateFuelBranches, track.source);
+  const names = useProduct<FuelBranchesReply>(runtime.client, namesAt === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: namesAt } }), active, validateFuelBranches, track.source);
   const consumerNames = names.data?.consumerNames ?? [];
   const keys = useMemo(() => (parts.data?.parts ?? []).map(part => ({ tag, part: part.part })).sort((a, b) => Number(a.part) - Number(b.part)), [parts.data, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);

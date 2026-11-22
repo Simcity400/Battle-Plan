@@ -30,6 +30,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import type { RegionalRule } from './breakdownData';
 import { LEVELS, OPTIONS } from './definition';
 import type { TerritoryBreakdownReply } from './types';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -50,8 +51,8 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const fill = options.growth === 'fill';
   const end = track ? (widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : track.branch.lastHour) : 0;
   const endAt = widget.time.mode === 'range' ? gate.window?.lastHour ?? null : campaign.hour;
-  const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill && endAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'territory-breakdown', params: { branchId: track.branch.id, hour: endAt, measure, rule } } : null, active, validateBreakdownReply, track?.source);
+  const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill && endAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'territory-breakdown', params: { branchId: track.branch.id, hour: endAt, measure, rule } }) : null, active, validateBreakdownReply, track?.source);
   const groups = useCountryGroups(runtime, track, active);
   const colours = useFactionColours(runtime.client, track?.source);
   const fallback = defaultCountryKey(track);

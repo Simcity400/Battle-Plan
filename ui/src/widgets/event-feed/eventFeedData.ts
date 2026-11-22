@@ -7,6 +7,7 @@ import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.t
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { EventFeedItem, EventFeedRow, EventFeedSpanReply, EventFeedStrike, EventFeedUnavailable, FacetFilter, FeedKindCode } from '../../generated/dashboard';
 import { plainScripted, reasonRows } from './scriptedGaps.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
   'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect',
@@ -70,8 +71,8 @@ export function feedRow(reply: LogReplyRow): LogRow<FeedEvent> {
 }
 
 export function kindsRequest(track: { source: { id: string; revision: string }; branch: { id: string } }): ProductRequest {
-  return { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [], kindsOnly: true } };
+  return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
+    params: { branchId: track.branch.id, categories: [], kindsOnly: true } });
 }
 
 export function validateSpan(value: unknown): EventFeedSpanReply {

@@ -31,6 +31,7 @@ import type { DesignRow } from './designsData';
 import './equipmentDesigns.css';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly DesignRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
@@ -40,7 +41,7 @@ const UNNAMED = 'Design name unavailable';
 function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   return { track, tag, ...useProduct<EquipmentDesignsReply>(runtime.client, request, active, validateDesigns, track?.source) };
 }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
+import { productRequest } from './request.ts';
 
 test('native query rejections use typed failures and cancellation keeps AbortError', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, ssr: { noExternal: ['@tauri-apps/api'] },
@@ -20,7 +21,7 @@ test('native query rejections use typed failures and cancellation keeps AbortErr
     await client.setMapViews('page-B', []);
     assert.deepEqual(host.__sentMapViews, [{ clockId: 'page-B', views: [] }]);
     const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
-    const query = { sourceId: 'synthetic', revision: '1', product: 'land-owners', params: {} };
+    const query = productRequest({ sourceId: 'synthetic', revision: '1', product: 'land-owners', params: {} });
     for (const failure of [{ kind: 'refused', text: 'Land owners are not prepared natively yet' }, { kind: 'failed', message: 'Synthetic technical detail' }]) {
       host.__typedQueryFailure = failure;
       await assert.rejects(client.product(query, new AbortController().signal), (error: unknown) => {

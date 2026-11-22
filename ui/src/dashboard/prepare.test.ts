@@ -6,8 +6,9 @@ import type { PrepareFrames } from './prepare.ts';
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import { loadProduct, peekProduct, productKey } from './products.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
+import { productRequest } from './request.ts';
 
-const request = (product: string, hour = 1): ProductRequest => ({ sourceId: 's', revision: 'r', product, params: { hour: gatedHour(hour) } });
+const request = (product: string, hour = 1): ProductRequest => (productRequest({ sourceId: 's', revision: 'r', product, params: { hour: gatedHour(hour) } }));
 const flush = async () => { for (let turn = 0; turn < 6; turn++) await Promise.resolve(); };
 
 function frames(): PrepareFrames & { run(): void } {

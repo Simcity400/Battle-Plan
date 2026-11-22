@@ -12,6 +12,7 @@ import type { PlaybackController } from './playback';
 import { loadProduct, useProduct } from './products.ts';
 import { asFailure } from './queryError.ts';
 import type { BoundHour } from './regionTime';
+import { productRequest } from './request.ts';
 
 export interface LogSpec {
   source: DashboardSource;
@@ -35,9 +36,9 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
   row: (reply: LogReplyRow) => LogRow<T>, pageSize = LOG_PAGE_SIZE, notes?: (page: unknown) => readonly N[]) {
   const lane = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branchId, spec.log, spec.product ?? null, spec.facets ?? null, spec.scope ?? null, spec.firstHour, spec.lastHour, pageSize]) : null;
   const validateCounts = useCallback((value: unknown) => validateLogCounts(value, spec?.firstHour ?? 0, spec?.lastHour ?? -1), [spec?.firstHour, spec?.lastHour]);
-  const counted = useProduct<LogCounts>(client, spec ? { sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
+  const counted = useProduct<LogCounts>(client, spec ? productRequest({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
     params: { branchId: spec.branchId, log: spec.log, ...(spec.facets ? { facets: spec.facets } : {}), ...(spec.scope ? { scope: spec.scope } : {}), from: spec.firstHour,
-      to: spec.lastHour, binHours: countBinHours(spec.firstHour, spec.lastHour) } } : null, active, validateCounts, spec?.source);
+      to: spec.lastHour, binHours: countBinHours(spec.firstHour, spec.lastHour) } }) : null, active, validateCounts, spec?.source);
   const counts = counted.data;
   const before = useMemo(() => counts ? cumulativeCounts(counts) : null, [counts]);
   const [held, setHeld] = useState<Held<T, N>>(() => noPages(lane));
@@ -98,7 +99,7 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
     const at = index * pageSize, asked = lane;
     const cutHour = latest.current.at, first = pageFirstHour(base, latest.current.before ?? cumulativeCounts(base), at);
     const asksFrom = cutHour !== null && at >= latest.current.shown ? Math.max(first, cutHour + 1) : first;
-    void loadProduct<unknown>(client, { sourceId: held.source.id, revision: held.source.revision, ...logPageRequest(held, base.before + at, pageSize), asksFrom },
+    void loadProduct<unknown>(client, productRequest({ sourceId: held.source.id, revision: held.source.revision, ...logPageRequest(held, base.before + at, pageSize), asksFrom }),
       controller.signal, undefined, undefined, false, undefined, undefined, true).then(value => {
       const page = validateLogPage(value, at, pageSize, base.before);
       const rows = page.rows.map(latest.current.row);

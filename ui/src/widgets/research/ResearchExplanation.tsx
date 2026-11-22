@@ -14,6 +14,7 @@ import { researchNumber } from './researchBreakdown';
 import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
 import { researchTimeRows, type ResearchSegment } from './researchTimeBar';
 import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
@@ -66,7 +67,7 @@ export default function ResearchExplanation({ client, gate, track, tag, hour, hi
     return first !== null && last !== null ? [{ ...part, firstObservedHour: first, lastHour: last }] : [];
   });
   const unrecorded = parts.length < asked.length;
-  const request = unrecorded ? null : { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), parts } };
+  const request = unrecorded ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), parts } });
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
   const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);

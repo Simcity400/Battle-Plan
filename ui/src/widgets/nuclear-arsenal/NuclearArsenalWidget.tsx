@@ -10,6 +10,7 @@ import { OPTIONS } from './definition';
 import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { arsenalStructure, nukeParts, validateNuclearArsenal } from './nuclearArsenalData.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const TOTAL = { kind: 'country-nuke-totals', measure: 'total' };
@@ -22,8 +23,8 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const race = view === 'race' && options.show !== 'breakdown';
   const end = useCampaignGate(runtime, widget, active && !race).hour;
-  const names = useProduct(runtime.client, !race && track && end !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
-    params: { branchId: track.branch.id, hour: end } } : null, active, validateNuclearArsenal, track?.source);
+  const names = useProduct(runtime.client, !race && track && end !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
+    params: { branchId: track.branch.id, hour: end } }) : null, active, validateNuclearArsenal, track?.source);
   const strict = useHeadProduct(runtime, useGate(runtime, widget), 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
   const head = withHeld(strict);
   const metadata = race ? head.data : names.data, shown = race ? strict.data : names.data;

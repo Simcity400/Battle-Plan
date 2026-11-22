@@ -23,6 +23,7 @@ import { breakdownValue, breakdownWindows, joinForceWindows } from './forceRace.
 import type { ForceParams } from './forceRace';
 import { bindCountryParts } from './countryPartsDrillData';
 import { partsRaceDrillData, UNATTRIBUTED_PART } from './partsRaceDrill';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface PartsRaceDetailProps { runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number; following: boolean; active: boolean }
 
@@ -61,8 +62,8 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product, params: { ...request!, window: index } }), () => windowsAt(live ? hourNow() : givenHour), subscribeClock, active && identity !== null,
+  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product, params: { ...request!, window: index } })), () => windowsAt(live ? hourNow() : givenHour), subscribeClock, active && identity !== null,
   validate, track?.source);
   windowsCheck.current = history.check;
   const reply = useMemo(() => manifest ? joinForceWindows(manifest, history.data) : undefined, [manifest, history.data]);

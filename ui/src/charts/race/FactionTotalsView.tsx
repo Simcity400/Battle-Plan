@@ -39,6 +39,7 @@ import { answerShape, answerValues, factionEntries, factionNote, factionSummarie
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface FactionTotalsViewProps extends WidgetProps {
   options: Readonly<Record<string, OptionValue>>;
@@ -108,9 +109,9 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     : answered.current?.store === store ? answered.current?.entry ?? null : null;
   const pushed = valuesEntry !== null;
   const refused = pushed && valuesEntry?.answer?.kind === 'notRecorded' ? valuesEntry.answer.reason : null;
-  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length && askAt !== null ? {
+  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length && askAt !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } } : null, active, validateStates, track?.source);
+    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track?.source);
   const live = useMemo(() => valuesEntry ? liveRace(runtime.clock, axisOffset,
     hour => { shown(hour); return factionEntries(rosterOf(hour), answerValues(valuesEntry.answer, named, DECIMALS), slots, hour, format).entries; },
     () => valuesEntry.version, !!group) : null,
@@ -130,8 +131,8 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const lines = useViewRead<{ from: number; to: number; width: number }, FactionLines>(lane, chartView, JSON.stringify(chartView), active,
     (at, signal, publish, restart) => {
       const range = gate.span(at.from, at.to);
-      return range ? loadProduct(runtime.client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'faction-lines',
-        params: { branchId: track!.branch.id, kind, measure, from: range.firstHour, to: range.lastHour, width: at.width, ...(groupParams ?? { membership }) } },
+      return range ? loadProduct(runtime.client, productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'faction-lines',
+        params: { branchId: track!.branch.id, kind, measure, from: range.firstHour, to: range.lastHour, width: at.width, ...(groupParams ?? { membership }) } }),
       signal, validateFactionLines, track!.source, restart, publish) : Promise.reject(new Error(OUTSIDE_MESSAGE));
     }, runtime.client);
   const looks = useFactionColours(runtime.client, track?.source);

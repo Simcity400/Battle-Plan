@@ -11,6 +11,7 @@ use playhead::{
 use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::{CountryLinkRow, CountryResourceRow, CountryRow, TableRows, tables};
 use replay_frame::frame::TableView;
+use serde::Deserialize;
 use serde_json::json;
 
 struct Power;

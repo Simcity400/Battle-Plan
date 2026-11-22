@@ -41,6 +41,7 @@ import type { ConvoyHealthReply, ConvoyView } from '../../generated/dashboard';
 import { regionFollows, SPEC } from '../../dashboard/regionTime.ts';
 import { useGate } from '../../dashboard/regionGate';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys('trade') };
@@ -78,8 +79,8 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const playhead = following && track ? Math.floor(runtime.clock.getSnapshot().position + track.axisOffset) : pinnedHour;
   const gate = useGate(runtime, widget, SPEC, active);
   const span = gate.span(extent[0], extent[1]);
-  const request = track && tag && span ? { sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
-    params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: span.firstHour, to: span.lastHour } } : null;
+  const request = track && tag && span ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
+    params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: span.firstHour, to: span.lastHour } }) : null;
   const { data, error, retry } = useProduct<ConvoyHealthReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const drillControl = useDrill(runtime, useRegion(widget));

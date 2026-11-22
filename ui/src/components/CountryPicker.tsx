@@ -15,6 +15,7 @@ import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagSize, LandOwners } from '../generated/dashboard';
 import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList';
 import type { CountryOption } from './countryList';
+import { productRequest } from '../dashboard/request.ts';
 
 const LIST_HEIGHT = 340;
 const NO_NAMES: ReadonlyMap<string, NameRead> = new Map();
@@ -170,7 +171,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   useEffect(() => {
     if (!source || allowedTags) return;
     const controller = new AbortController();
-    void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal, undefined, source).then(result => {
+    void loadProduct<LandOwners>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }), controller.signal, undefined, source).then(result => {
       if (!controller.signal.aborted) {
         setRoster({ key: sourceKey, countries: result.countries, error: null });
         onCountries?.(source.id, source.revision, result.countries);

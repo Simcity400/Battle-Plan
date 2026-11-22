@@ -19,6 +19,7 @@ import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } f
 import type { AirLooks } from './airSuperiority';
 import { airChoiceKey, airChoiceToken } from './airOptions';
 import type { AirChoicesReply, AirSide, AirSuperiorityReply, FactionGroup } from '../generated/dashboard';
+import { productRequest } from './request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_SIDES: AirSide[] = [];
@@ -43,7 +44,7 @@ export function airParams(mode: AirModeSettings) {
 
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority-choices', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority-choices', params: { branchId: track.branch.id } }) : null;
   return useProduct<AirChoicesReply>(runtime.client, request, active, validateAirChoices, track?.source);
 }
 

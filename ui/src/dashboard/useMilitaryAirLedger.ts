@@ -10,6 +10,7 @@ import { airCauseName, validateMilitaryAirWindow } from './militaryAirLedger';
 import { LedgerJoin, ledgerWindows } from './militaryAirJoin.ts';
 import type { LedgerReach } from './militaryAirJoin.ts';
 import type { MilitaryAirFamily, MilitaryAirMetric, MilitaryAirReply } from '../generated/dashboard';
+import { productRequest } from './request.ts';
 
 export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime, family: MilitaryAirFamily, active: boolean,
   query?: { regions?: readonly number[]; causes?: readonly number[]; metric: MilitaryAirMetric }, reach: LedgerReach = 'end') {
@@ -28,8 +29,8 @@ export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime,
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const windows = useFrameWindows<MilitaryAirReply>(runtime.client, identity, window => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'military-air-ledger', params: { ...params!, window } }), () => wantedAt(runtime.clock.getHour()), subscribe, active, validateMilitaryAirWindow, track?.source);
+  const windows = useFrameWindows<MilitaryAirReply>(runtime.client, identity, window => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'military-air-ledger', params: { ...params!, window } })), () => wantedAt(runtime.clock.getHour()), subscribe, active, validateMilitaryAirWindow, track?.source);
   const shown = windowOf(shownAt(runtime.clock.getHour()));
   const first = reach === 'end' ? windowOf(start) : shown;
   const joiner = useRef<LedgerJoin | null>(null);

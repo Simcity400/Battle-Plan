@@ -49,6 +49,7 @@ import { drawnCell, followedRow, followedValues, measureCell, partialSource, ran
 import type { BoardRow } from './scoreboardData';
 import './scoreboard.css';
 import type { ScoreboardFamily, ScoreboardReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly BoardRow[] = [];
@@ -140,7 +141,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const askedTags = useMemo(() => top == null ? rankedCandidates(resolved, moment, resolved.tags) : [], [top, resolved, moment]);
   const asked = useMemo(() => shown.map(column => column.key), [shown]);
   const params = !followedHead && track && registryData && !resolved.reason && askAt !== null ? scoreboardParams(track.branch.id, askAt, shown, askedTags, top, rank, descending) : null;
-  const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
+  const request = params && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params }) : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, asked.length), [asked]);
   const result = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour', 'tags'], active, validate, track?.source);
   const reply = followedHead ? undefined : result.data;
@@ -149,7 +150,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (at === null) return Promise.reject(new Error('This hour was not recorded.'));
     const params = scoreboardParams(track.branch.id, at, shown, top == null ? rankedCandidates(resolved, at, resolved.tags) : [], top, rank, descending);
     if (!params) return Promise.reject(new Error('Nothing to read at this hour.'));
-    const request = { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params };
+    const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params });
     return perfLog!.exactOnce(JSON.stringify(request), async () =>
       validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length).rows.map(row => countryKey(row.country)));
   } : undefined;

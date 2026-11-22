@@ -29,6 +29,7 @@ import { capturedText, departureText, labelHour, operativeMoments, operativeName
 import type { OperativeRow, Painted, PaintedField } from './rosterData';
 import './operativesRoster.css';
 import { useChangedState } from '../../dashboard/changedState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: OperativeRow[] = [];
 const NO_WARNINGS: string[] = [];
@@ -67,12 +68,12 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const hour = head.at ?? head.hour ?? lastHour;
   const unheldSlots = useSlotTags(runtime.client, track, active && !!head.data?.unheld.some(isSlotKey));
   const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? gate.recorded(head.hour) : null;
-  const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } } : null, active, validateDeparted, track?.source);
+  const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } }) : null, active, validateDeparted, track?.source);
   const tenureHour = useRef<number | null>(null);
   const tenureAt = gate.recorded(tenureHour.current);
-  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureAt !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureAt } } : null,
+  const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureAt !== null ? productRequest({ sourceId: track.source.id,
+    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureAt } }) : null,
     active, validateTenures, track?.source);
   const tenures = tenuresAsked.data;
   if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;

@@ -47,6 +47,7 @@ import { addedAt, contributionCell, contributorName, eventBadges, eventGroup, ev
 import './worldTension.css';
 import { at as pickAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
@@ -135,8 +136,8 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const layersKey = JSON.stringify(layers);
   const stableLayers = useMemo(() => layers, [layersKey]);
 
-  const events = useProduct<ThreatEventsReply>(runtime.client, track && options.markers !== false ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'threat-events', params: { branchId: track.branch.id } } : null, active, validateThreatEvents, track?.source);
+  const events = useProduct<ThreatEventsReply>(runtime.client, track && options.markers !== false ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'threat-events', params: { branchId: track.branch.id } }) : null, active, validateThreatEvents, track?.source);
   const lookTagsNow = useMemo(() => [...new Set(stableLayers.flatMap(layer => layer.tag ? [layer.tag] : []))].sort(), [stableLayers]);
   const drillLayers = useMemo(() => drillContribution ? layerContributions(drillContribution.contributions, Math.min(top, count), keepAt(drillAt)) : [],
     [drillContribution, top, count, keepAt, drillAt]);
@@ -163,7 +164,8 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     return () => onDiagnostics(NO_WARNINGS);
   }, [head.data, events.error, groups.error, onDiagnostics]);
 
-  const report = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
+  const drillShown = pinnedDrill || drillControl.open && options.drill !== 'popout';
+  const report = useCallback(() => { if (!drillShown) shown(head.shownAt()); }, [shown, head.shownAt, drillShown]);
   const reportDrill = useCallback(() => shown(picked.shownAt()), [shown, picked.shownAt]);
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
@@ -181,7 +183,8 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     },
     subscribe: head.live.subscribe,
   }), [head.data, head.live, stableLayers, share, report]);
-  useEffect(() => { if (!head.data) shown(null); }, [head.data, shown]);
+  useEffect(() => { if (!head.data && !drillShown) shown(null); }, [head.data, shown, drillShown]);
+  useEffect(() => { if (drillShown) shown(picked.shownAt()); }, [drillShown, picked.data, picked.shownAt, shown]);
 
   const menu = useContextMenu('Chart actions');
   interface Region { moment: number | null; layers: typeof stableLayers; colourOf: (tag: string | null) => string; looks: { name(tag: string): string } }
@@ -288,7 +291,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
 function ThreatEventsView({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const shown = useShownHour();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'threat-events', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'threat-events', params: { branchId: track.branch.id } }) : null;
   const reply = useProduct<ThreatEventsReply>(runtime.client, request, active, validateThreatEvents, track?.source);
   const trackHour = (clockHour: number) => trackHourOf(widget, track, runtime.tracks, clockHour);
   useAtHead(runtime.clock, active && widget.time.mode === 'follow', clockHour => {

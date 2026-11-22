@@ -321,7 +321,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
         return Ok(None);
     };
     let value = params;
-    let params: Params = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid {kind} request: {error}")))?;
+    let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid {kind} request: {error}")))?;
     if params.family.kind != series.kind {
         return Err(invalid("The family is not this series"));
     }

@@ -77,7 +77,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const pinnedAir = air && (options.view === 'breakdown' || options.show === 'breakdown' || widget.options?.show === 'breakdown');
   const airControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), pinnedAir ? 'air' : null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const airDrill = airControl.state, dispatchAir = airControl.dispatch;
-  const bombingControl = useDrill(runtime, useRegion(widget));
+  const bombingControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, HOLDERS);
   const [drillOwner, setDrillOwner] = useState<unknown>(null);
   const bombingDrill = useMemo(() => {
     const state = bombingControl.state;
@@ -296,15 +296,18 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     if (air || !drill || shown < from || shown > end || !track) return null;
     const span = widget.time.mode === 'range' ? bombingControl.gate.span(from, shown) : null;
     const timed = widget.time.mode === 'range' ? span ? bombingControl.gate.checkTime(span, 'range') : { time: null, refused: 'The range’s start was not recorded.' } : bombingControl.gate.checkTime();
+    const current = index && ledgerCountryAt(index, drill.tag, from, shown, drill.identity);
+    const holding = current ? bombingControl.gate.checkHold({ tag: current.tag, origin: shown }) : { held: null, refused: 'The country was not recorded at this time.' };
     if (!timed.time) return { refused: timed.refused };
-    const time = timed.time;
+    if (!holding.held) return { refused: holding.refused };
+    if (heldIdentity(holding.held) !== drill.identity) return { refused: 'The tag is held by another country at this time.' };
+    const { time } = timed, held = holding.held;
     return { run: () => {
       if (!active || airPickRef.current !== airPickOwner) return;
       const pinned = createWidget('bombing-damage-breakdown', track.id);
-      const pinnedTag = index && ledgerCountryAt(index, drill.tag, from, shown, drill.identity)?.tag || drill.tag;
-      runtime.addWidgetBelow(widget.id, { ...pinned, campaign: widget.campaign, trackIds: widget.trackIds, countries: { kind: 'tags', tags: [pinnedTag] }, time,
+      runtime.addWidgetBelow(widget.id, { ...pinned, campaign: widget.campaign, trackIds: widget.trackIds, countries: { kind: 'tags', tags: [held.tag] }, time,
         contentScale: widget.contentScale, options: { direction: drill.dealt ? 'dealt' : 'taken',
-          holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, pinnedTag, drill.identity]) } });
+          holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, held.tag, drill.identity]) } });
     } };
   })();
   if (air) {

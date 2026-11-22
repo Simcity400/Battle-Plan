@@ -28,6 +28,7 @@ import type { NativePartsRaceDrillAction, PartsRaceDrillState } from './partsRac
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import { useDrill } from '../drill/useDrill';
 import LiveText, { liveTexts } from '../LiveText';
+import { productRequest } from '../../dashboard/request.ts';
 
 const HOLDERS = { holders: true };
 
@@ -73,7 +74,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const hour = Math.floor(drillOpen ? regionAt ?? moment : moment);
   const chartPlayhead = following ? hour : playhead;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => Math.floor(runtime.clock.getHour()) + offset, at => new Map([['day', dayLabel(at)]])), [runtime.clock, offset]);
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) }) : null;
   const reply = useProduct(runtime.client, request, active, validate, track?.source);
   const numeric = useMemo(() => new NumericReply<T>(), [runtime.client]);
   const pickScope = JSON.stringify([contextKey, product, 'mix', tag, originHour]);

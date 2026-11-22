@@ -11,8 +11,8 @@ declare const BOUND: unique symbol;
 export type BoundHour = TrackHour & { readonly [BOUND]: 'bound' };
 declare const GATED: unique symbol;
 export type GatedHour = BoundHour & { readonly [GATED]: 'gated' };
-export interface BoundWindow { firstHour: BoundHour; lastHour: BoundHour }
-export interface GatedWindow { firstHour: BoundHour; lastHour: GatedHour }
+export type BoundWindow = { firstHour: BoundHour; lastHour: BoundHour };
+export type GatedWindow = { firstHour: BoundHour; lastHour: GatedHour };
 type Offsets = { firstOffset: number; lastOffset: number };
 export type PinTime = { mode: 'follow' } | { mode: 'pin'; windows: Record<string, Offsets> } | { mode: 'range' } & Offsets;
 let mintTime: (time: PinTime) => GatedTime;
@@ -74,21 +74,29 @@ export function followedProduct(query: unknown): { product: string; params: unkn
   return null;
 }
 
-function visitPath(value: unknown, segments: readonly string[], path: string, visit: (hour: unknown, path: string) => void): void {
+const plainObject = (value: unknown): value is Readonly<Record<string, unknown>> => value !== null && typeof value === 'object' && !Array.isArray(value);
+type Refuse = (path: string, expected: string) => void;
+
+function visitPath(value: unknown, segments: readonly string[], path: string, visit: (hour: unknown, path: string) => void, refuse: Refuse): void {
   if (!segments.length) { if (value !== null && value !== undefined) visit(value, path); return; }
-  if (value === null || typeof value !== 'object') return;
+  if (value === null || value === undefined) return;
   const [head, ...rest] = segments;
   const many = head.endsWith('[]'), key = many ? head.slice(0, -2) : head, index = /^\d+$/.test(key);
-  if (index !== Array.isArray(value)) return;
+  if (typeof value !== 'object') return;
+  if (index ? !Array.isArray(value) : !plainObject(value)) { refuse(path, index ? 'a list' : 'an object naming its fields'); return; }
   const item = index ? (value as readonly unknown[])[Number(key)] : (value as Readonly<Record<string, unknown>>)[key], at = index ? `${path}[${key}]` : `${path}.${key}`;
-  if (!many) visitPath(item, rest, at, visit);
-  else if (Array.isArray(item)) item.forEach((each, index) => visitPath(each, rest, `${at}[${index}]`, visit));
+  if (!many) { visitPath(item, rest, at, visit, refuse); return; }
+  if (item === null || item === undefined) return;
+  if (typeof item !== 'object') return;
+  if (!Array.isArray(item)) { refuse(at, 'a list'); return; }
+  item.forEach((each, position) => visitPath(each, rest, `${at}[${position}]`, visit, refuse));
 }
 
-export function hourFields(product: string, params: unknown, visit: (role: HourRole, hour: unknown, path: string) => void): boolean {
+export function hourFields(product: string, params: unknown, visit: (role: HourRole, hour: unknown, path: string) => void, refuse: Refuse = () => {}): boolean {
   const fields = requestFields(product);
   if (!fields) return false;
-  for (const [path, role] of Object.entries(fields)) visitPath(params, path.split('.'), 'params', (hour, at) => visit(role, hour, at));
+  if (!plainObject(params)) { refuse('params', 'an object naming its fields'); return true; }
+  for (const [path, role] of Object.entries(fields)) visitPath(params, path.split('.'), 'params', (hour, at) => visit(role, hour, at), refuse);
   return true;
 }
 
@@ -101,7 +109,7 @@ export function refusedHours(product: string, params: unknown, branch: CoveredBr
     else if (typeof hour !== 'number' || !Number.isSafeInteger(hour)) refused = `${path} is not a whole hour`;
     else if (hour < branch.firstHour || hour > branch.lastHour) refused = `${path} names hour ${hour}, outside branch ${branch.firstHour}–${branch.lastHour}`;
     else if (exact && gapAt({ branch }, hour)) refused = `${path} names hour ${hour}, which was not recorded`;
-  });
+  }, (path, expected) => { refused ??= `${path} is not ${expected}, as the contract declares`; });
   return declared ? refused : `${product} is not a declared product`;
 }
 

@@ -30,6 +30,7 @@ import '../generals/generals.css';
 import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboard';
 import { axisAt, regionWindow, SPEC, type RegionAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_PORTRAIT: readonly PortraitAt[] = [];
 const BRANCH_WIDE = { outside: false };
@@ -39,8 +40,8 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const career = useProduct<LeaderCareerReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'unit-leader-career', params: { branchId: track.branch.id, reference } } : null, active, validateCareer, track?.source);
+  const career = useProduct<LeaderCareerReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'unit-leader-career', params: { branchId: track.branch.id, reference } }) : null, active, validateCareer, track?.source);
   const params = useMemo(() => ({ reference }), [reference]);
   const region = useRegion(widget, time);
   const head = useHeadProduct<LeaderHourReply>(runtime, useGate(runtime, widget, time), 'unit-leader-hour', params, { active, validate: validateLeaderHour });

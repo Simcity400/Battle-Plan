@@ -43,6 +43,7 @@ import { motionOf } from '../../charts/easing.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { SPEC, at as pickAt } from '../../dashboard/regionTime';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 export const EVENT_PAGE = 128;
@@ -52,8 +53,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'party-history',
-    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'party-history',
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
   const { data, error, retry } = useProduct<PartyHistoryReply>(runtime.client, request, active, validatePartyHistoryReply);
   const slots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
   const live = widget.time.mode === 'follow';
@@ -136,9 +137,9 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     };
     const range = gate.span(bounds[0], bounds[1]);
     if (!track || !keys.length || !range) { land(local); return; }
-    void loadTransientProduct<{ hour: unknown }>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
+    void loadTransientProduct<{ hour: unknown }>(runtime.client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
       params: { branchId: track.branch.id, family: POPULARITY_FAMILY, lines: keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })), key,
-        from: gate.within(from), ...range } }, controller.signal).then(reply => {
+        from: gate.within(from), ...range } }), controller.signal).then(reply => {
       const remote = typeof reply.hour === 'number' && Number.isSafeInteger(reply.hour) ? reply.hour : null;
       const forward = key === 'Home' || key === 'ArrowRight';
       const candidates = [local, remote].filter((hour): hour is number => hour !== null && (from === null || hour !== from));

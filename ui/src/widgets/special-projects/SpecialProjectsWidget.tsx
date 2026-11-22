@@ -44,6 +44,7 @@ import type { PlaybackController } from '../../dashboard/playback';
 import ProjectDetails from './ProjectDetails';
 import './specialProjects.css';
 import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
@@ -144,8 +145,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const resolved = useMemo(() => projectCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0),
     [widget.countries, track, fallback, groups.data]);
   const tags = resolved.tags;
-  const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-    params: { branchId: track.branch.id, country: countryFromKey(tag) } })) : [], [track, resolved.ready, tags, view]);
+  const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } }))) : [], [track, resolved.ready, tags, view]);
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));

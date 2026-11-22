@@ -28,7 +28,7 @@ pub struct FactionState;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(tag = "view", rename_all = "camelCase")]
+#[serde(tag = "view", rename_all = "camelCase", from = "FactionStateAsked")]
 pub enum FactionStateParams {
     Rules {
         #[serde(rename = "branchId")]
@@ -42,6 +42,31 @@ pub enum FactionStateParams {
         branch_id: String,
         faction: String,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FactionStateAsked {
+    view: FactionView,
+    branch_id: String,
+    faction: String,
+    viewpoint: Option<dashboard_base::products::Country>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum FactionView {
+    Rules,
+    Manpower,
+}
+
+impl From<FactionStateAsked> for FactionStateParams {
+    fn from(asked: FactionStateAsked) -> Self {
+        match asked.view {
+            FactionView::Rules => Self::Rules { branch_id: asked.branch_id, faction: asked.faction, viewpoint: asked.viewpoint },
+            FactionView::Manpower => Self::Manpower { branch_id: asked.branch_id, faction: asked.faction },
+        }
+    }
 }
 
 impl FactionStateParams {

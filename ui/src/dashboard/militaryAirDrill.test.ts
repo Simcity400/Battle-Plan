@@ -16,6 +16,7 @@ import { tokensFromValues } from '../charts/tokens.ts';
 import type { WidgetProps } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
+import { gatedHour } from '../test-support/gated.ts';
 import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
 import type { SunburstProps } from '../charts/sunburst/Sunburst';
@@ -100,7 +101,7 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
   try {
     const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx') as typeof import('../widgets/bombing-damage-breakdown/BombingBreakdown.tsx');
     renderToStaticMarkup(createElement(Breakdown, {data: reply, runtime: {client: {}, clock: {}} as never, track: state.track as unknown as BoundTrack,
-      tag: 'B', identity: '1:9', from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
+      tag: 'B', identity: '1:9', namedAt: gatedHour(20), from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
     const chart = host.__bombingBreakdown!;
     assert.equal(chart.text.valueLabel, 'Damage'); assert.equal(chart.text.countLabel, 'Locations');
     assert.equal(chart.text.unit, 'building levels'); assert.match(chart.footnote as string, /Some damage may be missing/);
@@ -355,9 +356,11 @@ test('bombing parts retain exact corrections, selectable positive history and co
 test('bombing Drill follows the shared clock from a campaign view and rejects replaced client controls', async () => {
   const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
   state.data = validateMilitaryAirReply(bombingData()); globals.__airDrill = state;
+  state.groups = { retry() {}, data: { branchId: 'branch', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
+    unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: ['A', 'B', 'C'].map((tag, slot) => ({ tag, identities: [{ slot, countryId: 9, firstHour: 10, lastHour: 20 }] })) } };
   const vite = await server({ ...common,
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__airDrill.data, track: globalThis.__airDrill.track, retry() {} });',
-    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => globalThis.__airDrill.groups;',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777";',
     '/charts/butterfly/index.ts': 'export const ButterflyChart = props => { globalThis.__airDrill.butterfly = props; return null; };',
     '/dashboard/BombingDrill.tsx': 'export default props => { globalThis.__airDrill.bombing = props; return null; };',

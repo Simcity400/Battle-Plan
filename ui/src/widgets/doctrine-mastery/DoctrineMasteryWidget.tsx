@@ -31,6 +31,7 @@ import type { TrackNumbers } from './doctrineMasteryData';
 import { OPTIONS } from './definition';
 import './doctrineMastery.css';
 import type { DoctrineMasteryReply, DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -63,8 +64,8 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const hourShown = () => drawn.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
   const describedAt = gate.recorded(describing?.hour);
-  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing && describedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describedAt } } : null,
+  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing && describedAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describedAt } }) : null,
   active && describing !== null, validateDoctrineRewards, track?.source);
   const menu = useContextMenu('Doctrine mastery');
   const tracks = useMemo(() => new Map<string, { folder: MasteryFolder; item: MasteryTrack }>(shown.flatMap(folder =>

@@ -57,6 +57,7 @@ import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import { regionFollows, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const HOLDERS = { holders: true };
@@ -208,8 +209,8 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   const viewport = useViewportHeight();
   const menu = useContextMenu('Resource actions');
   const owner = useId();
-  const sizes = useProduct(runtime.client, campaign ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, active, validateResourceSizes, track.source);
+  const sizes = useProduct(runtime.client, campaign ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null, active, validateResourceSizes, track.source);
   const colours = useMemo(() => partColours(tokens), [tokens]);
   const cells = useRef(new Map<number, RowCells>());
   const head = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
@@ -338,10 +339,10 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const gate = useGate(runtime, widget, SPEC, active);
   const atHead = useHeadProduct<ResourceBalanceReply>(runtime, gate, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
     structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
-  const request = (hour: GatedHour) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } });
+  const request = (hour: GatedHour) => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } }));
   const sized = gate.span(extent[0], extent[1]);
-  const sizes = useProduct(runtime.client, sized ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
-    params: { branchId: track.branch.id, country: countryFromKey(tag), from: sized.firstHour, to: sized.lastHour } } : null, active, validateResourceSizes, track.source);
+  const sizes = useProduct(runtime.client, sized ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
+    params: { branchId: track.branch.id, country: countryFromKey(tag), from: sized.firstHour, to: sized.lastHour } }) : null, active, validateResourceSizes, track.source);
   const hoverAt = gate.recorded(hoverHour, within);
   const hovered = useProduct(runtime.client, hoverAt === null ? null : request(hoverAt), active, validateResourceBalance, track.source);
   useDiagnostics(onDiagnostics, atHead.data ? [...atHead.data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);

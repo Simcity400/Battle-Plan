@@ -40,6 +40,7 @@ import './divisionLog.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useDistinctState } from '../../dashboard/useDistinctState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly LogRow<DivisionLogEntry>[] = [];
 const sameKeys = (held: readonly LogRow<DivisionLogEntry>[], next: readonly LogRow<DivisionLogEntry>[]) => held.length === next.length
@@ -58,8 +59,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const last = track?.branch.lastHour ?? 0;
   const cut: LogCut = follow ? { follow: true, offset: track?.axisOffset ?? 0 }
     : { follow: false, hour: widget.time.mode === 'campaign' || !window ? null : Math.floor(window.lastHour) };
-  const manifest = useProduct<DivisionLogManifestReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'division-log-manifest', params: { branchId: track.branch.id } } : null, active, validateDivisionManifest);
+  const manifest = useProduct<DivisionLogManifestReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'division-log-manifest', params: { branchId: track.branch.id } }) : null, active, validateDivisionManifest);
   const campaign = track?.source.metadata.campaignKey ?? '';
   const branch = track?.branch.id ?? '';
   const templatesValue = typeof options.templates === 'string' ? options.templates : '';
@@ -87,9 +88,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   [track, manifest.data?.available, waiting, facets, logSpan?.firstHour, logSpan?.lastHour]);
   const list = useLogPages<DivisionLogEntry>(runtime.client, runtime.clock, spec, cut, active, divisionEntry);
   const counted = useMemo(() => [...(options.totals === true ? facets[0].values : []), VANISHED], [options.totals, facets]);
-  const countRequests = useMemo(() => spec ? counted.map(kind => ({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
+  const countRequests = useMemo(() => spec ? counted.map(kind => (productRequest({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
     params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], countries: [] }, ...facets.slice(1)],
-      from: spec.firstHour, to: spec.lastHour, binHours: countBinHours(first, last) } })) : [], [spec, counted, facets, first, last]);
+      from: spec.firstHour, to: spec.lastHour, binHours: countBinHours(first, last) } }))) : [], [spec, counted, facets, first, last]);
   const validateCounts = useCallback((value: unknown) => validateLogCounts(value, first, last), [first, last]);
   const kindCounts = useProducts<LogCounts>(runtime.client, countRequests, active, validateCounts, track?.source);
   const until = cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : cut.hour;
@@ -129,7 +130,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const placesAt = follow ? list.at : null;
   const places = useMemo(() => divisionPlaces(named, placesAt), [named, placesAt]);
   const readPlaces = useCallback((asked: readonly { provinceId: number; hour: number }[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client,
-    { sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch, places: asked, states: [] } },
+    productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch, places: asked, states: [] } }),
     signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
   [runtime.client, track, branch]);
   const placeReads = useKeyedReads<{ provinceId: number; hour: number }, PlaceName>(placesOwner, places, active, place => placeKey(place.provinceId, place.hour), readPlaces);

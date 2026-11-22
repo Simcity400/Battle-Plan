@@ -32,6 +32,7 @@ import { changeHours, countdownTexts, electionValues, electionsAt, electionsStat
 import type { ElectionRow } from './nextElectionsData';
 import './nextElections.css';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly ElectionRow[] = [];
 const NO_WARNINGS: string[] = [];
@@ -81,8 +82,8 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'elections' } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'elections' } }) : null;
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);

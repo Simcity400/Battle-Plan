@@ -23,6 +23,7 @@ const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/flow/FlowDiagram.tsx': capture('FlowDiagram'),
   '/widgets/trade-flows/useTradeFlows.ts': source('useTradeFlows'),
   '/dashboard/raids.ts': source('useRaidLog'),
+  '/dashboard/widgetPerf.ts': source('useShownHour'),
 };
 const stubs = { name: 'time-findings', enforce: 'pre' as const, transform(code: string, id: string) {
   const path = id.replaceAll('\\', '/').split('?')[0];
@@ -31,9 +32,9 @@ const stubs = { name: 'time-findings', enforce: 'pre' as const, transform(code: 
 
 interface Ask { product: string; hour: number | null; hours: number[]; params: Record<string, unknown> | null }
 interface Read { text: string; drillOpen: boolean; drill: string; day: string | null; asks: Ask[]; options: [string, unknown][]; pins: unknown[];
-  follows: string[]; followLog: string[]; buttons: string[]; errors: string[] }
+  follows: string[]; followLog: string[]; buttons: string[]; errors: string[]; shown: (number | null)[] }
 const KINDS = ['production-lines', 'world-tension', 'training-queue', 'occupation-trend', 'diplomatic-relations', 'general-career', 'navy-size', 'fuel', 'raid-tally', 'volunteers', 'equipment-produced',
-  'stability', 'weather-by-region', 'trade-flows', 'factories', 'scoreboard', 'resource-balance', 'research', 'casualties', 'equipment-stockpile'];
+  'stability', 'weather-by-region', 'trade-flows', 'factories', 'scoreboard', 'resource-balance', 'research', 'casualties', 'equipment-stockpile', 'autonomy'];
 const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<void>) => withNativePage('time-findings', '/ui/src/dashboard/timeFindings.dom.fixture.tsx',
   page => page.stage('time findings', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.findings.${expression}`);
@@ -456,7 +457,8 @@ test('30. World tension’s saved breakdown told to follow playback registers it
 
 test('31. Production lines’ breakdown following playback across a 720-hour bucket asks each bucket once, at its first recorded hour', () => onPage(async act => {
   const line = await act<string>('lineToken("GER", "k1")');
-  const shown = await act<Read>(scene({ kind: 'production-lines', time: { mode: 'follow' }, hour: 715, last: 1600, requestsWhilePlaying: true, countries: GER, groups: groupsOf(['GER']),
+  const long = { ...groupsOf([]), countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 1600 }] }] };
+  const shown = await act<Read>(scene({ kind: 'production-lines', time: { mode: 'follow' }, hour: 715, last: 1600, requestsWhilePlaying: true, countries: GER, groups: long,
     options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') }, replies: { 'production-lines': LINES } }));
   const played = await act<Read & { hour: number; playing: boolean }>('play(1, 10, 1000)');
   assert.ok(played.playing && played.hour >= 723, `playback crosses 720: ${played.hour}`);
@@ -496,11 +498,10 @@ test('35. Fuel’s held country is read under its alias at each request’s hour
   const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
   assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
   const gained = await act<Read & { pressed: boolean }>('press("Fuel gained")');
-  assert.ok(gained.pressed, 'the gain breakdown is shown');
-  const moved = await act<Read>('seek(108)');
+  assert.ok(gained.pressed && gained.drillOpen, 'the gain breakdown is shown, held at 103');
   const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 108)');
-  const named = [...gained.asks, ...moved.asks, ...hovered.asks].filter(ask => ask.product === 'country-fuel' && ask.hour === 108).map(ask => ask.params?.country);
-  assert.ok(hovered.called && named.length > 0 && named.every(country => country === 'GDR'), `reads at 108 name the held country’s alias: ${JSON.stringify(named)}`);
+  const named = hovered.asks.filter(ask => ask.product === 'country-fuel' && ask.hour === 108).map(ask => ask.params?.country);
+  assert.ok(hovered.called && named.length > 0 && named.every(country => country === 'GDR'), `the hover at 108 names the held country’s alias: ${JSON.stringify(hovered.asks)}`);
 }));
 
 test('36. Stability pinned at 103 holds GER through its rename: the history is read by the held identity within its runs, and a hover at 108 never reads the new GER', () => onPage(async act => {
@@ -531,4 +532,63 @@ test('39. Resource balance’s saved breakdown on its “First resource” setti
   const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { show: 'resource' }, groups: groupsOf(['GER']),
     replies: { 'resource-balance': RESOURCES } }));
   assert.ok(!/Resource unavailable/.test(shown.text), `the setting chooses the first resource: ${shown.text}`);
+}));
+
+test('40. World tension’s breakdown open and paused at 105 is the region that reports its hour: when the following parent leaves the branch, nothing reports the parent’s hour or its missing read', () => onPage(async act => {
+  await act(scene({ kind: 'world-tension', time: { mode: 'follow' }, hour: 105, replies: { 'world-tension': TENSION } }));
+  const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 105)');
+  assert.ok(opened.called && opened.drillOpen, `the breakdown opens: ${opened.text}`);
+  const paused = await act<Read & { pressed: boolean }>('press("Follow playback")');
+  assert.ok(paused.pressed && paused.drillOpen, 'the breakdown pauses at 105');
+  const left = await act<Read>('seek(112)');
+  assert.ok(left.drillOpen, 'the paused breakdown stays open');
+  assert.deepEqual(left.shown.filter(hour => hour !== 105), [], `only the breakdown’s hour is reported: ${JSON.stringify(left.shown)}`);
+}));
+
+test('41. Factories: GER picked at 103 and pinned after GER passes to another country pins the country it picked, by its verified identity', () => onPage(async act => {
+  await act(scene({ kind: 'factories', time: { mode: 'follow' }, hour: 103, countries: GER, groups: RENAMED }));
+  const opened = await act<Read & { called: boolean }>('call("CountryRaceView", "onPick", 103, "GER")');
+  assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
+  await act('seek(108)');
+  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
+  const saved = pinned.pins[0] as { countries: unknown; options: Record<string, unknown> } | undefined;
+  assert.ok(pinned.pressed && saved, `the breakdown pins: ${JSON.stringify(pinned.buttons)}`);
+  const token = saved.options.partsCountry;
+  assert.equal(typeof token, 'string', `the pin saves the picked country’s identity: ${JSON.stringify(saved.options)}`);
+  const country = JSON.parse(await act<string>(`content(${JSON.stringify(token)})`)) as { tag: string; originOffset: number };
+  assert.deepEqual([country.tag, country.originOffset, saved.countries], ['GER', 3, GER], 'the pin holds the country picked at 103');
+}));
+
+const REUSED = { ...groupsOf([]), countryIdentities: [
+  { tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 104 }] },
+  { tag: 'ENG', identities: [{ slot: 1, countryId: 102, firstHour: 105, lastHour: 109 }] }] };
+
+test('42. Stability pinned at 103 on GER, whose slot ENG holds from 105: its parts and their names are read only within GER’s own runs', () => onPage(async act => {
+  const shown = await act<Read>(scene({ kind: 'stability', time: pinAt(103), hour: 103, countries: GER, options: { show: 'stability' }, groups: REUSED,
+    replies: { 'series-parts': '({ branchId: "1", partBits: 32, owners: [{ country: 1, parts: [{ part: "1", firstHour: params.from, lastHour: params.to }], missing: [] }] })' } }));
+  const parts = shown.asks.filter(ask => ask.product === 'series-parts');
+  assert.ok(parts.length > 0 && parts.every(ask => (ask.params?.to as number) <= 104), `the part catalogue stays inside GER’s runs: ${JSON.stringify(parts.map(ask => ask.params))}`);
+  const names = shown.asks.filter(ask => ask.product === 'stability-part-names');
+  assert.ok(names.every(ask => (ask.hour ?? 0) <= 104), `part names are read while GER holds the slot: ${JSON.stringify(names.map(ask => ask.params))}`);
+}));
+
+const SUBJECTS = `({ branchId: '1', warnings: [], unobserved: [], levels: [{ token: 'puppet', name: 'Puppet', ordered: true }],
+  runs: [{ firstHour: 100, lastHour: 109, overlord: 'ENG', subject: 'GER', startHour: 100, steps: [{ firstHour: 100, lastHour: 109, level: 'puppet' }] }] })`;
+
+test('43. Autonomy of the human subjects at 108: hovering 103, before GER joins the humans, reads nothing for GER', () => onPage(async act => {
+  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { countriesAre: 'subjects' },
+    groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { subjects: SUBJECTS } }));
+  const hovered = await act<Read & { called: boolean }>('call("Timeline", "onHover", 103)');
+  assert.ok(hovered.called, 'the timeline takes the hover');
+  const early = hovered.asks.flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]).filter(read => read.hour === 103);
+  assert.deepEqual(early, [], `no read names GER at 103: ${JSON.stringify(hovered.asks)}`);
+}));
+
+test('44. Production lines’ saved breakdown pinned at 105 offers Follow playback on its own surface', () => onPage(async act => {
+  const line = await act<string>('lineToken("GER", "k1")');
+  const shown = await act<Read>(scene({ kind: 'production-lines', time: pinAt(105), hour: 108, countries: GER, groups: groupsOf(['GER']),
+    options: { show: 'efficiency', line, productionCountry: await act<string>('identityToken(0)') }, replies: { 'production-lines': LINES } }));
+  assert.ok(shown.buttons.includes('Follow playback'), `the saved breakdown can follow: ${JSON.stringify(shown.buttons)}`);
+  const lines = shown.asks.filter(ask => ask.product === 'production-lines' || ask.product === 'production-line-breakdown');
+  assert.ok(lines.some(ask => ask.params?.country === 1 && Array.isArray(ask.params?.within)), `the breakdown reads the held identity within its runs: ${JSON.stringify(lines.map(ask => ask.params))}`);
 }));

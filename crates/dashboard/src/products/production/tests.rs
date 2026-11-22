@@ -99,7 +99,7 @@ fn step(first: i32, last: i32, starts: bool, variant: &str, active: i32) -> line
 fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_published_count() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into() };
+    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: None };
     let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
     assert_eq!(keys, ["1#1", "2#1"], "ITA's line is not GER's; a line the alias produced is");
@@ -122,13 +122,16 @@ fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_publish
     let variants: Vec<&str> = reply.variants.iter().map(|variant| variant.id.as_str()).collect();
     assert_eq!(variants, ["100", "101", "200"]);
     assert!(reply.variants.iter().all(|variant| variant.name.is_none() && variant.name_unknown.is_some()), "a name not known says why, never blank");
+    let held = ProductionLinesParams { within: Some(vec![crate::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }]), ..params };
+    let within = lines_reply(&source, &query, &held, &no_content(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(within.lines[0].steps, [step(1_000, 1_099, true, "100", 2)], "a held identity's lines are read only within its own runs");
 }
 
 #[test]
 fn a_detail_window_holds_every_value_and_each_output_change_of_the_lines_in_it() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1 };
+    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1, within: None };
     let reply = detail_reply(&source, &query, &params, &AtomicBool::new(false)).unwrap();
     assert_eq!((reply.first_hour, reply.last_hour), (720, 1_439));
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();

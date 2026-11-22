@@ -13,6 +13,7 @@ import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products.ts';
 import { busyWait } from '../shell/busy.ts';
 import { PerClient } from './prepare.ts';
+import { productRequest } from './request.ts';
 
 export type FlagRead = Readonly<{ url?: string; image?: CountryFlagImage; reason?: string }>;
 export interface FlagAt { tag: string; branchId: string; hour: number }
@@ -113,8 +114,8 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
   let reply: CountryFlagReply | undefined, retryable = false;
   let failure: Failure = new Error('Flag drawing failed');
   try {
-    reply = await loadTransientProduct<CountryFlagReply>(client, { sourceId: recording.id, revision: recording.revision, product: 'country-flags',
-      params: { flags: batch.map(([, choice]) => choice), size } }, owner.controller.signal);
+    reply = await loadTransientProduct<CountryFlagReply>(client, productRequest({ sourceId: recording.id, revision: recording.revision, product: 'country-flags',
+      params: { flags: batch.map(([, choice]) => choice), size } }), owner.controller.signal);
   } catch (error) {
     retryable = transientError(error);
     failure = asFailure(error);
