@@ -68,10 +68,12 @@ impl NativeBitmap {
             return Err(invalid("BMP is short of its native pixel rows"));
         }
         let mut bytes = vec![0; written as usize];
-        for y in 0..height {
-            let source = start + y * padded;
-            bytes[y * advance..y * advance + padded]
-                .copy_from_slice(&data[source..source + padded]);
+        if padded > 0 {
+            for y in 0..height {
+                let source = start + y * padded;
+                bytes[y * advance..y * advance + padded]
+                    .copy_from_slice(&data[source..source + padded]);
+            }
         }
         Ok(Self {
             width: width as usize,
@@ -81,6 +83,17 @@ impl NativeBitmap {
             pitch: advance,
             bytes,
         })
+    }
+
+    pub(crate) fn require_rgb(&self) -> io::Result<()> {
+        let last = (self.height - 1)
+            .checked_mul(self.pitch)
+            .and_then(|row| (self.width - 1).checked_mul(self.components)?.checked_add(row))
+            .and_then(|at| at.checked_add(3));
+        match last {
+            Some(end) if end <= self.bytes.len() => Ok(()),
+            _ => Err(invalid("pixel reads outside the native bitmap storage")),
+        }
     }
 
     fn at(&self, x: usize, y: usize, length: usize) -> io::Result<&[u8]> {

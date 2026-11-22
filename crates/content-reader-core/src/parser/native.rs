@@ -555,6 +555,7 @@ pub struct Reader<'n> {
     names: Option<&'n KeyNames>,
     stopped: bool,
     effect_scope: Option<u32>,
+    recover_unsettled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -570,7 +571,17 @@ pub fn read<S: Copy>(
     names: Option<&KeyNames>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, None, dispatch)
+    read_scoped(bytes, mode, top, names, None, false, dispatch)
+}
+
+pub(crate) fn read_recovering<S: Copy>(
+    bytes: &[u8],
+    mode: Mode,
+    top: Top<S>,
+    names: Option<&KeyNames>,
+    dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
+) -> Read {
+    read_scoped(bytes, mode, top, names, None, true, dispatch)
 }
 
 pub fn read_in_effect_scope<S: Copy>(
@@ -581,7 +592,7 @@ pub fn read_in_effect_scope<S: Copy>(
     scope: u32,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
-    read_scoped(bytes, mode, top, names, Some(scope), dispatch)
+    read_scoped(bytes, mode, top, names, Some(scope), false, dispatch)
 }
 
 fn read_scoped<S: Copy>(
@@ -590,12 +601,14 @@ fn read_scoped<S: Copy>(
     top: Top<S>,
     names: Option<&KeyNames>,
     scope: Option<u32>,
+    recover_unsettled: bool,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
     crate::content::io_counts::parse(std::any::type_name::<S>(), bytes);
     let mut reader = Reader::new(lex(bytes, mode));
     reader.names = names;
     reader.effect_scope = scope;
+    reader.recover_unsettled = recover_unsettled;
     let items = match top {
         Top::File(node) => reader.file(node, dispatch),
         Top::Persistent(node) => reader.object_with_notes(node, dispatch, true),
@@ -643,6 +656,7 @@ impl<'n> Reader<'n> {
             names: None,
             stopped: false,
             effect_scope: None,
+            recover_unsettled: false,
         }
     }
 
@@ -1216,6 +1230,9 @@ impl<'n> Reader<'n> {
             }
             Shape::ByKey => {
                 if opens && self.current.kind != Kind::Open {
+                    if self.recover_unsettled {
+                        return Value::Scalar(value.text.clone());
+                    }
                     self.unsettled = Some(Misread {
                         kind: crate::DiagnosticKind::Unsettled,
                         count: None,
@@ -1280,6 +1297,10 @@ impl<'n> Reader<'n> {
                 Value::Scalar(value.text.clone())
             }
             Shape::Unsettled(why) => {
+                if self.recover_unsettled {
+                    self.skip_reported();
+                    return Value::Block(Vec::new());
+                }
                 self.unsettled = Some(Misread {
                     kind: crate::DiagnosticKind::Unsettled,
                     count: None,
@@ -1758,6 +1779,19 @@ impl<'n> Reader<'n> {
     fn color(&mut self, key: &Token) -> Value {
         let current = self.current();
         if current.kind == Kind::Bare && super::number_token(&current.text, false) {
+            if matches!(
+                crate::crt::scan_x32(&current.text),
+                crate::crt::Scanned::NoMatch
+            ) {
+                self.misread(
+                    key.line,
+                    format!(
+                        "field {} has {} where the colour reader reads a packed hexadecimal colour: it is reported and the previous colour is kept",
+                        key.shown(),
+                        current.shown()
+                    ),
+                );
+            }
             return Value::Scalar(current.text);
         }
         if current.kind != Kind::Open {
@@ -1903,6 +1937,10 @@ impl<'n> Reader<'n> {
             return None;
         }
         if let Some(variable) = definition {
+            if self.recover_unsettled {
+                self.skip_block();
+                return Some(Vec::new());
+            }
             self.unsettled = Some(Misread {
                 kind: crate::DiagnosticKind::Unsettled,
                 count: None,
