@@ -30,7 +30,7 @@ pub mod writer;
 
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use collect::records_of;
-pub use read::{HourCursor, Parallel};
+pub use read::HourCursor;
 pub use records::{CaptureStop, Cursor, Records, RecoveryNote};
 
 pub const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";

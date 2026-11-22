@@ -825,11 +825,11 @@ fn port_boundary(
     grouping: PortGrouping,
     first: naval_regional::SortKey,
     next: naval_regional::SortKey,
-    first_side: Allegiance,
-    next_side: Allegiance,
+    first_owner: (u32, Option<Allegiance>),
+    next_owner: (u32, Option<Allegiance>),
 ) -> bool {
     if grouping.allegiance {
-        naval_regional::allegiance_break(first_side, next_side, first.selected, next.selected)
+        naval_regional::allegiance_break(first_owner, next_owner, first.selected, next.selected)
     } else {
         naval_regional::compare(first, next, grouping.coarse) < 0
     }
@@ -838,13 +838,13 @@ fn port_boundary(
 fn port_runs(
     grouping: PortGrouping,
     keys: &[naval_regional::SortKey],
-    side: impl Fn(usize) -> Allegiance,
+    owner: impl Fn(usize) -> (u32, Option<Allegiance>),
 ) -> Vec<std::ops::Range<usize>> {
     let mut runs = Vec::new();
     let mut start = 0;
     for next in 1..=keys.len() {
         if next == keys.len()
-            || port_boundary(grouping, keys[start], keys[next], side(start), side(next))
+            || port_boundary(grouping, keys[start], keys[next], owner(start), owner(next))
         {
             runs.push(start..next);
             start = next;
@@ -1230,13 +1230,12 @@ fn port_items(
                     continue;
                 }
             };
-            let flotillas: Vec<_> =
-                port_runs(grouping, &keys, |at| tables.countries.side(units[at].slot))
-                    .into_iter()
-                    .map(|run| {
-                        context.flotilla(&units[run].iter().collect::<Vec<_>>(), true, false)
-                    })
-                    .collect();
+            let flotillas: Vec<_> = port_runs(grouping, &keys, |at| {
+                (units[at].slot, tables.countries.known_side(units[at].slot))
+            })
+            .into_iter()
+            .map(|run| context.flotilla(&units[run].iter().collect::<Vec<_>>(), true, false))
+            .collect();
             if let Some(memo) = retained.as_deref_mut() {
                 memo.0.insert(
                     province,

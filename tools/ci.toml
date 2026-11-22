@@ -142,6 +142,15 @@ unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
 
 [[job]]
+name = "smoke-tests"
+group = "tools"
+tier = "check"
+toolchain = "python"
+inputs = ["tools/smoke.ps1", "tools/smoke.tests.ps1", "tools/game-clock.ps1"]
+ci-only = true
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tools/smoke.tests.ps1"]
+
+[[job]]
 name = "ui-typecheck"
 group = "ui"
 tier = "check"

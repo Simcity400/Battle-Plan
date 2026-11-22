@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::textures::load_uploadable;
 
 use eframe::wgpu;
-use content_reader_core::ResolvedLayers;
+use content_reader_core::{ResolvedLayers, defines::Defines};
 use content_reader_image::{dds, native::Decode};
 
 use viewer_foundation::map::{
@@ -22,8 +22,29 @@ pub const BODY_MIN_INDEX: u8 = 3;
 pub const BODY_MAX_INDEX: u8 = 99;
 pub const MIN_RIVER_POINTS: usize = 3;
 
-pub const RIVER_FADE_FROM: f32 = 20.0;
-pub const RIVER_FADE_TO: f32 = 3.0;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiverDefines {
+    pub fade_from: f32,
+    pub fade_to: f32,
+}
+
+impl RiverDefines {
+    pub fn load(defines: &Defines) -> io::Result<Self> {
+        let read = |name: &str| -> io::Result<f32> {
+            let value = defines.fixed5("NGraphics", name)?;
+            Ok(value as f32 / 100_000.0)
+        };
+        let fade_from = read("RIVER_FADE_FROM")?;
+        let fade_to = read("RIVER_FADE_TO")?;
+        if !(fade_from.is_finite() && fade_to.is_finite()) || fade_from <= fade_to {
+            return Err(invalid(format!(
+                "NDefines.NGraphics.RIVER_FADE_FROM ({fade_from}) must exceed \
+                 NDefines.NGraphics.RIVER_FADE_TO ({fade_to})"
+            )));
+        }
+        Ok(Self { fade_from, fade_to })
+    }
+}
 
 pub const WIDTH_BASE: f32 = 0.60;
 pub const WIDTH_PER_INDEX: f64 = 0.17;
@@ -400,7 +421,11 @@ impl RiverMesh {
     }
 }
 
-pub fn build(image: &RiverImage<'_>, heights: &HeightField<'_>) -> io::Result<(RiverMesh, Trace)> {
+pub fn build(
+    image: &RiverImage<'_>,
+    heights: &HeightField<'_>,
+    defines: RiverDefines,
+) -> io::Result<(RiverMesh, Trace)> {
     heights.validate()?;
     if heights.width != image.width || heights.height != image.height {
         return Err(invalid(format!(
@@ -411,7 +436,7 @@ pub fn build(image: &RiverImage<'_>, heights: &HeightField<'_>) -> io::Result<(R
     let trace = trace(image)?;
     let mut mesh = RiverMesh::default();
     for river in &trace.rivers {
-        ribbon(river, heights, &mut mesh);
+        ribbon(river, heights, defines, &mut mesh);
     }
     Ok((mesh, trace))
 }
@@ -472,7 +497,7 @@ fn quads(
     }
 }
 
-fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
+fn ribbon(river: &River, heights: &HeightField<'_>, defines: RiverDefines, mesh: &mut RiverMesh) {
     let mut points = river.points.clone();
     smooth_river(&mut points);
     let count = points.len();
@@ -491,14 +516,15 @@ fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
         total += f64::from(length);
     }
     halves.push(halves[count - 2]);
-    let unfaded = (total - f64::from(RIVER_FADE_FROM)).max(0.0);
+    let unfaded = (total - f64::from(defines.fade_from)).max(0.0);
     let mut along = 0.0_f64;
     let mut alphas: Vec<f32> = lengths
         .iter()
         .map(|&length| {
             along += f64::from(length);
             let distance = if junction { along } else { total - along };
-            let alpha = 1.0 - (distance - unfaded) / f64::from(RIVER_FADE_FROM - RIVER_FADE_TO);
+            let alpha =
+                1.0 - (distance - unfaded) / f64::from(defines.fade_from - defines.fade_to);
             (alpha as f32).clamp(0.0, 1.0)
         })
         .collect();

@@ -4217,8 +4217,20 @@ impl Countries {
         flags.acquire(&keys.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
-    fn side(&self, slot: u32) -> Allegiance {
-        self.sides.get(&slot).copied().unwrap_or(Allegiance::Other)
+    fn known_side(&self, slot: u32) -> Option<Allegiance> {
+        self.sides.get(&slot).copied()
+    }
+
+    fn is_ours(&self, slot: u32) -> bool {
+        self.known_side(slot) == Some(Allegiance::Ours)
+    }
+
+    fn same_allegiance_group(&self, a: u32, b: u32) -> bool {
+        a == b
+            || matches!(
+                (self.known_side(a), self.known_side(b)),
+                (Some(first), Some(other)) if first == other
+            )
     }
 
     fn flag_keys(&self, slot: u32) -> Option<Vec<String>> {

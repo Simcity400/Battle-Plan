@@ -166,12 +166,14 @@ fn serial_core(census: &mut Census, memory: &impl Memory, limit: usize) {
         let provinces = Array::read(memory, roots.state + cgame_state::PROVINCES, 8)
             .ok_or("province array unreadable or invalid")?;
         for index in 0..census.entries.len().min(limit) {
+            let mut theatres = ctheatre::UnitTheatres::default();
             let row = project(
                 memory,
                 &roots.countries,
                 census.entries[index],
                 &census.unit_inputs.as_ref().unwrap().seeds[index],
                 &mut CoreIdentities::new(roots.base, provinces),
+                &mut TheatreLookup::new(&mut theatres),
             )?;
             Census::count_division(
                 &mut census.counts,
@@ -193,9 +195,7 @@ fn serial_core(census: &mut Census, memory: &impl Memory, limit: usize) {
     census.core_captured = true;
 }
 
-// quarantine: #146 not updated for the format 142 capture additions
 #[test]
-#[ignore = "quarantined under #146"]
 fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
     use crate::sampling::divisions_test_kit as kit;
     let mut bytes = kit::fixture();

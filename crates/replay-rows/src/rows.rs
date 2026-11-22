@@ -442,6 +442,10 @@ pub trait RowCodec: Default + Clone + Eq {
     const KEY_BITS: u32;
     fn key(&self) -> u128;
     fn check_key_fields(&self) -> io::Result<()>;
+    fn check_selected_fields(&self, mask: u64) -> io::Result<()> {
+        let _ = mask;
+        self.check_key_fields()
+    }
     fn not_recorded_fields(&self) -> u64;
     fn differing_fields(&self, previous: &Self) -> u64 {
         let _ = previous;
@@ -1620,6 +1624,24 @@ fn column_context(error: io::Error, key: u128, column: &str) -> io::Error {
 macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
+        typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked, mask| {
+                let all = full_mask(Self::SCHEMA.len());
+                if mask & all == all {
+                    $check
+                } else {
+                    Ok(())
+                }
+            }
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident, $mask:ident| $check:expr) => {
         $crate::row!($ty, |$key_name| $initial, { $(($($field)+): $kind),+ });
         #[cfg(any(test, feature = "test-support"))]
         impl $crate::checkpoint::endpoint::sparse::SparseReference for $ty {
@@ -1664,7 +1686,8 @@ macro_rules! typed_codec {
             fn round_to_display(&mut self) {
                 $(round_native_field(&mut self.$($field)+, $crate::display_step!($($step)?));)+
             }
-            fn check_key_fields(&self) -> io::Result<()> { let $checked = self; $check }
+            fn check_key_fields(&self) -> io::Result<()> { self.check_selected_fields(full_mask(Self::SCHEMA.len())) }
+            fn check_selected_fields(&self, $mask: u64) -> io::Result<()> { let $checked = self; $check }
             fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 $(NativeValue::visit_field_gaps(&self.$($field)+, visit);)+
             }
@@ -1793,6 +1816,7 @@ macro_rules! typed_codec {
                 $(if mask & (1_u64 << $index) != 0 {
                     row.$($field)+ = from_wire_field(wire($index)?, $crate::display_step!($($step)?)).map_err($crate::rows::column_error(key, stringify!($($field)+)))?;
                 })+
+                row.check_selected_fields(mask)?;
                 Ok(row)
             }
             #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]

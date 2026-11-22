@@ -25,6 +25,7 @@ use viewer_foundation::map::{
     province_admission::Admission,
     perspective::{Choice, Sight, Vision},
     province_map::HeightField,
+    province_schedule::ProvinceSet,
     unit_rules::STANDSTILL,
 };
 use viewer_world::map::{
@@ -238,12 +239,13 @@ struct Member {
     read_at: u32,
     seen: bool,
     stale: bool,
-    pick: Option<(PickRoute, Option<u32>)>,
+    roster: Option<u32>,
+    pick: Option<PickRoute>,
 }
 
 impl Default for Member {
     fn default() -> Self {
-        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, pick: None }
+        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, roster: None, pick: None }
     }
 }
 
@@ -363,8 +365,8 @@ pub struct Units {
     admission: Option<Admission>,
     camera_dirty: bool,
     showing: bool,
-    province_known: Vec<u64>,
-    province_in: Vec<u64>,
+    province_known: ProvinceSet,
+    province_in: ProvinceSet,
     deferred: Vec<u64>,
     deferred_count: usize,
     combat_dirty: bool,
@@ -426,8 +428,8 @@ impl Units {
             admission: None,
             camera_dirty: false,
             showing: false,
-            province_known: Vec::new(),
-            province_in: Vec::new(),
+            province_known: ProvinceSet::default(),
+            province_in: ProvinceSet::default(),
             deferred: Vec::new(),
             deferred_count: 0,
             combat_dirty: false,
@@ -549,11 +551,11 @@ impl Units {
         for slot in slots {
             let Some(member) = self.members.get(slot as usize) else { continue };
             let Some((province, owner)) = member.sighted else { continue };
-            let (route, roster) = member.pick.unzip();
+            let route = member.pick;
             divisions.entry(province).or_default().push(PickDivision {
                 id: member.id,
                 owner,
-                roster: roster.flatten(),
+                roster: member.roster,
                 kind: route.and_then(|route| route.kind),
                 hop: route.and_then(|route| route.hop),
                 unrouted: route.map(|route| route.unrouted),
@@ -599,18 +601,10 @@ impl Units {
         if self.admission.is_none() {
             return true;
         }
-        let (word, bit) = (province as usize / 64, 1u64 << (province % 64));
-        if word >= self.province_known.len() {
-            self.province_known.resize(word + 1, 0);
-            self.province_in.resize(word + 1, 0);
+        if self.province_known.insert(province) && self.admits(province) {
+            self.province_in.insert(province);
         }
-        if self.province_known[word] & bit == 0 {
-            self.province_known[word] |= bit;
-            if self.admits(province) {
-                self.province_in[word] |= bit;
-            }
-        }
-        self.province_in[word] & bit != 0
+        self.province_in.contains(province)
     }
 
     fn wanted(&mut self, slot: u32, divisions: Option<&Mirror>) -> bool {
@@ -642,8 +636,8 @@ impl Units {
         self.camera_dirty = false;
         let (size, defines) = self.ground.map();
         self.admission = self.camera.filter(|(_, viewport)| *viewport != [0, 0]).map(|(placement, viewport)| Admission::new(placement.on(size, defines), viewport));
-        self.province_known.iter_mut().for_each(|word| *word = 0);
-        self.province_in.iter_mut().for_each(|word| *word = 0);
+        self.province_known.clear();
+        self.province_in.clear();
         if self.deferred_count > 0 {
             let divisions = mirrors.get(TableId::Divisions);
             let mut deferred = std::mem::take(&mut self.deferred);
@@ -961,7 +955,7 @@ impl Units {
                 Some(owner_slot) => {
                     let (signature, route) = self.signature(mirrors, id, province);
                     let roster = roster.and_then(|raw| self.links.get(&raw).copied());
-                    self.members[at].pick = route.map(|route| (route, roster));
+                    (self.members[at].pick, self.members[at].roster) = (route, roster);
                     let member = &self.members[at];
                     if member.id != id || member.sighted != Some((province, owner_slot)) || member.read_at == NONE {
                         let (seen, read_at) = seer.sees(id, owner_slot, province);
@@ -976,6 +970,7 @@ impl Units {
             _ => None,
         };
         if key.is_none() {
+            (self.members[at].pick, self.members[at].roster) = (None, None);
             self.index(slot, NONE);
         }
         self.members[at].stale = true;
@@ -1453,7 +1448,8 @@ impl Units {
         self.readers = FastMap::default();
         self.deferred = Vec::new();
         self.deferred_count = 0;
-        (self.province_known, self.province_in, self.statuses) = (Vec::new(), Vec::new(), HashMap::new());
+        (self.province_known, self.province_in, self.statuses) =
+            (ProvinceSet::default(), ProvinceSet::default(), HashMap::new());
         (self.choice, self.sight_epoch) = (None, None);
         self.admission = None;
         if movers {
@@ -1626,8 +1622,8 @@ impl Layer for Units {
             }
             match table {
                 TableId::Divisions => {
-                    let keyed = [columns.province.column, columns.owner.column];
-                    let selected = [columns.template.column, columns.roster.column, columns.expeditionary.column];
+                    let keyed = [columns.province.column, columns.owner.column, columns.roster.column];
+                    let selected = [columns.template.column, columns.expeditionary.column];
                     let mut moved = |slot: u32| {
                         if self.moved.mark(slot, frame) {
                             self.marked[0] += 1;
