@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, io};
 
 use super::{
     Decimal, GameDate, Item, block, boolean, bytes, decimal, field, integer, invalid,
-    required_block, required_bytes, scalar, typed_handle,
+    null_permitted_handle, required_block, required_bytes, scalar, typed_handle,
 };
 
 pub type BuildingKey = (u32, Vec<u8>);
@@ -674,11 +674,13 @@ pub(super) fn parse_with_countries(
                     }
                     Some(b"railway_gun") => {
                         pack.railway_gun_repairs.push(RailwayGunRepair {
-                            id: field(fields, b"id")?.map(typed_handle).transpose()?,
+                            id: field(fields, b"id")?
+                                .map(null_permitted_handle)
+                                .transpose()?,
                             country: country.to_vec(),
                             queue_ordinal: ordinal,
                             railway_gun: field(fields, b"railway_gun")?
-                                .map(typed_handle)
+                                .map(null_permitted_handle)
                                 .transpose()?,
                         });
                     }

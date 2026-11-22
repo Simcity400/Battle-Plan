@@ -261,15 +261,17 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
                 .ok()
                 .map(|at| &rows[at])
         });
-    let Some(status) = status else {
-        return "no status".into();
-    };
     let mut terms = Vec::new();
-    if matches!(status.out_of_supply_days, Recorded::Value(Some(days)) if days != 0) {
-        terms.push("days out of supply");
-    }
-    if status.displayed_supply_ratio().is_some_and(|ratio| ratio < 100_000) {
-        terms.push("partial supply");
+    match status {
+        Some(status) => {
+            if matches!(status.out_of_supply_days, Recorded::Value(Some(days)) if days != 0) {
+                terms.push("days out of supply");
+            }
+            if status.displayed_supply_ratio().is_some_and(|ratio| ratio < 100_000) {
+                terms.push("partial supply");
+            }
+        }
+        None => terms.push("no status"),
     }
     if movement.fuel_limited {
         terms.push("fuel");
@@ -277,14 +279,16 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
     if movement.retreat {
         terms.push("retreat");
     }
-    match &status.commander_modifiers {
-        Recorded::Value(Some(entries)) if entries[1].is_some() => {
-            terms.push("commander armour speed entry");
+    if let Some(status) = status {
+        match &status.commander_modifiers {
+            Recorded::Value(Some(entries)) if entries[1].is_some() => {
+                terms.push("commander armour speed entry");
+            }
+            Recorded::Value(Some(entries)) if entries.iter().any(Option::is_some) => {
+                terms.push("commander");
+            }
+            _ => {}
         }
-        Recorded::Value(Some(entries)) if entries.iter().any(Option::is_some) => {
-            terms.push("commander");
-        }
-        _ => {}
     }
     if terms.is_empty() {
         "none of these".into()
@@ -812,6 +816,24 @@ mod tests {
         checker_empty.observe(&next_empty);
         assert_eq!(checker_empty.differed, 1);
         assert_eq!(checker_empty.differences.get("fuel"), Some(&1));
+
+        let (_, content) =
+            land_fuel_fixture(Recorded::Value(Some(0)), 1_000_000, Some(40_000), 400_000);
+        let mut checker_no_status = Checker::new(Ok(content));
+        let mut next_no_status = next_empty.clone();
+        *next_no_status.tables[replay_data::rows::TableId::DivisionStatus.index()] =
+            replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::DivisionStatus(
+                Vec::new(),
+            ));
+        checker_no_status.observe(&empty);
+        checker_no_status.observe(&next_no_status);
+        assert_eq!(checker_no_status.differed, 1);
+        assert_eq!(
+            checker_no_status.differences.get("no status, fuel"),
+            Some(&1),
+            "{:?}",
+            checker_no_status.differences
+        );
 
         let (partial_penalizing, content) =
             land_fuel_fixture(Recorded::Value(Some(24_000_000)), 1_000_000, Some(40_000), 400_000);

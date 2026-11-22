@@ -158,7 +158,7 @@ pub(super) fn compare_raid_equipment(
         });
     let mut recorded = BTreeSet::new();
     let mut compared = 0;
-    let mut totals_compared = 0;
+    let mut totals_consistent = 0;
     for row in complete::<tables::RaidEquipment>(frame)? {
         let id = (u64::from(row.id) << 32) | u64::from(row.reference_type);
         if !recorded.insert(id) {
@@ -223,29 +223,27 @@ pub(super) fn compare_raid_equipment(
                 Some(&saved.amount),
             );
         }
-        match &archetype_of {
-            Some(archetype_of) => {
-                totals_compared +=
-                    compare_raid_archetype_totals(row, pool, archetype_of, &label, report)
-            }
-            None => report.limitation(
-                "VariantDefinitions is not complete in this frame, so no saved variant's archetype and no raid pool archetype total is derived",
-                format!("{label}.archetype_amounts"),
-            ),
-        }
+        totals_consistent += compare_raid_archetype_totals(
+            row,
+            pool,
+            archetype_of.as_ref(),
+            &label,
+            report,
+        );
     }
     for id in expected.keys().filter(|id| !recorded.contains(id)) {
         missing(report, "RaidEquipment", id, "absent from replay");
     }
     report.compared("RaidEquipment", compared);
-    report.compared("RaidEquipment.archetype_amounts", totals_compared);
     report.limitation(
         "the pool writer omits zero entries unless allow_zero_entries, so omitted zero membership and absolute pool ordinals are not save-certified",
         "RaidEquipment",
     );
     report.limitation(
-        "The pool writer does not write per-archetype totals or addition/removal history; without an unsaturation witness, native order, zero-total membership, and disagreements within the clamp bound +-0x53E2D620FB40 cannot distinguish an unwound saturation clamp from a wrong total and are reported as limitations rather than differences",
-        "RaidEquipment.archetype_tokens",
+        "The pool writer does not write per-archetype totals or addition/removal history; without an unsaturation witness, archetype totals earn no exact comparison credit, and both agreements and disagreements within +-0x53E2D620FB40 are consistency observations rather than save-certified totals",
+        format!(
+            "RaidEquipment.archetype_tokens ({totals_consistent} totals consistent with saved variant sums)"
+        ),
     );
     Ok(())
 }
@@ -253,40 +251,60 @@ pub(super) fn compare_raid_equipment(
 fn compare_raid_archetype_totals(
     row: &replay_data::rows::RaidEquipmentRow,
     saved: &[content_reader_save::production::Equipment],
-    archetype_of: &BTreeMap<u64, u32>,
+    archetype_of: Option<&BTreeMap<u64, u32>>,
     label: &str,
     report: &mut Report,
 ) -> usize {
     const LIMIT: i128 = 0x53e2_d620_fb40;
-    let mut expected: BTreeMap<u32, (i128, bool)> = BTreeMap::new();
-    for entry in saved {
-        let Some(&archetype) = archetype_of.get(&entry.variant) else {
-            report.limitation(
-                "a saved raid pool variant has no VariantDefinitions row (a variant created after the table's last read), so this raid's archetype totals are not derived",
-                format!("{label}: variant {}", entry.variant),
-            );
-            return 0;
-        };
-        let amount = i128::from(entry.amount.raw);
-        let sum = expected.entry(archetype).or_default();
-        sum.0 += amount;
-        sum.1 |= amount.abs() >= LIMIT;
-    }
-    let mut compared = 0;
     let mut seen = BTreeSet::new();
+    let mut in_bound = BTreeMap::new();
     for (&archetype, &total) in row.archetype_tokens.iter().zip(&row.archetype_amounts) {
         let field = format!("{label}.archetype[{archetype}]");
         if !seen.insert(archetype) {
             report.difference(field, "repeated archetype", "one total per archetype");
             continue;
         }
-        let total_wide = i128::from(total);
-        if total_wide.abs() > LIMIT {
-            expected.remove(&archetype);
-            compared += 1;
+        if i128::from(total).abs() > LIMIT {
             report.difference(field, total, format!("within clamp bound +-{LIMIT}"));
             continue;
         }
+        in_bound.insert(archetype, total);
+    }
+    let Some(archetype_of) = archetype_of else {
+        report.limitation(
+            "VariantDefinitions is not complete in this frame, so no saved variant's archetype and no raid pool archetype total is derived",
+            format!("{label}.archetype_amounts"),
+        );
+        return 0;
+    };
+    let mut expected: BTreeMap<u32, (i128, bool)> = BTreeMap::new();
+    let mut missing_definition = false;
+    for entry in saved {
+        let Some(&archetype) = archetype_of.get(&entry.variant) else {
+            missing_definition = true;
+            report.limitation(
+                "a saved raid pool variant has no VariantDefinitions row (a variant created after the table's last read), so this raid's archetype totals are not derived",
+                format!("{label}: variant {}", entry.variant),
+            );
+            continue;
+        };
+        let amount = i128::from(entry.amount.raw);
+        let sum = expected.entry(archetype).or_default();
+        sum.0 += amount;
+        sum.1 |= amount.abs() >= LIMIT;
+    }
+    for (&archetype, &(sum, _)) in &expected {
+        if !seen.contains(&archetype) {
+            report.difference(format!("{label}.archetype[{archetype}]"), "absent", sum);
+        }
+    }
+    if missing_definition {
+        return 0;
+    }
+    let mut consistent = 0;
+    for (archetype, total) in in_bound {
+        let field = format!("{label}.archetype[{archetype}]");
+        let total_wide = i128::from(total);
         let total_at_bound = total_wide.abs() == LIMIT;
         match expected.remove(&archetype) {
             Some((sum, entry_at_bound))
@@ -298,7 +316,7 @@ fn compare_raid_archetype_totals(
                 )
             }
             Some((sum, _)) if total_wide == sum => {
-                compared += 1;
+                consistent += 1;
             }
             Some((sum, _)) => report.limitation(
                 "the saved raid equipment pool does not serialize per-archetype totals or addition/removal history; without an unsaturation witness, a disagreement within +-0x53E2D620FB40 cannot distinguish an unwound saturation clamp from a wrong total",
@@ -315,10 +333,7 @@ fn compare_raid_archetype_totals(
             None => {}
         }
     }
-    for (archetype, (sum, _)) in expected {
-        report.difference(format!("{label}.archetype[{archetype}]"), "absent", sum);
-    }
-    compared
+    consistent
 }
 
 pub fn compare_raid_tooltip_operands(

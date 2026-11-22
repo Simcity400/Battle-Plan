@@ -2185,6 +2185,7 @@ fn mixed_construction_queue_preserves_ordinals_and_names_unsupported_railway_gun
         br#"countries={GER={production={general_lines={
             building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
             railway_gun={id={id=1 type=76} priority=1 amount=0 cost=0 created_date="1944.8.26.17" railway_gun={id=1 type=74}}
+            railway_gun={id={id=2 type=76} priority=2 amount=0 cost=0 created_date="1944.8.27.1" railway_gun={id=0 type=0}}
             rail_way={id={id=2 type=4713} cost=2 priority=-1 amount=1 created_date=1936.1.1.12 base=-1 target=2 current_province=-1 remaining_hours=-0.00001 rail_way={7 4 7}}
             building={id={id=5 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3} to_repair=2}
         }}}} states={} provinces={}"#,
@@ -2217,7 +2218,7 @@ fn mixed_construction_queue_preserves_ordinals_and_names_unsupported_railway_gun
         replay_data::rows::BuildingConstructionRow {
             id: (5_u64 << 32) | 59,
             country: 12,
-            queue_ordinal: 3,
+            queue_ordinal: 4,
             cost: 100_000,
             amount: 1,
             created_hour,
@@ -2231,7 +2232,7 @@ fn mixed_construction_queue_preserves_ordinals_and_names_unsupported_railway_gun
     let rails = vec![replay_data::rows::RailwayConstructionRow {
         id: (2_u64 << 32) | 4713,
         country: 12,
-        queue_ordinal: 2,
+        queue_ordinal: 3,
         cost: 200_000,
         priority: -1,
         amount: 1,
@@ -2255,10 +2256,13 @@ fn mixed_construction_queue_preserves_ordinals_and_names_unsupported_railway_gun
         .find(|(reason, _)| reason.contains("railway_gun"))
         .map(|(_, subjects)| subjects)
         .expect("named limitation for unsupported railway_gun repair rows");
-    assert_eq!(subjects.len(), 1, "{subjects:?}");
+    assert_eq!(subjects.len(), 2, "{subjects:?}");
     assert!(subjects[0].contains("GER.general_lines[1].railway_gun"), "{subjects:?}");
     assert!(subjects[0].contains(&format!("id={}", (1_u64 << 32) | 76)), "{subjects:?}");
     assert!(subjects[0].contains(&format!("target={}", (1_u64 << 32) | 74)), "{subjects:?}");
+    assert!(subjects[1].contains("GER.general_lines[2].railway_gun"), "{subjects:?}");
+    assert!(subjects[1].contains(&format!("id={}", (2_u64 << 32) | 76)), "{subjects:?}");
+    assert!(subjects[1].contains("target=0"), "{subjects:?}");
 
     let mut rail_only = Report::default();
     railway_construction(&rails, &saved, &links, &mut rail_only).unwrap();
