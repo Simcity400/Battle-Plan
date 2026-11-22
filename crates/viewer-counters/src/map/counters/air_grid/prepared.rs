@@ -7,7 +7,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use viewer_foundation::{table_access::TokenNames, tooltip_text::Tooltip};
+use dashboard_text::table_access::TokenNames;
+use viewer_foundation::tooltip_text::Tooltip;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedItem {
@@ -280,7 +281,7 @@ fn group_color(
     if group == 0 {
         return None;
     }
-    let row = viewer_foundation::map::tables::rows::<tables::OrdersGroupPlans>(frame)
+    let row = viewer_foundation::tables::rows::<tables::OrdersGroupPlans>(frame)
         .ok()
         .and_then(|plans| {
             let rows = plans.rows();
@@ -297,7 +298,7 @@ fn group_color(
             );
             None
         }
-        Some(row) => match viewer_foundation::map::counter_inputs::color(
+        Some(row) => match viewer_unit_reads::counter_inputs::color(
             row.red, row.green, row.blue, row.alpha,
         ) {
             Some(rgba) => Some(rgba),
@@ -736,7 +737,7 @@ mod tests {
     #[test]
     fn carrier_grid_visits_all_bases_in_member_then_ship_order_without_an_intel_gate() {
         use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
-        use viewer_foundation::map::counter_order::Hull;
+        use viewer_unit_reads::counter_order::Hull;
         let models: Vec<_> = [91, 92, 0, 93]
             .into_iter()
             .map(|base| ShipModelRow {

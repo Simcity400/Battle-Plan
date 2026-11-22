@@ -2,16 +2,13 @@
 use super::*;
 use content_reader_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
-use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::table_access::TokenNames;
+use viewer_gpu::province_map::ProvinceMap;
+use dashboard_text::table_access::TokenNames;
 use std::collections::HashMap;
 
-use viewer_foundation::map::visibility::{AccessLinks, ProvinceAccess, Relations};
-use viewer_foundation::table_access::TokenKeys;
-use {
-    viewer_foundation::map::building_facts as map_buildings,
-    viewer_foundation::map::building_facts::SlotAdmission,
-};
+use viewer_foundation::visibility::{AccessLinks, ProvinceAccess, Relations};
+use dashboard_text::table_access::TokenKeys;
+use viewer_foundation::building_facts::{self as map_buildings, SlotAdmission};
 
 pub fn naval_base_frame(known: bool, foreign: bool, disclosed: bool, ships: bool) -> u32 {
     if !known {
@@ -63,11 +60,11 @@ type BuildingTokens = (BTreeMap<String, u32>, BTreeSet<String>);
 const TOKEN_TABLES: &[replay_data::rows::TableId] = &[replay_data::rows::TableId::LexicalTokens];
 
 #[derive(Clone)]
-struct TokenMemo(Arc<viewer_foundation::map::memo::Keyed<BuildingTokens>>);
+struct TokenMemo(Arc<viewer_runtime::memo::Keyed<BuildingTokens>>);
 
 impl Default for TokenMemo {
     fn default() -> Self {
-        Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
+        Self(Arc::new(viewer_runtime::memo::Keyed::new(
             TOKEN_TABLES,
         )))
     }
@@ -599,7 +596,7 @@ impl BaseIcons {
     pub(super) fn read_profiled(
         frame: &DecodedFrame,
         context: &BaseContext<'_>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<Self> {
         let provinces = spans.measure(
             "overlay.tables.counters.native_base_icons.base.provinces",
@@ -1450,7 +1447,7 @@ impl<'a, 'b> SiteContext<'a, 'b> {
         } else {
             (site_frame(&count), count.shown)
         };
-        let air = if inputs.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir {
+        let air = if inputs.visibility.priorities == viewer_foundation::mode_visibility::PriorityTable::StrategicAir {
             let mut display = count;
             display.shown &= kind == building_facts::AIR_BASE && !inputs.selected_air.is_empty();
             if kind == building_facts::AIR_BASE && (!self.sites.aircraft_complete || !self.sites.complete) {

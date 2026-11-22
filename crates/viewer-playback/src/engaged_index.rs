@@ -9,25 +9,34 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Instant,
 };
-use viewer_foundation::engaged::HourSides;
-use viewer_foundation::engagement_history::{
-    Covered, Folded, History, ICON_KINDS, NAVAL, NAVAL_ICON, SOURCES, icon_hour, icon_source,
+use viewer_engagements::engaged::HourSides;
+use viewer_engagements::engagement_history::{
+    Covered,
+    Folded,
+    History,
+    ICON_KINDS,
+    NAVAL,
+    NAVAL_ICON,
+    SOURCES,
+    icon_hour,
+    icon_source,
 };
 use viewer_foundation::fold_tables::available;
 #[cfg(test)]
-use viewer_foundation::engagement_history::{
-    CombatFlags, LAND, Provenance, at, combats, kept_frames,
+use viewer_engagements::engagement_history::{
+    CombatFlags,
+    LAND,
+    Provenance,
+    at,
+    combats,
+    kept_frames,
 };
-use viewer_foundation::{
+use viewer_engagements::{
     engaged::{self, Continuity, Engaged},
     icon_frames::{IconFold, Kept},
-    map::{
-        perspective::Country,
-        tables::{Available, core},
-        visibility::Relations,
-    },
     naval_check::{self, ByteCheck, Summary},
 };
+use viewer_foundation::{perspective::Country, tables::{Available, core}, visibility::Relations};
 
 const ICON_TABLES: [TableId; 5] = [
     TableId::LandCombats,
@@ -700,9 +709,9 @@ impl Pass {
 
 fn sides_of<F: Tables + ?Sized>(kind: usize, frame: &F) -> io::Result<HourSides> {
     if kind == NAVAL {
-        viewer_foundation::naval_sides::naval_sides(frame)
+        viewer_engagements::naval_sides::naval_sides(frame)
     } else {
-        viewer_foundation::engagement_progress::land_sides(frame)
+        viewer_engagements::engagement_progress::land_sides(frame)
     }
 }
 

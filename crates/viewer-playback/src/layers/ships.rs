@@ -21,13 +21,9 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{
-    camera::{MapDefines, MapSize, Placement},
-    counter_move::{RouteWorld, UnitRoute},
-    perspective::{Choice, Vision},
-    province_admission::Admission,
-    task_force_visual::skip_of,
-};
+use viewer_gpu::{camera::{MapDefines, MapSize, Placement}, province_admission::Admission};
+use viewer_unit_reads::{counter_move::{RouteWorld, UnitRoute}, task_force_visual::skip_of};
+use viewer_foundation::perspective::{Choice, Vision};
 use viewer_unit_models::{
     equipment_graphics::{Decided, LimitValues, Limits},
     unit_models::{Force, ForcePart, ModelReport, ResolvedRoster, ShipGround},
@@ -69,7 +65,7 @@ impl Naval for Content {
     fn figure(&self, force: &Force, route: Result<UnitRoute<'_>, &'static str>, link: &dyn Fn(u32) -> Option<u32>, vision: &Vision, skip: &dyn Fn(u32) -> Option<bool>, ordinal: Option<u32>, speed: Option<i32>, day: i32, roster: &mut dyn FnMut() -> Roster) -> ForcePart {
         let counters = &self.counters;
         let movement = self.movement.as_deref();
-        let heights = viewer_foundation::map::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
+        let heights = viewer_gpu::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
         let world = movement.map(|movement| RouteWorld { map: &movement.map, heights, width: self.map.width as f32 });
         let definitions = &self.map.definitions;
         let land = |province| match movement.and_then(|movement| movement.map.terrain(province)) {
@@ -194,7 +190,7 @@ impl Rosters {
         let working = Arc::clone(&shared);
         let maker = timeline::maker("ship_rosters");
         let worker = std::thread::Builder::new().name("ship rosters".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             resolve(&working, &*naval, maker)
         })?;
         Ok(Self { shared, worker: Some(worker), maker })
@@ -347,8 +343,8 @@ impl Drop for Rosters {
 }
 
 fn waited_for(began: Instant, answered_at: Option<Instant>, slices: u64, timeouts: u64, answered: bool) {
-    use viewer_foundation::view_record::add;
-    if !viewer_foundation::view_record::on() {
+    use viewer_runtime::view_record::add;
+    if !viewer_runtime::view_record::on() {
         return;
     }
     let late = answered_at.filter(|_| answered).map_or(0, |at| began.max(at).elapsed().as_micros() as u64);
@@ -563,7 +559,7 @@ fn motion_route<'a>(motion: Option<&Mirror>, columns: &Columns, force: u64, path
     }
     let combat_role = motion.number(columns.combat_role, row).value().unwrap_or(0);
     Ok(UnitRoute {
-        class: viewer_foundation::unit_class::CounterClass::TaskForce,
+        class: viewer_runtime::unit_class::CounterClass::TaskForce,
         combat_role,
         combat_count: u32::from(combat_role != 0),
         combat_province: 0,

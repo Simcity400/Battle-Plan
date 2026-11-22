@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, atomic::Ordering, mpsc},
     thread,
 };
-use viewer_foundation::map::perspective::{Choice, Vision};
+use viewer_foundation::perspective::{Choice, Vision};
 
 type SceneInputs = ([u8; 32], Option<(i64, i64)>);
 
@@ -435,7 +435,7 @@ impl Layer for BuildingsFed {
             let (jobs, receive) = mpsc::channel();
             let (send, made) = mpsc::channel();
             thread::Builder::new().name("buildings".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(receive, send)
             })?;
             (self.jobs, self.made) = (Some(jobs), Some(made));

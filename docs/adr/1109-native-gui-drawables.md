@@ -10,4 +10,4 @@ The native quad is positioned from its bottom-left, with scale, vertical stretch
 
 Draws carry current constants and authored technique state. A null technique record retains the preceding program and samplers and disables blending. An undeclared sampler retains its previous binding. A state change restarts the effect clock on the next draw, including a return to Up or a transition to Disabled. Authored vertex programs receive local geometry and the accumulated transform. Straight color alpha is modulated by the window's opacity. Drawable extent measurement follows the same resource refusal path as drawing, including measurement for a control the caller later centers or offsets.
 
-[Drawable and effect resolution](../../crates/viewer-foundation/src/map/native_gui.rs) · [Animation contract](1109-native-animation.md)
+[Drawable and effect resolution](../../crates/viewer-native-gui/src/native_gui.rs) · [Animation contract](1109-native-animation.md)

@@ -1,4 +1,4 @@
-use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
+use viewer_gpu::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu::{self, util::DeviceExt};
 use content_reader_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,

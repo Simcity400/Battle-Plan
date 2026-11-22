@@ -18,11 +18,8 @@ use std::{
     sync::{Arc, Weak},
 };
 use viewer_combat::{Prepared, Selector, division_panel, land_marker_tooltips, naval_marker_tooltips, reads::Reads, terrain_mode};
-use viewer_foundation::{
-    engagement_history::History,
-    map::perspective::Vision,
-    tooltip_text::Tooltip,
-};
+use viewer_engagements::engagement_history::History;
+use viewer_foundation::{perspective::Vision, tooltip_text::Tooltip};
 use viewer_raids::map::raids::tooltips::{Key, lane::Lane};
 
 #[derive(Clone, Debug)]

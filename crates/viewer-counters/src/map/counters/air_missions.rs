@@ -6,13 +6,10 @@ use replay_data::rows::AirWingRow;
 use replay_derive::air_mission_counts::count;
 use replay_derive::air_mission_counts::{Counts, MISSIONS, RegionalWings, regional_counts};
 use std::collections::HashMap;
-use viewer_foundation::map::{
+use viewer_native_gui::{
     gui_resources::{count_noted, count_refused, hit_rectangle},
     icon_windows::{Owner, Plan, Retry},
-    native_gui::{
-        self,
-        lifecycle::{Instance, MapIconPool, SlotId},
-    },
+    native_gui::{self, lifecycle::{Instance, MapIconPool, SlotId}},
     native_resources::Context,
     native_windows::{AIR_MISSION_ENTRY_WINDOW as ENTRY, AIR_MISSION_WINDOW as WINDOW},
 };
@@ -617,13 +614,12 @@ impl Prepared {
         regional_wings: &RegionalWings<'_>,
     ) {
         use content_reader_localisation::localisation::Argument;
-        use viewer_foundation::{
-            map::{
-                air_reachability::MissionCountrySources, air_registry_sources::AirRegistrySources,
-                aircraft_count::SortieSources,
-            },
-            tooltip_text::Tooltip,
+        use viewer_unit_reads::{
+            air_reachability::MissionCountrySources,
+            air_registry_sources::AirRegistrySources,
         };
+        use replay_derive::aircraft_count::SortieSources;
+        use viewer_foundation::tooltip_text::Tooltip;
         const KEYS: [&str; MISSIONS] = [
             "AIRWING_MISSION_TYPE_AIR_SUPERIORITY",
             "AIRWING_MISSION_TYPE_CAS",
@@ -878,7 +874,7 @@ impl Prepared {
         let owners: Vec<_> = owners.into_iter().map(|(_, owner)| owner).collect();
         let root = inputs.windows.gui_type(WINDOW.as_bytes());
         let item = inputs.windows.gui_type(ENTRY.as_bytes());
-        let tick = viewer_foundation::map::icon_windows::frame(&mut view.last, time);
+        let tick = viewer_native_gui::icon_windows::frame(&mut view.last, time);
         view.pool.present_recorded(
             &context,
             &Plan {
@@ -946,9 +942,9 @@ impl Prepared {
                                 } else {
                                     format!(
                                         "{}R{}{}!",
-                                        viewer_foundation::map::native_text::COLOR,
+                                        viewer_native_gui::native_text::COLOR,
                                         content_reader_core::fixed5::fixed5_to_string(supply.deficit, 1),
-                                        viewer_foundation::map::native_text::COLOR
+                                        viewer_native_gui::native_text::COLOR
                                     )
                                 };
                                 entry.set_text(item, control, &number, &resources)?;
@@ -982,7 +978,7 @@ impl Prepared {
                         let text_value = if alerted
                             || (count == 0 && supply.is_some_and(|supply| supply.severity < 2))
                         {
-                            let control = viewer_foundation::map::native_text::COLOR;
+                            let control = viewer_native_gui::native_text::COLOR;
                             format!("{control}R{count}{control}!")
                         } else {
                             count.to_string()
@@ -1074,7 +1070,7 @@ impl Prepared {
                                 (native::Kind::TextBox, "supply_count"),
                                 (native::Kind::TextBox, "supply_count_small"),
                             ] {
-                                if let Some(hit) = viewer_foundation::map::gui_resources::observer_hit_rectangle(named(item, kind, name)?, &layout, drawn.origin, &resources, &mut report.icon_gui_notes, viewer_foundation::map::gui_resources::HitMode::NativeGeometry) {
+                                if let Some(hit) = viewer_native_gui::gui_resources::observer_hit_rectangle(named(item, kind, name)?, &layout, drawn.origin, &resources, &mut report.icon_gui_notes, viewer_native_gui::gui_resources::HitMode::NativeGeometry) {
                                     hits.push(AirMissionHover { region: drawn.owner, part: AirMissionPart::Supply, rect: hit.rect, layer: draw_layer, text: Arc::clone(hover) });
                                 }
                             }

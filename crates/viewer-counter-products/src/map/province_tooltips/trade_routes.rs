@@ -2,7 +2,7 @@
 use super::Arg;
 use replay_data::rows::{Recorded, TradeRouteRow, tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::ribbon_content::TradeRouteLine;
+use viewer_gpu::ribbon_content::TradeRouteLine;
 use viewer_foundation::tooltip_text::Tooltip;
 
 const HEADERS: [&str; 4] = [

@@ -19,11 +19,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use viewer_foundation::{
-    engaged::Engaged,
-    engagement_history::{Covered, History},
-    map::perspective::Country,
-};
+use viewer_engagements::{engaged::Engaged, engagement_history::{Covered, History}};
+use viewer_foundation::perspective::Country;
 
 fn hour_rows(hour: Hour) -> Vec<TableRows> {
     let links = (1..=3).map(|id| CountryLinkRow { id, canonical_slot: id }).collect();

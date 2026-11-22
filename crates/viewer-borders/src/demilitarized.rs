@@ -1,4 +1,4 @@
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use std::{collections::BTreeSet, io};
 
 use eframe::wgpu;
@@ -10,11 +10,8 @@ use super::{
     borders::{BorderClass, BorderMeshes, Vertex},
 };
 use map_display_data::landscape::Regions;
-use viewer_foundation::map::{
-    gpu_contract::{DEPTH_FORMAT, buffer, invalid},
-    tables::rows,
-    textures::{ColorSpace, upload},
-};
+use viewer_gpu::{gpu_contract::{DEPTH_FORMAT, buffer, invalid}, textures::{ColorSpace, upload}};
+use viewer_foundation::tables::rows;
 
 pub const TRANSPARENCY: f32 = 1.0;
 
@@ -419,7 +416,7 @@ impl DemilitarizedPass {
                 batches.push(self.batch(class, &self.hover, color, coarse));
             }
         }
-        viewer_foundation::map::gpu_contract::compiled(&self.compiled)?
+        viewer_gpu::gpu_contract::compiled(&self.compiled)?
             .draw(arena, encoder, targets, inputs, &batches, true)
             .map(|_| ())
     }
@@ -532,10 +529,8 @@ mod tests {
 
     #[test]
     fn theatre_outline_closes_coasts_and_island_without_drawing_internal_or_double_edges() {
-        use {
-            super::super::border_pass::Topology,
-            viewer_foundation::map::province_map::{HeightField, ProvinceMap},
-        };
+        use super::super::border_pass::Topology;
+        use viewer_gpu::province_map::{HeightField, ProvinceMap};
         let mut map = map();
         map.width = 8;
         map.height = 4;

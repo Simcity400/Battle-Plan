@@ -8,7 +8,7 @@ use content_reader_core::scripted_map_modes::{Layer, LayerType};
 use replay_data::rows::tables;
 use std::cell::RefCell;
 use std::rc::Rc;
-use viewer_foundation::map::tables::core;
+use viewer_foundation::tables::core;
 
 const FIXED5: i64 = 100_000;
 

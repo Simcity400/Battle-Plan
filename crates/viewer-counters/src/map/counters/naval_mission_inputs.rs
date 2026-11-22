@@ -6,8 +6,8 @@ use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
 };
-use viewer_foundation::table_access::TokenError;
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenError;
+use dashboard_text::table_access::TokenNames;
 
 type Fact<T> = Result<T, String>;
 pub(super) mod hover;
@@ -116,7 +116,7 @@ pub(super) struct Hour<'a> {
     topology: Topology<'a>,
     ports: Fact<BTreeMap<u32, u32>>,
     bases: Fact<BTreeSet<u32>>,
-    moves: Fact<viewer_foundation::map::movement_reads::Moves<'a, 'a>>,
+    moves: Fact<viewer_unit_reads::movement_reads::Moves<'a, 'a>>,
     ours: u32,
 }
 
@@ -129,7 +129,7 @@ impl<'a> Hour<'a> {
         forces: HashMap<u64, &'a TaskForceRow>,
         (topology, moves): (
             Topology<'a>,
-            Fact<viewer_foundation::map::movement_reads::Moves<'a, 'a>>,
+            Fact<viewer_unit_reads::movement_reads::Moves<'a, 'a>>,
         ),
         ours: u32,
     ) -> Fact<Self> {
@@ -566,7 +566,7 @@ impl<'a> Hour<'a> {
         region: u32,
         owner: u32,
         enemies: &[u32],
-    ) -> Fact<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources> {
+    ) -> Fact<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSources> {
         let ledgers = data::<tables::NavalMissionLedgers>(self.frame)?;
         let mut patrol = 0_i64;
         let mut friendly_strike = 0_i64;
@@ -610,7 +610,7 @@ impl<'a> Hour<'a> {
             }
         }
         Ok(
-            viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources {
+            viewer_unit_reads::naval_dominance_sources::RegionalDominanceSources {
                 patrol,
                 strike_multiplier: 100_000_i64.wrapping_add(friendly_strike),
                 enemy_raiding: 100_000_i64
@@ -634,20 +634,20 @@ impl<'a> Hour<'a> {
     }
     pub(super) fn dominance_sources(
         &mut self,
-    ) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+    ) -> viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap {
         self.dominance_sources_in(None)
     }
 
     pub(super) fn dominance_sources_in(
         &mut self,
         only: Option<u32>,
-    ) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+    ) -> viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap {
         let owner = self
             .ids
             .get(&self.ours)
             .copied()
             .ok_or_else(|| "naval dominance source viewer country unavailable".to_owned())?;
-        let enemies = viewer_foundation::map::naval_region_control::raw_roster(
+        let enemies = replay_derive::naval_region_control::raw_roster(
             self.frame,
             self.ours,
             AirCountryRelationRow::ENEMY,
@@ -911,7 +911,7 @@ impl<'a> Hour<'a> {
 
 pub(super) fn decorate_profiled<'a>(
     icons: &mut MissionIcons,
-    spans: &mut viewer_foundation::profiling::BuilderSpans,
+    spans: &mut viewer_runtime::profiling::BuilderSpans,
     hour: impl FnOnce() -> Fact<Hour<'a>>,
 ) {
     icons.naval_dominance_sources = None;

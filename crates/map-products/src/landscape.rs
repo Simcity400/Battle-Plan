@@ -9,10 +9,8 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::{
-    map::{name_draw::Placements, perspective, tables::core},
-    profiling::BuilderSpans,
-};
+use viewer_runtime::{name_draw::Placements, profiling::BuilderSpans};
+use viewer_foundation::{perspective, tables::core};
 use viewer_borders::demilitarized::{self, Zone};
 use viewer_map_icons::labels;
 use viewer_buildings::map_buildings::{self, BuildingsBase, MapBuildingSummary};
@@ -149,7 +147,7 @@ impl ProductHour<'_> {
                     .collect();
                 core::<tables::Countries>(self.frame)?;
                 let allegiances =
-                    viewer_foundation::map::allegiance::war_table(self.frame, &links, ours)?;
+                    viewer_foundation::allegiance::war_table(self.frame, &links, ours)?;
                 let facts = self.content.landscape.label_facts.project_fields(
                     self.frame,
                     self.content.reads.binding(&["localisation"])?,
@@ -175,7 +173,7 @@ impl ProductHour<'_> {
         mode: &MapMode,
         ours: u32,
     ) -> io::Result<Arc<map_display_data::landscape::ModeProjection>> {
-        let _scope = viewer_foundation::profiling::thread_span("modes");
+        let _scope = viewer_runtime::profiling::thread_span("modes");
         let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
         if *mode == MapMode::default() {
             return Ok(default_mode_projection());
@@ -358,7 +356,7 @@ impl ProductHour<'_> {
     }
 
     pub fn territory(&self) -> io::Result<Arc<map_display_data::landscape::Territory>> {
-        let _scope = viewer_foundation::profiling::thread_span("territory");
+        let _scope = viewer_runtime::profiling::thread_span("territory");
         let _cost = replay_frame::cpu::scope("territory rows", Some("territory"));
         let binding = self
             .content
@@ -464,7 +462,7 @@ impl ProductHour<'_> {
         city: &Arc<Vec<bool>>,
         spans: &mut BuilderSpans,
     ) -> io::Result<(map_display_data::buildings::Buildings, MapBuildingSummary)> {
-        let _scope = viewer_foundation::profiling::thread_span("buildings");
+        let _scope = viewer_runtime::profiling::thread_span("buildings");
         let _cost = replay_frame::cpu::scope("viewer", Some("buildings"));
         let vision = self.vision(choice)?;
         let binding = self.content.reads.dependent_binding(

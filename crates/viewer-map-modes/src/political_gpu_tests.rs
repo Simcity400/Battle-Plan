@@ -2,9 +2,9 @@ use super::*;
 use gradient::{LayerKind, LayerPlane};
 use std::sync::MutexGuard;
 use std::time::Instant;
-use viewer_foundation::map::gpu_contract::device_descriptor;
-use viewer_foundation::map::gpu_passes::PassTimer;
-use viewer_foundation::map::test_support::serial;
+use viewer_gpu::gpu_contract::device_descriptor;
+use viewer_gpu::gpu_passes::PassTimer;
+use viewer_gpu::test_support::serial;
 
 #[path = "political_gpu/membership_gpu_tests.rs"]
 mod membership_gpu_tests;

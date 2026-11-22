@@ -56,10 +56,9 @@ use std::{
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
 };
-use viewer_foundation::{
-    engagement_history::History,
-    map::{camera::MapSize, perspective, province_admission::Admission},
-};
+use viewer_engagements::engagement_history::History;
+use viewer_gpu::{camera::MapSize, province_admission::Admission};
+use viewer_foundation::perspective;
 use viewer_map_modes::map_mode::MapMode;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -67,8 +66,8 @@ pub struct View {
     pub map_mode: MapMode,
     pub perspective: perspective::Choice,
     pub camera_height: f32,
-    pub camera: Option<viewer_foundation::map::camera::Placement>,
-    pub target: Option<viewer_foundation::map::camera::Placement>,
+    pub camera: Option<viewer_gpu::camera::Placement>,
+    pub target: Option<viewer_gpu::camera::Placement>,
     pub fog: bool,
     pub viewport: [u32; 2],
     pub graphics: dashboard_core::protocol::MapGraphics,
@@ -179,7 +178,7 @@ impl Rate {
     }
 
     pub fn a_publication() -> Self {
-        Self::a_second(viewer_foundation::map::simulation_rate::rate().round().max(1.0) as u32)
+        Self::a_second(viewer_runtime::simulation_rate::rate().round().max(1.0) as u32)
     }
 
     pub fn makings_a_second(self) -> u32 {
@@ -191,7 +190,7 @@ impl Rate {
     }
 
     pub fn behind(self) -> u32 {
-        let publications = viewer_foundation::map::simulation_rate::rate();
+        let publications = viewer_runtime::simulation_rate::rate();
         (publications / f64::from(self.0)).ceil() as u32 + BOUND
     }
 }
@@ -256,7 +255,7 @@ pub trait Layer: Send {
 
     fn apply(&mut self, step: &Step, mirrors: &Mirrors);
 
-    fn moved_at(&self, step: &Step, mirrors: &Mirrors, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+    fn moved_at(&self, step: &Step, mirrors: &Mirrors, into: &mut viewer_unit_reads::counter_move::MovedHours) {
         let _ = (step, mirrors, into);
     }
 
@@ -770,7 +769,7 @@ impl Dirty {
 pub enum KeptAt {
     Unread,
     Unindexed,
-    At(Hour, viewer_foundation::engagement_history::Provenance),
+    At(Hour, viewer_engagements::engagement_history::Provenance),
 }
 
 impl KeptAt {
@@ -785,7 +784,7 @@ impl KeptAt {
         match (self, now) {
             (Self::Unindexed, Self::Unindexed) => Some(Vec::new()),
             (Self::At(from, held), Self::At(head, found)) if held == found => match found {
-                viewer_foundation::engagement_history::Provenance::Indexed => {
+                viewer_engagements::engagement_history::Provenance::Indexed => {
                     let (history, branch) = index?;
                     history.icons_changed(kind, branch, from, head, viewer)
                 }
@@ -866,8 +865,8 @@ pub fn moved_provinces(
     mirrors: &Mirrors,
     table: TableId,
     province: usize,
-    unit: impl Fn(u64) -> viewer_foundation::unit_handle::Unit,
-    into: &mut viewer_foundation::map::counter_move::MovedHours,
+    unit: impl Fn(u64) -> viewer_runtime::unit_handle::Unit,
+    into: &mut viewer_unit_reads::counter_move::MovedHours,
 ) {
     let hours = step.hours_of(table.index());
     if hours.is_empty() {

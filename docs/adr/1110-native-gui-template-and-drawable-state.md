@@ -12,4 +12,4 @@ Button, icon and simple-button sprite setters have different native rules for fr
 
 Progress rendering keeps the authored geometry, orientation and state. A sprite progress bar turns about its local bottom-left, with orientation determining the UV axis. Its assigned value can be negative, and a value above the configured steps clamps before division. A zero step count retains the floating result. Circular progress writes the remaining and completed portions as a fan with one triangle per normalized unit. A masked shield draws the flag before the overlay and keeps the two paths' bindings distinct.
 
-[Widget construction](../../crates/viewer-foundation/src/map/native_gui/widgets.rs) · [GUI fixtures](../../crates/viewer-foundation/src/map/native_gui/tests.rs)
+[Widget construction](../../crates/viewer-native-gui/src/native_gui/widgets.rs) · [GUI fixtures](../../crates/viewer-native-gui/src/native_gui/tests.rs)

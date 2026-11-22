@@ -8,4 +8,4 @@ Opt into GPU timestamps before making the device. A normal viewer run omits thei
 
 Political gradient operands come from the recorded content, including the country thickness and area ranges in map pixels, strategic-region thickness, neutral RGB and the search floor. The country's channel uses the largest fixed mode thickness so changing the map mode stays within its search. The viewer uses the full-quality divisor and requires compatible map dimensions.
 
-[Map targets and adapters](../../crates/viewer-foundation/src/map/gpu_contract.rs) · [Frame timings](../../crates/viewer-foundation/src/map/gpu_frame_time.rs) · [Pass timings](../../crates/viewer-foundation/src/map/gpu_passes.rs) · [Gradient operands](../../crates/viewer-foundation/src/map/gradient_math.rs)
+[Map targets and adapters](../../crates/viewer-gpu/src/gpu_contract.rs) · [Frame timings](../../crates/viewer-gpu/src/gpu_frame_time.rs) · [Pass timings](../../crates/viewer-gpu/src/gpu_passes.rs) · [Gradient operands](../../crates/viewer-gpu/src/gradient_math.rs)

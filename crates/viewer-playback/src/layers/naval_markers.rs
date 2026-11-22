@@ -21,16 +21,13 @@ use viewer_counters::map::{
     counters::{DetailFacts, HqForces, NavalMarkerInputs, NavalMarkerValues, ResultFields, combat_markers::whole_of, naval_marker_values, result_country_lists},
     naval_combat_occurrences::{Combat, Direct, Transfers, Units},
 };
-use viewer_foundation::{
+use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{NAVAL, NAVAL_ICON, Provenance},
     icon_frames::Kept,
-    map::{
-        perspective::{Choice, Vision},
-        unit_rules::STANDSTILL,
-    },
     naval_icon_frames::CensusMember,
 };
+use viewer_foundation::{perspective::{Choice, Vision}, unit_rules::STANDSTILL};
 
 pub trait Shore: Send + Sync {
     fn province_kind(&self, province: u32) -> Option<ProvinceKind>;

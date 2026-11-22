@@ -19,16 +19,14 @@ use replay_data::{
     rows::ResourceOriginRow, rows::TradeRouteRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{
-    errors::invalid,
-    map::{
-        mode_visibility::Visibility,
-        province_map::HeightField,
-        ribbon_content::{MAPARROWS, OrderAssets, OrderField, TRADE_ROUTE_TYPE_NAME},
-        ribbon_fixed::Smoothing,
-    },
-    table_access::{self, Available},
+use viewer_runtime::errors::invalid;
+use viewer_foundation::mode_visibility::Visibility;
+use viewer_gpu::{
+    province_map::HeightField,
+    ribbon_content::{MAPARROWS, OrderAssets, OrderField, TRADE_ROUTE_TYPE_NAME},
+    ribbon_fixed::Smoothing,
 };
+use dashboard_text::table_access::{self, Available};
 
 pub const NO_ROUTE: u8 = 0;
 pub const LAND_ROUTE: u8 = 1;
@@ -237,7 +235,7 @@ fn color(defines: &Defines, name: &str) -> io::Result<[f32; 4]> {
     let mut color = match values[..values.len().min(4)] {
         [h, s, v] => {
             let [r, g, b] =
-                viewer_foundation::map::gradient_math::hsv_to_rgb([h as f32, s as f32, v as f32]);
+                viewer_gpu::gradient_math::hsv_to_rgb([h as f32, s as f32, v as f32]);
             [r, g, b, 1.0]
         }
         [r, g, b, a] => [r as f32, g as f32, b as f32, a as f32],
@@ -779,10 +777,10 @@ impl KeptStops {
         {
             let stops = stops.clone();
             self.now.insert(key, (read, stops.clone()));
-            viewer_foundation::view_record::add("trade routes", "stops kept", 1);
+            viewer_runtime::view_record::add("trade routes", "stops kept", 1);
             return Ok(stops);
         }
-        viewer_foundation::view_record::add("trade routes", "stops searched", 1);
+        viewer_runtime::view_record::add("trade routes", "stops searched", 1);
         let stops = geometry::directed_stops(route, content, reverse)?;
         self.now.insert(key, (read, stops.clone()));
         Ok(stops)
@@ -860,7 +858,7 @@ fn build_into(
     )
 }
 
-pub type Emit<'a> = dyn FnMut(&mut OrderField, &viewer_foundation::map::ribbon_content::ArrowType, &Shaped, [f32; 4], [f32; 4], &HeightField<'_>) -> Option<Vec<[f32; 2]>> + 'a;
+pub type Emit<'a> = dyn FnMut(&mut OrderField, &viewer_gpu::ribbon_content::ArrowType, &Shaped, [f32; 4], [f32; 4], &HeightField<'_>) -> Option<Vec<[f32; 2]>> + 'a;
 
 #[allow(clippy::too_many_arguments, reason = "the tables, the countries, the exchanges and the two content callbacks are each the caller's")]
 pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: RegionalFields>(
@@ -968,7 +966,7 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
         report.drawn += 1;
         let scale = arrow.global_scale(shaped.controls.len());
         let drawn = out.field.trade_route_lines.len() as u32;
-        out.field.trade_route_lines.push(viewer_foundation::map::ribbon_content::TradeRouteLine {
+        out.field.trade_route_lines.push(viewer_gpu::ribbon_content::TradeRouteLine {
             layer: line.layer.index() as u8,
             route: (line.route.country(), line.route.class(), line.route.other()),
             client: line.client,
@@ -976,11 +974,11 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
         out.field
             .trade_route_hovers
             .extend(shaped.controls.iter().map(|&point| {
-                let [x, z] = viewer_foundation::map::ribbon_fixed::to_world(point);
-                viewer_foundation::map::ribbon_content::TradeRouteSample {
+                let [x, z] = viewer_gpu::ribbon_fixed::to_world(point);
+                viewer_gpu::ribbon_content::TradeRouteSample {
                     at: [
                         x,
-                        viewer_foundation::map::ribbon_mesh::ribbon_height(inputs.heights, x, z),
+                        viewer_gpu::ribbon_mesh::ribbon_height(inputs.heights, x, z),
                         z,
                         arrow.body_width[0] * scale * arrow.body_uv_scale * defines.intersect_distance,
                     ],
@@ -994,7 +992,7 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
             continue;
         }
         let count = convoy_count(line.convoys_assigned, &defines.convoys);
-        let points: Vec<[f32; 2]> = shaped.controls.iter().copied().map(viewer_foundation::map::ribbon_fixed::to_world).collect();
+        let points: Vec<[f32; 2]> = shaped.controls.iter().copied().map(viewer_gpu::ribbon_fixed::to_world).collect();
         if count == 0 {
             out.sailing.push(Sailing { assigned: line.assigned, points, map_width: width });
             continue;
@@ -1016,6 +1014,6 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
             }
         }
     }
-    viewer_foundation::map::ribbon_mesh::sort_draws(&mut out.field.draws);
+    viewer_gpu::ribbon_mesh::sort_draws(&mut out.field.draws);
     Ok(())
 }

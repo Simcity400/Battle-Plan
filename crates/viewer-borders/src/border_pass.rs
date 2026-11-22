@@ -1,10 +1,10 @@
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use std::{
     collections::{BTreeMap, HashSet},
     io,
     sync::Arc,
 };
-use viewer_foundation::map::textures::load_uploadable;
+use viewer_gpu::textures::load_uploadable;
 
 use eframe::wgpu;
 use content_reader_core::{
@@ -17,7 +17,7 @@ use content_reader_states::states::StateDefinition;
 
 use super::{borders::{self, BorderClass, BorderDraw, BorderMesh, BorderMeshes}, demilitarized::Zone};
 use map_display_data::landscape::Regions;
-use viewer_foundation::map::{
+use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, buffer, invalid},
     province_map::WATER_HEIGHT,
     textures::{ColorSpace, upload},
@@ -981,7 +981,7 @@ impl BorderPass {
                 }
             })
             .collect::<Vec<_>>();
-        viewer_foundation::map::gpu_contract::compiled(&self.compiled)?.draw(
+        viewer_gpu::gpu_contract::compiled(&self.compiled)?.draw(
             arena,
             encoder,
             targets,

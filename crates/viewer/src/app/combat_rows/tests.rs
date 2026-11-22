@@ -11,7 +11,7 @@ use crate::{
 };
 use replay_data::rows::TableId;
 use std::sync::{Arc, Mutex};
-use viewer_foundation::engagement_history::History;
+use viewer_engagements::engagement_history::History;
 
 #[test]
 fn the_marker_hovers_and_the_byte_check_take_the_engaged_index_from_the_engagements_layer() {

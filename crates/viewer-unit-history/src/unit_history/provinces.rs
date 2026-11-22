@@ -38,7 +38,7 @@ impl Record {
             } else {
                 "hour_targets_changed"
             };
-            viewer_foundation::view_record::add("unit walk", name, 1);
+            viewer_runtime::view_record::add("unit walk", name, 1);
         }
         if !kept {
             self.targets = next.cloned();
@@ -197,7 +197,7 @@ impl Provinces {
     }
 
     pub fn prepare_inputs(&mut self, targets: &Targets, naval: &naval::History) {
-        let _join_span = viewer_foundation::profiling::span("units_prepare_inputs");
+        let _join_span = viewer_runtime::profiling::span("units_prepare_inputs");
         #[cfg(test)]
         if self.sparse_install == Some(false) {
             self.joined = None;

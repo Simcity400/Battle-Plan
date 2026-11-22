@@ -1,6 +1,6 @@
 
 use super::*;
-use viewer_foundation::map::counter_inputs::OrderFacts;
+use viewer_unit_reads::counter_inputs::OrderFacts;
 use content_reader_core::movement::MovementMap;
 
 pub type LandStacks = super::Shards<(u32, u32), Arc<[(Member, counter_action::Action)]>>;
@@ -69,6 +69,7 @@ pub struct Member {
     pub hp: i64,
     pub org: i64,
     pub bars: bool,
+    pub status_recorded: bool,
     pub status: counter_status::Member,
     pub group_parent: Option<u64>,
     pub parent_branch: Option<bool>,
@@ -123,6 +124,7 @@ pub fn division_member(
             hp: strength.hp,
             org: strength.org,
             bars: strength.bars,
+            status_recorded: strength.status_recorded,
             status: strength.status,
             group_parent: orders.group_parent,
             parent_branch: orders.parent_branch,
@@ -138,6 +140,7 @@ pub struct Strength {
     pub hp: i64,
     pub org: i64,
     pub bars: bool,
+    pub status_recorded: bool,
     pub status: counter_status::Member,
 }
 
@@ -151,6 +154,7 @@ pub fn member_strength(division: &DivisionFields, owner: u32, joins: &impl Membe
             .maxima
             .map_or(0, |[_, maximum]| counter_status::ratio(division.organisation, maximum)),
         bars: joins.bars(division.id),
+        status_recorded: status.recorded,
         status: counter_status::Member {
             supply_ratio: status.supply_ratio,
             naval_transfer: status.naval_transfer,
@@ -193,7 +197,13 @@ pub fn member_orders(division: &DivisionFields, joins: &impl MemberJoins) -> Ord
 
 impl Member {
     pub fn set_strength(&mut self, strength: Strength) {
-        (self.hp, self.org, self.bars, self.status) = (strength.hp, strength.org, strength.bars, strength.status);
+        (self.hp, self.org, self.bars, self.status_recorded, self.status) = (
+            strength.hp,
+            strength.org,
+            strength.bars,
+            strength.status_recorded,
+            strength.status,
+        );
     }
 
     pub fn set_orders(&mut self, orders: Orders) {
@@ -236,6 +246,7 @@ impl Member {
             hp: self.hp,
             org: self.org,
             bars: self.bars,
+            status_recorded: self.status_recorded,
             status: self.status,
             movement: None,
             action,
@@ -268,6 +279,7 @@ impl LandUnit<'_> {
             hp: self.hp,
             org: self.org,
             bars: self.bars,
+            status_recorded: self.status_recorded,
             status: self.status,
             group_parent: self.group_parent,
             parent_branch: self.parent_branch,

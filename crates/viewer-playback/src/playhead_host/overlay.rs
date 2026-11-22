@@ -18,14 +18,10 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_counters::map::counters::{Kinds, Layered, Need, Shown};
-use viewer_foundation::{
-    engagement_history::History,
-    map::counter_move::MovedHours,
-    map::{
-        camera::Camera,
-        perspective::{Choice, Vision},
-    },
-};
+use viewer_engagements::engagement_history::History;
+use viewer_unit_reads::counter_move::MovedHours;
+use viewer_gpu::camera::Camera;
+use viewer_foundation::perspective::{Choice, Vision};
 
 const WHOLE: Duration = Duration::from_secs(120);
 
@@ -177,7 +173,7 @@ pub fn tables_shown(shown: Shown) -> Vec<TableId> {
     let family = |held: bool, tables: &'static [TableId]| held.then_some(tables).unwrap_or_default();
     let mut tables: Vec<TableId> = OVERLAY
         .iter()
-        .chain(viewer_foundation::map::perspective::VISION_TABLES)
+        .chain(viewer_foundation::perspective::VISION_TABLES)
         .chain(family(shown.units, UNIT_COUNTERS))
         .chain(family(shown.land_combats, LAND_COMBATS))
         .chain(family(shown.naval_missions, NAVAL_MISSIONS))
@@ -301,7 +297,7 @@ fn lays(lay: bool, whole: bool, untaken: bool) -> bool {
 }
 
 fn note_us(name: &'static str, started: Instant) {
-    viewer_foundation::map::redraws::note(name, u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    viewer_runtime::redraws::note(name, u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
 }
 
 struct Request<P> {
@@ -643,7 +639,7 @@ impl Overlay {
             marks: self.maker,
         };
         let started = std::thread::Builder::new().name("map overlay".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             if tables.is_some() {
                 engine_executable::executable_tables::enter(tables);
             }
@@ -690,15 +686,15 @@ impl Overlay {
     }
 
     fn record_join(&self, began: Instant, hour: Hour) {
-        if !viewer_foundation::view_record::on() {
+        if !viewer_runtime::view_record::on() {
             return;
         }
         let at = self.stands.is_some_and(|stands| stands >= hour);
-        viewer_foundation::view_record::add("overlay", "joins", 1);
-        viewer_foundation::view_record::add("overlay", "join_us", began.elapsed().as_micros() as u64);
-        viewer_foundation::view_record::add("overlay", if at { "joins_at_the_hour" } else { "joins_behind" }, 1);
+        viewer_runtime::view_record::add("overlay", "joins", 1);
+        viewer_runtime::view_record::add("overlay", "join_us", began.elapsed().as_micros() as u64);
+        viewer_runtime::view_record::add("overlay", if at { "joins_at_the_hour" } else { "joins_behind" }, 1);
         if let Some(behind) = self.hour.map(|held| hour.saturating_sub(held)).filter(|&behind| behind > 0) {
-            viewer_foundation::view_record::set("overlay", "hours_behind", u64::try_from(behind).unwrap_or(0));
+            viewer_runtime::view_record::set("overlay", "hours_behind", u64::try_from(behind).unwrap_or(0));
         }
     }
 
@@ -933,7 +929,7 @@ impl Maker {
     fn make_tables(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, tabled: &Tabled, loading: &mut Vec<String>) -> bool {
         let at = crate::document::Hour::new(&self.content, rows, 0.0).with_air_rosters(Some(Arc::clone(&want.ask.rosters)));
         let raids = want.lay_ins.raids.clone().unwrap_or_default();
-        let mut spans = viewer_foundation::profiling::BuilderSpans::new(replay_frame::cpu::enabled());
+        let mut spans = viewer_runtime::profiling::BuilderSpans::new(replay_frame::cpu::enabled());
         let engaged = want.engaged.as_deref();
         let (made, missed) = replay_frame::frame::discovering(|| {
             at.hour_tables_at_head(&want.perspective, Arc::clone(&want.vision), raids, engaged, tabled.left_out, want.left, tabled.labels, tabled.need, &mut spans)
@@ -950,7 +946,7 @@ impl Maker {
                 self.tables = Some(tables);
                 self.tabled = Some(tabled.clone());
                 self.tabled_count += 1;
-                viewer_foundation::view_record::add("overlay", "tables_built", 1);
+                viewer_runtime::view_record::add("overlay", "tables_built", 1);
                 true
             }
             Err(error) => {
@@ -959,7 +955,7 @@ impl Maker {
             }
         };
         for part in spans.into_records() {
-            viewer_foundation::map::redraws::note(part.name, (part.ms * 1000.0) as u64);
+            viewer_runtime::redraws::note(part.name, (part.ms * 1000.0) as u64);
         }
         built
     }
@@ -1013,14 +1009,14 @@ impl Maker {
         if !missed.is_empty() {
             self.learn(&missed);
             lock(&self.shared.held).missed = missed;
-            viewer_foundation::map::redraws::note("missed.full", 1);
+            viewer_runtime::redraws::note("missed.full", 1);
             return None;
         }
         lock(&self.shared.held).missed.clear();
         let mut prepared = match made {
             Ok(prepared) => prepared,
             Err(error) => {
-                viewer_foundation::map::redraws::note("refused.full", 1);
+                viewer_runtime::redraws::note("refused.full", 1);
                 loading.push(format!("the overlay: {error}"));
                 return None;
             }
@@ -1042,7 +1038,7 @@ impl Maker {
                 lay_ins.lay(&mut prepared, &at, ask.camera, ask.pixels, ask.ui_scale, tables.ours());
             }
         }
-        viewer_foundation::map::redraws::note("made.full", 1);
+        viewer_runtime::redraws::note("made.full", 1);
         note_us("overlay.layout_us", started);
         self.laid = Some(laid);
         Some(Some(Made {
@@ -1154,7 +1150,7 @@ impl ShownVision {
             let (jobs, receive) = std::sync::mpsc::channel::<crate::layers::vision::SeenCopy>();
             let (send, made) = std::sync::mpsc::channel();
             let started = std::thread::Builder::new().name("shown vision".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 let mut before = None;
                 for copy in receive {
                     let (seen, made) = copy.make_after(before.as_ref());
@@ -1228,7 +1224,7 @@ mod tests {
         let every = overlay_tables();
         let none = tables_shown(Shown { units: false, bases: false, land_combats: false, naval_missions: false });
         assert!(none.iter().all(|table| every.contains(table)), "the families' tables are a part of the whole list");
-        for table in OVERLAY.iter().chain(viewer_foundation::map::perspective::VISION_TABLES) {
+        for table in OVERLAY.iter().chain(viewer_foundation::perspective::VISION_TABLES) {
             assert!(none.contains(table), "{table:?} is read at every view, whatever it draws");
         }
         for (family, tables) in [("units", UNIT_COUNTERS), ("land combats", LAND_COMBATS), ("naval missions", NAVAL_MISSIONS), ("bases", BASE_ICONS)] {
@@ -1292,8 +1288,8 @@ mod tests {
         let view = |view: CounterView| CounterView { presentation: Arc::clone(&on), ..view };
         let held = laid();
         assert_eq!(held, laid(), "nothing changed: the frame places the overlay it holds");
-        let hovered = view(CounterView { hovered: Some(viewer_foundation::unit_handle::Unit::Division(7)), ..CounterView::default() });
-        let selected = view(CounterView { selected: Arc::new([viewer_foundation::unit_handle::Unit::Division(3)].into()), ..CounterView::default() });
+        let hovered = view(CounterView { hovered: Some(viewer_runtime::unit_handle::Unit::Division(7)), ..CounterView::default() });
+        let selected = view(CounterView { selected: Arc::new([viewer_runtime::unit_handle::Unit::Division(3)].into()), ..CounterView::default() });
         for changed in [
             Laid { view: hovered, ..laid() },
             Laid { view: selected, ..laid() },
@@ -1306,7 +1302,7 @@ mod tests {
         ] {
             assert_ne!(held, changed, "the overlay is laid out again for it");
         }
-        let pressed = view(CounterView { pressed: Some(viewer_foundation::unit_handle::Unit::Division(7)), plate_hovered: Some(viewer_foundation::unit_handle::Unit::Division(7)), ..CounterView::default() });
+        let pressed = view(CounterView { pressed: Some(viewer_runtime::unit_handle::Unit::Division(7)), plate_hovered: Some(viewer_runtime::unit_handle::Unit::Division(7)), ..CounterView::default() });
         assert_eq!(held, Laid { view: pressed, ..laid() }, "a plate's state draws the layout again, never lays it out");
         assert_ne!(held, laid_on(&Arc::new(Presentation::default())));
     }
@@ -1424,7 +1420,7 @@ mod tests {
         assert!(!joins_on(true, false, true), "the wait ran out");
     }
 
-    use viewer_foundation::unit_handle::Unit;
+    use viewer_runtime::unit_handle::Unit;
 
     const DIVISION: Unit = Unit::Division(7);
     const OUT: (i32, u32) = (112, 2);
@@ -1585,7 +1581,7 @@ mod tests {
 
         fn ask(&mut self, choice: &Choice, hour: Hour, ours: u32) {
             let key = VisionKey { applied: Some(hour), published: crate::layers::Published::Current, carried: 0, choice: choice.clone() };
-            let parts = viewer_foundation::map::perspective::Parts { ours, ..Default::default() };
+            let parts = viewer_foundation::perspective::Parts { ours, ..Default::default() };
             self.shown.make(key, Instant::now(), crate::layers::vision::SeenCopy::of_parts(parts));
         }
 
@@ -1597,7 +1593,7 @@ mod tests {
     }
 
     fn country(tag: &str) -> Choice {
-        Choice { country: viewer_foundation::map::perspective::Country::Tag(tag.into()), fog: true }
+        Choice { country: viewer_foundation::perspective::Country::Tag(tag.into()), fog: true }
     }
 
     #[test]

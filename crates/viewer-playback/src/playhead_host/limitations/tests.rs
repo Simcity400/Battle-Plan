@@ -180,16 +180,16 @@ fn the_lists_are_compared_by_their_lines_text_each_sides_extra_lines_named_and_t
 
 struct Unread;
 
-impl viewer_foundation::map::tables::Statuses for Unread {
-    fn seen(&self, _table: TableId) -> viewer_foundation::map::tables::Seen {
-        viewer_foundation::map::tables::Seen::Unavailable("unread".into())
+impl viewer_foundation::tables::Statuses for Unread {
+    fn seen(&self, _table: TableId) -> viewer_foundation::tables::Seen {
+        viewer_foundation::tables::Seen::Unavailable("unread".into())
     }
 }
 
 #[test]
 fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     use super::Owner;
-    use viewer_foundation::map::{
+    use viewer_foundation::{
         perspective::Resolution,
         tables::{DISPLAY_NOT_RECORDED, Limitations, Perspective, RowFacts, table_limitations},
     };

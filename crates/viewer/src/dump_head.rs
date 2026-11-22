@@ -18,7 +18,7 @@ use map_display_data::{
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 use viewer_map_modes::{map_mode::MapMode, political::PoliticalLayers};
 use viewer_models::strike_effects::Impacts;
 

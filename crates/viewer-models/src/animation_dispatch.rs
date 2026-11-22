@@ -185,13 +185,13 @@ impl Dispatch {
     ) -> bool {
         self.created.clear();
         let created = &mut self.created;
-        let plan_span = viewer_foundation::profiling::span("animation_dispatch_plan");
+        let plan_span = viewer_runtime::profiling::span("animation_dispatch_plan");
         if self
             .layout
             .as_ref()
             .is_none_or(|layout| !layout.matches(rigs, field))
         {
-            viewer_foundation::view_record::add(label, "dispatch_layout_built", 1);
+            viewer_runtime::view_record::add(label, "dispatch_layout_built", 1);
             self.layout = Some(Layout::build(rigs, field));
         }
         let layout = self.layout.as_mut().unwrap();
@@ -274,7 +274,7 @@ impl Dispatch {
                 })
                 .collect();
             drop(plan_span);
-            run_span = viewer_foundation::profiling::span("animation_dispatch_run_commit");
+            run_span = viewer_runtime::profiling::span("animation_dispatch_run_commit");
             for (player, task) in &mut bound {
                 let Task { rig, calls, .. } = &mut **task;
                 for call in calls {
@@ -319,8 +319,8 @@ impl Dispatch {
                         .get(key)
                         .is_some_and(|clock| clock.phase.is_some()))
         });
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add(label, "dispatch_sources", layout.sources.len() as u64);
             add(
                 label,

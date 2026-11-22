@@ -1,6 +1,6 @@
 use super::*;
-use viewer_foundation::land_combat_math::Condition;
-use viewer_foundation::map::native_gui::Assets;
+use viewer_engagements::land_combat_math::Condition;
+use viewer_native_gui::native_gui::Assets;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]

@@ -1,6 +1,6 @@
 
 use std::collections::BTreeMap;
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 
 pub struct Shown {
     pub key: (usize, u32, u32),
@@ -43,7 +43,7 @@ impl Motion {
         camera: &Camera,
         size: [u32; 2],
     ) {
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         let (mut moved, mut posed, mut both_still) = (0u64, 0u64, 0u64);
         let (mut movers, mut movers_still) = (0u64, 0u64);
         let mut bands = [0u64; 4];
@@ -111,7 +111,7 @@ impl Motion {
     }
 
     pub fn end(&mut self) {
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         self.still = if self.changed == 0 { self.still + 1 } else { 0 };
         add("actors shown", "changed", self.changed);
         add("actors shown", "frame_is_new", u64::from(self.changed > 0));

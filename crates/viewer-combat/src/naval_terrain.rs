@@ -3,7 +3,7 @@ use content_reader_core::{
 };
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use std::{io, sync::Arc};
-use viewer_foundation::naval_math::dominance_value;
+use replay_derive::naval_math::dominance_value;
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::tooltip_keys;

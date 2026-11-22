@@ -2,7 +2,7 @@
 use super::{CameraDefines, gates};
 use content_reader_regions::regions::StrategicRegion;
 use std::collections::BTreeMap;
-use viewer_foundation::map::province_schedule::Schedule;
+use viewer_gpu::province_schedule::Schedule;
 
 #[derive(Clone, Debug, Default)]
 pub struct RegionProvinces(BTreeMap<u32, Box<[u32]>>);

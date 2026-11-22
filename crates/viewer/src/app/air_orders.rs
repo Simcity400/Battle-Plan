@@ -7,7 +7,7 @@ use viewer_counters::map::{
     air_orders::{CONFIRMATION_DESCRIPTION, CONFIRMATION_TITLE, Response},
     counters::CounterReport,
 };
-use viewer_foundation::map::native_gui::pointer::Input;
+use viewer_native_gui::native_gui::pointer::Input;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Under {
@@ -36,7 +36,7 @@ pub(super) struct AirOrders {
 
 impl AirOrders {
     pub(super) fn over(&self, at: [f32; 2]) -> bool {
-        self.open && self.controls.iter().any(|(rect, _)| viewer_foundation::map::gui_resources::contains(*rect, at))
+        self.open && self.controls.iter().any(|(rect, _)| viewer_runtime::geometry::contains(*rect, at))
     }
 
     pub(super) fn holding(&self) -> bool {

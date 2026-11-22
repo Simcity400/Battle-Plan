@@ -1,9 +1,9 @@
 
 use std::sync::Arc;
-use viewer_foundation::map::sprites::{Batch, Quad};
+use viewer_native_gui::sprites::{Batch, Quad};
 
 pub(crate) fn clockless(batch: &Batch) -> Vec<Quad> {
-    use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
+    use viewer_native_gui::native_shader::draw::SPRITE_TIME;
     let mut quads = batch.quads.clone();
     for quad in &mut quads {
         if let Some(exact) = &mut quad.exact {

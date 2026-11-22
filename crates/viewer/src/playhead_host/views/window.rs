@@ -11,16 +11,11 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::{
-    map::{
-        camera::{Camera, MapSize},
-        counter_hovers::unit_hits::{Hit, Kind},
-        counter_move::MovementFrame,
-        perspective::Choice,
-        province_map::HeightField,
-    },
-    unit_handle::Unit,
-};
+use viewer_gpu::{camera::{Camera, MapSize}, province_map::HeightField};
+use viewer_native_gui::counter_hovers::unit_hits::{Hit, Kind};
+use viewer_unit_reads::counter_move::MovementFrame;
+use viewer_foundation::perspective::Choice;
+use viewer_runtime::unit_handle::Unit;
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const VIEWPORT: [u32; 2] = [3840, 2160];
@@ -158,7 +153,7 @@ struct Evaluated {
     texts: Vec<(String, String)>,
     spent: Vec<(String, u64, u64)>,
     reads: Vec<(String, Vec<TableId>)>,
-    quads: Vec<(String, Vec<viewer_foundation::map::sprites::Quad>)>,
+    quads: Vec<(String, Vec<viewer_native_gui::sprites::Quad>)>,
     missed: Vec<TableId>,
 }
 

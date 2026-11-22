@@ -3,14 +3,14 @@ use std::cell::{Cell, RefCell};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
+use viewer_gpu::gpu_contract::DEPTH_FORMAT;
 
 use eframe::wgpu;
 
-use viewer_foundation::map::camera::{Camera, WATER_HEIGHT};
-use viewer_foundation::map::frame::FrameConstants;
-use viewer_foundation::map::gpu_contract::extent;
-use viewer_foundation::map::textures::{Content, Sampled};
+use viewer_gpu::camera::{Camera, WATER_HEIGHT};
+use viewer_gpu::frame::FrameConstants;
+use viewer_gpu::gpu_contract::extent;
+use viewer_gpu::textures::{Content, Sampled};
 
 pub const DEPTH_MAP_SIZE: u32 = 2048;
 
@@ -475,7 +475,7 @@ impl Buffers {
         if matches!(ready, Ready::Draw | Ready::Clear) {
             drop(self.depth_pass(encoder, wgpu::LoadOp::Clear(1.0)));
         }
-        let record = |name| viewer_foundation::view_record::add("map scene", name, 1);
+        let record = |name| viewer_runtime::view_record::add("map scene", name, 1);
         match ready {
             Ready::Draw => record("shadow_casters_drawn"),
             Ready::Keep => record("shadow_casters_kept"),
@@ -766,8 +766,8 @@ fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::camera::{MapDefines, MapSize};
-    use viewer_foundation::map::frame::{DayNight, shadow_fade_factor};
+    use viewer_gpu::camera::{MapDefines, MapSize};
+    use viewer_gpu::frame::{DayNight, shadow_fade_factor};
 
     fn at(height: f32) -> Camera {
         Camera {
@@ -775,7 +775,7 @@ mod tests {
             height,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
     }
 
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn a_free_eye_looking_as_the_game_camera_gets_its_light() {
-        use viewer_foundation::map::camera::{Free, Pose};
+        use viewer_gpu::camera::{Free, Pose};
         let (map, frame) = reference();
         let eye = map.eye();
         let free = Camera {
@@ -923,7 +923,7 @@ mod tests {
 
     #[test]
     fn a_free_eye_s_light_moves_continuously_through_the_horizon() {
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
         let (reference, frame) = reference();
         let at = |look_y: f32| {
             let camera = Camera {
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn a_free_eye_looking_at_the_sky_fits_its_capped_footprint() {
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
         let (reference, frame) = reference();
         let camera = Camera {
             center: [3000.0, 1500.0],
@@ -1034,7 +1034,7 @@ mod tests {
             height: 163.934,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         };
         let at = |hour| {
             light_direction(
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn the_screen_targets_follow_the_view_at_the_screen_size() {
-        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, _queue) = viewer_gpu::test_support::gpu::device();
         let side = |view: &wgpu::TextureView| {
             let size = view.texture().size();
             [size.width, size.height]
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn a_clear_screen_buffer_is_not_cleared_again_while_it_stays_clear() {
-        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
         let buffers = Buffers::new(&device, [7, 5], Screen::Half);
         let submit = |record: &dyn Fn(&mut wgpu::CommandEncoder)| {
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -1288,7 +1288,7 @@ mod tests {
         });
         let texel = || -> [u8; 4] {
             let pixels =
-                viewer_foundation::map::test_support::gpu::render_with(&device, &queue, |pass| {
+                viewer_gpu::test_support::gpu::render_with(&device, &queue, |pass| {
                     pass.set_pipeline(&pipeline);
                     pass.set_bind_group(0, &group, &[]);
                     pass.draw(0..3, 0..1);

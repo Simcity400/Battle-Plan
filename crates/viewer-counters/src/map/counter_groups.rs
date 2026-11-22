@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use content_reader_core::defines::Defines;
-use viewer_foundation::map::free_icons::{Place, Track};
+use viewer_gpu::icon_tracks::{Place, Track};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupDefines {

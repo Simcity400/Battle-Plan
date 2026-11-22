@@ -7,7 +7,7 @@ use replay_data::rows::tables;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use viewer_foundation::map::tables::core;
+use viewer_foundation::tables::core;
 
 const FIXED5: i64 = 100_000;
 

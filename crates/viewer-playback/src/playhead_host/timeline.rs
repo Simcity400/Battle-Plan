@@ -47,7 +47,7 @@ fn now() -> u64 {
 }
 
 fn on() -> bool {
-    viewer_foundation::view_record::on()
+    viewer_runtime::view_record::on()
 }
 
 pub fn maker(name: &'static str) -> Maker {

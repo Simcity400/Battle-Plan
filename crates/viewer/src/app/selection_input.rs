@@ -8,7 +8,8 @@ use std::{
     sync::Arc,
 };
 use viewer_counters::map::{box_selection, selection_sounds};
-use viewer_foundation::{map::counter_hovers::unit_hits::Kind, unit_handle::Unit};
+use viewer_native_gui::counter_hovers::unit_hits::Kind;
+use viewer_runtime::unit_handle::Unit;
 use super::unit_pick;
 use viewer_playback::{cursors::MapCursor, layers::units::PickDivision};
 use viewer_unit_models::model_pick::{Figures, Shape};
@@ -202,7 +203,7 @@ impl SelectionInput {
                     }
                 },
             };
-            instance.position[0] = viewer_foundation::map::unit_pose::unwrap(instance.position[0], eye[0], width);
+            instance.position[0] = viewer_gpu::unit_pose::unwrap(instance.position[0], eye[0], width);
             shape.hit(instance, &joints, eye, ray)
         };
         let hits: Vec<(u32, u32)> = figures.along(eye, ray).into_iter().filter(|figure| met(figure)).map(|figure| (figure.province, figure.order)).collect();
@@ -662,7 +663,7 @@ mod tests {
     #[test]
     fn theatres_come_from_the_hours_units_and_each_gap_is_named() {
         use replay_data::rows::{DivisionRow, RailwayGunCounterInputRow, TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put};
+        use viewer_foundation::test_support::{test_frame, test_put};
         let mut frame = test_frame(0);
         test_put(
             &mut frame,
@@ -688,7 +689,7 @@ mod tests {
     #[test]
     fn the_unit_order_is_the_clients_recorded_list_and_its_absence_is_named() {
         use replay_data::rows::{CountryLinkRow, LandUnitOrderRow, LocalPlayerRow, TableRows};
-        use viewer_foundation::map::test_support::{test_frame, test_put};
+        use viewer_foundation::test_support::{test_frame, test_put};
         let mut frame = test_frame(0);
         test_put(&mut frame, TableRows::CountryLinks(vec![CountryLinkRow { id: 40, canonical_slot: 7 }]));
         test_put(&mut frame, TableRows::LocalPlayer(vec![LocalPlayerRow { country: 40, observer_country: 0 }]));

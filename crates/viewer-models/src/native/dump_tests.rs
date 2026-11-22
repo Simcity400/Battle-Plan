@@ -1,10 +1,10 @@
 use crate::native::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
-use viewer_foundation::map::test_support::gpu as tests;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::gpu_contract::SCENE_FORMAT;
+use viewer_gpu::test_support::gpu as tests;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -50,7 +50,7 @@ fn draw(
                     height: 100,
                 },
                 defines: MapDefines::test(),
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             },
             offsets: &[0., 0.],
             visible: None,
@@ -634,7 +634,7 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
             height: 100,
         },
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let mut expected_pixel = None;
     for frame in 0..8 {
@@ -939,7 +939,7 @@ mod independent;
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusals() {
-    use viewer_foundation::map::gpu_contract::read_texture;
+    use viewer_gpu::gpu_contract::read_texture;
     let (_directory, mut library, blank) = fixture();
     library.meshes[1].native[0].lods[0][0].material.shader = Some("Object".into());
     let mut alternate = library.meshes[1].native[0].lods[0][0].clone();
@@ -957,7 +957,7 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
             height: 100,
         },
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let render = |draws: &DrawList, caster: bool, samples| {
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -1011,7 +1011,7 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
             queue.submit([encoder.finish()]);
             read_texture(&device, &queue, &colour, 4).unwrap()
         } else {
-            let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_foundation::map::gpu_contract::SeaBed::Half);
+            let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_gpu::gpu_contract::SeaBed::Half);
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(
@@ -1241,7 +1241,7 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
     let camera = Camera {
         center: [0., 0.], height: 100.,
         map: MapSize { width: 100, height: 100 },
-        defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map,
+        defines: MapDefines::test(), pose: viewer_gpu::camera::Pose::Map,
     };
     for samples in [1, 4] {
         let mut models = [0, 1].map(|_| {
@@ -1419,7 +1419,7 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
             height: 100,
         },
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let compare = |model: &ModelPass, frame: ModelFrame<'_>, inputs: Inputs<'_>| {
         let fresh = model
@@ -1533,14 +1533,14 @@ fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
         height: 100.,
         map: MapSize { width: 100, height: 100 },
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let near = GameCull::of(&camera, [800, 600]);
-    let lens = viewer_foundation::map::camera::Lens { near: 1., far: 20_000., ..viewer_foundation::map::camera::Lens::MAP };
+    let lens = viewer_gpu::camera::Lens { near: 1., far: 20_000., ..viewer_gpu::camera::Lens::MAP };
     let east_eye = Camera {
         center: [40., 50.],
         height: 10.,
-        pose: viewer_foundation::map::camera::Pose::Free(viewer_foundation::map::camera::Free::new(std::f32::consts::FRAC_PI_2, 0., lens)),
+        pose: viewer_gpu::camera::Pose::Free(viewer_gpu::camera::Free::new(std::f32::consts::FRAC_PI_2, 0., lens)),
         ..camera
     };
     let step = |model: &ModelPass, camera: Camera, drawn: [f32; 4]| {
@@ -1600,7 +1600,7 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
             height: 100,
         },
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let step = |model: &mut ModelPass, scene: u8| {
         arena.reset();
@@ -1689,7 +1689,7 @@ fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_re
                 height: 100,
             },
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         },
         offsets: &[0.],
         visible: Some([0., 0., 100., 100.]),

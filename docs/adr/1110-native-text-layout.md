@@ -10,4 +10,4 @@ Unbound text boxes resolve authored keys through the content stack, retaining an
 
 Inline icons try the prefixed sprite name and then the bare one. An empty name supplies neither art nor advance, even if a frame suffix was present. A known icon takes its advance from its texture width divided by frame count, and can contribute texture height to its line when the font permits. A zero frame count refuses the invalid division. UVs select the horizontal frame and clamp the upper coordinate, while preserving the selected frame index. Layout and draw intentionally use their respective signed and unsigned width calculations.
 
-[Native bitmap text](../../crates/viewer-foundation/src/map/native_text.rs) · [Text layout fixtures](../../crates/viewer-foundation/src/map/native_text/tests.rs)
+[Native bitmap text](../../crates/viewer-native-gui/src/native_text.rs) · [Text layout fixtures](../../crates/viewer-native-gui/src/native_text/tests.rs)

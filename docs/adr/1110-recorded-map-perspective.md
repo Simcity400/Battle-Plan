@@ -14,4 +14,4 @@ Naval count text takes the visibility and jitter seed from the first grouped tas
 
 Port strike tooltips load score, estimate width and likelihood independently. Exact intel needs no estimates, and early status arms need none of those operands. The score coefficients preserve their authored order and values. The screening ratio clamps separately, and likelihood thresholds clamp individually while retaining their original order.
 
-[Perspective](../../crates/viewer-foundation/src/map/perspective.rs) · [Incremental vision](../../crates/viewer-foundation/src/map/perspective/incremental.rs) · [Naval counts](../../crates/viewer-foundation/src/map/naval_count_approx.rs) · [Port strike definitions](../../crates/viewer-foundation/src/map/port_mission_defines.rs)
+[Perspective](../../crates/viewer-foundation/src/perspective.rs) · [Incremental vision](../../crates/viewer-foundation/src/perspective/incremental.rs) · [Naval counts](../../crates/viewer-unit-reads/src/naval_count_approx.rs) · [Port strike definitions](../../crates/viewer-unit-reads/src/port_mission_defines.rs)

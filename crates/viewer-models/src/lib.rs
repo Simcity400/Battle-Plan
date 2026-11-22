@@ -15,9 +15,9 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Instant;
-use viewer_foundation::debug_fields;
-use viewer_foundation::map::textures::load_file;
-use viewer_foundation::profiling::BuilderSpans;
+use viewer_runtime::debug_fields;
+use viewer_gpu::textures::load_file;
+use viewer_runtime::profiling::BuilderSpans;
 mod animation_dispatch;
 mod draw_snapshot;
 mod identity;
@@ -46,7 +46,7 @@ use content_reader_core::{ResolvedLayers, mesh, mesh::Descriptors};
 use content_reader_image::{Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::DEPTH_MAP_FORMAT;
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::{Camera, MapSize},
     gpu_contract::{DEPTH_FORMAT, Targets},
     textures::{Bound, ColorSpace, upload},
@@ -431,7 +431,7 @@ impl ModelLibrary {
                 let mut worker = spans.fork();
                 let asset_namespace = Arc::clone(&asset_namespace);
                 handles.push(job_priority::spawn_in(scope, move || {
-                    let baked = viewer_foundation::worker_priority::at_bake_priority(|| {
+                    let baked = viewer_runtime::worker_priority::at_bake_priority(|| {
                         worker.measure(labels.worker, |_| {
                             let mut library = ModelLibrary {
                                 asset_namespace: Some(asset_namespace),
@@ -2087,7 +2087,7 @@ impl ModelPass {
         player: Option<&entity_animation::Player>,
         frozen_animation: bool,
     ) -> ActorPoses {
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         if let Some(player) = player {
             if let Some(posed) = self.posed.get((key, mesh)) {
                 add(self.label, "poses_worked", 1);
@@ -2382,8 +2382,8 @@ impl ModelPass {
     }
 
     pub fn set_clock_records(&mut self, records: &Arc<[ClockRecord]>, time: f32) {
-        let _span = viewer_foundation::profiling::span("set_clock_records");
-        viewer_foundation::view_record::add(self.label, "clock_records", records.len() as u64);
+        let _span = viewer_runtime::profiling::span("set_clock_records");
+        viewer_runtime::view_record::add(self.label, "clock_records", records.len() as u64);
         if !self.redirects.is_empty() {
             self.set_clocks(
                 records
@@ -2465,8 +2465,8 @@ impl ModelPass {
                 .iter()
                 .any(|offset| visible(group, *offset, rectangle))
         };
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add(self.label, "animate_instances", self.field.instances.len() as u64);
             add(self.label, "animate_groups", self.field.groups.len() as u64);
             add(
@@ -2608,7 +2608,7 @@ impl ModelPass {
         if moved.is_empty() {
             return;
         }
-        let _span = viewer_foundation::profiling::span("model_move_placed");
+        let _span = viewer_runtime::profiling::span("model_move_placed");
         let mut groups: Vec<usize> = Vec::with_capacity(moved.len());
         for &(ordinal, instance) in moved {
             let Some(&(group, index)) = self.field.native_order.get(ordinal) else {
@@ -2646,7 +2646,7 @@ impl ModelPass {
             group.bounds = bounds;
             group.centroid = std::array::from_fn(|axis| (sum[axis] / count) as f32);
         }
-        viewer_foundation::view_record::add(self.label, "field_moved_parts", moved.len() as u64);
+        viewer_runtime::view_record::add(self.label, "field_moved_parts", moved.len() as u64);
         self.written.set(true);
     }
 
@@ -3069,9 +3069,9 @@ impl ModelPass {
         why: impl std::fmt::Display,
     ) {
         let reason = why.to_string();
-        if viewer_foundation::view_record::on() {
-            viewer_foundation::view_record::add_named(self.label, &format!("refused: {reason}"), 1);
-            viewer_foundation::view_record::add_named(self.label, &format!("refused {name}: {reason}"), 1);
+        if viewer_runtime::view_record::on() {
+            viewer_runtime::view_record::add_named(self.label, &format!("refused: {reason}"), 1);
+            viewer_runtime::view_record::add_named(self.label, &format!("refused {name}: {reason}"), 1);
         }
         let why = format!("refused actor {name}: {reason}");
         count(Count::RefusedActors, 1);
@@ -3196,7 +3196,7 @@ impl ModelPass {
     }
 
     fn rebuild_native_walk(&mut self) {
-        let _span = viewer_foundation::profiling::span("native_walk_install");
+        let _span = viewer_runtime::profiling::span("native_walk_install");
         self.native_walk.rebuild(
             &self.field,
             self.meshes.len(),
@@ -3218,8 +3218,8 @@ impl ModelPass {
         }
         let mut walked = self.walked.borrow_mut();
         let change = walked.note(&self.field, changed);
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add(self.label, "field_placed", 1);
             add(self.label, "field_instances", self.field.instances.len() as u64);
             match change {
@@ -3586,7 +3586,7 @@ pub(crate) fn count(what: Count, n: u64) {
 static REFUSALS: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
 
 fn profiling_refusals() -> bool {
-    viewer_foundation::profile_writer::profiling()
+    viewer_runtime::profile_writer::profiling()
 }
 
 pub fn take_refusals() -> BTreeMap<String, u64> {
@@ -3663,7 +3663,7 @@ fn animate_players_native(
         palette: &'a mut [PaletteJoint],
         events: &'a mut Vec<entity_animation::Event>,
     }
-    let plan_span = viewer_foundation::profiling::span("animation_dispatch_plan");
+    let plan_span = viewer_runtime::profiling::span("animation_dispatch_plan");
     field.prepare_clock_order();
     field.group_work.clear();
     field.group_work.extend(field.groups.iter().map(|group| {
@@ -3786,7 +3786,7 @@ fn animate_players_native(
             .filter_map(|(key, player)| by_player.remove(key).map(|work| (player, work)))
             .collect();
         drop(plan_span);
-        run_span = viewer_foundation::profiling::span("animation_dispatch_run_commit");
+        run_span = viewer_runtime::profiling::span("animation_dispatch_run_commit");
         for (player, work) in &mut tasks {
             for work in work.iter_mut() {
                 let palette = if work.palette.is_empty() {

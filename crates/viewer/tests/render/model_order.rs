@@ -2,7 +2,7 @@ use content_reader_core::{mesh, test_support::Stack};
 use content_reader_image::native::Decode;
 use std::sync::Arc;
 use viewer_audio::{Content, Emitter, Engine, Frame, Group, Mix, Samples};
-use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
+use viewer_gpu::camera::{Camera, MapDefines, MapSize, Pose};
 use viewer_models::{entity_animation, ModelInstance, ModelLibrary, ModelPass, sound_events};
 use viewer_weather_effects::entity_effects::Lights;
 use viewer_scene_base::pointlights::Tiles;

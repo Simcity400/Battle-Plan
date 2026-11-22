@@ -3,9 +3,9 @@ use replay_data::{
     rows::ArmyIconInputRow, rows::ClockRow, rows::DivisionRow, rows::LexicalTokenRow,
     rows::ProvinceUnitOrderRow, rows::TableRows, rows::TemplateSubunit,
 };
-use viewer_foundation::map::count_math::count_range_seeded;
-use viewer_foundation::map::test_support::unit_types::subunits as synthetic_subunits;
-use viewer_foundation::map::test_support::{test_frame, test_put as put};
+use viewer_runtime::count_math::count_range_seeded;
+use viewer_foundation::test_support::unit_types::subunits as synthetic_subunits;
+use viewer_foundation::test_support::{test_frame, test_put as put};
 
 fn unit(owner: u32, rank: u8, template_id: u32, intel: u16) -> Unit {
     Unit {
@@ -20,7 +20,7 @@ fn content() -> Content {
     let subunits = synthetic_subunits();
     Content {
         template_reveal: Ok(
-            viewer_foundation::map::visibility::template_reveal::Defines {
+            viewer_foundation::visibility::template_reveal::Defines {
                 army_maximum: 100_000,
                 basic: 30_000,
                 standard: 70_000,

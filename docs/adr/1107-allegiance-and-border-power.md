@@ -10,4 +10,4 @@ Political fill and unit counters inherit colours through the current autonomy st
 
 Land composition and air-base estimates share one fixed-point count law. The caller supplies a subtype salt for land and a country salt for air bases, along with recorded content operands. Preserve zero-based month indexing and fixed-point square-root rounding.
 
-[Allegiance](../../crates/viewer-foundation/src/map/allegiance.rs) · [Border power](../../crates/viewer-foundation/src/map/border_power.rs) · [Colour inheritance](../../crates/viewer-foundation/src/map/color_inheritance.rs) · [Count math](../../crates/viewer-foundation/src/map/count_math.rs)
+[Allegiance](../../crates/viewer-foundation/src/allegiance.rs) · [Border power](../../crates/viewer-foundation/src/border_power.rs) · [Colour inheritance](../../crates/viewer-foundation/src/color_inheritance.rs) · [Count math](../../crates/viewer-runtime/src/count_math.rs)

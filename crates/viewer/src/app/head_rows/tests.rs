@@ -21,13 +21,9 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeSet, io, sync::Arc};
-use viewer_foundation::{
-    map::{
-        counter_hovers::unit_hits::{Hit, Kind as HitKind},
-        counter_move::MovementFrame,
-    },
-    unit_handle::Unit,
-};
+use viewer_native_gui::counter_hovers::unit_hits::{Hit, Kind as HitKind};
+use viewer_unit_reads::counter_move::MovementFrame;
+use viewer_runtime::unit_handle::Unit;
 
 const RECORDING: Recording = Recording { branch: 3 };
 const STRINGS: [&[u8]; 1] = [b""];

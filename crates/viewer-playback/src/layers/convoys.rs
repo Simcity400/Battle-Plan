@@ -14,8 +14,8 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::{
-    perspective::{Choice, Vision},
+use viewer_foundation::perspective::{Choice, Vision};
+use viewer_gpu::{
     province_map::HeightField,
     ribbon_content::{ArrowType, OrderDraw, OrderField, OrderVertex},
 };
@@ -159,9 +159,9 @@ impl Routes for crate::document::Content {
         let (graph, geography) = self.icons.raids.mission_topology().map_err(|why| format!("the content's province graph is unavailable: {why}"))?;
         let position = |province: u32| {
             let slot = if geography.land.contains(&province) && provinces.ports.contains_key(&province) {
-                viewer_foundation::map::unit_rules::SHIP_IN_PORT
+                viewer_foundation::unit_rules::SHIP_IN_PORT
             } else {
-                viewer_foundation::map::unit_rules::STANDSTILL
+                viewer_foundation::unit_rules::STANDSTILL
             };
             self.counters.anchor(province, slot)
         };
@@ -210,9 +210,9 @@ impl Routes for crate::document::Content {
         };
         let position = |province: u32| {
             let slot = if geography.land.contains(&province) && provinces.ports.contains_key(&province) {
-                viewer_foundation::map::unit_rules::SHIP_IN_PORT
+                viewer_foundation::unit_rules::SHIP_IN_PORT
             } else {
-                viewer_foundation::map::unit_rules::STANDSTILL
+                viewer_foundation::unit_rules::STANDSTILL
             };
             self.counters.anchor(province, slot)
         };
@@ -230,13 +230,13 @@ impl Routes for crate::document::Content {
             state_provinces: &self.icons.raids.trigger_content.state_provinces,
             position: &position,
         };
-        let heights = viewer_foundation::map::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
+        let heights = viewer_gpu::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
         let declared = |name: &str| self.unit_models.declares(name);
         let inputs = trade_routes::Inputs { orders: &self.orders, defines: self.trade_routes.as_ref().map_err(String::as_str), content: &content, heights: &heights, ours, declared: &declared };
         let checked = (|| {
             inputs.defines.map_err(|reason| format!("the trade-route defines cannot be read: {reason}"))?;
-            inputs.orders.types.get(viewer_foundation::map::ribbon_content::TRADE_ROUTE_TYPE_NAME).ok_or_else(|| {
-                format!("{} declares no arrowType {}", viewer_foundation::map::ribbon_content::MAPARROWS, viewer_foundation::map::ribbon_content::TRADE_ROUTE_TYPE_NAME)
+            inputs.orders.types.get(viewer_gpu::ribbon_content::TRADE_ROUTE_TYPE_NAME).ok_or_else(|| {
+                format!("{} declares no arrowType {}", viewer_gpu::ribbon_content::MAPARROWS, viewer_gpu::ribbon_content::TRADE_ROUTE_TYPE_NAME)
             })?;
             let tables = tables?;
             trade_routes::build_lines(&inputs, &tables, countries, exchanges, culture, stops, emit, &mut out)
@@ -304,7 +304,7 @@ impl Maker {
             }
             #[cfg(test)]
             let _exit = WorkerExit(Arc::clone(&sent));
-            viewer_foundation::worker_priority::background_priority();
+            viewer_runtime::worker_priority::background_priority();
             while let Ok(mut job) = receive.recv() {
                 let mut answered = 1;
                 while let Ok(newer) = receive.try_recv() {
@@ -404,7 +404,7 @@ fn deferred_at(table: TableId) -> Option<usize> {
 #[derive(Clone, Debug)]
 struct Ribbon {
     vertices: Vec<OrderVertex>,
-    native: Vec<viewer_foundation::map::ribbon_content::Vertex>,
+    native: Vec<viewer_gpu::ribbon_content::Vertex>,
     draw: OrderDraw,
     points: Vec<[f32; 2]>,
 }

@@ -1,6 +1,6 @@
 use super::*;
-use viewer_foundation::map::air_reachability::TargetPredicates;
-use viewer_foundation::map::aircraft_model;
+use viewer_unit_reads::air_reachability::TargetPredicates;
+use viewer_unit_reads::aircraft_model;
 fn wing(id: u64, owner: u32, region: u32) -> AirWingRow {
     AirWingRow {
         id,

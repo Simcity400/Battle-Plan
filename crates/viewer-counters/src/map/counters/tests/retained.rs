@@ -105,7 +105,7 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 80.,
             ];
             use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
-            use viewer_foundation::map::camera::{Free, Lens, Pose};
+            use viewer_gpu::camera::{Free, Lens, Pose};
             let flown = [
                 ([-20., 2.], 30., FRAC_PI_2, -0.4),
                 ([-18., 2.], 30., FRAC_PI_2, -0.4),
@@ -375,7 +375,7 @@ fn land_plates_against_fresh(
         |mut inputs| {
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
-            use viewer_foundation::map::camera::{Free, Lens, Pose};
+            use viewer_gpu::camera::{Free, Lens, Pose};
             let frame = DecodedFrame {
                 branch: 1,
                 hour: 11,
@@ -565,7 +565,7 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
 }
 
 fn clockless(batch: &Batch) -> Batch {
-    use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
+    use viewer_native_gui::native_shader::draw::SPRITE_TIME;
     let mut batch = batch.clone();
     for quad in &mut batch.quads {
         if let Some(exact) = &mut quad.exact {
@@ -627,8 +627,8 @@ fn assert_quad_bits(a: &Batch, b: &Batch) {
 }
 
 fn assert_native_bits(
-    a: &viewer_foundation::map::native_shader::draw::Quad,
-    b: &viewer_foundation::map::native_shader::draw::Quad,
+    a: &viewer_native_gui::native_shader::draw::Quad,
+    b: &viewer_native_gui::native_shader::draw::Quad,
 ) {
     assert_eq!(a, b);
     assert_eq!(
@@ -657,7 +657,7 @@ fn synthetic_hour_with_history(
     frame: &DecodedFrame,
     history: Option<&History>,
 ) -> HourTables {
-    let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+    let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
     hour_tables(
         frame,
         inputs.map,
@@ -812,8 +812,8 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                 LandCombatSideRow, NavalCombatRow, TableId, TableRows,
             };
             use replay_frame::frame::TableView;
-            use viewer_foundation::engagement_history::{Covered, NAVAL, NAVAL_ICON};
-            use viewer_foundation::icon_frames::Kept;
+            use viewer_engagements::engagement_history::{Covered, NAVAL, NAVAL_ICON};
+            use viewer_engagements::icon_frames::Kept;
             let mut frame = DecodedFrame {
                 branch: 1,
                 hour: 11,
@@ -1028,7 +1028,7 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                             );
                         } else {
                             land_combats.limits.insert(
-                                viewer_foundation::icon_frames::CARRIED.to_owned(),
+                                viewer_engagements::icon_frames::CARRIED.to_owned(),
                                 [61].into(),
                             );
                         }
@@ -1164,7 +1164,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
         ProvinceRow, SimulationFeatureRow, TableId, TableRows,
     };
     use replay_frame::frame::TableView;
-    use viewer_foundation::map::province_map::ProvinceMap;
+    use viewer_gpu::province_map::ProvinceMap;
     content_reader_core::test_game::enter();
     let stack = content_reader_core::test_support::Stack::new("base-icon-lookups");
     let base = stack.base();
@@ -1222,7 +1222,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
         guis,
         |assets| {
             assets.layouts = Layouts::read(&assets.windows);
-            assets.gui = viewer_foundation::map::native_resources::GuiResources::new(
+            assets.gui = viewer_native_gui::native_resources::GuiResources::new(
                 native::resources::Registry::load(&layers).unwrap(),
                 b"english",
                 [4, 4],
@@ -1232,7 +1232,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 .gui
                 .load(
                     &layers,
-                    &viewer_foundation::map::native_gui::Assets {
+                    &viewer_native_gui::native_gui::Assets {
                         sprites: [
                             b"GFX_synthetic_plate".to_vec(),
                             b"GFX_mapicon_facility_air".to_vec(),
@@ -1454,7 +1454,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 let actual = BaseIcons::read_profiled(
                     &frame,
                     &context,
-                    &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                    &mut viewer_runtime::profiling::BuilderSpans::new(false),
                 );
                 if case == 17 {
                     let why = actual.unwrap_err();
@@ -1737,7 +1737,7 @@ fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
         guis,
         |assets| {
             assets.layouts = Layouts::read(&assets.windows);
-            assets.gui = viewer_foundation::map::native_resources::GuiResources::new(
+            assets.gui = viewer_native_gui::native_resources::GuiResources::new(
                 native::resources::Registry::load(&layers).unwrap(),
                 b"english",
                 [4, 4],
@@ -1747,7 +1747,7 @@ fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
                 .gui
                 .load(
                     &layers,
-                    &viewer_foundation::map::native_gui::Assets {
+                    &viewer_native_gui::native_gui::Assets {
                         sprites: [
                             b"GFX_synthetic_plate".to_vec(),
                             b"GFX_mapicon_facility_air".to_vec(),

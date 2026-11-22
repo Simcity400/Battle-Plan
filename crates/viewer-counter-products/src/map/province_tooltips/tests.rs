@@ -34,7 +34,7 @@ fn air_region_hover_rebuilds_for_each_views_ordered_wing_selection() {
 fn thermal_identifier_notes_reach_province_content_warnings() {
     let content = Content {
         labels: Arc::new(
-            viewer_foundation::recorded_labels::RecordedLabels::from_localisation(
+            viewer_runtime::recorded_labels::RecordedLabels::from_localisation(
                 &Default::default(),
             ),
         ),

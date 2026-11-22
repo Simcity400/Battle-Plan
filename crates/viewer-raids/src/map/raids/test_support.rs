@@ -5,7 +5,7 @@ use replay_data::{
     rows::TableSchema,
 };
 use replay_frame::frame::TableView;
-use viewer_foundation::map::test_support::gui;
+use viewer_native_gui::test_support::gui;
 pub fn parse(source: &str) -> Vec<content_reader_core::parser::Item> {
     content_reader_core::parser::parse(source.as_bytes())
         .unwrap()

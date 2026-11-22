@@ -1,28 +1,28 @@
 
 use replay_data::rows::FactionTheatreRow;
 use std::collections::HashMap;
-use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
-use viewer_foundation::map::gui_resources::contains;
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
-use viewer_foundation::map::native_gui::Resources;
-use viewer_foundation::map::native_gui::SpriteSetter;
-use viewer_foundation::map::native_gui::lifecycle;
-use viewer_foundation::map::province_schedule::Schedule;
+use viewer_gpu::icon_tracks::{IconAnchor, IconFamily};
+use viewer_runtime::geometry::contains;
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
+use viewer_native_gui::native_gui::Resources;
+use viewer_native_gui::native_gui::SpriteSetter;
+use viewer_native_gui::native_gui::lifecycle;
+use viewer_gpu::province_schedule::Schedule;
 #[cfg(test)]
-use viewer_foundation::map::province_schedule::Update;
+use viewer_gpu::province_schedule::Update;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui as test_support_gui;
+use viewer_native_gui::test_support::gui as test_support_gui;
 
 use super::*;
-use viewer_foundation::map::native_gui;
+use viewer_native_gui::native_gui;
 
 const COUNT: &str = "count";
 const FACTION_ICON: &str = "faction_icon";
 const BUTTON: &[u8] = b"button";
 
-use viewer_foundation::map::native_windows::FACTION_PING_WINDOW;
+use viewer_native_gui::native_windows::FACTION_PING_WINDOW;
 pub const EMBLEM_SUFFIX: &str = "_miniature";
 pub const PING_PRIORITY: i8 = 0;
 fn unwrap(reference: i32, x: i32, width: i32) -> i32 {
@@ -363,10 +363,7 @@ impl PreparedPins {
         batch: &mut Batch,
         report: &mut CounterReport,
     ) {
-        use viewer_foundation::map::{
-            icon_windows::{Owner, Plan},
-            native_resources::Context,
-        };
+        use viewer_native_gui::{icon_windows::{Owner, Plan}, native_resources::Context};
         let flags = gui_windows::window_flags(inputs, countries);
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
         let context = Context {
@@ -458,8 +455,8 @@ impl PreparedPins {
             batch.at_anchor(anchor);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
             match painted.paint(
-                viewer_foundation::map::sprites::WindowKey::new(
-                    viewer_foundation::map::sprites::WindowPool::FactionPing,
+                viewer_native_gui::sprites::WindowKey::new(
+                    viewer_native_gui::sprites::WindowPool::FactionPing,
                     0,
                     drawn.owner,
                 ),
@@ -534,7 +531,7 @@ mod tests {
     #[test]
     fn pin_hover_distinguishes_refused_alpha_from_native_pass_through() {
         content_reader_core::test_game::enter();
-        use viewer_foundation::map::native_gui::lifecycle::Instance;
+        use viewer_native_gui::native_gui::lifecycle::Instance;
         let mut resources = test_support_gui::fixture();
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
@@ -567,7 +564,7 @@ mod tests {
     #[test]
     fn pin_refresh_uses_native_nested_inherited_controls_and_text() {
         content_reader_core::test_game::enter();
-        use viewer_foundation::map::native_gui::{PartKind, lifecycle::Instance};
+        use viewer_native_gui::native_gui::{PartKind, lifecycle::Instance};
         let resources = test_support_gui::fixture();
         let gui=native::read(br#"guiTypes = { containerWindowType = {
           name = faction_ping_map_icon size = { width = 100 height = 50 }

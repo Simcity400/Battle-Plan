@@ -105,9 +105,9 @@ fn previous_inputs(
         &layers.read(&format!("map/{}", default_map.heightmap))?,
     )
     .map_err(|error| {
-        viewer_foundation::errors::invalid(format!("map/{}: {error}", default_map.heightmap))
+        viewer_runtime::errors::invalid(format!("map/{}: {error}", default_map.heightmap))
     })?;
-    viewer_foundation::map::textures::expect_size(
+    viewer_gpu::textures::expect_size(
         "map/heightmap.bmp",
         heightmap.width,
         heightmap.height,
@@ -151,7 +151,7 @@ fn previous_inputs(
         Err(error) => Err(format!("the province graph cannot be built ({error})")),
     };
     let dlcs = layers.dlc_names()?;
-    let resource_bonuses = viewer_foundation::state_resources::resource_bonuses(&defines)?;
+    let resource_bonuses = dashboard_text::state_resources::resource_bonuses(&defines)?;
     let continents = content_reader_core::terrain::read_default_map(layers)
         .and_then(|map| layers.read(&map.file("continent")?))
         .and_then(|bytes| {
@@ -187,8 +187,8 @@ fn previous_inputs(
             content_reader_core::movement::MovementDefines::read(&defines)?,
         ))
     })();
-    let geometry = viewer_foundation::map::province_geometry::ProvinceGeometry::build(&map);
-    let heights = viewer_foundation::map::province_map::HeightField {
+    let geometry = viewer_gpu::province_geometry::ProvinceGeometry::build(&map);
+    let heights = viewer_gpu::province_map::HeightField {
         width: heightmap.width,
         height: heightmap.height,
         values: &heightmap.indices,
@@ -238,8 +238,8 @@ fn previous_inputs(
         fog,
         anchors: Arc::new(anchors),
         default_anchors: Arc::new(default_anchors),
-        bounds: Arc::new(viewer_foundation::map::province_admission::province_boxes(
-            &viewer_foundation::map::province_map::ProvinceMap {
+        bounds: Arc::new(viewer_gpu::province_admission::province_boxes(
+            &viewer_gpu::province_map::ProvinceMap {
                 width: map.width,
                 height: map.height,
                 ids: &map.province_ids,

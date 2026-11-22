@@ -1,8 +1,8 @@
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
-use viewer_foundation::map::camera::Placement;
+use viewer_gpu::camera::Placement;
 #[cfg(test)]
-use viewer_foundation::map::test_support::TEST_HANG_GUARD;
+use viewer_runtime::test_support::TEST_HANG_GUARD;
 use viewer_world::scene_faults::Point;
 
 pub(super) fn target(fixture: &Fixture) -> dashboard_core::protocol::DashboardMapView {
@@ -83,7 +83,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
             Some(Placement {
                 center: camera.center,
                 height: camera.height,
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             }),
         )),
         exit: false,
@@ -140,7 +140,7 @@ fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()
     viewer.camera = Some(Placement {
         center: request.camera.center,
         height: request.camera.height,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     });
     viewer.install_map(document, fixture.scene()?, "fixture".into());
     let ctx = egui::Context::default();
@@ -199,7 +199,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     viewer.camera = Some(Placement {
         center: request.camera.center,
         height: request.camera.height,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     });
     viewer.install_map(document, fixture.scene()?, "fixture".into());
     let ctx = egui::Context::default();

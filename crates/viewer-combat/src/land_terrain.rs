@@ -5,7 +5,8 @@ use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
-use {super::content::Content as StaticContent, viewer_foundation::table_access::rows};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::rows;
 use {
     super::{
         Selection,

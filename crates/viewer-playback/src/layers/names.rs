@@ -27,7 +27,7 @@ use std::{
     thread,
     time::Instant,
 };
-use viewer_foundation::map::name_draw::next_generation;
+use viewer_runtime::name_draw::next_generation;
 use viewer_map_modes::map_mode::{MapMode, NameLayer, NameLayers};
 use viewer_map_text::name_pass::{self, AreaText, PlacementInputs};
 
@@ -260,7 +260,7 @@ impl Placers {
             .filter_map(|_| {
                 let (held, atlas, sender) = (Arc::clone(&queue), Arc::clone(atlas), sender.clone());
                 thread::Builder::new().name("names placement".into()).spawn(move || {
-                    viewer_foundation::worker_priority::background_priority();
+                    viewer_runtime::worker_priority::background_priority();
                     place_jobs(&held, &*atlas, &sender)
                 }).ok()
             })
@@ -1027,7 +1027,7 @@ impl Names {
             let (send, made) = mpsc::channel();
             let (content, due) = (Arc::clone(&self.content), self.fed.due());
             thread::Builder::new().name("names fold".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(content, receive, send, due)
             })?;
             (self.jobs, self.made) = (Some(jobs), Some(made));
@@ -1070,7 +1070,7 @@ impl Names {
                 }
                 if self.whole_pending.is_some() {
                     let placements = self.whole_pending.take().expect("held");
-                    viewer_foundation::view_record::add("names layer", "installs", 1);
+                    viewer_runtime::view_record::add("names layer", "installs", 1);
                     target.install(&placements)?;
                     self.drawn = placements;
                 }
@@ -1426,16 +1426,16 @@ impl Layer for Names {
             self.exchange(false);
         }
         let pushed = self.push_any(&mut OnScene(gpu));
-        if viewer_foundation::view_record::on() {
+        if viewer_runtime::view_record::on() {
             let kind = match self.kind {
                 Kind::Nothing => 0,
                 Kind::Countries => 1,
                 Kind::Whole => 2,
             };
-            viewer_foundation::view_record::set("names layer", "kind", kind);
-            viewer_foundation::view_record::set("names layer", "drawn_generation", self.drawn.generation);
-            viewer_foundation::view_record::set("names layer", "drawn_names", self.drawn.country.len() as u64);
-            viewer_foundation::view_record::set("names layer", "pending", u64::from(self.whole_pending.is_some()));
+            viewer_runtime::view_record::set("names layer", "kind", kind);
+            viewer_runtime::view_record::set("names layer", "drawn_generation", self.drawn.generation);
+            viewer_runtime::view_record::set("names layer", "drawn_names", self.drawn.country.len() as u64);
+            viewer_runtime::view_record::set("names layer", "pending", u64::from(self.whole_pending.is_some()));
         }
         pushed
     }

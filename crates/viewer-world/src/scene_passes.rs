@@ -5,7 +5,7 @@ use std::{
     io,
 };
 #[cfg(test)]
-use viewer_foundation::map::gpu_contract::compiled;
+use viewer_gpu::gpu_contract::compiled;
 
 #[cfg(test)]
 #[path = "scene_passes_tests.rs"]

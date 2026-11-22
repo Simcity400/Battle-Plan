@@ -11,7 +11,7 @@ use std::{
     },
     time::Duration,
 };
-use viewer_foundation::map::camera::{Camera, Pose, motion::Floor};
+use viewer_gpu::camera::{Camera, Pose, motion::Floor};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CameraTarget {
@@ -356,7 +356,7 @@ fn event(line: Line, scale: f32, modifiers: egui::Modifiers) -> Option<egui::Eve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::camera::{MapDefines, MapSize};
+    use viewer_gpu::camera::{MapDefines, MapSize};
 
     #[test]
     fn lines_become_egui_events_in_points() {

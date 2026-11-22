@@ -1,7 +1,7 @@
 
 use super::*;
 use replay_data::rows::{RailwayGunCounterInputRow, RailwayGunEtaOperands};
-use viewer_foundation::map::railway_gun_counter::{self as guns, GunOperands, RailStatus};
+use viewer_unit_reads::railway_gun_counter::{self as guns, GunOperands, RailStatus};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GunFields<'a> {
@@ -47,7 +47,7 @@ impl<'a> GunFields<'a> {
 
     pub fn route(&self) -> counter_move::UnitRoute<'a> {
         counter_move::UnitRoute {
-            class: viewer_foundation::unit_class::CounterClass::RailwayGun,
+            class: viewer_runtime::unit_class::CounterClass::RailwayGun,
             combat_role: self.combat_role,
             combat_count: self.operands.combat_count,
             combat_province: self.combat_province,
@@ -106,7 +106,7 @@ pub struct GunMember {
     pub naval_transfer: bool,
     pub own: bool,
     pub name: String,
-    pub timing: viewer_foundation::map::counter_hovers::land::Timing,
+    pub timing: viewer_native_gui::counter_hovers::land::Timing,
     pub location_warning: Option<bool>,
     pub join_action: u8,
     pub action: counter_action::Action,
@@ -142,7 +142,7 @@ pub fn gun_member(gun: &GunFields<'_>, ground: GunGround<'_>, joins: &impl GunJo
         Err(reason) => return Gun::Unnamed(reason),
     };
     let route = gun.route();
-    let class = viewer_foundation::unit_class::CounterClass::RailwayGun;
+    let class = viewer_runtime::unit_class::CounterClass::RailwayGun;
     let placed = ground.movement.and_then(|movement| {
         route.stack_kind(gun.province, &movement.map, &|id| (ground.anchor)(id, class.standstill(true)))
     });
@@ -180,7 +180,7 @@ pub fn gun_member(gun: &GunFields<'_>, ground: GunGround<'_>, joins: &impl GunJo
         naval_transfer: gun.operands.naval_transfer != 0,
         own: slot == vision.ours(),
         name,
-        timing: viewer_foundation::map::counter_hovers::land::Timing {
+        timing: viewer_native_gui::counter_hovers::land::Timing {
             next: ground.movement.and_then(|content| first_edge(gun, content)),
             kind: placed,
         },
@@ -236,9 +236,10 @@ impl GunMember {
             hp: self.hp,
             org: 0,
             bars: true,
+            status_recorded: true,
             status: counter_status::Member {
-                supply_ratio: self.supply_ratio,
-                naval_transfer: self.naval_transfer,
+                supply_ratio: counter_status::SupplyRatio::exact(self.supply_ratio),
+                naval_transfer: Some(self.naval_transfer),
                 own: self.own,
                 ..Default::default()
             },

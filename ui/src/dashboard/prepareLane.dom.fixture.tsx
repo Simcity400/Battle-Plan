@@ -109,23 +109,18 @@ const fixture = {
     clock.playing = true; clock.anchor();
     await frame(); await frame();
     const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
-    const intervals: number[] = [];
-    let last = await frame();
+    await frame();
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
-      const now = await frame();
-      intervals.push(now - last);
-      last = now;
+      await frame();
     }
     clock.playing = false; clock.anchor();
-    intervals.sort((a, b) => a - b);
     const asked = requests.slice(before.requests);
     return {
       commits: visibleCommits - before.commits,
       preparedRenders: preparedRenders - before.prepared,
       asked: asked.map(item => item.product),
       hostWhilePlaying: false,
-      p50: intervals[Math.floor(intervals.length * 0.5)], p95: intervals[Math.floor(intervals.length * 0.95)],
     };
   },
   hostShown: () => !!document.querySelector('[data-prepare]'),
