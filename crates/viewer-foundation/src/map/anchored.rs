@@ -369,7 +369,7 @@ mod tests {
             rect,
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: None,
@@ -525,7 +525,7 @@ mod tests {
             rect: [10.0, 20.0, 4.0, 4.0],
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: Some(Exact {

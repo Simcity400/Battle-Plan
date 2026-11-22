@@ -177,8 +177,8 @@ export const nativeDashboardClient: DashboardClient = {
 
   releaseSource,
 
-  async setMapViews(views) {
-    if (desktopAvailable) await invoke('set_dashboard_maps', { views });
+  async setMapViews(clockId, views) {
+    if (desktopAvailable) await invoke('set_dashboard_maps', { clockId, views });
   },
 
   async onMapStates(callback) {

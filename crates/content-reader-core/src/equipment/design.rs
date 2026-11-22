@@ -1,6 +1,17 @@
 use super::{STAT_COUNT, stat_index};
 use crate::{fixed5::script_fixed5, parser::Item};
 
+pub const RELIABILITY_STAT: usize = 65;
+pub const RELIABILITY_FACTOR_STAT: usize = 66;
+pub const CARRIER_SIZE_STAT: usize = 72;
+pub const BUILD_COST_IC_STAT: usize = 77;
+pub const FORBIDDEN_RELIABILITY_SCALED_STATS: [usize; 4] = [
+    RELIABILITY_STAT,
+    RELIABILITY_FACTOR_STAT,
+    BUILD_COST_IC_STAT,
+    CARRIER_SIZE_STAT,
+];
+
 pub type ResourcePool = Vec<(Vec<u8>, i64)>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -418,6 +429,11 @@ impl StatGroup {
         }
         result
     }
+    pub(super) fn read_entries(target: &mut Vec<StatValue>, fields: &[Item]) {
+        for entry in fields {
+            Self::term(target, entry);
+        }
+    }
     fn term(target: &mut Vec<StatValue>, field: &Item) {
         let Some(index) = field.keyword().and_then(|key| stat_index(&key.folded())) else {
             return;
@@ -428,6 +444,25 @@ impl StatGroup {
         } else {
             target.push(StatValue { index, value });
         }
+    }
+}
+
+fn stat_term(values: &[StatValue], index: usize) -> i64 {
+    values
+        .iter()
+        .find(|entry| entry.index == index)
+        .map_or(0, |entry| entry.value)
+}
+
+fn average_component(source: &StatContribution) -> i64 {
+    if source.average_count > 0 {
+        if source.average_sum <= i64::MIN + 1 || source.average_sum == i64::MAX {
+            0xffff_ffff
+        } else {
+            source.average_sum.wrapping_mul(100_000) / (i64::from(source.average_count) * 100_000)
+        }
+    } else {
+        0
     }
 }
 
@@ -508,21 +543,85 @@ impl StatComponents {
         }
         Ok(())
     }
+    pub fn apply_module(
+        &mut self,
+        group: &StatGroup,
+        equipment: &super::Equipment,
+    ) -> Result<(), &'static str> {
+        for value in &group.add {
+            let target = self
+                .values
+                .get_mut(value.index)
+                .ok_or("equipment additive stat index outside native metadata")?;
+            let factor = stat_term(&equipment.module_add_stats_multiplier, value.index)
+                .wrapping_add(100_000);
+            target.additive = target
+                .additive
+                .wrapping_add(factor.wrapping_mul(value.value) / 100_000);
+        }
+        for value in &group.multiply {
+            let target = self
+                .values
+                .get_mut(value.index)
+                .ok_or("equipment multiplier stat index outside native metadata")?;
+            let factor = stat_term(&equipment.module_multiply_stats_multiplier, value.index)
+                .wrapping_add(100_000);
+            target.multiplier = target
+                .multiplier
+                .wrapping_add(factor.wrapping_mul(value.value) / 100_000);
+        }
+        for value in &group.average {
+            let target = self
+                .values
+                .get_mut(value.index)
+                .ok_or("equipment average stat index outside native metadata")?;
+            let factor = stat_term(&equipment.module_add_stats_multiplier, value.index)
+                .wrapping_add(100_000);
+            target.average_sum = target
+                .average_sum
+                .wrapping_add(factor.wrapping_mul(value.value) / 100_000);
+            target.average_count = target.average_count.wrapping_add(1);
+        }
+        Ok(())
+    }
+    pub fn effective_reliability(&self) -> i64 {
+        let source = &self.values[RELIABILITY_STAT];
+        let base = source.additive.wrapping_add(average_component(source));
+        (source.multiplier.wrapping_add(100_000).wrapping_mul(base) / 100_000).clamp(0, 100_000)
+    }
+    pub fn apply_reliability_scaling(
+        &mut self,
+        equipment: &super::Equipment,
+    ) -> Result<(), &'static str> {
+        if equipment.scaled_by_reliability.is_empty() {
+            return Ok(());
+        }
+        let reliability = self.effective_reliability();
+        for term in &equipment.scaled_by_reliability {
+            let target = self
+                .values
+                .get_mut(term.index)
+                .ok_or("reliability-scaled equipment stat index outside native metadata")?;
+            target.additive = target
+                .additive
+                .wrapping_add(term.value.wrapping_mul(reliability) / 100_000);
+        }
+        Ok(())
+    }
+    pub fn finish_for(
+        &self,
+        equipment: &super::Equipment,
+    ) -> Result<[i64; STAT_COUNT], &'static str> {
+        let mut combined = self.clone();
+        combined.apply_reliability_scaling(equipment)?;
+        Ok(combined.finish())
+    }
     pub fn finish(&self) -> [i64; STAT_COUNT] {
         std::array::from_fn(|index| {
             let source = &self.values[index];
-            let average = if source.average_count > 0 {
-                if source.average_sum <= i64::MIN + 1 || source.average_sum == i64::MAX {
-                    0xffff_ffff
-                } else {
-                    source.average_sum.wrapping_mul(100_000)
-                        / (i64::from(source.average_count) * 100_000)
-                }
-            } else {
-                0
-            };
+            let average = average_component(source);
             let value = source.additive.wrapping_add(average);
-            if index == 0x48 {
+            if index == CARRIER_SIZE_STAT {
                 let value = value.wrapping_add(source.multiplier);
                 if value % 100_000 == 0 {
                     value
@@ -766,5 +865,26 @@ mod tests {
                 .cost_ic,
             700_000
         );
+    }
+
+    #[test]
+    fn reliability_scaling_clamps_effective_reliability_and_applies_before_final_multiplier() {
+        let mut equipment = super::super::Equipment::new(b"test".to_vec(), 0);
+        equipment.scaled_by_reliability = vec![StatValue {
+            index: 0,
+            value: 1_000_000,
+        }];
+        let mut over = [0; STAT_COUNT];
+        over[RELIABILITY_STAT] = 150_000;
+        let mut comp = StatComponents::base(&over);
+        comp.applied(false, 0, 50_000).unwrap();
+        assert_eq!(comp.effective_reliability(), 100_000);
+        assert_eq!(comp.finish_for(&equipment).unwrap()[0], 1_500_000);
+
+        let mut negative = [0; STAT_COUNT];
+        negative[RELIABILITY_STAT] = -25_000;
+        let comp = StatComponents::base(&negative);
+        assert_eq!(comp.effective_reliability(), 0);
+        assert_eq!(comp.finish_for(&equipment).unwrap()[0], 0);
     }
 }

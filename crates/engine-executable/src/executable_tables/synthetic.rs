@@ -2,9 +2,9 @@ use crate::availability::{Verified, Withheld};
 use crate::build::ExecutableIdentity;
 
 use super::{
-    ExecutableTables, Tables, auxiliary::AuxiliaryTables, commands, folding::FoldingTable,
-    keywords::KeywordTables, numeric::NumericTables, registries::RegistryTables,
-    variables::VariableTables,
+    ExecutableTables, Tables, auxiliary::AuxiliaryTables, commands, cursors::CursorTable,
+    folding::FoldingTable, keywords::KeywordTables, numeric::NumericTables,
+    registries::RegistryTables, variables::VariableTables,
 };
 
 pub struct Parts {
@@ -17,6 +17,7 @@ pub struct Parts {
     pub numeric: Verified<NumericTables>,
     pub commands: Verified<commands::CommandTables>,
     pub folding: Verified<FoldingTable>,
+    pub cursors: Verified<CursorTable>,
 }
 
 impl Parts {
@@ -35,11 +36,17 @@ impl Parts {
             numeric: Err(absent(super::NUMERIC)),
             commands: Err(absent(super::COMMANDS)),
             folding: Err(absent(super::FOLDING)),
+            cursors: Err(absent(super::CURSORS)),
         }
     }
 
     pub fn keywords(mut self, keywords: KeywordTables) -> Self {
         self.keywords = Ok(keywords);
+        self
+    }
+
+    pub fn cursors(mut self, cursors: CursorTable) -> Self {
+        self.cursors = Ok(cursors);
         self
     }
 
@@ -54,6 +61,7 @@ impl Parts {
             numeric: self.numeric,
             commands: self.commands,
             folding: self.folding,
+            cursors: self.cursors,
         }))
     }
 }

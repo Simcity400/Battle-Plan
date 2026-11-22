@@ -489,11 +489,17 @@ impl<'a> NavalContext<'a> {
         })
     }
 
-    fn fleet_color(&self, fleet: u64) -> Option<[f32; 4]> {
-        let row = self.native.fleet(fleet)?;
-        Some(counter_inputs::color(
-            row.red, row.green, row.blue, row.alpha,
-        ))
+    fn fleet_color(&self, fleet: u64) -> Result<[f32; 4], String> {
+        let row = self.native.fleet(fleet).ok_or_else(|| {
+            format!(
+                "group_marker is undecided: fleet {fleet}'s colour (FleetCounterInputs) is not recorded"
+            )
+        })?;
+        counter_inputs::color(row.red, row.green, row.blue, row.alpha).ok_or_else(|| {
+            format!(
+                "group_marker is refused: fleet {fleet}'s colour (FleetCounterInputs) has non-finite components"
+            )
+        })
     }
 
     fn member<'b>(&'b self, unit: &NavalUnit<'_>) -> counter_inputs::NavalMember<'b> {
@@ -562,9 +568,7 @@ impl<'a> NavalContext<'a> {
                  task forces' missions) is not recorded"
             )),
             Some(false) => Ok(None),
-            Some(true) => self.fleet_color(fleet).map(Some).ok_or_else(|| {
-                format!("group_marker is undecided: fleet {fleet}'s colour (FleetCounterInputs) is not recorded")
-            }),
+            Some(true) => self.fleet_color(fleet).map(Some),
         };
         let side = if port {
             self.type_tints

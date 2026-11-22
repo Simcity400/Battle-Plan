@@ -97,17 +97,42 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
         let before = side.entry().playhead().step_state();
         let carried_before = carried(side);
         let head = before.0.unwrap_or(0);
-        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame_synced(head) }.unwrap();
         if done(side, &frame) {
             return;
         }
-        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || carried(side) < carried_before {
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || frame.exact || carried(side) < carried_before {
             continue;
         }
         let more = side
             .wait_step_after(before, last)
             .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
         assert!(more, "the map side reached the last recorded hour ({last}) without reaching {}: {}", what(side), seen(side));
+    }
+}
+
+pub fn frames_at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl FnMut(&MapSide, &Frame) -> bool) {
+    frames_at_named(side, hour, |_| what.to_owned(), done);
+}
+
+pub fn frames_at_named(side: &mut MapSide, hour: replay_data::Hour, what: impl Fn(&MapSide) -> String, mut done: impl FnMut(&MapSide, &Frame) -> bool) {
+    let carried = |side: &MapSide| side.parts().map_or(0, |(_, layers)| layers.iter().map(|layer| layer.carried().entities).sum::<usize>());
+    loop {
+        assert!(side.entry().playhead().error().is_none(), "the playhead stopped while waiting for {}: {:?}", what(side), side.entry().playhead().error());
+        reads_landed(side);
+        let before = side.entry().playhead().step_state();
+        let carried_before = carried(side);
+        let frame = if side.composing() { side.frame_waiting(hour) } else { side.frame_synced(hour) }.unwrap();
+        if done(side, &frame) {
+            return;
+        }
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || frame.exact || carried(side) < carried_before {
+            continue;
+        }
+        let more = side
+            .wait_step_after(before, hour)
+            .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
+        assert!(more, "the map side reached hour {hour} without reaching {}: {}", what(side), seen(side));
     }
 }
 

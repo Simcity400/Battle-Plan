@@ -550,7 +550,7 @@ pub fn production_frame(
     use replay_data::{
         rows::CountryAppearanceRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
         rows::OutputPurpose, rows::ProductionLineOutputRow, rows::ProductionLineRow,
-        rows::Recorded, rows::VariantDefinitionRow,
+        rows::Recorded, rows::ReservedCountryNamingRow, rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -573,8 +573,16 @@ pub fn production_frame(
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
             country: 11,
+            original_tag_reference: Recorded::Value(Some(0)),
             ..Default::default()
         }]));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                dynamic_tag_boundary: Recorded::Value(Some(50)),
+                ..Default::default()
+            },
+        ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
             LexicalTokenRow {
