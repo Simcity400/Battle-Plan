@@ -102,6 +102,7 @@ pub fn capture(
             let next = used
                 .checked_add(array.count as usize)
                 .ok_or("division manpower demand overflow")?;
+            grow(contributors, next)?;
             rows[len] = Row {
                 division: seed.division,
                 start: used,
@@ -111,7 +112,6 @@ pub fn capture(
             used = next;
             len += 1;
         }
-        grow(contributors, used)?;
         for (count, layout) in [(2, &TWO_LAYOUT), (1, &ONE_LAYOUT)] {
             let mut gathered = 0;
             for (n, row) in rows[..len].iter().enumerate() {
