@@ -280,14 +280,14 @@ fn group_color(
     if group == 0 {
         return None;
     }
-    let row = frame
-        .complete::<tables::OrdersGroupPlans>()
+    let row = viewer_foundation::map::tables::rows::<tables::OrdersGroupPlans>(frame)
         .ok()
         .and_then(|plans| {
-            plans
-                .binary_search_by_key(&group, |row| row.group)
+            let rows = plans.rows();
+            rows.binary_search_by_key(&group, |row| row.group)
                 .ok()
-                .map(|at| &plans[at])
+                .map(|at| &rows[at])
+                .or_else(|| rows.iter().find(|row| row.group == group))
         });
     match row {
         None => {
@@ -856,6 +856,60 @@ mod tests {
         assert!(
             absent
                 .contains_key("Air grid group marker: current group colour is unavailable")
+        );
+    }
+
+    #[test]
+    fn group_color_inspects_retained_rows_of_truncated_orders_group_plans() {
+        use replay_data::{rows::OrdersGroupPlanRow, rows::TableId, rows::TableRows};
+        use replay_frame::{frame::Metrics, frame::TableView};
+        let valid = [0.2f32, 0.4, 0.6, 1.0];
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "fixture".into(),
+                }
+                .into()
+            }),
+        };
+        *frame.tables[TableId::OrdersGroupPlans.index()] = TableView::Truncated {
+            rows: TableRows::OrdersGroupPlans(vec![
+                OrdersGroupPlanRow {
+                    group: 7,
+                    red: valid[0].to_bits(),
+                    green: valid[1].to_bits(),
+                    blue: valid[2].to_bits(),
+                    alpha: valid[3].to_bits(),
+                    ..Default::default()
+                },
+                OrdersGroupPlanRow {
+                    group: 8,
+                    red: f32::NAN.to_bits(),
+                    green: 0.4f32.to_bits(),
+                    blue: 0.6f32.to_bits(),
+                    alpha: 1.0f32.to_bits(),
+                    ..Default::default()
+                },
+            ]),
+            missing: 1,
+        };
+        let mut refused = BTreeMap::new();
+        assert_eq!(group_color(&frame, 7, &mut refused), Some(valid));
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(group_color(&frame, 8, &mut refused), None);
+        assert!(
+            refused
+                .keys()
+                .any(|key| key.contains("non-finite") && key.contains('8')),
+            "{refused:?}"
+        );
+        let mut absent = BTreeMap::new();
+        assert_eq!(group_color(&frame, 99, &mut absent), None);
+        assert!(
+            absent.contains_key("Air grid group marker: current group colour is unavailable")
         );
     }
 

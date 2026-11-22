@@ -211,6 +211,7 @@ pub struct TextChild {
     pub at: [f32; 2],
     pub max_width: f32,
     pub align: text::Align,
+    pub truncate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4072,8 +4073,7 @@ fn draw_child(
 
 pub(super) fn turned_rect(child: &Child, size: [f32; 2], origin: [f32; 2]) -> [f32; 4] {
     let (width, height) = (size[0] * child.scale, size[1] * child.scale);
-    let (sin, cos) = child.rotation.sin_cos();
-    if sin.abs() > cos.abs() {
+    if height > width {
         [
             origin[0] + child.at[0],
             origin[1] + child.at[1] + (height - width) * 0.5,
@@ -4108,12 +4108,13 @@ fn draw_text(
     if child.max_width <= 0.0 {
         return;
     }
-    let glyphs = text::layout(
+    let glyphs = text::layout_truncated(
         font,
         value,
         [origin[0] + child.at[0], origin[1] + child.at[1]],
         child.align,
         Some(child.max_width),
+        child.truncate,
     );
     if !glyphs.is_empty() {
         batch.text(&glyphs, color);

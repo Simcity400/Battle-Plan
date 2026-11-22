@@ -529,29 +529,30 @@ impl Batch {
         rotation: f32,
         color: [f32; 4],
     ) {
-        let width = pixels.clamp(0.0, size[0] + 1.0).floor();
-        if width < 1.0 {
+        let drawn = pixels.clamp(0.0, size[0] + 1.0).floor();
+        if drawn < 1.0 {
             return;
         }
-        let fill = (width / size[0]).min(1.0);
+        let fill = (drawn / size[0]).min(1.0);
         let [u0, v0, u1, v1] = sheet.frame_uv(0);
+        let pivot = [at[0] + size[0] * 0.5, at[1] + size[1] * 0.5];
+        let delta = (drawn - size[0]) * 0.5;
         let (sin, cos) = rotation.sin_cos();
-        let (rect, uv) = if sin.abs() > cos.abs() {
-            let cx = at[0] + width * 0.5;
-            let cy = at[1] + size[1] * 0.5;
-            let uv = if sin >= 0.0 {
-                [u0, v0, u1, v0 + (v1 - v0) * fill]
-            } else {
-                [u0, v1 - (v1 - v0) * fill, u1, v1]
-            };
-            ([cx - size[1] * 0.5, cy - width * 0.5, size[1], width], uv)
+        let frame = sheet.frame_size();
+        let (rect, uv) = if frame[1] > frame[0] {
+            let cx = pivot[0] + delta * sin;
+            let cy = pivot[1] + delta * cos;
+            (
+                [cx - size[1] * 0.5, cy - drawn * 0.5, size[1], drawn],
+                [u0, v0, u1, v0 + (v1 - v0) * fill],
+            )
         } else {
-            let uv = if cos >= 0.0 {
-                [u0, v0, u0 + (u1 - u0) * fill, v1]
-            } else {
-                [u1 - (u1 - u0) * fill, v0, u1, v1]
-            };
-            ([at[0], at[1], width, size[1]], uv)
+            let cx = pivot[0] + delta * cos;
+            let cy = pivot[1] - delta * sin;
+            (
+                [cx - drawn * 0.5, cy - size[1] * 0.5, drawn, size[1]],
+                [u0, v0, u0 + (u1 - u0) * fill, v1],
+            )
         };
         self.quads.push(Quad {
             texture: sheet.texture,
@@ -3759,14 +3760,14 @@ mod tests {
         );
         let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
         assert!(
-            near(pixel(&pixels, 2, 4), [40, 234, 200]),
+            near(pixel(&pixels, 18, 4), [40, 10, 200]),
             "{:?}",
-            pixel(&pixels, 2, 4)
+            pixel(&pixels, 18, 4)
         );
         assert!(
-            near(pixel(&pixels, 9, 6), [200, 136, 200]),
+            near(pixel(&pixels, 11, 6), [200, 108, 200]),
             "{:?}",
-            pixel(&pixels, 9, 6)
+            pixel(&pixels, 11, 6)
         );
         assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
 

@@ -131,12 +131,34 @@ pub(super) fn presented(
                 .map(|icon| icon.scale)
                 .or_else(|| element.button().map(|button| button.scale))
                 .unwrap_or(1.0);
-            if let Some(icon) = element.icon()
-                && icon.rotation != 0.0
-            {
+            if let Some(icon) = element.icon() {
                 if element.is_named("bar_org") || element.is_named("bar_str") {
-                    rect[1] -= (frame.drawn[1] - frame.drawn[0]) * scale * 0.5;
-                } else {
+                    match container_frame(root, None) {
+                        Ok(container) => {
+                            let anchor = viewer_foundation::map::native_gui::compute_anchor(
+                                icon.orientation,
+                                native::Orientation::UpperLeft,
+                                container.content_size,
+                                [0; 2],
+                            );
+                            rect[0] = origin[0]
+                                + container.content_at[0] as f32
+                                + icon.position[0]
+                                + anchor[0] as f32;
+                            rect[1] = origin[1]
+                                + container.content_at[1] as f32
+                                + icon.position[1]
+                                + anchor[1] as f32;
+                        }
+                        Err(reason) => {
+                            out.refused.push(format!(
+                                "{window}.{} hover placement unavailable: {reason}",
+                                element.name()
+                            ));
+                            continue;
+                        }
+                    }
+                } else if icon.rotation != 0.0 {
                     out.refused.push(format!(
                         "{window}.{} rotated hover placement unavailable",
                         element.name()
@@ -172,7 +194,6 @@ struct Frame {
     hit: Hit,
     texture: [f32; 2],
     grid: [i32; 2],
-    drawn: [f32; 2],
 }
 
 impl Frame {
@@ -213,7 +234,6 @@ fn sheet_frame(inputs: &CounterInputs<'_>, sheet: &SpriteSheet) -> Result<Frame,
         hit: sprite_hit(inputs, sheet.name.as_bytes())?,
         texture: sheet.size.map(|value| value as f32),
         grid: [sheet.frames.max(1) as i32, 1],
-        drawn: sheet.frame_size(),
     })
 }
 
@@ -225,14 +245,14 @@ fn selected_frame(
     quad: &sprites::Quad,
 ) -> Result<Frame, &'static str> {
     if element.is_named("type") {
-        let (name, cell) = inputs
+        let name = inputs
             .assets
             .types
             .entries()
             .find_map(|((name, _), cell)| {
                 (inputs.assets.types.texture == quad.texture
                     && inputs.assets.types.uv(*cell) == quad.uv)
-                    .then_some((name, *cell))
+                    .then_some(name)
             })
             .ok_or("hover type sprite identity unavailable")?;
         let (texture, grid) = inputs
@@ -244,7 +264,6 @@ fn selected_frame(
             hit: sprite_hit(inputs, name.as_bytes())?,
             texture: texture.map(|value| value as f32),
             grid,
-            drawn: inputs.assets.types.frame_size(cell),
         });
     }
     if element.is_named("general_portrait") {
@@ -454,13 +473,12 @@ mod tests {
             sprite: "GFX_div_templ_7_small".into(),
             frame: 1,
         };
-        let cell = atlas.cell(&icon).unwrap();
+        assert!(atlas.cell(&icon).is_some());
         let (texture, grid) = atlas.source_dimensions(&icon.sprite).unwrap();
         let frame = Frame {
             hit: Hit::Frame,
             texture: texture.map(|edge| edge as f32),
             grid,
-            drawn: atlas.frame_size(cell),
         };
         assert_eq!(frame.scaled_size(1.0), [12., 30.]);
         assert_eq!(frame.scaled_size(0.75), [9., 22.5]);
@@ -491,10 +509,92 @@ mod tests {
         let fractional = Frame {
             texture: [12., 31.],
             grid: [1, 3],
-            drawn: [12., 31. / 3.],
             ..frame
         };
         assert_eq!(fractional.scaled_size(0.7)[1].to_bits(), 0x40e7_7777);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bar_hover_uses_authored_placement_at_180_degrees() {
+        content_reader_core::test_game::enter();
+        let gui = br#"guiTypes = {
+            containerWindowType = {
+                name = "naval_combat_mapicon"
+                size = { width = 10 height = 10 }
+            }
+            containerWindowType = {
+                name = "unit_counter_navy"
+                size = { width = 10 height = 10 }
+            }
+            containerWindowType = {
+                name = "unit_counter"
+                size = { width = 76 height = 24 }
+                iconType = { name = "bar_org" spriteType = "GFX_synthetic_overlay" position = { x = 14 y = 8 } rotation = 3.1415927 }
+            }
+        }"#;
+        let guis = native::Guis::new(vec![(
+            "test.gui".into(),
+            native::read_at(gui, viewer_foundation::map::test_support::VIEWPORT),
+        )]);
+        super::super::tests::with_counter_inputs_fixture(
+            guis,
+            |assets| {
+                assets
+                    .sheets
+                    .get_mut("GFX_synthetic_overlay")
+                    .unwrap()
+                    .size = [17, 3];
+            },
+            |_| {},
+            |inputs| {
+                let sheet = inputs.assets.sheet("GFX_synthetic_overlay").unwrap();
+                let child = Child {
+                    sprite: "GFX_synthetic_overlay".into(),
+                    at: [14.0, 8.0],
+                    scale: 1.0,
+                    frame: 0,
+                    rotation: std::f32::consts::PI,
+                    centered: false,
+                    order: 0,
+                };
+                let mut batch = sprites::Batch::default();
+                batch.at_layer(0);
+                draw_bar(&mut batch, sheet, &child, [100.0, 200.0], 0.5);
+                let stack = land::Stack {
+                    selected: false,
+                    owner: 0,
+                    logical: Some(0),
+                    plate: Ok([1.0; 4]),
+                    flag_owner: 0,
+                    coarse: false,
+                    type_tint: None,
+                    hq: false,
+                    portrait: None,
+                    hidden: false,
+                    hit_points: Vec::new(),
+                    organisation: Vec::new(),
+                    bars: true,
+                    members: Vec::new(),
+                    divisions: Arc::from([]),
+                    timing: Arc::from([]),
+                    template: 0,
+                    alternate_template: 0,
+                    disclosure: Ok(false),
+                    grouping_unknown: None,
+                    moving: None,
+                    action: Ok(0),
+                    marker: Ok(None),
+                    leader_en_route: None,
+                    defending_area: false,
+                    gun: None,
+                    abilities: None,
+                };
+                let out = presented(&inputs, &stack, false, [100.0, 200.0], &batch.quads);
+                assert!(out.refused.is_empty(), "{:?}", out.refused);
+                assert_eq!(out.controls.len(), 1);
+                assert_eq!(out.controls[0].1, [114.0, 208.0, 17.0, 3.0]);
+            },
+        );
     }
 }

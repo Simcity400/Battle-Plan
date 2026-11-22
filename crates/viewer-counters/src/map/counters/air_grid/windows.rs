@@ -15,6 +15,7 @@ use viewer_foundation::map::{
 struct Entry {
     instance: Instance,
     data: Option<PreparedItem>,
+    refused: BTreeMap<String, usize>,
 }
 #[derive(Default, Debug)]
 pub(crate) struct View {
@@ -98,6 +99,7 @@ impl View {
                     for entry in entries {
                         entry.instance.hide(item, item)?;
                         entry.data = None;
+                        entry.refused.clear();
                     }
                 }
                 return Ok(());
@@ -126,10 +128,12 @@ impl View {
             entry.1.push(Entry {
                 instance: Instance::construct(item, viewport, resources)?,
                 data: None,
+                refused: BTreeMap::new(),
             });
         }
         for (index, entry) in entry.1.iter_mut().enumerate() {
             entry.data = values.get(index).cloned();
+            entry.refused.clear();
             if let Some(data) = &entry.data {
                 update_item(
                     &mut entry.instance,
@@ -138,6 +142,7 @@ impl View {
                     inputs,
                     countries,
                     resources,
+                    &mut entry.refused,
                 )?;
             } else {
                 entry.instance.hide(item, item)?;
@@ -239,6 +244,9 @@ impl View {
             for (why, count) in &data.refused {
                 *report.icon_gui_notes.entry(why.clone()).or_default() += count;
             }
+            for (why, count) in &entry.refused {
+                *report.icon_gui_notes.entry(why.clone()).or_default() += count;
+            }
             let Some(at) = holder else {
                 continue;
             };
@@ -334,6 +342,7 @@ fn update_item(
     inputs: &CounterInputs<'_>,
     countries: Option<&Countries>,
     resources: &dyn native_gui::Resources,
+    refused: &mut BTreeMap<String, usize>,
 ) -> Result<(), String> {
     use native::Kind::{Button, Icon, TextBox};
     let find = |kind, name: &str| {
@@ -386,20 +395,27 @@ fn update_item(
     {
         visible(instance, root, Icon, name, value == Some(true))?;
     }
-    let plate = countries
-        .zip(data.country)
-        .and_then(|(countries, country)| {
-            countries.sides.get(&country).copied().and_then(|side| {
-                counter_plate_color(
-                    inputs.settings.color_mode,
-                    &inputs.content.defines.tints,
-                    countries,
-                    side,
-                    Some(country),
-                )
-                .ok()
-            })
-        });
+    let plate = match countries.zip(data.country) {
+        Some((countries, country)) => match countries.sides.get(&country).copied() {
+            Some(side) => match counter_plate_color(
+                inputs.settings.color_mode,
+                &inputs.content.defines.tints,
+                countries,
+                side,
+                Some(country),
+            ) {
+                Ok(color) => Some(color),
+                Err(why) => {
+                    *refused
+                        .entry(format!("Air grid plate: {why}"))
+                        .or_default() += 1;
+                    None
+                }
+            },
+            None => None,
+        },
+        None => None,
+    };
     visible(instance, root, Button, "count_bg", plate.is_some())?;
     if let Some(color) = plate {
         instance.control(root, find(Button, "count_bg")?)?.color = Some(color);
@@ -652,6 +668,7 @@ mod tests {
                     &inputs,
                     Some(&countries),
                     &resources,
+                    &mut BTreeMap::new(),
                 )
                 .unwrap();
                 let control = |kind, name| root.find(kind, name).unwrap();
@@ -720,6 +737,7 @@ mod tests {
                     &inputs,
                     Some(&countries),
                     &resources,
+                    &mut BTreeMap::new(),
                 )
                 .unwrap();
                 instance
@@ -740,6 +758,107 @@ mod tests {
                             .any(|part| part.path.ends_with(&format!(".{name}")))
                     );
                 }
+            },
+        );
+    }
+
+    #[test]
+    fn air_grid_country_plate_reports_non_finite_ui_color_refusal() {
+        content_reader_core::test_game::enter();
+        let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
+            "guiTypes={",
+            r#"guiTypes={
+                    containerWindowType={name=naval_combat_mapicon}
+                    containerWindowType={name=unit_counter_navy size={width=60 height=30}
+                        gridboxtype={name=wings_box position={x=-20 y=35}
+                            size={width=100% height=100%} slotsize={width=58 height=23}
+                            max_slots_horizontal=1 format=UPPER_LEFT}}
+                "#,
+            1,
+        );
+        super::super::super::tests::with_counter_inputs_fixture(
+            super::super::super::tests::action_gui(false),
+            |assets| {
+                assets.windows = SharedNativeWindows::read(source.as_bytes(), [400, 400]).unwrap();
+            },
+            |_| {},
+            |mut inputs| {
+                let windows = inputs.windows;
+                inputs.settings.color_mode = CounterColorMode::Country;
+                let root = windows.navy();
+                let mut resources = fixture();
+                let sprite = resources.sprites.get_mut("GFX_even").unwrap();
+                sprite.frames = 4;
+                sprite.texture = [80, 10];
+                let mut countries = Countries::default();
+                countries.sides.insert(1, Allegiance::Ours);
+                countries.ui_colors.colors.insert(1, None);
+                let data = PreparedItem {
+                    item: super::super::Item {
+                        members: vec![7],
+                        selected: false,
+                        archetype: Some(1),
+                        group: 0,
+                        planes: 20,
+                    },
+                    icon_frame: 1,
+                    action: None,
+                    country: Some(1),
+                    group_color: None,
+                    markers: [Some(false); 4],
+                    capacity: Some(100),
+                    hover: Arc::default(),
+                    marker_hovers: std::array::from_fn(|_| Arc::default()),
+                    refused: Default::default(),
+                };
+                let mut instance = Instance::construct(root, [400, 400], &resources).unwrap();
+                instance.gui_show(root, root).unwrap();
+                let mut view = View::default();
+                view.update(
+                    0,
+                    None,
+                    &mut instance,
+                    root,
+                    "wings_box",
+                    Some(&Ok(vec![data])),
+                    &inputs,
+                    Some(&countries),
+                    &resources,
+                )
+                .unwrap();
+                let tick = Tick { time: 1., dt: 1. };
+                instance.tick(root, &resources, tick).unwrap();
+                let drawn = Drawn {
+                    owner: 0,
+                    origin: [100, 200],
+                    layout: instance.layout(root, &resources, None).unwrap().unwrap(),
+                };
+                let mut report = CounterReport::default();
+                let grid = view
+                    .compose_held(
+                        0,
+                        &drawn,
+                        NAVY_WINDOW,
+                        "wings_box",
+                        &inputs,
+                        &resources,
+                        tick,
+                        7,
+                        None,
+                        IconFamily::Columns,
+                        &mut report,
+                    )
+                    .unwrap();
+                let composed = drawn.layout.composed_parts(&grid.parts).cloned().collect::<Vec<_>>();
+                assert!(!composed.iter().any(|part| part.path.ends_with(".count_bg")));
+                assert!(
+                    report
+                        .icon_gui_notes
+                        .keys()
+                        .any(|note| note.contains("slot 1") && note.contains("non-finite")),
+                    "{:?}",
+                    report.icon_gui_notes
+                );
             },
         );
     }

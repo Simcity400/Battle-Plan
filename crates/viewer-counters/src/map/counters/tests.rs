@@ -1043,6 +1043,7 @@ fn layouts() -> Layouts {
         at,
         max_width,
         align: text::Align::Centre,
+        truncate: true,
     };
     Layouts {
         land: Ok(LandCounter {
@@ -5786,4 +5787,50 @@ fn land_stack_refuses_non_finite_group_marker_and_preserves_valid_ones() {
     foreign.owner = 2;
     let stack = land::land_stack(&[&foreign], &tables, &Default::default(), false, &|_| false, false);
     assert_eq!(stack.marker, Ok(None));
+}
+
+#[test]
+fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
+    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
+    let child = |degrees: f32| Child {
+        sprite: "GFX_horizontal_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: degrees.to_radians(),
+        centered: false,
+        order: 0,
+    };
+    let origin = [100.0, 200.0];
+    let mut below = Batch::default();
+    draw_bar(&mut below, &horizontal, &child(44.9), origin, 1.0);
+    let mut above = Batch::default();
+    draw_bar(&mut above, &horizontal, &child(45.1), origin, 1.0);
+    let q_below = &below.quads[0];
+    let q_above = &above.quads[0];
+    assert_eq!(q_below.rect[2], 18.0);
+    assert_eq!(q_above.rect[2], 18.0);
+    let centre = |q: &sprites::Quad| [q.rect[0] + q.rect[2] * 0.5, q.rect[1] + q.rect[3] * 0.5];
+    let (c_below, c_above) = (centre(q_below), centre(q_above));
+    assert!(
+        (c_below[0] - c_above[0]).abs() < 0.05 && (c_below[1] - c_above[1]).abs() < 0.05,
+        "45-degree jump: {c_below:?} vs {c_above:?}"
+    );
+
+    let corner0 = |q: &sprites::Quad| {
+        let cx = q.rect[0] + q.rect[2] * 0.5;
+        let cy = q.rect[1] + q.rect[3] * 0.5;
+        let (dx, dy) = (q.rect[0] - cx, q.rect[1] - cy);
+        let (sin, cos) = q.rotation.sin_cos();
+        [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
+    };
+    let mut full = Batch::default();
+    draw_bar(&mut full, &horizontal, &child(30.0), origin, 1.0);
+    let mut partial = Batch::default();
+    draw_bar(&mut partial, &horizontal, &child(30.0), origin, 0.5);
+    let (p_full, p_partial) = (corner0(&full.quads[0]), corner0(&partial.quads[0]));
+    assert!(
+        (p_full[0] - p_partial[0]).abs() < 1e-4 && (p_full[1] - p_partial[1]).abs() < 1e-4,
+        "source texel moved under partial fill: {p_full:?} vs {p_partial:?}"
+    );
 }
