@@ -196,7 +196,27 @@ pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
 
 pub fn replay() -> &'static Replay {
     static HELD: OnceLock<Replay> = OnceLock::new();
-    HELD.get_or_init(|| Replay::from_records(b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap())
+    HELD.get_or_init(|| {
+        let kept = kept_path();
+        if let Some(replay) = kept.as_deref().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| Replay::open(bytes).ok()) {
+            return replay;
+        }
+        let replay = Replay::from_records(b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap();
+        if let Some(path) = kept {
+            let written = path.with_extension(format!("{}.tmp", std::process::id()));
+            if std::fs::write(&written, replay.bytes()).and_then(|()| std::fs::rename(&written, &path)).is_err() {
+                let _ = std::fs::remove_file(&written);
+            }
+        }
+        replay
+    })
+}
+
+fn kept_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let built = std::fs::metadata(&exe).ok()?;
+    let stamp = built.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(std::env::temp_dir().join(format!("{}-{}-{stamp}.battleplan", exe.file_stem()?.to_string_lossy(), built.len())))
 }
 
 pub fn query() -> Query<'static> {
