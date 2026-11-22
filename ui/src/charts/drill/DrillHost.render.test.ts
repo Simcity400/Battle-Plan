@@ -138,7 +138,8 @@ test('opening slides at once and mounts the breakdown on the next frame', async 
         if (!id.replaceAll('\\', '/').endsWith('/drill/DrillHost.tsx')) return;
         return code.replace("import { useEffect, useLayoutEffect, useRef, useState } from 'react';",
           'const { useEffect, useEffect: useLayoutEffect, useRef, useState } = globalThis.__drillMount;')
-          .replace("from '../../components/Popover'", "from 'drill-mount-popover'");
+          .replace("from '../../components/Popover'", "from 'drill-mount-popover'")
+          .replace("import { useDrillShown } from '../../dashboard/widgetPerf.ts';", 'const useDrillShown = () => {};');
       },
       resolveId(id) { if (id === 'drill-mount-popover') return '\0drill-mount-popover'; },
       load(id) { if (id === '\0drill-mount-popover') return `export const usePopover = () => ({ popup: { current: null } }); export const Popover = () => null;`; },
