@@ -154,6 +154,35 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
     let queue = frame
         .complete::<tables::NavalRepairQueue>()
         .map_err(|e| io::Error::other(e.to_string()))?;
+    let queued: std::collections::HashSet<u64> = queue
+        .iter()
+        .filter(|row| row.province == province)
+        .filter_map(|row| {
+            ships
+                .binary_search_by_key(&row.ship, |ship| ship.id)
+                .ok()
+                .map(|at| ships[at].task_force)
+        })
+        .collect();
+    let viewing_fleets: std::collections::HashSet<u64> = country
+        .fleets
+        .iter()
+        .map(|occurrence| occurrence.fleet)
+        .collect();
+    let mut fleet_forces: std::collections::HashMap<u64, Vec<u64>> =
+        std::collections::HashMap::with_capacity(viewing_fleets.len());
+    let mut contributing_fleets: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for force in forces {
+        if viewing_fleets.contains(&force.fleet) {
+            fleet_forces.entry(force.fleet).or_default().push(force.id);
+            if force.province == province || queued.contains(&force.id) {
+                contributing_fleets.insert(force.fleet);
+            }
+        }
+    }
+    if contributing_fleets.is_empty() {
+        return Ok(Vec::new());
+    }
     let (fleet_inputs, truncated_missing) =
         match viewer_foundation::map::tables::rows::<tables::FleetCounterInputs>(frame)? {
             viewer_foundation::map::tables::Available::Complete(rows) => (rows, None),
@@ -171,31 +200,12 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
                 )));
             }
         };
-    let viewing_fleets: std::collections::HashSet<u64> = country
-        .fleets
-        .iter()
-        .map(|occurrence| occurrence.fleet)
-        .collect();
-    let mut fleet_forces: std::collections::HashMap<u64, Vec<u64>> =
-        std::collections::HashMap::with_capacity(viewing_fleets.len());
-    for force in forces {
-        if viewing_fleets.contains(&force.fleet) {
-            fleet_forces.entry(force.fleet).or_default().push(force.id);
-        }
-    }
-    let queued: std::collections::HashSet<u64> = queue
-        .iter()
-        .filter(|row| row.province == province)
-        .filter_map(|row| {
-            ships
-                .binary_search_by_key(&row.ship, |ship| ship.id)
-                .ok()
-                .map(|at| ships[at].task_force)
-        })
-        .collect();
     let mut members = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for occurrence in &country.fleets {
+        if !contributing_fleets.contains(&occurrence.fleet) {
+            continue;
+        }
         let roster = fleet_inputs
             .binary_search_by_key(&occurrence.fleet, |row| row.fleet)
             .ok()
@@ -709,7 +719,31 @@ mod tests {
             reason: "older recording".into(),
         };
         assert!(base_members(&frame, 3, 5).is_err());
+        assert!(base_members(&frame, 3, 7).unwrap().is_empty());
 
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![
+                force(1, 10, 88),
+                force(2, 11, 5),
+                force(3, 11, 99),
+                force(4, 11, 5),
+            ]),
+        );
+        *frame.tables[TableId::FleetCounterInputs.index()] = TableView::Truncated {
+            rows: TableRows::FleetCounterInputs(vec![FleetCounterInputRow {
+                fleet: 11,
+                task_forces: vec![4, 3, 2],
+                ..Default::default()
+            }]),
+            missing: 1,
+        };
+        assert_eq!(base_members(&frame, 3, 5).unwrap(), [4, 3, 2]);
+        assert!(base_members(&frame, 3, 88).is_err());
+
+        *frame.tables[TableId::FleetCounterInputs.index()] = TableView::Unavailable {
+            reason: "older recording".into(),
+        };
         put(
             &mut frame,
             TableRows::CountryGameScoreInputs(vec![CountryGameScoreInputRow {
