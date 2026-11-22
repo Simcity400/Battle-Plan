@@ -547,6 +547,7 @@ pub struct Equipment {
     pub module_add_stats_multiplier: Vec<StatValue>,
     pub module_multiply_stats_multiplier: Vec<StatValue>,
     pub scaled_by_reliability: Vec<StatValue>,
+    pub off_sheet: Vec<Vec<u8>>,
     pub duplicate: bool,
 }
 
@@ -583,6 +584,7 @@ impl Equipment {
             module_add_stats_multiplier: Vec::new(),
             module_multiply_stats_multiplier: Vec::new(),
             scaled_by_reliability: Vec::new(),
+            off_sheet: Vec::new(),
             duplicate: false,
         }
     }
@@ -909,6 +911,7 @@ impl Database {
                 equipment.module_add_stats_multiplier.clear();
                 equipment.module_multiply_stats_multiplier.clear();
                 equipment.scaled_by_reliability.clear();
+                equipment.off_sheet.clear();
                 at
             }
             None => self.register(key.to_vec()),
@@ -1113,6 +1116,11 @@ impl Database {
                             Some((_, known)) => *known = module,
                             None => modules.push((slot.to_vec(), module)),
                         }
+                    }
+                }
+                b"manpower" | b"resources" | b"modifier_stat" if stat_index(&keyword).is_none() => {
+                    if !self.equipment[at].off_sheet.contains(&keyword) {
+                        self.equipment[at].off_sheet.push(keyword.clone());
                     }
                 }
                 stat => {

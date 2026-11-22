@@ -639,7 +639,7 @@ impl AtHour for SpecialProjectDetailsAt {
         for project in projects {
             let Some((_, Some(history))) = project["owner"].as_u64().and_then(|owner| read_of.get(&(owner as u32))) else { return Ok(false) };
             let kept = match history {
-                Ok(_) => !project["choices"].is_null(),
+                Ok(read) => project["historyReadHour"].as_i64() == Some(i64::from(*read)),
                 Err(why) => project["choices"].is_null() && unavailable.contains(why.as_str()),
             };
             if !kept {
@@ -648,9 +648,7 @@ impl AtHour for SpecialProjectDetailsAt {
         }
         let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
         for project in projects {
-            let (read, history) = &read_of[&(project["owner"].as_u64().unwrap() as u32)];
-            project["readHour"] = (*read).into();
-            project["historyReadHour"] = history.as_ref().and_then(|history| history.as_ref().ok()).copied().into();
+            project["readHour"] = read_of[&(project["owner"].as_u64().unwrap() as u32)].0.into();
         }
         data["hour"] = at.hour.into();
         Ok(true)

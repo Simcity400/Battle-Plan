@@ -171,7 +171,9 @@ fn two_completions_sharing_an_owner_project_and_marker_ordinal_on_different_date
 fn owners_are_every_raw_id_linking_to_the_slot_and_edges_stay_in_the_piece() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };
     let owners = owner_ids(&links, 5, 20, 150);
-    assert_eq!(owners, BTreeMap::from([(10, vec![(20, 99)]), (11, vec![(50, 150)])]));
+    assert_eq!(owners, BTreeMap::from([(10, vec![(0, 99)]), (11, vec![(50, 150)])]));
+    let day = STAGGER_PERIOD - 1;
+    assert_eq!(owner_ids(&links, 5, 100, 150), BTreeMap::from([(10, vec![(100 - day, 99)]), (11, vec![(100 - day, 150)])]), "an owner reaches back as far as a read that still supplies the first hour");
     let spans: [&[(i32, i32)]; 2] = [&[(20, 99)], &[(30, 40), (60, 300)]];
     assert_eq!(boundaries(20, 150, &[], &spans, &History::default()), [20, 30, 41, 60, 100]);
     let stamps = History { keys: vec![(0, vec![Step { hour: 25, cells: Some(Box::new([Cell::Number(25)])) }])], ..History::default() };
@@ -230,10 +232,14 @@ fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countr
     assert_eq!(supplied(&read.owners, 11, None, 50), None, "a row whose read is not recorded is not admitted");
 }
 
-fn folded(id: &str, first: i32, last: i32, frame: impl Fn(i32) -> replay_frame::frame::DecodedFrame) -> [(Fold, Vec<(i32, i32)>, Vec<(i32, i32)>); 2] {
+fn synthetic(id: &str, first: i32, last: i32, frame: impl Fn(i32) -> replay_frame::frame::DecodedFrame) -> Source {
     use crate::test_fixtures::{CAMPAIGN, records};
     let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (first..=last).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = Source::from_replay(crate::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    Source::from_replay(crate::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+fn folded(id: &str, first: i32, last: i32, frame: impl Fn(i32) -> replay_frame::frame::DecodedFrame) -> [(Fold, Vec<(i32, i32)>, Vec<(i32, i32)>); 2] {
+    let source = synthetic(id, first, last, frame);
     let query = crate::answer::query(&source, 1).unwrap();
     let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
     let mut links = HashMap::new();
@@ -375,40 +381,52 @@ fn hours_whose_holder_is_unknown_are_named_apart_from_hours_no_one_held() {
 }
 
 #[test]
-fn a_project_gone_from_a_complete_read_and_back_is_another_episode_whatever_its_history() {
-    use crate::test_fixtures::{CAMPAIGN, records, source};
+fn a_project_gone_from_a_complete_read_and_back_is_another_episode_whatever_its_history_and_the_other_owners_reads() {
+    use crate::test_fixtures::source;
     use replay_data::rows::{ProjectHistoryRow, ProjectRow, SliceReadRow, TableRows};
     use replay_frame::frame::TableView;
     const FIRST: i32 = 20;
     const GONE: std::ops::Range<i32> = 30..35;
     const LAST: i32 = 45;
     const CHOICE: i32 = 25;
-    let frame = |hour: i32| {
-        let mut frame = source(1, hour, None);
-        let mut project = ProjectRow { owner: 9001, local_id: 1, definition_id: 40, program_reference: 1, started: 1, ..Default::default() };
-        project.state.current_offset = 0x18;
-        project.state.not_completed = 1;
-        let choice = ProjectHistoryRow { owner: 9001, project: 1, ordinal: 0, prototype_reward_handle: 3, option_handle: 4, date: CHOICE, ..Default::default() };
-        let (projects, history) = match hour {
-            _ if GONE.contains(&hour) => (Vec::new(), Vec::new()),
-            _ if hour >= GONE.end => (vec![project], vec![choice]),
-            _ => (vec![project], Vec::new()),
+    let variants: [(&str, fn(i32) -> Option<i32>); 3] = [
+        ("special-projects-one-episode", Some),
+        ("special-projects-one-episode-lagging", |hour| Some(hour - 1)),
+        ("special-projects-one-episode-unstamped", |hour| (!GONE.contains(&hour)).then_some(hour)),
+    ];
+    for (id, other) in variants {
+        let frame = |hour: i32| {
+            let mut frame = source(1, hour, None);
+            let mut project = ProjectRow { owner: 9001, local_id: 1, definition_id: 40, program_reference: 1, started: 1, ..Default::default() };
+            project.state.current_offset = 0x18;
+            project.state.not_completed = 1;
+            let choice = ProjectHistoryRow { owner: 9001, project: 1, ordinal: 0, prototype_reward_handle: 3, option_handle: 4, date: CHOICE, ..Default::default() };
+            let (projects, history) = match hour {
+                _ if GONE.contains(&hour) => (Vec::new(), Vec::new()),
+                _ if hour >= GONE.end => (vec![project], vec![choice]),
+                _ => (vec![project], Vec::new()),
+            };
+            *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(projects));
+            *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(history));
+            *frame.tables[TableId::ProjectPrograms.index()] = TableView::Complete(TableRows::empty(TableId::ProjectPrograms));
+            let mut stamps: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
+                .into_iter()
+                .flat_map(|table| [(11, other(hour)), (9001, Some(hour))].into_iter().filter_map(move |(owner, read)| Some(SliceReadRow { table: table.index() as u32, owner, sample_hour: read? })))
+                .collect();
+            stamps.sort_by_key(|row| (row.table, row.owner));
+            *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
+            frame
         };
-        *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(projects));
-        *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(history));
-        *frame.tables[TableId::ProjectPrograms.index()] = TableView::Complete(TableRows::empty(TableId::ProjectPrograms));
-        let mut stamps: Vec<SliceReadRow> =
-            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: hour })).collect();
-        stamps.sort_by_key(|row| (row.table, row.owner));
-        *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
-        frame
-    };
-    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = Source::from_replay(crate::SourceKey { source_id: "special-projects-one-episode".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let query = crate::answer::query(&source, 1).unwrap();
-    let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
-    assert!(!one_episode(&query, &country, (9001, 1, 40), CHOICE, LAST).unwrap(), "a choice dated before a complete read showed the project gone belongs to its predecessor, though that one's history was empty");
-    assert!(one_episode(&query, &country, (9001, 1, 40), GONE.end + 1, LAST).unwrap(), "an hour of the listing project's own episode proves it");
-    assert!(!one_episode(&query, &country, (9001, 1, 41), GONE.end + 1, LAST).unwrap(), "another definition is another project");
-    assert!(!one_episode(&query, &country, (9001, 1, 40), GONE.start, LAST).unwrap(), "an hour no read shows the project proves nothing");
+        let source = synthetic(id, FIRST, LAST, frame);
+        let query = crate::answer::query(&source, 1).unwrap();
+        let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
+        assert!(!one_episode(&query, &country, (9001, 1, 40), CHOICE, LAST).unwrap(), "{id}: a choice dated before a complete read showed the project gone belongs to its predecessor, though that one's history was empty and another owner was unread");
+        assert!(one_episode(&query, &country, (9001, 1, 40), GONE.end + 1, LAST).unwrap(), "{id}: an hour of the listing project's own episode proves it, with every owner's read reaching back to its stamp");
+        assert!(!one_episode(&query, &country, (9001, 1, 41), GONE.end + 1, LAST).unwrap(), "{id}: another definition is another project");
+        assert!(!one_episode(&query, &country, (9001, 1, 40), GONE.start, LAST).unwrap(), "{id}: an hour no read shows the project proves nothing");
+        for (fold, ..) in folded(&format!("{id}-followed"), FIRST, LAST, frame) {
+            let starts: Vec<i32> = fold.episodes.iter().map(|episode| episode.start.hour).collect();
+            assert_eq!(starts.last(), Some(&GONE.end), "{id}: the project back after its owner's proven absence is a new episode: {starts:?}");
+        }
+    }
 }

@@ -219,6 +219,12 @@ impl Episodes {
                     self.fold.observe((piece.slot, piece.id), next, next, &shown);
                 } else { self.fold.extend(before, next); }
                 extend(&mut self.observed, next, next);
+            } else if boundary && c.projects.reader.status() == Status::Complete {
+                let present: Vec<(u32, u32, u32)> = c.projects.rows.iter()
+                    .filter_map(|(&key, cells)| project_row((key >> 32) as u32, key as u32, cells))
+                    .filter(|row| c.proven.0.contains_key(&row.owner))
+                    .map(|row| (row.owner, row.local, row.definition)).collect();
+                self.fold.absent((piece.slot, piece.id), |raw| c.proven.0.contains_key(&raw), &present);
             }
             c.piece.last = next;
         }

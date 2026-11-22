@@ -113,11 +113,20 @@ impl Fold {
         id
     }
 
-    pub fn observe(&mut self, holder: (u32, u32), first: i32, last: i32, projects: &[Observed<'_>]) {
+    fn hold(&mut self, holder: (u32, u32)) {
         if self.holder.is_some_and(|held| held != holder) {
             self.open.clear();
         }
         self.holder = Some(holder);
+    }
+
+    pub fn absent(&mut self, holder: (u32, u32), proven: impl Fn(u32) -> bool, present: &[(u32, u32, u32)]) {
+        self.hold(holder);
+        self.open.retain(|key, _| !proven(key.0) || present.contains(key));
+    }
+
+    pub fn observe(&mut self, holder: (u32, u32), first: i32, last: i32, projects: &[Observed<'_>]) {
+        self.hold(holder);
         let mut next = BTreeMap::new();
         for observed in projects {
             let row = observed.row;

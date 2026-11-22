@@ -193,6 +193,7 @@ pub struct ModuleDesign {
     pub allowed_module_categories: Vec<(Vec<u8>, Vec<u8>)>,
     pub forbidden_categories: Vec<Vec<u8>>,
     pub mission_terms: Vec<(Vec<Vec<u8>>, StatGroup)>,
+    pub manpower: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -281,6 +282,8 @@ impl ModuleDesign {
                 result
                     .mission_terms
                     .push((missions, StatGroup::read(fields, false)));
+            } else if field.keyword_is("manpower") {
+                result.manpower = Some(number(field));
             } else if field.keyword_is("category") {
                 result.category = token(field);
             } else if field.keyword_is("xp_cost") {

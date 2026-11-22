@@ -95,26 +95,64 @@ fn tactics_show_all_six_effects_favoured_by_side() {
 }
 
 #[test]
-fn equipment_totals_apply_the_default_modules_before_reliability_scaling() {
+fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability_scaling_and_name_what_they_withhold() {
     let (database, _) = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/convoys.txt",
-        "equipment_modules = { gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } } }
+        "equipment_modules = {
+            gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } }
+            motor = { add_stats = { torpedo_attack = 1 } }
+            deck = { manpower = 500 build_cost_resources = { steel = 2 } mission_type_stats = { limit = { cas } add_stats = { lg_attack = 6 } } }
+         }
          equipments = {
             hull = { is_archetype = yes type = convoy reliability = 0.8
                 scaled_by_reliability = { hg_attack = 0.5 }
                 module_add_stats_multiplier = { lg_attack = 0.5 }
-                module_multiply_stats_multiplier = { lg_attack = 1.0 } }
-            hull_1 = { archetype = hull default_modules = { main = gun } }
-            hull_2 = { archetype = hull default_modules = { main = empty } }
-            hull_3 = { archetype = hull default_modules = { main = lost_gun } }
+                module_multiply_stats_multiplier = { lg_attack = 1.0 }
+                module_slots = { main = { allowed_module_categories = { any } } engine = { allowed_module_categories = { any } } }
+                default_modules = { engine = motor } }
+            hull_1 = { archetype = hull module_slots = inherit default_modules = { main = gun } }
+            hull_2 = { archetype = hull module_slots = inherit default_modules = { main = empty } }
+            hull_3 = { archetype = hull module_slots = inherit default_modules = { main = lost_gun } }
+            hull_4 = { archetype = hull parent = hull_1 module_slots = inherit default_modules = { engine = empty } }
+            hull_5 = { archetype = hull module_slots = inherit default_modules = { main = deck } resources = { steel = 1 } }
          }",
     )]);
+    let metadata = content_reader_core::equipment::stat_metadata();
     let stat = |name: &str| content_reader_core::equipment::stat_index(name.as_bytes()).unwrap();
-    let totals = equipment_totals(&database, "hull_1").unwrap();
-    assert_eq!((totals[stat("lg_attack")], totals[stat("hg_attack")]), (450_000, 40_000), "the default gun adds 2 light attack, scaled to 3 and multiplied to 4.5");
-    assert_eq!(equipment_totals(&database, "hull_2").unwrap()[stat("lg_attack")], 0, "an empty slot adds nothing");
-    let refused = equipment_totals(&database, "hull_3").unwrap_err();
+    let totals = |token: &str| equipment_totals(&database, metadata, token);
+    let hull_1 = totals("hull_1").unwrap().stats;
+    assert_eq!((hull_1[stat("lg_attack")], hull_1[stat("hg_attack")]), (450_000, 40_000), "the default gun adds 2 light attack, scaled to 3 and multiplied to 4.5");
+    assert_eq!(hull_1[stat("torpedo_attack")], 100_000, "the engine slot inherited with the archetype keeps the archetype's default engine");
+    assert_eq!(totals("hull_2").unwrap().stats[stat("lg_attack")], 0, "an empty slot adds nothing");
+    let hull_4 = totals("hull_4").unwrap().stats;
+    assert_eq!((hull_4[stat("lg_attack")], hull_4[stat("torpedo_attack")]), (450_000, 0), "a slot's default comes from the nearest of parent and archetype that names it, and an explicit empty overrides the archetype's");
+    let refused = totals("hull_3").err().unwrap();
     assert!(refused.contains("lost_gun") && refused.contains("hull_3"), "{refused}");
+    let withheld = totals("hull_5").unwrap().withheld;
+    for named in ["resources of hull_5", "Default module deck in slot main: manpower 500 ", "resource cost steel 2 ", "lg_attack 6 (added) applies only on cas missions"] {
+        assert!(withheld.iter().any(|why| why.contains(named)), "{named} is named as withheld: {withheld:?}");
+    }
+    assert!(totals("hull_1").unwrap().withheld.is_empty(), "nothing is withheld from equipment whose stats all come from stat blocks");
+}
+
+#[test]
+fn a_modules_stats_outside_its_stat_block_are_named_as_withheld() {
+    let design = content_reader_core::equipment::ModuleDesign {
+        mission_terms: vec![(vec![b"cas".to_vec()], StatGroup { add: vec![StatValue { index: 0, value: 600_000 }], ..Default::default() }), (Vec::new(), StatGroup { multiply: vec![StatValue { index: 2, value: 10_000 }], ..Default::default() })],
+        manpower: Some(50_000_000),
+        build_resources: vec![(b"steel".to_vec(), 200_000)],
+        ..Default::default()
+    };
+    assert_eq!(
+        off_sheet(METADATA, &design),
+        [
+            "soft_attack 6 (added) applies only on cas missions under mission_type_stats; mission-conditional stats are not shown",
+            "reliability 0.1 (multiplied) applies only under mission_type_stats; mission-conditional stats are not shown",
+            "manpower 500 is outside the stat block and is not shown",
+            "resource cost steel 2 is outside the stat block and is not shown",
+        ]
+    );
+    assert!(off_sheet(METADATA, &content_reader_core::equipment::ModuleDesign::default()).is_empty());
 }
 
 fn recording() -> Source {

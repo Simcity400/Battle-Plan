@@ -18,16 +18,13 @@ const DAILY_READS: [i32; 2] = [28, 52];
 const PROJECT_READS: [i32; 3] = [30, 40, 55];
 const UNHELD: i32 = 45;
 const LATE_ITERATION: i32 = 48;
-const NEXT_DAY_ITERATION: i32 = 31;
 const UNHELD_NEXT_ITERATION: i32 = 42;
 const MOVED_OWNER: u32 = 9002;
 const MOVED_READS: [i32; 3] = [47, 50, 53];
 const MOVED_HELD: std::ops::Range<i32> = 49..53;
 const MOVED_ITERATION: i32 = 51;
 const HISTORY_UNSTAMPED: [i32; 2] = [30, 35];
-const LATER_READ_ITERATION: u32 = 5;
-const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = 30..45;
-const BEFORE_UNHELD_ITERATION: (u32, i32) = (6, 33);
+const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = FIRST..45;
 const ALIAS_UNSTAMPED: i32 = 38;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
@@ -64,7 +61,7 @@ fn frame(hour: i32) -> DecodedFrame {
     }
     let moved = MOVED_READS.into_iter().filter(|&at| at <= hour).max();
     let read = PROJECT_READS.into_iter().filter(|&at| at <= hour).max();
-    let history = |ordinal, date, first: i32| read.filter(|&read| read >= first).map(|_| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() });
+    let history = |ordinal, date, first: i32| (hour >= first).then_some(ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() });
     set(&mut frame, TableId::Projects, TableRows::Projects(
         [read.map(|_| ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }), moved.map(|_| ProjectRow { owner: MOVED_OWNER, local_id: 5, definition_id: 77, ..Default::default() })]
             .into_iter()
@@ -73,28 +70,30 @@ fn frame(hour: i32) -> DecodedFrame {
     ));
     set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(
         [
-            history(0, PROJECT_READS[0], PROJECT_READS[0]),
-            history(1, PROJECT_READS[0], PROJECT_READS[0]).map(|row| ProjectHistoryRow { prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, ..row }),
-            history(2, LATE_ITERATION, PROJECT_READS[2]),
-            history(3, NEXT_DAY_ITERATION, PROJECT_READS[1]),
-            history(4, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
-            history(LATER_READ_ITERATION, PROJECT_READS[0], PROJECT_READS[1]),
-            history(BEFORE_UNHELD_ITERATION.0, BEFORE_UNHELD_ITERATION.1, PROJECT_READS[1]),
+            history(0, FIRST, FIRST),
+            history(1, FIRST, FIRST).map(|row| ProjectHistoryRow { prototype_reward_handle: COMPLETION_MARKER, option_handle: COMPLETION_MARKER, ..row }),
+            history(2, FIRST, FIRST),
+            history(3, FIRST, FIRST),
+            history(4, FIRST, FIRST),
+            history(5, LATE_ITERATION, PROJECT_READS[2]),
+            history(6, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
             moved.filter(|&read| read >= MOVED_READS[2]).map(|_| ProjectHistoryRow { owner: MOVED_OWNER, project: 5, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: MOVED_ITERATION, ..Default::default() }),
         ]
         .into_iter()
         .flatten()
         .collect(),
     ));
-    let mut slices: Vec<SliceReadRow> = [(9001, read), (11, read.filter(|_| hour != ALIAS_UNSTAMPED)), (MOVED_OWNER, moved)]
+    let history_read = |read: Option<i32>| match hour {
+        _ if HISTORY_UNSTAMPED.contains(&hour) => Some(FIRST - 1),
+        _ if HISTORY_READ_AT_FIRST.contains(&hour) => Some(FIRST),
+        _ => read,
+    };
+    let stamp = |table: TableId, owner, read: Option<i32>| read.map(|sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour });
+    let mut slices: Vec<SliceReadRow> = [(9001, read), (11, read.filter(|_| hour != ALIAS_UNSTAMPED))]
         .into_iter()
-        .filter_map(|(owner, read)| read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
+        .flat_map(|(owner, read)| [stamp(TableId::Projects, owner, read), stamp(TableId::ProjectHistory, owner, history_read(read))])
+        .chain([stamp(TableId::Projects, MOVED_OWNER, moved), stamp(TableId::ProjectHistory, MOVED_OWNER, moved)])
         .flatten()
-        .map(|row| match row.table == TableId::ProjectHistory.index() as u32 {
-            true if HISTORY_UNSTAMPED.contains(&hour) => SliceReadRow { sample_hour: FIRST - 1, ..row },
-            true if HISTORY_READ_AT_FIRST.contains(&hour) => SliceReadRow { sample_hour: FIRST, ..row },
-            _ => row,
-        })
         .collect();
     slices.sort_by_key(|row| (row.table, row.owner));
     set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -156,10 +155,8 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     assert!(has(&unstamped, "Project choice history was not read"), "{unstamped}");
 }
 
-#[test]
-fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_returns() {
-    let source = recording();
-    let panel = crate::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
+fn followed_as_direct(source: &Source) -> impl Fn(i32) -> Value + use<> {
+    let panel = crate::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
     let exact = panel.exact().unwrap();
     let cancelled = AtomicBool::new(false);
     for hour in FIRST..=LAST {
@@ -169,8 +166,14 @@ fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_r
             Err(_) => assert!(followed.value.is_err(), "hour {hour}"),
         }
     }
-    let at = |hour: i32| (exact.cold)(hour, &cancelled).unwrap();
-    assert_eq!(at(HISTORY_UNSTAMPED[1] - 1)["projects"][0]["choices"].as_array().map(Vec::len), Some(1));
+    let cold = exact.cold.clone();
+    move |hour| cold(hour, &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_returns() {
+    let at = followed_as_direct(&recording());
+    assert_eq!(at(HISTORY_UNSTAMPED[1] - 1)["projects"][0]["choices"].as_array().map(Vec::len), Some(4));
     assert_eq!(at(HISTORY_UNSTAMPED[1])["projects"][0]["choices"], Value::Null, "an unproven history read is not recorded, never the last one's choices");
     let expired = FIRST + STAGGER_PERIOD;
     assert!(at(expired - 1)["projects"][0]["choices"].is_array());
@@ -209,18 +212,38 @@ fn followed_details_drop_an_owners_refusal_once_another_reason_withholds_its_cho
     };
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(crate::SourceKey { source_id: "special-project-refusals".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let panel = crate::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
-    let exact = panel.exact().unwrap();
-    let cancelled = AtomicBool::new(false);
-    for hour in FIRST..=LAST {
-        let followed = (exact.advance)(hour, hour == FIRST, &cancelled, None);
-        let direct = (exact.cold)(hour, &cancelled).unwrap();
-        assert_eq!(followed.value.as_ref().as_ref().ok(), Some(&direct), "hour {hour}");
-    }
-    let at = |hour: i32| (exact.cold)(hour, &cancelled).unwrap();
+    let at = followed_as_direct(&source);
     assert!(has(&at(EXPIRED - 1), OTHER_OWNER), "the history read before the owner joined is another country's");
     assert!(!has(&at(EXPIRED), OTHER_OWNER), "once that read is older than a day, only its age withholds the choices");
     assert!(has(&at(EXPIRED), "Project choice history was not read"));
+}
+
+#[test]
+fn followed_details_spell_choices_again_when_unchanged_rows_are_read_again() {
+    const SPELLED: i32 = 22;
+    const READS: [i32; 2] = [FIRST, 40];
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        for &table in DETAIL_TABLES.iter().filter(|&&table| table != TableId::CountryLinks) {
+            set(&mut frame, table, TableRows::empty(table));
+        }
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }]));
+        set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(vec![ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: FIRST, ..Default::default() }]));
+        let spelled = [(41, "mod_reward"), (42, "mod_option")].into_iter().filter(|&(token, _)| token != 42 || hour >= SPELLED);
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect()));
+        let read = READS.into_iter().filter(|&at| at <= hour).max().unwrap();
+        let mut slices: Vec<SliceReadRow> =
+            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
+        slices.sort_by_key(|row| (row.table, row.owner));
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-project-respelled".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let at = followed_as_direct(&source);
+    let option = |hour: i32| at(hour)["projects"][0]["choices"][0]["option"]["token"].clone();
+    assert_eq!(option(READS[1] - 1), json!("42"), "the read that listed the choice could not spell it, though a later hour can");
+    assert_eq!(option(READS[1]), json!("mod_option"), "the next read of the same rows spells the choice and drops its refusal");
 }
 
 #[test]

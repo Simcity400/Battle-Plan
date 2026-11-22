@@ -5,7 +5,11 @@ use super::{
     politics_content::{PoliticsContent, politics_content},
 };
 use crate::{Source, catalogue};
-use content_reader_core::{combat_tactics::Tactic, equipment::StatGroup};
+use content_reader_core::{
+    combat_tactics::Tactic,
+    equipment::{Database, ModuleDesign, STAT_COUNT, StatComponents, StatGroup},
+    fixed5::format_fixed5,
+};
 use content_reader_localisation::localisation::{Argument, Localisation};
 use dashboard_text::subunit_requirements::Content as SubUnitSheets;
 use replay_data::rows::TableId;
@@ -170,23 +174,59 @@ impl<'l> Sheet<'l> {
     }
 }
 
-fn equipment_totals(database: &content_reader_core::equipment::Database, token: &str) -> Result<[i64; content_reader_core::equipment::STAT_COUNT], String> {
+fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(bytes)
+}
+
+fn off_sheet(metadata: &Metadata, design: &ModuleDesign) -> Vec<String> {
+    let fixed = |value| format_fixed5(value, true, 5);
+    let mut out = Vec::new();
+    for (missions, group) in &design.mission_terms {
+        let missions: Vec<_> = missions.iter().map(|mission| lossy(mission)).collect();
+        let only = if missions.is_empty() { String::new() } else { format!(" on {} missions", missions.join(", ")) };
+        for (terms, kind) in [(&group.add, "added"), (&group.average, "averaged"), (&group.multiply, "multiplied")] {
+            for term in terms {
+                let stat = metadata.get(term.index).map_or_else(|| format!("stat {}", term.index), |(name, _, _)| (*name).to_owned());
+                out.push(format!("{stat} {} ({kind}) applies only{only} under mission_type_stats; mission-conditional stats are not shown", fixed(term.value)));
+            }
+        }
+    }
+    if let Some(manpower) = design.manpower {
+        out.push(format!("manpower {} is outside the stat block and is not shown", fixed(manpower)));
+    }
+    for (resource, amount) in &design.build_resources {
+        out.push(format!("resource cost {} {} is outside the stat block and is not shown", lossy(resource), fixed(*amount)));
+    }
+    out
+}
+
+struct Totals {
+    stats: [i64; STAT_COUNT],
+    withheld: Vec<String>,
+}
+
+fn equipment_totals(database: &Database, metadata: &Metadata, token: &str) -> Result<Totals, String> {
     let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
     let equipment = &database.equipment[at];
-    let mut components = content_reader_core::equipment::StatComponents::base(&equipment.stats);
-    for (slot, module) in &equipment.default_modules {
-        if module.eq_ignore_ascii_case(b"empty") {
-            continue;
+    let mut components = StatComponents::base(&equipment.stats);
+    let mut withheld = Vec::new();
+    for held in database.lineage(equipment)? {
+        for keyword in &held.off_sheet {
+            let why = format!("{} of {} is outside the stat block and is not shown", lossy(keyword), lossy(&held.name));
+            if !withheld.contains(&why) {
+                withheld.push(why);
+            }
         }
-        if database.module(module).is_none() {
-            let (module, slot) = (String::from_utf8_lossy(module), String::from_utf8_lossy(slot));
-            return Err(format!("Default module {module} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"));
-        }
+    }
+    for (slot, module) in database.default_modules(equipment)? {
+        let (shown, slot) = (lossy(module), lossy(slot));
+        let design = database.module_design(module).ok_or_else(|| format!("Default module {shown} in slot {slot} of equipment {token} is not in the recorded content, so its stats are withheld"))?;
         if let Some(group) = database.module_stats(module) {
             components.apply_module(group, equipment)?;
         }
+        withheld.extend(off_sheet(metadata, design).into_iter().map(|why| format!("Default module {shown} in slot {slot}: {why}")));
     }
-    Ok(components.finish_for(equipment)?)
+    Ok(Totals { stats: components.finish_for(equipment)?, withheld })
 }
 
 fn stat_metadata() -> Result<&'static Metadata, String> {
@@ -250,12 +290,17 @@ impl AtHour for EntityStatsAt {
             let technologies = || view.doctrines.and_then(|doctrines| doctrines.technologies.as_ref()).ok_or_else(|| "The recorded technology content was not read".to_owned());
             match params.kind {
                 EntityKind::Equipment => {
-                    let stats = equipment_totals(&technologies()?.equipment, token)?;
-                    sheet.equipment(stat_metadata()?, &stats);
+                    let metadata = stat_metadata()?;
+                    let totals = equipment_totals(&technologies()?.equipment, metadata, token)?;
+                    sheet.equipment(metadata, &totals.stats);
+                    totals.withheld.into_iter().for_each(|why| sheet.refuse(why));
                 }
                 EntityKind::Module => {
-                    let stats = technologies()?.equipment.module_stats(token).ok_or_else(|| format!("Module {token} is not in the recorded content"))?;
-                    sheet.module(stat_metadata()?, stats);
+                    let (database, metadata) = (&technologies()?.equipment, stat_metadata()?);
+                    let missing = || format!("Module {token} is not in the recorded content");
+                    let (stats, design) = (database.module_stats(token).ok_or_else(missing)?, database.module_design(token).ok_or_else(missing)?);
+                    sheet.module(metadata, stats);
+                    off_sheet(metadata, design).into_iter().for_each(|why| sheet.refuse(why));
                 }
                 EntityKind::Tactic => {
                     let tactics = technologies()?.tactics.as_ref().ok_or("The recorded combat tactics were not read")?.as_ref().map_err(Clone::clone)?;

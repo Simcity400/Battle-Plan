@@ -455,6 +455,7 @@ fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
 }
 
 fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32, Vec<(i32, i32)>> {
+    let first = first.saturating_sub(STAGGER_PERIOD - 1);
     let mut out: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
     for (&raw, runs) in &links.slots {
         for &(a, b, held) in runs {
@@ -630,9 +631,6 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         let linked: Vec<u32> = read.owners.iter().filter(|(_, spans)| within(spans, first)).map(|(&raw, _)| raw).collect();
         let mut supplies = |table: TableId, raw: u32| supplied(&read.owners, raw, sample(reads.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(first))), first);
         let projects_read: HashMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, supplies(TableId::Projects, raw)?))).collect();
-        if projects_read.len() != linked.len() {
-            continue;
-        }
         let histories: HashMap<u32, i32> = if history_known { linked.iter().filter_map(|&raw| Some((raw, supplies(TableId::ProjectHistory, raw)?))).collect() } else { HashMap::new() };
         let mut history: HashMap<(u32, u32), Vec<Entry>> = HashMap::new();
         for (owner, project, ordinal, cursor) in &mut entries {
@@ -652,6 +650,11 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
                 let scientist = program.map(|id| programs.get_mut(&id).and_then(|cursor| cursor.at(first)));
                 rows.push((raw, row, scientist));
             }
+        }
+        if projects_read.len() != linked.len() {
+            let present: Vec<(u32, u32, u32)> = rows.iter().map(|(_, row, _)| (row.owner, row.local, row.definition)).collect();
+            fold.absent((piece.slot, piece.id), |raw| projects_read.contains_key(&raw), &present);
+            continue;
         }
         let shown: Vec<Observed<'_>> = rows
             .iter()
