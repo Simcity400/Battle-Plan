@@ -1,21 +1,117 @@
 import { spawn } from "node:child_process";
 import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { cargoTarget } from "./cargo-target.mjs";
+import { readHostTuple, resolveCargoTarget, resolveTargetPlacement } from "./cargo-target.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const mode = process.argv[2];
-let interrupted = false;
-if (!["dev", "build"].includes(mode)) {
-  console.error("Usage: node tools/desktop.mjs dev|build");
-  process.exit(2);
+const STAGE = "stage";
+const VALUE_FLAGS = new Set(["--config", "--profile", "--target", "-t", "--target-dir"]);
+
+function flagValues(args, ...names) {
+  const wanted = new Set(names);
+  const values = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--") break;
+    if (wanted.has(arg)) {
+      if (index + 1 >= args.length) throw Object.assign(new Error(`${arg} needs a value.`), { exitCode: 2 });
+      values.push(args[++index]);
+      continue;
+    }
+    let matched = false;
+    for (const name of names) {
+      if (name.startsWith("--") && arg.startsWith(`${name}=`)) {
+        values.push(arg.slice(name.length + 1));
+        matched = true;
+        break;
+      }
+    }
+    if (!matched && VALUE_FLAGS.has(arg) && index + 1 < args.length) index++;
+  }
+  return values;
 }
 
-const SHIPPED = JSON.parse(await readFile(path.join(root, "tools", "shipped.json"), "utf8"));
+export function stageOutputDir({ targetDir, outputDirName, profile }) {
+  return path.join(targetDir, ...(outputDirName === undefined ? [] : [outputDirName]), profile === "dev" ? "debug" : profile);
+}
 
-const STAGE = "stage";
+export function companionBuildArgs({ name, embeds, profile, targetArgs, targetDirArgs }) {
+  return [
+    "build",
+    "-p",
+    name,
+    ...(embeds.has(name) ? ["--features", `${name}/custom-protocol`] : []),
+    "--profile",
+    profile,
+    ...targetArgs,
+    ...targetDirArgs,
+    "--message-format=json-render-diagnostics",
+  ];
+}
+
+export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = root, env = process.env, hostTarget }) {
+  const separator = argv.indexOf("--");
+  const cliArgs = separator < 0 ? argv : argv.slice(0, separator);
+  const runnerArgs = separator < 0 ? [] : argv.slice(separator + 1);
+  const appSeparator = runnerArgs.indexOf("--");
+  const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator);
+  const explicitProfiles = flagValues(cargoArgs, "--profile");
+  const explicitProfile = explicitProfiles.length > 0 ? explicitProfiles[explicitProfiles.length - 1] : undefined;
+  const release = mode === "build"
+    ? !(cliArgs.includes("--debug") || cliArgs.includes("-d"))
+    : cliArgs.includes("--release") || cargoArgs.includes("--release") || cargoArgs.includes("-r");
+  const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
+
+  const desktopDir = path.join(workspaceRoot, "crates", "desktop");
+  const explicitTargets = [...flagValues(cliArgs, "--target", "-t"), ...flagValues(cargoArgs, "--target")];
+  if (explicitTargets.length > 1) {
+    throw new Error("--target names multiple build targets this command cannot place; pass a single --target.");
+  }
+  const homeRoot = env.USERPROFILE ?? env.HOME;
+  const home = env.CARGO_HOME || (homeRoot ? path.join(homeRoot, ".cargo") : undefined);
+  const configured = explicitTargets.length === 1
+    ? { target: explicitTargets[0], baseDir: desktopDir, source: "--target" }
+    : await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
+  const placement = configured === undefined
+    ? undefined
+    : await resolveTargetPlacement({ ...configured, hostTarget: hostTarget ?? (() => readHostTuple(env)) });
+  const targetArgs = placement === undefined ? [] : ["--target", placement.targetArg];
+
+  const targetDirs = flagValues(cargoArgs, "--target-dir");
+  const targetDir = targetDirs.length > 0 ? targetDirs[targetDirs.length - 1] : undefined;
+  if (targetDir === "") {
+    throw Object.assign(new Error("--target-dir needs a directory."), { exitCode: 2 });
+  }
+  const resolvedTargetDir = targetDir === undefined ? undefined : path.resolve(workspaceRoot, targetDir);
+  const targetDirArgs = resolvedTargetDir === undefined ? [] : ["--target-dir", resolvedTargetDir];
+
+  const forwardedCargoArgs = explicitProfile === undefined && profile === "release-lto" ? ["--profile", profile] : [];
+  for (let index = 0; index < cargoArgs.length; index++) {
+    const arg = cargoArgs[index];
+    if (arg.startsWith("--profile=")) forwardedCargoArgs.push("--profile", arg.slice("--profile=".length));
+    else if (arg.startsWith("--target-dir=")) forwardedCargoArgs.push(...targetDirArgs);
+    else if (arg === "--target-dir") { forwardedCargoArgs.push(...targetDirArgs); index++; }
+    else forwardedCargoArgs.push(arg);
+  }
+  const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwardedCargoArgs, ...runnerArgs.slice(appSeparator)];
+  const tauriArgs = mode === "build"
+    ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
+    : [...cliArgs, "--", ...forwardedRunnerArgs];
+
+  return {
+    profile,
+    targetArgs,
+    outputDirName: placement?.outputDirName,
+    targetDir: resolvedTargetDir,
+    targetDirArgs,
+    forwardedRunnerArgs,
+    tauriArgs,
+  };
+}
+
+let interrupted = false;
 
 async function shipped(source, target, into) {
   if (!(await stat(source)).isDirectory()) {
@@ -53,49 +149,16 @@ function run(executable, args, cwd = root, capture = false) {
   });
 }
 
-function flagValue(args, ...names) {
-  for (const [index, arg] of args.entries()) {
-    for (const name of names) {
-      if (arg === name) return args[index + 1];
-      if (name.startsWith("--") && arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
-    }
+async function main() {
+  const mode = process.argv[2];
+  if (!["dev", "build"].includes(mode)) {
+    console.error("Usage: node tools/desktop.mjs dev|build");
+    process.exit(2);
   }
-  return undefined;
-}
+  const SHIPPED = JSON.parse(await readFile(path.join(root, "tools", "shipped.json"), "utf8"));
+  const plan = await planDesktopInvocation({ mode, argv: process.argv.slice(3), root, env: process.env });
+  if (process.env.CARGO_TARGET_DIR) process.env.CARGO_TARGET_DIR = path.resolve(root, process.env.CARGO_TARGET_DIR);
 
-const extra = process.argv.slice(3);
-const separator = extra.indexOf("--");
-const cliArgs = separator < 0 ? extra : extra.slice(0, separator);
-const runnerArgs = separator < 0 ? [] : extra.slice(separator + 1);
-const appSeparator = runnerArgs.indexOf("--");
-const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator);
-const explicitProfile = flagValue(cargoArgs, "--profile");
-const release = mode === "build"
-  ? !(cliArgs.includes("--debug") || cliArgs.includes("-d"))
-  : cliArgs.includes("--release") || cargoArgs.includes("--release") || cargoArgs.includes("-r");
-const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
-const target = flagValue(cliArgs, "--target", "-t") ?? flagValue(cargoArgs, "--target");
-const targetArgs = target === undefined ? [] : ["--target", target];
-const builtFor = target ?? await cargoTarget({ cwd: path.join(root, "crates", "desktop"), env: process.env, cargoArgs,
-  home: process.env.CARGO_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", ".cargo") });
-if (process.env.CARGO_TARGET_DIR) process.env.CARGO_TARGET_DIR = path.resolve(root, process.env.CARGO_TARGET_DIR);
-const targetDir = flagValue(cargoArgs, "--target-dir");
-if (targetDir === "" || (targetDir === undefined && cargoArgs.includes("--target-dir"))) {
-  console.error("--target-dir needs a directory.");
-  process.exit(2);
-}
-const targetDirArgs = targetDir === undefined ? [] : ["--target-dir", path.resolve(root, targetDir)];
-const forwardedCargoArgs = explicitProfile === undefined && profile === "release-lto" ? ["--profile", profile] : [];
-for (let index = 0; index < cargoArgs.length; index++) {
-  const arg = cargoArgs[index];
-  if (arg.startsWith("--profile=")) forwardedCargoArgs.push("--profile", arg.slice("--profile=".length));
-  else if (arg.startsWith("--target-dir=")) forwardedCargoArgs.push(...targetDirArgs);
-  else if (arg === "--target-dir") { forwardedCargoArgs.push(...targetDirArgs); index++; }
-  else forwardedCargoArgs.push(arg);
-}
-const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwardedCargoArgs, ...runnerArgs.slice(appSeparator)];
-
-try {
   const notices = mode === "build" ? await thirdPartyNotices(path.join(root, "LICENSES"), SHIPPED.notices.components) : null;
   const releaseVersion = mode === "build" ? process.env.BATTLEPLAN_VERSION || undefined : undefined;
   if (releaseVersion) process.env.TAURI_CONFIG = JSON.stringify({ version: releaseVersion });
@@ -104,14 +167,22 @@ try {
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
   }
   const metadata = JSON.parse(await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], root, true));
-  let output = path.join(targetDir === undefined ? metadata.target_directory : path.resolve(root, targetDir),
-    ...(builtFor === undefined ? [] : [builtFor]), profile === "dev" ? "debug" : profile);
+  let output = stageOutputDir({
+    targetDir: plan.targetDir === undefined ? metadata.target_directory : plan.targetDir,
+    outputDirName: plan.outputDirName,
+    profile: plan.profile,
+  });
   if (mode === "build") {
     const embeds = new Set(metadata.packages.filter((member) => "custom-protocol" in member.features).map((member) => member.name));
     let messages = "";
     for (const name of SHIPPED.cargo) {
-      messages += await run("cargo", ["build", "-p", name, ...(embeds.has(name) ? ["--features", `${name}/custom-protocol`] : []),
-        "--profile", profile, ...targetArgs, ...targetDirArgs, "--message-format=json-render-diagnostics"], root, true);
+      messages += await run("cargo", companionBuildArgs({
+        name,
+        embeds,
+        profile: plan.profile,
+        targetArgs: plan.targetArgs,
+        targetDirArgs: plan.targetDirArgs,
+      }), root, true);
     }
     const artifact = messages.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } })
       .find((message) => message?.reason === "compiler-artifact"
@@ -142,11 +213,14 @@ try {
     config = { ...(releaseVersion ? { version: releaseVersion } : {}), build: { beforeBuildCommand: null }, bundle: { resources,
       ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"], windows: { nsis: { installerIcon: "icons/nightly.ico" } } } : {}) } };
   }
-  const args = mode === "build"
-    ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
-    : [...cliArgs, "--", ...forwardedRunnerArgs];
-  await run(process.execPath, [cli, mode, "--config", JSON.stringify(config), ...args], path.join(root, "crates", "desktop"));
-} catch (error) {
-  if (!interrupted) console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = interrupted ? 130 : 1;
+  await run(process.execPath, [cli, mode, "--config", JSON.stringify(config), ...plan.tauriArgs], path.join(root, "crates", "desktop"));
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  try {
+    await main();
+  } catch (error) {
+    if (!interrupted) console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = interrupted ? 130 : error?.exitCode ?? 1;
+  }
 }
