@@ -21,8 +21,8 @@ compiled in, so a candidate belongs to one channel. After a stable release, `fin
 as the workspace version, over SSH with the release deploy key the checkout carries.
 
 `resolve` decides whether a release is due and from what. A nightly is due when main has changed
-since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true or an
-earlier nightly release run is still going. A stable
+since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true or another
+nightly release run is going. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
 takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
 only promotes. `publish --draft` is the dry run: everything goes to a new draft
@@ -72,6 +72,7 @@ ASSET_LIMIT = 2 * GB
 INSTALLER = "battleplan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 RELEASE_WORKFLOW = "release.yml"
+CI_WORKFLOW = "ci.yml"
 NIGHTLY_RUN = "Release nightly"
 PUSH_ATTEMPTS = 5
 BUMP_AUTHOR = "github-actions[bot]"
@@ -601,9 +602,11 @@ def find_candidate(repo, name):
 
 
 def ci_state(repo, commit):
-    """Why main's CI is not green on `commit`, or None once every workflow its push started has
-    settled green. Scheduled and dispatched runs, this release's own among them, are not main's CI."""
+    """Why main's CI is not green on `commit`, or None once every workflow its push started, CI among
+    them, has settled green. Scheduled and dispatched runs, this release's own among them, are not main's CI."""
     runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/runs?head_sha={commit}&event=push&per_page=100"]).stdout)["workflow_runs"]
+    if not any(found["path"] == f".github/workflows/{CI_WORKFLOW}" for found in runs):
+        return "its CI run has not started"
     latest = {}
     for found in runs:
         known = latest.get(found["workflow_id"])
@@ -618,11 +621,10 @@ def ci_state(repo, commit):
 
 
 def nightly_going(repo):
-    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{RELEASE_WORKFLOW}/runs?per_page=100"]).stdout)["workflow_runs"]
-    own = int(os.environ.get("GITHUB_RUN_NUMBER") or 0)
-    earlier = [found["run_number"] for found in runs if found["status"] != "completed"
-               and found["display_title"] == NIGHTLY_RUN and found["run_number"] < own]
-    return min(earlier, default=None)
+    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{RELEASE_WORKFLOW}/runs?status=in_progress&per_page=100"]).stdout)["workflow_runs"]
+    own = int(os.environ.get("GITHUB_RUN_ID") or 0)
+    others = [found["run_number"] for found in runs if found["display_title"] == NIGHTLY_RUN and found["id"] != own]
+    return min(others, default=None)
 
 
 def resolve(args):
@@ -654,7 +656,7 @@ def resolve(args):
         if why := ci_state(repo, commit):
             return not_yet(f"{commit[:12]}'s CI is not green: {why}")
         if not args.draft and (going := nightly_going(repo)):
-            return not_yet(f"nightly release run {going} is still going")
+            return not_yet(f"nightly release run {going} is going")
         name = artifact_name("nightly", commit)
         built, _ = find_candidate(repo, name)
         found.update(due="true", commit=commit, artifact=name, candidate_run=str(built or ""),

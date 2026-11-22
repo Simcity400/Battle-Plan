@@ -168,7 +168,8 @@ def answers(*replies):
 class MainCi(unittest.TestCase):
     def runs(self, *found):
         keys = ("workflow_id", "name", "run_number", "run_attempt", "status", "conclusion")
-        return json.dumps({"workflow_runs": [dict(zip(keys, run)) for run in found]})
+        listed = [dict(zip(keys, run), path=f".github/workflows/{run[1].lower()}.yml") for run in found]
+        return json.dumps({"workflow_runs": listed})
 
     def test_main_is_green_once_the_latest_run_of_each_workflow_its_push_started_settled_green(self):
         settled = self.runs((1, "CI", 3, 1, "completed", "failure"),
@@ -176,9 +177,11 @@ class MainCi(unittest.TestCase):
                             (2, "Comments", 8, 1, "completed", "skipped"))
         with mock.patch.object(release, "run", answers(settled)):
             self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
-        with mock.patch.object(release, "run", answers(self.runs())):
-            self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
-        with mock.patch.object(release, "run", answers(self.runs((2, "Comments", 8, 1, "in_progress", None)))):
+        for listed in (self.runs(), self.runs((2, "Comments", 8, 1, "completed", "success"))):
+            with mock.patch.object(release, "run", answers(listed)):
+                self.assertEqual(release.ci_state("owner/repo", "b" * 40), "its CI run has not started")
+        with mock.patch.object(release, "run", answers(self.runs((1, "CI", 3, 1, "completed", "success"),
+                                                                 (2, "Comments", 8, 1, "in_progress", None)))):
             self.assertIn("Comments run is still going", release.ci_state("owner/repo", "b" * 40))
         with mock.patch.object(release, "run", answers(self.runs((1, "CI", 4, 1, "completed", "failure")))):
             self.assertIn("CI run ended failure", release.ci_state("owner/repo", "b" * 40))
@@ -253,23 +256,25 @@ class Resolve(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PAUSE_NIGHTLY": "true"}):
             self.assertEqual(self.resolve()["due"], "false")
 
-    def test_a_nightly_yields_to_an_earlier_nightly_run_still_going_and_a_dry_run_does_not(self):
+    def test_a_nightly_yields_to_another_nightly_run_going_and_a_dry_run_does_not(self):
         going = mock.Mock(return_value=41)
         self.assertEqual(self.resolve(nightly_going=going)["due"], "false")
         self.assertEqual(self.resolve(draft=True, nightly_going=going)["due"], "true")
 
-    def test_only_an_earlier_nightly_release_run_still_going_counts(self):
-        def found(number, status, title="Release nightly"):
-            return {"run_number": number, "status": status, "display_title": title}
+    def test_any_other_nightly_release_run_going_counts_and_dry_runs_and_other_channels_do_not(self):
+        def found(number, title="Release nightly"):
+            return {"id": 1000 + number, "run_number": number, "display_title": title}
 
-        runs = json.dumps({"workflow_runs": [found(44, "in_progress"), found(43, "queued", "Release nightly (dry run)"),
-                                             found(42, "in_progress", "Release stable"), found(41, "completed"),
-                                             found(40, "in_progress"), found(39, "waiting")]})
-        with mock.patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "44"}):
-            with mock.patch.object(release, "run", answers(runs)):
-                self.assertEqual(release.nightly_going("owner/repo"), 39)
-        with mock.patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "39"}):
-            with mock.patch.object(release, "run", answers(runs)):
+        busy = json.dumps({"workflow_runs": [found(44), found(43, "Release nightly (dry run)"),
+                                             found(42, "Release stable"), found(40)]})
+        alone = json.dumps({"workflow_runs": [found(44), found(43, "Release nightly (dry run)")]})
+        with mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "1040"}):
+            with mock.patch.object(release, "run", answers(busy)):
+                self.assertEqual(release.nightly_going("owner/repo"), 44)
+        with mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "1044"}):
+            with mock.patch.object(release, "run", answers(busy)):
+                self.assertEqual(release.nightly_going("owner/repo"), 40)
+            with mock.patch.object(release, "run", answers(alone)):
                 self.assertIsNone(release.nightly_going("owner/repo"))
 
     def test_a_commit_whose_workflows_differ_from_mains_is_refused_before_anything_is_built(self):
