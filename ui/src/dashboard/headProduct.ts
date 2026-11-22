@@ -150,6 +150,7 @@ export function headSubject(track: Pick<BoundTrack, 'source' | 'branch'> | undef
 }
 
 export interface Retained<T> { client: unknown; subject: string; data: T; hour: number | null }
+export const shownAsked = (hour: number | null, paused: number | null) => paused === null || hour === paused;
 type TargetHour = { exact: number | null } | { through: number };
 
 export function retain<T>(held: Retained<T> | null, client: unknown, subject: string | null, asked: T | undefined, hour: number | null, target?: TargetHour): Retained<T> | null {
@@ -219,12 +220,16 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const heldData = landed ? panelReply(landed.panel, validate).data : undefined;
   const heldReading = useMemo(() => heldData !== undefined && landed && heldLive ? { data: heldData, hour: landed.hour, through: landed.through, live: heldLive } : undefined,
     [heldData, landed, heldLive]);
-  const kept = outside ? undefined : held.current ?? undefined;
-  const data = outside ? undefined : pushed ? fromPanel.data : kept?.data;
-  const dataAt = kept?.hour ?? null;
-  const error: Failure | undefined = pushed ? fromPanel.error : asked.error;
+  const kept = outside || pushed ? undefined : held.current ?? undefined;
+  const shown = kept && shownAsked(kept.hour, follows && !runtime.clock.getSnapshot().playing ? hourAt(runtime.clock.getHour()) : null) ? kept : undefined;
+  const data = outside ? undefined : pushed ? fromPanel.data : shown?.data;
+  const dataAt = shown?.hour ?? null;
+  const error: Failure | undefined = outside ? undefined : pushed ? fromPanel.error : asked.error;
   const askedData = pushed ? undefined : data;
   const askedLive = useMemo(() => repliedCells(askedData), [askedData]);
+  const askedHeld = kept && !shown && !asked.error ? kept : undefined;
+  const askedReading = useMemo(() => askedHeld && askedHeld.hour !== null
+    ? { data: askedHeld.data, hour: askedHeld.hour, through: askedHeld.hour, live: repliedCells(askedHeld.data) } : undefined, [askedHeld]);
   const live = pushed && panelLive ? panelLive : askedLive;
   if (followed.status === 'unavailable' && followed.reason) headFallbacks.set(product, followed.reason);
   const exactRead = perfLog && track && params ? (at: number) => {
@@ -238,7 +243,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   } : undefined);
   return {
     data, error, retry: asked.retry, root, hour, live, outside,
-    exactRead, held: outside ? undefined : heldReading,
+    exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,
     atNow: outside ? () => null : pushed && entry ? () => entry.panel ? entry.hour : null : () => dataAt,

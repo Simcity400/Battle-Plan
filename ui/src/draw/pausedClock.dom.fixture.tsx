@@ -40,8 +40,10 @@ const arsenalAt = (hour: number): NuclearArsenalReply => ({ ...reply,
   countries: [{ tag: 'GER', countryId: 1, total: hour, counts: [{ ordinal: 0, value: hour, ready: hour }] }], warnings: [`read at ${hour}`] });
 const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null, grand: { id: 'mobile', name: 'Mobile warfare', icon: null }, completed: [],
   tracks: [{ ordinal: 0, name: 'Infantry', sub: { id: 'sub_a', name: 'Sub A', icon: null }, unlocked: 1, rewards: [{ id: 'r1', name: 'First', threshold: '5000000' }] }] }], warnings: [] };
+const ASKED = 'asked-arsenal';
+const refused = { short: false };
 const replies: Record<string, (hour: number, query: Record<string, unknown>) => unknown> = { 'nuclear-arsenal': arsenalAt,
-  'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
+  'air-aces': (hour, query) => refused.short && query.branchId === '2' ? { readHour: hour } : { readHour: hour, missing: null, aces: [], warnings: [] },
   'doctrine-mastery': (_hour, query) => query.country === 'ENG' ? { folders: [], warnings: [] } : doctrine,
   wargoals: (hour, query) => ({ asked: query.country, branchId: query.branchId, tag: query.country, warnings: [], stateNames: [], standings: [], goals: [],
     justifications: [{ id: '1', ordinal: 0, name: 'Conquest', actor: 'GER', recipient: 'GER', states: [], total: '100000', daily: '1000', payUpfront: false,
@@ -62,8 +64,10 @@ HTMLCanvasElement.prototype.transferControlToOffscreen = function (this: HTMLCan
   return offscreen;
 };
 const surfaceOf = (canvas: HTMLCanvasElement | null) => canvas && surfaces.get(canvas);
+const inspected: { id: number; owner: number }[] = [];
 class GatedWorker extends Worker {
   override postMessage(message: ToWorker, transfer?: Transferable[] | StructuredSerializeOptions) {
+    if (message.type === 'inspectRace') inspected.push({ id: message.id, owner: message.owner });
     const canvas = (message.type === 'surface' || message.type === 'race') && message.canvas && offscreens.get(message.canvas);
     if (canvas) surfaces.set(canvas, message.id);
     if (message.type === 'surface' || message.type === 'race') owners.set(message.id, message.owner);
@@ -84,6 +88,8 @@ const ports: MessagePort[] = [];
 const decoder = new FollowDecoder();
 const followed = new Map<number, Record<string, unknown>>(), pushedAt = new Map<number, string>();
 const native = { id: -1, hold: false, asked: null as { hour: number; seek: number } | null, asks: 0 };
+const askedHold = { on: false, waiting: [] as (() => void)[] };
+const releaseAsked = () => { askedHold.on = false; for (const read of askedHold.waiting.splice(0)) read(); };
 function push() {
   const asked = native.asked;
   if (!asked) return;
@@ -99,7 +105,7 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
   if (product === 'follow') {
     const { id, query } = params as { id: number; query: Record<string, unknown> };
     const panel = String(query.panel);
-    if (!replies[panel]) return { available: false, reason: `${panel} is not followed here` };
+    if (!replies[panel] || panel === ASKED) return { available: false, reason: `${panel} is not followed here` };
     if (panel === 'nuclear-arsenal') native.id = id;
     followed.set(id, query);
     if (!native.hold) push();
@@ -111,6 +117,10 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
     return null;
   }
   if (product === 'unfollow') { followed.delete((params as { id: number }).id); return null; }
+  if (product === ASKED) {
+    const read = () => arsenalAt((params as { hour: number }).hour);
+    return askedHold.on ? new Promise(resolve => askedHold.waiting.push(() => resolve(read()))) : read();
+  }
   const served = replies[product];
   if (!served) throw new Error(`${product} is not served here`);
   native.asks++;
@@ -119,7 +129,7 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
 const client = {
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) =>
-    ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data: answer(request.product, request.params) }),
+    ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data: await answer(request.product, request.params) }),
   openFollow: async (given: readonly MessagePort[]) => {
     for (const port of given) { port.onmessage = ({ data }) => decoder.release(data); ports.push(port); }
   },
@@ -149,7 +159,7 @@ const presents = new Map<number, Present>();
 const drawn = new Map<number, number | null>();
 const racePresents = new Map<number, Extract<FromWorker, { type: 'racePresent' }>>();
 const emptied = { seek: -1 };
-let strict: number | null = null, followedSurface = false, listedRead = '';
+let strict: number | null = null, askedStrict: number | null = null, followedSurface = false, listedRead = '';
 const waiting = new Set<() => void>();
 const wake = () => queueMicrotask(() => { for (const heard of [...waiting]) heard(); });
 function delivered(message: FromWorker) {
@@ -171,6 +181,7 @@ const inkOf = (panel: string) => document.querySelector<HTMLCanvasElement>(`#${p
 const raceCanvas = () => document.querySelector<HTMLCanvasElement>('#race canvas');
 const panelPresent = () => presents.get(surfaceOf(inkOf('panel')) ?? -1);
 const headedPresent = () => presents.get(surfaceOf(inkOf('headed')) ?? -1);
+const askedPresent = () => presents.get(surfaceOf(inkOf('asked')) ?? -1);
 const racePresent = () => racePresents.get(surfaceOf(raceCanvas()) ?? -1);
 
 function Panel() {
@@ -189,6 +200,18 @@ function Headed() {
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
   useLayoutEffect(() => { strict = read.data?.countries[0]?.total ?? null; followedSurface = read.read === 'followed'; wake(); });
   return <div id="headed" ref={attach} style={{ width: '480px', height: '40px' }}>
+    {head.data && <span data-paint="empty">{arsenalNotice(head.data, clock.getHour())}</span>}
+  </div>;
+}
+
+function Asked() {
+  const root = useRef<HTMLDivElement | null>(null);
+  const read = useHeadProduct(runtime, headed, ASKED, NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const head = withHeld(read);
+  useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', read, arsenalStructure, headed, runtime), true);
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
+  useLayoutEffect(() => { askedStrict = read.data?.countries[0]?.total ?? null; wake(); });
+  return <div id="asked" ref={attach} style={{ width: '480px', height: '40px' }}>
     {head.data && <span data-paint="empty">{arsenalNotice(head.data, clock.getHour())}</span>}
   </div>;
 }
@@ -266,8 +289,8 @@ function tip() {
   return open?.owner === DOCTRINE_TIPS ? open.content.rows?.find(row => row.label === 'As of')?.value ?? '' : null;
 }
 function shown() {
-  const ink1 = inkOf('panel'), ink2 = inkOf('headed'), race = raceCanvas();
-  return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks, listedRead,
+  const ink1 = inkOf('panel'), ink2 = inkOf('headed'), ink3 = inkOf('asked'), race = raceCanvas();
+  return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, askedStrict, asks: native.asks, listedRead,
     listed: document.querySelector('#listed')?.textContent ?? null, warned: arsenalWarnings.told.filter(warning => warning.startsWith('read at ')),
     aces: stateOf('#aces .widget-state'), shortAces: stateOf('#short-aces .widget-state'), goals: framed('goals'), shortGoals: framed('short-goals'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
     raceDescribed: !!raceCanvas()?.getAttribute('aria-describedby'), raceRanking: document.querySelector('#race p[id$="-ranking"]')?.textContent ?? '',
@@ -275,7 +298,8 @@ function shown() {
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(surfaceOf(ink1) ?? -1)),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent()?.hour),
-    headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(surfaceOf(ink2) ?? -1)) };
+    headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(surfaceOf(ink2) ?? -1)),
+    asked: surface(ink3, document.querySelector('#asked'), !!ink3 && !ink3.hidden, drawn.get(surfaceOf(ink3) ?? -1)) };
 }
 const lit = (now: { visible: boolean; opacity: number }) => now.visible && now.opacity === 1;
 const painted = () => { const now = shown(); return now.field === 'worker' && now.headedField === 'worker' && lit(now.panel) && lit(now.race) && lit(now.headed); };
@@ -333,10 +357,10 @@ function menuOpens() {
 
 async function heldSeek(hour: number, settled: () => boolean, done: () => boolean = () => true) {
   let pending: (ReturnType<typeof shown> & { menus: string[] | null })[] = [];
-  const seen = await watch(() => { native.hold = true; watchRemoval(); clock.seek(hour); }, async () => {
+  const seen = await watch(() => { native.hold = true; askedHold.on = true; watchRemoval(); clock.seek(hour); }, async () => {
     await until(() => settled() && removalSeen());
     pending = [{ ...shown(), menus: menuOpens() }];
-    native.hold = false; push();
+    native.hold = false; push(); releaseAsked();
     if (pending[0]!.listedRead === 'followed') await until(() => landed(hour) && strict === hour && done());
   });
   return { seen, pending: pending[0]! };
@@ -390,16 +414,41 @@ async function raceHold(hour: number, gone: boolean) {
   return { before, seen, pending, done: seen.at(-1)! };
 }
 
+async function raceScroll(hour: number) {
+  const race = raceCanvas()!, from = clock.getHour(), id = surfaceOf(race)!;
+  race.focus();
+  race.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+  await until(() => shown().raceLive.includes(`at ${from}`));
+  const held = (type: 'racePresent' | 'raceInspection', owner: number) => gate.held.find(({ message }) => message.type === type && message.owner === owner &&
+    (message.type === 'raceInspection' || message.type === 'racePresent' && message.seek === clock.getSnapshot().seekSequence && message.hour === hour));
+  gate.holds = message => (message.type === 'racePresent' || message.type === 'raceInspection') && message.id === id;
+  clock.seek(hour);
+  const painted = owners.get(id)!;
+  await until(() => !!held('racePresent', painted) && shown().race.busy);
+  const present = held('racePresent', painted)!;
+  gate.held.splice(gate.held.indexOf(present), 1); present.deliver();
+  await until(() => !!held('raceInspection', painted));
+  race.parentElement!.dispatchEvent(new Event('scroll'));
+  const scrolled = owners.get(id)!;
+  await until(() => !!held('racePresent', scrolled));
+  gate.holds = null;
+  inspected.length = 0;
+  for (const { deliver } of gate.held.splice(0)) deliver();
+  const restored = inspected.some(asked => asked.id === id && asked.owner === scrolled);
+  if (restored) await until(() => shown().raceLive === `GER at ${hour}`);
+  return { scrolled: scrolled !== painted, restored, done: shown() };
+}
+
 export const fixture = {
   async mount() {
     pop.showPopover();
-    createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed />{createPortal(<Listed />, pop)}<Probe />
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed /><Asked />{createPortal(<Listed />, pop)}<Probe />
       <div style={{ display: 'flex', gap: '8px' }}><div id="aces" style={box}><AcesWidget {...aces} /></div>
         <div id="short-aces" style={box}><AcesWidget {...shortAces} /></div>
         <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div>
         <div id="no-doctrines" style={box}><DoctrineMasteryWidget {...noDoctrines} /></div></div>
       <div id="arsenal-widget" style={{ width: '480px', height: '160px', overflow: 'hidden' }}><NuclearArsenalWidget {...arsenal} /></div></>);
-    await until(() => followedSurface && listedRead === 'followed' && landed(23) && !!document.querySelector('#doctrine [data-track]'));
+    await until(() => followedSurface && listedRead === 'followed' && landed(23) && !!document.querySelector('#doctrine [data-track]') && askedStrict === 23 && lit(shown().asked));
     raceCanvas()!.focus();
     raceCanvas()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
     await until(() => !!shown().raceRanking && !!shown().raceLive);
@@ -410,7 +459,8 @@ export const fixture = {
     return { ...shown(), menus, focused };
   },
   speed: (hoursPerSecond: number) => watch(() => clock.setSpeed(hoursPerSecond)),
-  heldSeek: (hour: number) => heldSeek(hour, () => current() && readEmptied(), () => shown().tip === dayLabel(hour) && shown().warned.join() === `read at ${hour}`),
+  heldSeek: (hour: number) => heldSeek(hour, () => current() && currentOf(askedPresent()) && readEmptied(),
+    () => shown().tip === dayLabel(hour) && shown().warned.join() === `read at ${hour}` && shown().askedStrict === hour && lit(shown().asked)),
   heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent()) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => landed(clock.getHour()))),
   async pastShortEnd() {
@@ -424,8 +474,24 @@ export const fixture = {
     const seen = await watch(() => clock.step(1), () => until(() => landed(SHORT_END + 1) && shown().goals === past));
     return { before, seen, after: seen.at(-1)!, end, past };
   },
+  async refusedPastEnd() {
+    refused.short = true;
+    clock.seek(SHORT_END);
+    await until(() => landed(SHORT_END) && shown().shortAces === 'error');
+    const before = shown(), start = Math.ceil(performance.now()), speed = clock.getSnapshot().hoursPerSecond, commits = probe.commits;
+    at(start, () => clock.setPlaying(true));
+    at(start + 50, () => clock.setSpeed(speed + 1));
+    probe.bump();
+    await until(() => probe.commits > commits);
+    const after = shown();
+    at(start + 50, () => { clock.setPlaying(false); clock.setSpeed(speed); });
+    await until(() => landed(clock.getHour()));
+    refused.short = false;
+    return { before, after };
+  },
   staleStep,
   raceHold,
+  raceScroll,
   async playFor(milliseconds: number) {
     const start = Math.ceil(performance.now());
     at(start, () => clock.setPlaying(true));

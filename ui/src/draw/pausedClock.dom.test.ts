@@ -5,8 +5,8 @@ import { withNativePage } from '../../../tools/native-page.ts';
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
-  warned: string[]; aces: string | null; shortAces: string | null; goals: string | null; shortGoals: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; raceFocused: boolean; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
-  panel: Surface; race: Surface; headed: Surface;
+  askedStrict: number | null; warned: string[]; aces: string | null; shortAces: string | null; goals: string | null; shortGoals: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; raceFocused: boolean; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
+  panel: Surface; race: Surface; headed: Surface; asked: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
 const lit = (surface: Surface, hour: number) => surface.visible && surface.opacity === 1 && !surface.busy && surface.hour === hour;
@@ -34,11 +34,15 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     const { seen: midnight, pending } = await act<{ seen: Shown[]; pending: Shown }>('heldSeek(24)');
     assert.equal(pending.listedRead, 'followed',
       `a pop-out widget whose content is removed while 24:00 is read keeps its follow through the observers' callbacks: ${show(pending)}`);
-    const held = midnight[0]!;
+    const held = midnight[0]!, midnightEnd = midnight.at(-1)!;
     assert.ok(kept(held) && held.hour === 24 && surfaces(held).every(surface => dim(surface, 23)),
       `before the worker paints, the previous day's pictures stay visible at the muted opacity and busy: ${show(held)}`);
     assert.ok(kept(pending) && pending.strict === null && dim(pending.headed, 23) && [pending.panel, pending.race].every(surface => dim(surface, 23) || lit(surface, 24)),
       `with the followed reply for 24:00 still pending, the head's data is empty and only the drawn host holds 23:00, dimmed on its surface: ${show(pending)}`);
+    assert.ok(pending.askedStrict === null && dim(pending.asked, 23),
+      `with the asked reply for 24:00 still pending, a head with no follow holds 23:00 only for its drawn host, which keeps it dimmed and waiting: ${show(pending)}`);
+    assert.ok(midnight.every(state => dim(state.asked, 23) || lit(state.asked, 24)) && midnightEnd.askedStrict === 24,
+      `every sample shows the asked head's 23:00 dimmed or 24:00 at full strength: ${show(midnight.find(state => !dim(state.asked, 23) && !lit(state.asked, 24)))}`);
     assert.ok(pending.aces === 'loading' && pending.noDoctrines === 'loading',
       `while 24:00 is read, Aces shows loading, not a time outside the recording, and Doctrine mastery holding 23:00 shows loading, not 23:00's status: ${show(pending)}`);
     assert.deepEqual(mounted.menus, ['pointer', 'keyboard'], 'a current Doctrine mastery row opens its menu by pointer and by keyboard');
@@ -58,7 +62,6 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     const between = midnight.find(state => !kept(state) || !surfaces(state).every(surface => dim(surface, 23) || lit(surface, 24)));
     t.diagnostic(`midnight: ${midnight.length} samples, ${midnight.filter(state => surfaces(state).some(surface => !surface.visible)).length} blank`);
     assert.equal(between, undefined, `every sample shows the previous day dimmed or the next day at full strength, on the surfaces it mounted with: ${show(between)}`);
-    const midnightEnd = midnight.at(-1)!;
     assert.ok(at(midnightEnd, 24) && midnightEnd.strict === 24, `the next day is painted at full strength: ${show(midnightEnd)}`);
     assert.ok(midnightEnd.raceDescribed, `the Nuclear arsenal race is described again once 24:00 is painted: ${show(midnightEnd)}`);
     assert.ok(midnightEnd.aces === 'empty' && midnightEnd.tip !== null && midnightEnd.tip !== mounted.tip && midnightEnd.described && midnightEnd.warned.join() === 'read at 24',
@@ -98,7 +101,13 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
       `War goals stepped past its track's end shows outside the recording, while the main track's War goals shows 101's completion: ${show(pastEnd)}`);
     assert.equal(stepping.find(state => state.shortGoals !== end && state.shortGoals !== pastEnd.shortGoals), undefined,
       'stepping War goals past its track\'s end never shows loading');
-    for (const [hour, gone, said] of [[120, false, 'GER at 120'], [144, true, 'GER is no longer in the ranking']] as const) {
+    const { before: refusedEnd, after: crossed } = await act<{ before: Shown; after: Shown }>('refusedPastEnd()');
+    assert.ok(refusedEnd.shortAces === 'error' && crossed.hour > 100 && crossed.shortAces === 'unavailable',
+      `while playback runs across the end of a track whose last reading was refused, that track's Aces is outside the recording, not the old refusal: ${show(crossed)}`);
+    const scroll = await act<{ scrolled: boolean; restored: boolean; done: Shown }>('raceScroll(120)');
+    assert.ok(scroll.scrolled && scroll.restored && scroll.done.raceFocused && scroll.done.raceDescribed && scroll.done.raceLive === 'GER at 120',
+      `a scroll between the current picture and its inspection reply still restores the selected country from the next picture: ${show(scroll.done)}`);
+    for (const [hour, gone, said] of [[144, false, 'GER at 144'], [168, true, 'GER is no longer in the ranking']] as const) {
       const { before, seen, pending, done } = await act<{ before: Shown; seen: Shown[]; pending: Shown; done: Shown }>(`raceHold(${hour}, ${gone})`);
       assert.ok(before.raceFocused && before.raceLive.includes(`at ${before.hour}`), `the race is focused and announces its selected row: ${show(before)}`);
       assert.ok(dim(pending.race, before.hour) && pending.raceFocused, `held, the race keeps focus under the dim: ${show(pending)}`);

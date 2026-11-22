@@ -791,7 +791,10 @@ test('a paused reading short of the paused hour is published once after playback
   followed.land([decoder.item(datedStep(23, [{ id: 4, answer: one(1n, 7n) }], 1).slice().buffer)]);
   followed.drain(24);
   assert.deepEqual(published(24).sort(), [[3, 23, 23], [4, 23, 23]], 'each reading is sent while paused at 24, though the page rejects it');
-  assert.deepEqual(published(null).sort(), [[3, 23, 23], [4, 23, 23]], 'resuming publishes each rejected reading once, whatever its shape');
+  assert.deepEqual([...followed.resumed()].map(r => [r.id, r.coverage?.start, r.coverage?.through]).sort(), [[3, 23, 23], [4, 23, 23]],
+    'resuming publishes each rejected reading once, whatever its shape');
+  assert.deepEqual([...followed.resumed()], [], 'and only once');
+  assert.deepEqual(published(null), [], 'the first playing frame sends nothing more');
   step(25, []);
   followed.land([decoder.item(datedStep(25, [], 1).slice().buffer)]);
   followed.drain(25);

@@ -128,7 +128,7 @@ export class Followed {
     for (const entry of this.dirty) {
       const { id, panel, answer, hour } = entry;
       const last = this.sent.get(id);
-      if (playing && !this.short.has(id) && last && last.panel === panel && last.answer === answer) continue;
+      if (playing && last && last.panel === panel && last.answer === answer) continue;
       let shape: string;
       if (panel) {
         shape = this.staged.get(panel) ?? this.panelShape(id, panel, hour);
@@ -137,19 +137,24 @@ export class Followed {
       } else shape = answer?.reason ?? 'pending';
       this.sent.set(id, { shape, panel, answer });
       if (playing) {
-        if (this.short.delete(id) || last?.shape !== shape && !(panel && this.staged.has(panel))) yield this.snapshot(id)!;
+        if (last?.shape !== shape && !(panel && this.staged.has(panel))) yield this.snapshot(id)!;
         continue;
       }
       if (this.showsAt(entry, paused)) this.short.delete(id); else this.short.add(id);
       yield this.snapshot(id)!;
     }
-    for (const id of this.short) {
+    if (!playing) for (const id of this.short) {
       const entry = this.entries.get(id)!;
-      if (this.dirty.has(entry) || !playing && !this.showsAt(entry, paused)) continue;
+      if (this.dirty.has(entry) || !this.showsAt(entry, paused)) continue;
       this.short.delete(id);
       yield this.snapshot(id)!;
     }
     this.dirty.clear();
+  }
+
+  *resumed(): Iterable<PageReading> {
+    for (const id of this.short) yield this.snapshot(id)!;
+    this.short.clear();
   }
 
   private showsAt(entry: FollowEntry, paused: number) {

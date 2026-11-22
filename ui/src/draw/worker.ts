@@ -386,7 +386,8 @@ function report(s: Surface, head: number, notices: Present[]) {
   const shown = s.through !== undefined;
   const short = s.kind !== 'table' && !shown && !anchor.playing && s.model.follow !== undefined && !covered(s, head);
   if (s.kind !== 'table') { if (short) uncovered.add(s); else uncovered.delete(s); }
-  const held = s.kind !== 'table' && !shown && (short || s.kind === 'panel' && !!s.remeasure);
+  const asked = s.kind !== 'table' && !shown && !anchor.playing && s.model.follow === undefined && !!s.model.asked;
+  const held = s.kind !== 'table' && !shown && (short || asked || s.kind === 'panel' && !!s.remeasure);
   if (s.shown === shown && (s.kind === 'table' || s.waiting === held)) return;
   s.shown = shown;
   if (s.kind === 'race') {
@@ -604,6 +605,10 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       const moved = !m.anchor.playing && anchor.position !== m.anchor.position;
       if (speedChanged || moved || anchor.seek !== m.anchor.seek || anchor.playing !== m.anchor.playing) responding = true;
       if (anchor.playing && !m.anchor.playing) followed.paused();
+      if (!anchor.playing && m.anchor.playing && lane === 0) {
+        const updates = [...followed.resumed()];
+        if (updates.length) post({ type: 'structure', updates });
+      }
       if (anchor.playing !== m.anchor.playing || moved) {
         for (const s of [...panels.values(), ...races.values(), ...tables.values()]) if (s.model.fixed === undefined) dirty.add(s);
       }
