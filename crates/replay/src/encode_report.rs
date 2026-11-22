@@ -84,23 +84,6 @@ pub fn facts_pack(path: &Path, bytes: Vec<u8>, content: &Identity, session_only:
         .ok_or_else(|| io::Error::other(format!("{} is another content's facts", path.display())))
 }
 
-pub fn pace(rate: f64, from: u64, hours: u64) -> io::Result<(f64, u64)> {
-    if rate.is_finite() && rate > 0.0 && paced_due(rate, from, hours).is_some() {
-        Ok((rate, from))
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "--pace needs a positive rate of game hours a second that keeps the due time of the last hour asked ({hours}) on the clock: give a faster pace or fewer --hours"
-            ),
-        ))
-    }
-}
-
-fn paced_due(rate: f64, from: u64, hours: u64) -> Option<std::time::Duration> {
-    std::time::Duration::try_from_secs_f64(hours.saturating_sub(from) as f64 / rate).ok()
-}
-
 pub struct Everything {
     pub facts: Option<Vec<u8>>,
     pub revisions: u64,
@@ -109,23 +92,13 @@ pub struct Everything {
     pub pace: Option<(f64, u64)>,
     pub hours: u64,
     pub paced: Option<Instant>,
-    pub unpaced: Option<u64>,
     pub taken: Rc<Cell<u64>>,
     pub last: Option<Hour>,
 }
 
 impl Everything {
     pub fn new(facts: Option<Vec<u8>>, pace: Option<(f64, u64)>) -> Self {
-        Self { facts, revisions: 0, committed: false, blocks: 0, pace, hours: 0, paced: None, unpaced: None, taken: Rc::default(), last: None }
-    }
-
-    pub fn pacing(&self) -> io::Result<()> {
-        match (self.unpaced, self.pace) {
-            (Some(hour), Some((rate, _))) => Err(io::Error::other(format!(
-                "--pace at {rate} game hours a second puts hour {hour}'s due time past the clock"
-            ))),
-            _ => Ok(()),
-        }
+        Self { facts, revisions: 0, committed: false, blocks: 0, pace, hours: 0, paced: None, taken: Rc::default(), last: None }
     }
 }
 
@@ -155,10 +128,7 @@ impl Host for Everything {
             return;
         }
         let started = *self.paced.get_or_insert_with(Instant::now);
-        let Some(due) = paced_due(rate, from, self.hours) else {
-            self.unpaced.get_or_insert(self.hours);
-            return;
-        };
+        let due = std::time::Duration::from_secs_f64((self.hours - from) as f64 / rate);
         if let Some(wait) = due.checked_sub(started.elapsed()) {
             std::thread::sleep(wait);
         }
@@ -317,36 +287,5 @@ pub fn report_phases() {
             .map(|charge| json!({ "owner": charge.owner, "kind": charge.kind.name(), "at_peak": charge.at_peak, "peak": charge.peak, "end": charge.end }))
             .collect();
         eprintln!("{}", json!({ "phase": summary, "phase_peak": phase.tracked_peak, "os_at_peak": os, "labels": held }));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_pace_is_refused_when_an_hour_asked_could_fall_past_the_clock() {
-        assert_eq!(super::pace(24.0, 5, u64::MAX).unwrap(), (24.0, 5));
-        assert_eq!(super::pace(1e-12, 1, 1).unwrap(), (1e-12, 1));
-        let refused = [
-            (1e-300, u64::MAX),
-            (2f64.powi(-32), u64::MAX),
-            (1e-12, 1 << 40),
-            (0.0, 1),
-            (-1.0, 1),
-            (f64::NAN, 1),
-            (f64::INFINITY, 1),
-        ];
-        for (rate, hours) in refused {
-            let refused = super::pace(rate, 0, hours).expect_err("refused");
-            assert!(refused.to_string().contains("--pace"), "{rate} for {hours}: {refused}");
-        }
-    }
-
-    #[test]
-    fn an_hour_past_the_clock_is_reported_by_name() {
-        let mut host = super::Everything::new(None, Some((2f64.powi(-32), 0)));
-        assert!(host.pacing().is_ok());
-        host.unpaced = Some(1 << 32);
-        let refused = host.pacing().expect_err("named");
-        assert!(refused.to_string().contains("hour 4294967296"), "{refused}");
     }
 }

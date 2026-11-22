@@ -62,7 +62,6 @@ fn main() -> io::Result<()> {
             return Err(usage());
         }
     }
-    let pace = pace.map(|(rate, from)| encode_report::pace(rate, from, limit)).transpose()?;
     let facts = journal_facts(Path::new(directory), capture, facts)?;
     eprintln!("{}", json!({ "facts": facts.as_ref().map(|(path, pack)| json!({ "file": path, "pack_bytes": pack.len() })) }));
     let facts = facts.map(|(_, pack)| pack);
@@ -118,7 +117,6 @@ fn main() -> io::Result<()> {
     loop {
         let stop = || memory || stop_after.is_some() || taken.get() >= limit;
         let progress = writer.advance(&mut source, &mut host, &stop)?;
-        host.pacing()?;
         if std::mem::take(&mut host.committed) {
             if memory {
                 eprintln!("{}", serde_json::Value::Object(encode_report::revision_line(&writer, host.revisions, host.hours + first_hours, started)));
