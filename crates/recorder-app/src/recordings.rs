@@ -1299,12 +1299,12 @@ mod tests {
         refresh(&settings, Some("Z01"));
         *response.lock().unwrap() = Some("Repaired country".into());
         for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY;
+            known.retry = known.retry.map(|_| Duration::ZERO);
         }
         refresh(&settings, Some("Repaired country"));
         *response.lock().unwrap() = Some("Changed game installation".into());
         for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY_MAX;
+            known.retry = known.retry.map(|_| Duration::ZERO);
         }
         let view = library.view("panel", visit.get(), true);
         let listed = library.list(&settings, view, &live, &BTreeMap::new(), || {});
