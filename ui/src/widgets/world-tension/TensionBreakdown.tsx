@@ -17,11 +17,12 @@ import type { Failure } from '../../dashboard/queryError';
 import type { TensionContribution, ThreatEvent, WorldTensionReply } from '../../generated/dashboard';
 import TensionChart from './TensionChart';
 import { causeAt, contributionCell, contributorName, eventKeys, percent, percentOf, shareText, worldCells } from './tensionData.ts';
+import { type ReadCoverage } from '../../dashboard/widgetTime.ts';
 
 export interface TensionBreakdownProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   extent: [number, number]; playhead: number | null; following: boolean;
-  hour: number;
+  hour: number | null; read: ReadCoverage;
   reply: WorldTensionReply | undefined; live: Live<LiveValues<number>>; error?: Failure; onRetry?: () => void;
   looks: CountryLooks; colour: (tag: string | null) => string; otherColour: string;
   layers: readonly TensionContribution[];
@@ -31,7 +32,7 @@ export interface TensionBreakdownProps {
   onPick?: (hour: number) => void;
 }
 
-export default function TensionBreakdown({ runtime, track, active, options, extent, playhead, following, hour, reply, live, error, onRetry, looks, colour,
+export default function TensionBreakdown({ runtime, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
   otherColour, layers, events, tooltip, report, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
   const keys = useMemo(() => eventKeys(events), [events]);
@@ -63,9 +64,10 @@ export default function TensionBreakdown({ runtime, track, active, options, exte
   }), [reply, live, scale]);
   const chosen = cause === null ? -1 : keys.indexOf(cause);
   const event = chosen < 0 ? null : events[chosen];
-  const added = event ? causeAt(event, hour) : null;
+  const added = event && hour !== null ? causeAt(event, hour) : null;
+  if (read.outside || hour === null) return <WidgetState kind="outside" read={read} />;
   if (error && !reply) return <WidgetState kind="error" failure={error} onRetry={onRetry} />;
-  if (!reply) return <WidgetState kind="loading" label="Loading world tension…" />;
+  if (!reply) return <WidgetState kind="loading" label="Loading world tension…" read={read} />;
   return <div className="world-tension-drill">
     {reply.missing ? <p className="drill-empty">{reply.missing}</p> : null}
     <DrillParts parts={[]} live={parts} format={value => `${Math.round(value * 1000) / 1000}%`} active={active} virtual signedShares
@@ -77,7 +79,7 @@ export default function TensionBreakdown({ runtime, track, active, options, exte
     </div>
     {event && <div className="drill-empty" role="group" aria-label="Selected cause">
       <strong>{event.reason}</strong><p>{formatDateTime(event.hour)} · {event.tag ? contributorName(event.tag, event.remembered, tag => looks.name(tag)) : 'Country not identified'}.</p>
-      <p>Its contribution: {added === null ? 'Not yet recorded' : percent(added, scale, 3)}{event.lastRead < hour ? `, as last read on ${dayLabel(event.lastRead)}` : ''}.</p>
+      <p>Its contribution: {added === null ? 'Not yet recorded' : percent(added, scale, 3)}{hour !== null && event.lastRead < hour ? `, as last read on ${dayLabel(event.lastRead)}` : ''}.</p>
     </div>}
     <div className="world-tension-drill-chart">
       <TensionChart runtime={runtime} track={track} active={active} options={options} label="Country contributions over time" extent={extent} playhead={playhead}

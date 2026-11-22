@@ -35,7 +35,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useReadCoverage } from '../../dashboard/readCoverage';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition';
@@ -61,7 +61,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const coverage = useReadCoverage(runtime, widget);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
   const lastHour = track?.branch.lastHour ?? 0;
   const registryResult = useScoreboardColumns(runtime, track, active);
   const registryData = registryResult.data;

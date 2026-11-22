@@ -6,8 +6,7 @@ import { countryFromKey, isSlotKey } from './countryKey.ts';
 import { useSlotTags } from './countrySlots.ts';
 import type { SlotTags } from './countrySlots';
 import type { DashboardClient } from './client';
-import { resolveWindow, type BoundTrack, type WidgetSpec } from './model.ts';
-import type { WidgetRuntime } from './definitions';
+import { type BoundTrack } from './model.ts';
 import type { PlaybackController } from './playback';
 import { useFallbackHour } from './follow/useFollow.ts';
 
@@ -83,12 +82,4 @@ export function useIdentityHour(client: DashboardClient, track: Pick<BoundTrack,
   const unheld = on && Number.isNaN(settled);
   const requestHour = useFallbackHour(clock, unheld);
   return !on || unheld ? trackHour(requestHour) : settled;
-}
-
-export function useWidgetIdentityHour(runtime: Pick<WidgetRuntime, 'client' | 'clock' | 'tracks'>, widget: WidgetSpec, tags: readonly string[], active: boolean): number {
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const trackHour = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null,
-    [widget, track, runtime.tracks]);
-  const identity = useIdentityHour(runtime.client, track, tags, runtime.clock, active && widget.time.mode === 'follow', trackHour);
-  return Math.floor(identity ?? trackHour(runtime.clock.getHour()) ?? track?.branch.lastHour ?? 0);
 }

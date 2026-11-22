@@ -40,6 +40,7 @@ import type { LiveValues } from '../../charts/live';
 import type { BalanceRow } from './balanceOfPowerData';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly BalanceRow[] = [];
 const PARAMS = { view: 'balances' } as const;
@@ -81,6 +82,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
+  const mainRegion = useRegion(widget);
   const live = head.live;
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -193,7 +195,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   return <div className="balance-of-power" ref={rootRef}>
     {headerSlot && view && createPortal(<span className="pill balance-count">{usNumber.format(rows.length)} active</span>, headerSlot)}
     {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
-    <DrillHost mode="inline" open={!!choice?.balance} anchor={anchor} title={`${countryName}: ${openName}`} day={dayLabel(hour)} following={false} canFollow={false}
+    <DrillHost mode="inline" open={!!choice?.balance} anchor={anchor} title={`${countryName}: ${openName}`} day={data ? dayLabel(data.hour) : ''} following={false} canFollow={false} time={{ runtime, region: mainRegion }}
       onClose={() => setOpened(null)} onFollow={() => {}} main={body}>
       {track && history.data && openHolder && choice?.balance && <BalanceCountryView runtime={runtime} track={track} active={active} subject={openHolder} names={history.data.names}
         balance={choice.balance} liveHead={liveHead} limitAt={limitAt} gameShown={hour <= limit ? valueAt(openHolder.shown, hour) : null} countryName={countryName} at={hour} limit={limit}

@@ -8,16 +8,19 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import WidgetState from '../../components/WidgetState';
 import { amountKey, amountText, managementStructure, validateNavalManagement } from './navalManagementData';
 import './navyManagement.css';
+import { FOLLOW, pickedAt } from '../../dashboard/regionTime.ts';
 
 export default function NavyManagement({ runtime, widget, track, tag, hour, following, active }: PartsRaceDetailProps) {
   const [open, setOpen] = useState(false);
-  const head = useHeadProduct(runtime, { ...widget, trackIds: [track.id] }, 'naval-management', open ? { country: countryFromKey(tag) } : null,
-    { active: active && open, validate: validateNavalManagement, structure: managementStructure, hoverHour: following ? null : hour });
+  const spec = useMemo(() => ({ ...widget, trackIds: [track.id] }), [widget, track.id]);
+  const head = useHeadProduct(runtime, spec, 'naval-management', open ? { country: countryFromKey(tag) } : null,
+    { active: active && open, validate: validateNavalManagement, structure: managementStructure, time: following ? FOLLOW : pickedAt(track, hour) });
   const data = head.data;
   const texts = useMemo<LiveTexts>(() => ({ text: key => amountText(head.live.read(), key, data), subscribe: head.live.subscribe }), [head.live, data]);
   return <details className="navy-management" ref={head.root} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Repairs, refits and reinforcement</summary>
     {open && <div className="navy-management-content">{head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : head.outside ? <WidgetState kind="outside" read={head} />
       : !data ? <WidgetState kind="loading" label="Loading naval orders…" read={head} />
       : <><p>Standing orders for fleets held by this country on {dayLabel(hour)}.</p>
         {data.warnings.length > 0 && <p role="status">Some naval details are unavailable. {data.warnings.join(' ')}</p>}

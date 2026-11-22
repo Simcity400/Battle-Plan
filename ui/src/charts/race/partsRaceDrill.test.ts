@@ -4,9 +4,13 @@ import { registerWidgets } from '../../dashboard/definitions.ts';
 import { partsRaceModel, validatePartsRaceReply } from '../../dashboard/partsRace.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { runAt } from '../series.ts';
-import { drillHour } from '../drill/drillState.ts';
+import { axisAt, drillAction, regionHour } from '../../dashboard/regionTime.ts';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, partsRaceDrillBands, partsRaceDrillData, pinPartsRace, reducePartsRaceDrill, validateNativePartsRaceReply } from './partsRaceDrill.ts';
 import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData.ts';
+
+const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
+const drillAt = (state: { follow: boolean; hour: number | null }, playhead: number) =>
+  regionHour({ widget: { trackIds: ['wide'], time: { mode: 'follow' } } as unknown as WidgetSpec, action: drillAction(state, WIDE) }, WIDE, [WIDE], axisAt(playhead));
 
 test('drawn actor candidates override ranking without adding hidden or missing countries', () => {
   let fallbacks = 0;
@@ -32,7 +36,7 @@ test('actor chooser retains the clicked hour and branch and rejects superseded i
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 31.9, tags: ['drawn A', 'drawn B'] });
   assert.equal(state.breakdown, null);
   assert.equal(state.follow, false);
-  assert.equal(drillHour(state, 500), 31);
+  assert.equal(drillAt(state, 500), 31);
   assert.equal(reducePartsRaceDrill(state, { type: 'follow' }), state);
   assert.equal(reducePartsRaceDrill(state, { type: 'pick', hour: 500 }), state);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 44, tags: ['drawn C', 'drawn D'] });
@@ -42,7 +46,7 @@ test('actor chooser retains the clicked hour and branch and rejects superseded i
   state = reducePartsRaceDrill(state, { type: 'choose', key, hour: 44, tag: 'drawn D' });
   assert.deepEqual(state, { breakdown: 'drawn D', follow: false, hour: 44, choices: null });
   state = reducePartsRaceDrill(state, { type: 'follow' });
-  assert.equal(drillHour(state, 500), 500);
+  assert.equal(drillAt(state, 500), 500);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 60, tags: ['drawn A', 'drawn B'] });
   state = reducePartsRaceDrill(state, { type: 'close' });
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key, hour: 60, tag: 'drawn A' }), state);

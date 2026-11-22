@@ -29,10 +29,6 @@ export function reduceDrill(state: DrillState, action: DrillAction): DrillState 
   }
 }
 
-export function drillHour(state: DrillState, playhead: number | null): number | null {
-  return state.follow ? playhead : state.hour;
-}
-
 export const DRILL_OPTION: OptionField = {
   key: 'drill', section: 'interaction', label: 'Breakdown opens',
   kind: 'choice', default: 'inline', choices: [{ value: 'inline', label: 'In the widget' }, { value: 'popout', label: 'Beside it' }],

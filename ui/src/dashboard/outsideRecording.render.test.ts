@@ -44,10 +44,10 @@ test('a market drill asking recorded hour 105, inside a widget whose range ends 
     const widget = { id: 'ledger', kind: 'market-ledger', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 5, lastOffset: 10 }, options: {} };
     const heads = new time.ActiveHeads();
     heads.set({}, true);
-    host.__stub = { useHeadProduct: (_runtime: never, _widget: never, _product: never, _params: never, options: { hoverHour: number | null }) => head({ outside: options.hoverHour === null }) };
+    host.__stub = { useHeadProduct: (_runtime: never, _widget: never, _product: never, _params: never, options: { time?: { kind: string } }) => head({ outside: options.time?.kind !== 'at' }) };
     const runtime = { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150) };
-    const drawn = markup(createElement(time.WidgetTimeContext.Provider, { value: { heads, outside: true, detail: time.SETTINGS_DETAIL, reads: widget } as never },
-      createElement(MarketDrill, { runtime, widget, hour: 105, following: false, tags: ['GER'], selected: null, active: true })));
+    const drawn = markup(createElement(time.RegionContext.Provider, { value: { heads, outside: true, detail: time.SETTINGS_DETAIL, key: 'main' } as never },
+      createElement(MarketDrill, { runtime, widget, time: { kind: 'at', hour: 105 }, tags: ['GER'], selected: null, active: true })));
     assert.ok(drawn.includes('data-state="loading"') && !drawn.includes(OUTSIDE), `the drill reads 105, inside the track, so it is loading: ${drawn}`);
   } finally { delete host.__stub; await close(); }
 });
@@ -61,7 +61,8 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
     const widget = { id: 'fuel', kind: 'fuel', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, options: {} };
     const clock = clockAt({ firstHour: 100, lastHour: 200 }, 110);
     host.__stub = {
-      useHeadProduct: (runtime: { clock: PlaybackController }, spec: { time: { mode: string } }) => head({ outside: spec.time.mode === 'follow' && runtime.clock.getHour() > 109 }),
+      useHeadProduct: (runtime: { clock: PlaybackController }, _spec: never, _product: never, _params: never, options: { time?: { kind: string } }) =>
+        head({ outside: options.time?.kind === 'follow' && runtime.clock.getHour() > 109 }),
       usePartSeries: () => ({ summaries: [], onSummaryView() {}, error: undefined, retry() {}, owner: null }),
     };
     const drawn = markup(createElement(Breakdown, { runtime: { tracks: [shortTrack], client: {}, clock }, widget, track: shortTrack, tag: 'GER', hour: null, follows: true,

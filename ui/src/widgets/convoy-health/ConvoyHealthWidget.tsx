@@ -38,6 +38,8 @@ import type { ConvoyRow } from './convoyData';
 import { DETAILS, OPTIONS } from './definition';
 import './convoyHealth.css';
 import type { ConvoyHealthReply, ConvoyView } from '../../generated/dashboard';
+import { drillAction, regionFollows } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys('trade') };
@@ -105,12 +107,14 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const onPick = useCallback((row: HeatRow, period: HeatPeriod | null, hour: number) => {
     setPicked(row.id);
     const head = track ? runtime.clock.getSnapshot().position + track.axisOffset : null;
-    dispatch({ type: 'open', breakdown: DETAILS.id, hour: period?.readHour ?? hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? head : pinnedHour });
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour: period?.readHour ?? hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? head : null });
   }, [runtime, track, following, pinnedHour]);
   const pickOwner = useMemo(() => ({ data, view, tag }), [data, view, tag]);
   const drilled = picked ? byId.get(picked) ?? null : null;
-  const drillFollows = drill.follow && following;
-  const drillHour = drillFollows ? null : drill.hour ?? pinnedHour ?? extent[1];
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillFollows = regionFollows(drillRegion) && drill.breakdown !== null;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
+  const drillHour = drillFollows ? null : drillAt;
   const liveFacts = useMemo(() => drilled && drillFollows && liveHead
     ? liveTexts(runtime.clock, () => Math.floor(liveHead.read()), at => new Map([['day', dayLabel(at)], ...drilled.facts(at).map(fact => [fact.label, fact.value] as const)]))
     : null, [drilled, drillFollows, liveHead, runtime.clock]);
@@ -143,7 +147,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   </div>;
   return <div ref={anchor} className="convoy-health-host" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!drilled} anchor={anchor}
-      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : dayLabel(drillHour ?? extent[1])}
+      title={drilled?.label ?? DETAILS.label} day={liveFacts ? <LiveText live={liveFacts} at="day" /> : drillHour === null ? '' : dayLabel(drillHour)} time={{ runtime, region: drillRegion }}
       following={drillFollows} canFollow={following}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {drilled && <ConvoyDrill row={drilled} runtime={runtime} track={track} hour={drillHour} liveHead={drillFollows ? liveHead : undefined}

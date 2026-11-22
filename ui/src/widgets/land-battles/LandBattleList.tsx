@@ -26,6 +26,7 @@ import type { LandBattleRow } from './landBattlesData';
 import { definition, VIEWS } from './definition';
 import LandBattleDrill from './LandBattleDrill';
 import './landBattles.css';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 type Props = BattleLogProps<LandBattleRow> & { context: BattleViewContext };
 const NO_PLACES: readonly { provinceId: number; hour: number }[] = [];
@@ -298,6 +299,7 @@ const BattleCells = memo(function BattleCells({ stateKey, item, values, sides, t
 
 export default function LandBattleList(props: Props) {
   const { rows, view, log, country, live, menu, context, label, empty, onVisibleRows } = props;
+  const listRegion = useRegion(context.widget);
   const tokens = useChartTokens();
   const colours = useMemo(() => [tokens.categories[0], tokens.categories[1]], [tokens]);
   const actions = useContext(HeaderActionsSlot);
@@ -424,7 +426,8 @@ export default function LandBattleList(props: Props) {
   </div>;
   const drill = options.drill === 'popout' ? 'popout' : 'inline';
   return <>{header}<DrillHost mode={drill} open={current !== null} title={current ? placeName(current, context.placePending(current)) : ''}
-    day={dayLabel(context.shownHour)} following={false} canFollow={false} onFollow={() => {}} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
+    day={dayLabel(context.shownHour)} following={false} canFollow={false} onFollow={() => {}} onClose={() => setOpenId(null)} anchor={anchor} main={list}
+    time={{ runtime: context.runtime, region: listRegion }}>
     {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} heldAt={heldAt} />}
   </DrillHost></>;
 }

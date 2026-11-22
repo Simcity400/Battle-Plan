@@ -6,7 +6,7 @@ import type { TimeChartProps } from '../../charts/TimeChart';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products';
+import { FOLLOW, pickedAt } from '../../dashboard/regionTime';
 import type { Failure } from '../../dashboard/queryError';
 import type { CountryFuelReply, HourSpan } from '../../generated/dashboard';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
@@ -26,20 +26,14 @@ export interface FuelAt extends ReadCoverage {
 export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack, tag: string | null, hour: number | null, follows: boolean,
   active: boolean, structure: (reply: CountryFuelReply) => string): FuelAt {
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
-  const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: { mode: 'follow' } } as WidgetSpec), [widget]);
   const paint = useCallback((reply: CountryFuelReply) => live.set(reply), [live]);
-  const head = useHeadProduct<CountryFuelReply>(runtime, spec, COUNTRY_FUEL, follows && tag ? { country: countryFromKey(tag) } : null,
-    { active: active && follows, validate: validateCountryFuel, structure, paint });
-  const asked = useProduct<CountryFuelReply>(runtime.client, !follows && tag && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null, active && !follows, validateCountryFuel, track.source);
-  useEffect(() => { live.set(follows ? head.data : asked.data); }, [live, follows, head.data, asked.data]);
-  const askedOutside = hour !== null && (hour < track.branch.firstHour || hour > track.branch.lastHour);
-  return follows
-    ? { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: true, shownAt: head.shownAt, outside: head.outside }
-    : { data: asked.data, error: asked.error, retry: asked.retry, live, root: NO_ROOT, followed: false, shownAt: () => asked.data ? hour : null, outside: askedOutside };
+  const head = useHeadProduct<CountryFuelReply>(runtime, widget, COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateCountryFuel, structure, paint, time: follows ? FOLLOW : pickedAt(track, hour) });
+  useEffect(() => { live.set(head.data); }, [live, head.data]);
+  return { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: follows, shownAt: head.shownAt,
+    outside: head.outside, outsideDetail: head.outsideDetail };
 }
 
-const NO_ROOT = () => {};
 
 export const MOST_PARTS = 8;
 

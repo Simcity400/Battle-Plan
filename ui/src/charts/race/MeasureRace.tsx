@@ -24,7 +24,7 @@ import type { ChartSummary } from '../chartSummary';
 import type { TimeChartProps } from '../TimeChart';
 import type { TooltipContent, TooltipRow } from '../tooltip';
 import DrillHost from '../drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../drill/drillState';
+import { CLOSED, pinnedBreakdown, reduceDrill } from '../drill/drillState';
 import type { DrillAction, DrillState } from '../drill/drillState';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -57,6 +57,8 @@ import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measu
 import type { MeasureParts, PartValues } from './measureParts';
 import { PartFollows, PartsHead, usePartStates } from './PartFollows';
 import PartsBreakdown from './PartsBreakdown';
+import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const holds = (summary: ChartSummary) => summary.buckets.some(bucket => bucket !== null && bucket.maxValue > 0);
 
@@ -300,7 +302,9 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const mixTag = parts && raceView === null ? mixCountry(widget.countries, fallbackTag, shownEntries()) : null;
   const breakdownTag = drill.breakdown ?? mixTag;
   const breakdownFollows = following && (drill.breakdown == null || drill.follow);
-  const breakdownHour = Math.floor(drill.breakdown != null ? drillHour(drill, moment) ?? moment : moment);
+  const drillRegion = useRegion(widget, drill.breakdown != null ? drillAction(drill, track) : SPEC);
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
+  const breakdownHour = Math.floor(drill.breakdown != null ? regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock)) ?? moment : moment);
   const breakdownTags = useMemo(() => breakdownTag ? [breakdownTag] : [], [breakdownTag]);
   const breakdownHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
   const breakdownOn = active && !!breakdownTag && breakdownFollows;
@@ -400,7 +404,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
   return <div className="parts-race" ref={attachRoot}>{follows}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={drillTitle}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={drillTitle}
       day={dayLabel(breakdownHour)} following={drill.follow} canFollow={following}
       returnFocus=".country-race-chart canvas" onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       onPause={() => dispatch({ type: 'pick', hour: Math.floor(runtime.clock.getHour()) + axisOffset })}

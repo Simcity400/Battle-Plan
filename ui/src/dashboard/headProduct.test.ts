@@ -5,6 +5,7 @@ import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
 import type { HeadProduct } from './headProduct';
+import { at, SPEC, type TrackHour } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { FollowEntry } from './follow/store';
 import { observeOnScreen, screenHolder } from './follow/useFollow.ts';
@@ -33,22 +34,22 @@ test('content scrolled inside a visible widget, or replaced inside a pop-out, is
 });
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {
-  const following = headRead(widget({ mode: 'follow' }), track, [track], null);
+  const following = headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: SPEC }, track, [track]);
   assert.equal(following.follows, true);
   assert.equal(following.hourAt(200.7), 210, 'its fallback asks the clock’s hour on the track');
-  const hovered = headRead(widget({ mode: 'follow' }), track, [track], 321);
+  const hovered = headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: at(321 as TrackHour) }, track, [track]);
   assert.deepEqual([hovered.follows, hovered.hourAt(200)], [false, 321], 'a hovered hour is asked whatever the head does');
-  const pinned = headRead(widget({ mode: 'pin', windows: { main: { firstOffset: 0, lastOffset: 50 } } }), track, [track], null);
+  const pinned = headRead({ widget: widget({ mode: 'pin', windows: { main: { firstOffset: 0, lastOffset: 50 } } }) as WidgetSpec, action: SPEC }, track, [track]);
   assert.deepEqual([pinned.follows, pinned.hourAt(200), pinned.hourAt(400)], [false, 150, 150], 'a pinned hour never moves with the clock');
-  const range = headRead(widget({ mode: 'range', firstOffset: 0, lastOffset: 80 }), track, [track], null);
+  const range = headRead({ widget: widget({ mode: 'range', firstOffset: 0, lastOffset: 80 }) as WidgetSpec, action: SPEC }, track, [track]);
   assert.deepEqual([range.follows, range.hourAt(0)], [false, 180], 'a range is read at its end');
 });
 
 test('an hour outside the recorded branch, or no track, asks nothing', () => {
-  const following = headRead(widget({ mode: 'follow' }), track, [track], null);
+  const following = headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: SPEC }, track, [track]);
   assert.equal(following.hourAt(50), null);
   assert.equal(following.hourAt(491), null);
-  assert.equal(headRead(widget({ mode: 'follow' }), undefined, [], null).hourAt(200), null);
+  assert.equal(headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: SPEC }, undefined, []).hourAt(200), null);
 });
 
 test('a followed panel is asked by the fallback’s clock until its first push lands, and read only from pushes after, whatever a seek empties', () => {
@@ -137,12 +138,12 @@ test('continuous playback across a track’s end tells a following widget once, 
   const page = new PlaybackController(engine);
   t.after(() => page.stop());
   const ending = { id: 'side', axisOffset: 0, branch: { id: 's', firstHour: 0, lastHour: 100 } } as unknown as BoundTrack;
-  const read = headRead({ kind: 'aces', trackIds: ['side'], time: { mode: 'follow' } }, ending, [ending], null);
+  const read = headRead({ widget: { kind: 'aces', trackIds: ['side'], time: { mode: 'follow' } } as WidgetSpec, action: SPEC }, ending, [ending]);
   const widgets = [new WidgetFrames(page, 'aces'), new WidgetFrames(page, 'aces-2')];
   const told: [number, boolean][] = [];
   const stops = widgets.map((widget, index) => watchBoundary(widget.clock, () => read.hourAt(widget.clock.getHour()) === null, () => told.push([index, read.hourAt(page.getHour()) === null])));
   const starting = { id: 'late', axisOffset: 0, branch: { id: 'l', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
-  const late = headRead({ kind: 'doctrine-mastery', trackIds: ['late'], time: { mode: 'follow' } }, starting, [starting], null);
+  const late = headRead({ widget: { kind: 'doctrine-mastery', trackIds: ['late'], time: { mode: 'follow' } } as WidgetSpec, action: SPEC }, starting, [starting]);
   const entered: boolean[] = [];
   const stopLate = watchBoundary(page, () => late.hourAt(page.getHour()) === null, () => entered.push(late.hourAt(page.getHour()) === null));
   page.setBounds({ firstHour: 0, lastHour: 500 });

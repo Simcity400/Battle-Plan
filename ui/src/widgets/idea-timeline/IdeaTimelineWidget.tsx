@@ -21,6 +21,7 @@ import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData';
 import type { HolderStyle, LawStyle } from './ideaTimelineData';
 import './ideaTimeline.css';
 import { motionOf } from '../../charts/easing.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const COUNTRY_NOT_RECORDED = 'country not recorded';
@@ -36,7 +37,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
   const liveHead = useMemo(() => track && widget.time.mode === 'follow' ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [track, widget.time.mode, runtime.clock]);
-  useShownEachFrame(runtime.clock, () => data ? liveHead ? Math.min(liveHead.read(), track?.branch.lastHour ?? 0) : playhead ?? last : null);
+  useShownEachFrame(runtime.clock, () => data ? liveHead ? recordedHour(track, liveHead.read()) : playhead ?? last : null);
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const category = data ? chosenCategory(data.categories, String(options.category ?? '')) : null;

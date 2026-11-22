@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
@@ -33,6 +33,8 @@ import './territoryTransfers.css';
 import { motionOf } from '../../charts/easing.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TRANSFERS: readonly TransferOccurrence[] = [];
@@ -135,7 +137,9 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const transferMenu = useCallback((row: TransferOccurrence) => track ? [jumpItem(runtime, track.id, row.afterHour)] : [], [runtime, track]);
 
   const playhead = track ? Math.floor(playbackHour + track.axisOffset) : null;
-  const drillAt = drill.breakdown ? drillHour(drill, playhead) ?? moment : moment;
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
+  const drillAt = drill.breakdown ? regionAt ?? moment : moment;
   const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
   const drillReached = useMemo(() => drill.breakdown || pinned ? transfersAt(scoped, drillThrough, rangeFrom, wholeCampaign) : NO_TRANSFERS,
     [drill.breakdown, pinned, scoped, drillThrough, rangeFrom, wholeCampaign]);
@@ -210,7 +214,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   </div>;
   return <>{failure}<div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfer-host" ref={drillAnchor}>
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
       title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null}
       returnFocus={drillCountry == null || typeof CSS === 'undefined' ? undefined : `tr[data-table-row="${CSS.escape(drillCountry)}"]`}
       onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{drillBody}</DrillHost>

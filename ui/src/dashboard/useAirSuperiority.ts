@@ -82,7 +82,7 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields
   }, [choices.data, looks, hour, factions.factions, factions.displayNames, options.regions, track?.source.metadata.campaignKey]);
 }
 
-export function useAirMoment(props: WidgetProps, options: Readonly<Record<string, OptionValue>>, hoverHour: number | null = null) {
+export function useAirMoment(props: WidgetProps, options: Readonly<Record<string, OptionValue>>) {
   const { widget, runtime, active, onDiagnostics } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const campaign = track?.source.metadata.campaignKey ?? '';
@@ -91,7 +91,7 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
     [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
-  const product = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows, hoverHour });
+  const product = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
   const looks = useAirLooks(props, product.data, product.at, mode, product.read === 'followed');
   useEffect(() => {
     const warnings = [...(product.data?.warnings ?? []), ...looks.warnings];

@@ -1,5 +1,5 @@
-import { drillHour, pinnedBreakdown } from '../../charts/drill/drillState.ts';
-import type { DrillAction, DrillState } from '../../charts/drill/drillState';
+import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
+import type { DrillAction } from '../../charts/drill/drillState';
 import { addStackAmount, forEachCompactStackSegment, stackEdges } from '../../charts/stack.ts';
 import type { CompactStackModel, StackRun, StackSegment, StackSum } from '../../charts/stack';
 import { contentKey, setToken } from '../../dashboard/options.ts';
@@ -280,10 +280,6 @@ export function contributionMeasureExtent(model: ContributionMeasureModel, from:
 
 export function openContributions(widget: Pick<WidgetSpec, 'time'>, hour: number, playing: boolean, playhead: number | null): DrillAction {
   return { type: 'open', breakdown: 'contributions', hour, playing, playhead: widget.time.mode === 'follow' ? playhead : null };
-}
-
-export function contributionHour(state: DrillState, track: Pick<BoundTrack, 'axisOffset'>, clockHour: number): number | null {
-  return drillHour(state, Math.floor(clockHour) + track.axisOffset);
 }
 
 export function pinContributions(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, selection: TradeSelection,

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Table from '../../charts/table/Table';
@@ -30,6 +30,8 @@ import { designRevision, designTypes, designsAt, designsKnown, designsSince, see
 import type { DesignRow } from './designsData';
 import './equipmentDesigns.css';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly DesignRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
@@ -109,7 +111,8 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     setPicked({ owner, row });
     dispatch({ type: 'open', breakdown: SHEET.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const at = hour === null ? null : drillHour(drill, hour) ?? hour;
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
 
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see designs." />;
   if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -136,7 +139,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={dayLabel(at ?? hour)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={at === null ? '' : dayLabel(at)} following={drill.follow} time={{ runtime, region: drillRegion }} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && <DesignSheet />}
     </DrillHost>

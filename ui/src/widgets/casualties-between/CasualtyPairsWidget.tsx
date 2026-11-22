@@ -10,7 +10,7 @@ import type { ChordFrame } from '../../charts/chord/ChordChart';
 import type { ChordHit } from '../../charts/chord/layout';
 import type { ChordData } from '../../charts/chord/layout';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
 import { compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment, stackEdges } from '../../charts/stack';
 import { runAt } from '../../charts/series';
@@ -54,6 +54,8 @@ import { definition, DETAIL } from './definition';
 import './casualtyPairs.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
+import { drillAction, regionHour, axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const SORT = { column: 'value', direction: 'descending' } as const;
 const pairKey = (flow: PairFlow) => flow.id;
@@ -122,9 +124,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const effectiveDrill = drill.breakdown ? drill : pinned
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
-  const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
+  const drillRegion = useRegion(widget, drill.breakdown ? drillAction(drill, track) : SPEC);
+  const detailAt = open ? regionHour(drillRegion, track, runtime.tracks, axisAt(playback)) : recordedHour(track, hour);
+  const detailHour = detailAt ?? hour;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
-  const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);
+  const detailOutside = !!track && detailAt === null;
   const pickDay = useCallback((at: number) => dispatch(drill.breakdown ? { type: 'pick', hour: at }
     : { type: 'open', breakdown: DETAIL.id, hour: at, playing: false, playhead: null }), [drill.breakdown]);
   const follow = () => dispatch(drill.breakdown ? { type: 'follow' }
@@ -322,7 +326,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), through)}>Corrections</button>}
   </>;
   return <div className="casualty-pairs" ref={anchor}>{groupFailure}
-    {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs"
+    {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs" time={{ runtime, region: drillRegion }}
       day={drillDay ? <LiveText live={drillDay} at="day" /> : dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
       onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}
       onClose={() => { dispatch({ type: 'close' }); setDetail(null); }}

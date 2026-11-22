@@ -19,13 +19,14 @@ import { resolveOptions } from '../../dashboard/options';
 import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useWidgetIdentityHour } from '../../dashboard/atHead';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS, VIEWS } from './definition';
 import { counted, divisionName, equipmentStructure, fill, items, percent, share, templateName, templateTooltip, typeFill, typeKey, typeName, typeTooltip, validateDivisionEquipment } from './divisionEquipmentData';
 import './divisionEquipment.css';
 import type { DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
+import { SPEC } from '../../dashboard/regionTime';
+import { useRegion } from '../../dashboard/widgetTime';
 
 type Drill = { kind: 'type'; key: string } | { kind: 'template'; template: string } | { kind: 'division'; division: string; template: string | null };
 const templateKey = (row: EquipmentTemplate) => row.template;
@@ -47,10 +48,10 @@ export function missingCell(raw: string | null) {
 export default function DivisionEquipmentWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [storedDrill, setStoredDrill] = useState<{ owner: object; drill: Drill } | null>(null);
-  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const hour = useWidgetIdentityHour(runtime, widget, chosen, active);
-  const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
+  const mainRegion = useRegion(widget);
+  const country = useReachedCountry(widget, runtime, SPEC, active, widget.options?.country, setOption);
+  const hour = country.hour;
   const tag = country.tag;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
@@ -155,9 +156,12 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;
   const drillData = detail.data;
   const drillMenu = () => drillData?.poolHour == null || !track ? [] : [jumpItem(runtime, track.id, drillData.poolHour)];
-  const drillHour = drill && drill.kind !== 'type' ? detail.hour : state.hour;
+  const drillHour = (drill && drill.kind !== 'type' ? detail.at ?? detail.hour : state.at ?? state.hour) ?? hour;
   let body = null;
-  if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
+  if (drill && (drill.kind === 'type' ? state.outside : detail.outside)) body = <WidgetState kind="outside" read={drill.kind === 'type' ? state : detail} />;
+  else if (drill?.kind === 'type' && state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
+  else if (drill?.kind === 'type' && !data) body = <WidgetState kind="loading" label="Loading…" read={state} />;
+  else if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
     <Table rowRevision={row => [row]} label={`${typeName(type)} models`} rows={type.variants} columns={[
       { key: 'model', header: 'Model', label: 'Model', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? 'Design name unavailable',
         render: row => <span data-tooltip={row.variant}>{row.name ?? 'Design name unavailable'}</span> },
@@ -166,7 +170,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     ]} rowKey={row => row.variant} sort={{ column: 'held', direction: 'descending' }} cellBars={bars} narrow={narrowTableOf(options)} menu={menu} /></div>
     : <WidgetState kind="unavailable" message="This equipment type is not held at this date." />;
   else if (drill && detail.error) body = <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />;
-  else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" />;
+  else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" read={detail} />;
   else if (drill?.kind === 'template' && drillData) body = <div className="division-equipment-drill">
     <Table rowRevision={row => [row, divisionColumns]} label="Divisions of this template" rows={drillData.divisionRows ?? []} columns={divisionColumns} rowKey={divisionKey} sort={FILL_SORT}
       cellBars={bars} narrow={narrowTableOf(options)} onRowClick={row => setDrill({ kind: 'division', division: row.division, template: drill.template })}
@@ -191,6 +195,6 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'
         ? templateName(drillData?.templates.find(row => row.template === drill.template) ?? data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}
-      day={formatDateTime(drillHour ?? Math.floor(runtime.clock.getHour()))} following={widget.time.mode === 'follow'} canFollow={false} anchor={anchor}
-      onClose={() => setDrill(back)} onFollow={() => {}} main={main}>{body}</DrillHost></div>;
+      day={drillHour === null ? '' : formatDateTime(drillHour)} following={widget.time.mode === 'follow'} canFollow={false} anchor={anchor}
+      onClose={() => setDrill(back)} onFollow={() => {}} main={main} time={{ runtime, region: mainRegion }}>{body}</DrillHost></div>;
 }

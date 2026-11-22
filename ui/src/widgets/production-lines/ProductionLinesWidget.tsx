@@ -6,7 +6,7 @@ import ArtFallback from '../../components/ArtFallback';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
@@ -41,6 +41,8 @@ import {
 } from './productionData.ts';
 import './productionLines.css';
 import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
+import { drillAction, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 type Part = 'efficiency' | 'output';
@@ -97,7 +99,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
-  const breakdownHour = pinned ? clockHour : drillHour(drill, clockHour);
+  const drillRegion = useRegion(widget, pinned ? SPEC : drillAction(drill, track));
+  const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
+  const breakdownHour = pinned ? clockHour : regionAt;
   const breakdown = useLineBreakdown(runtime, widget, pinned ? savedCountry?.tag ?? tag : tag, key, group, breakdownHour, data?.detailHours ?? 720, active && (pinned || drill.breakdown !== null));
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
@@ -134,7 +138,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
           { label: 'Efficiency breakdown', run: () => open(lineKey, 'efficiency', hour, true) },
           { label: 'Output breakdown', run: () => open(lineKey, 'output', hour, true) }] : []])} />;
   return <div ref={anchor} className="production-lines">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!opened} anchor={anchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!opened} anchor={anchor}
       title={`${part === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} main={main}
       onClose={() => { dispatch({ type: 'close' }); setOpened(null); }} onFollow={() => dispatch({ type: 'follow' })}>{drillView}</DrillHost>

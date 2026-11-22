@@ -24,6 +24,7 @@ import './diplomaticPacts.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -51,7 +52,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
   const bySlot = tag !== null && isSlotKey(tag);
   const slots = useSlotTags(runtime.client, track, active && bySlot);

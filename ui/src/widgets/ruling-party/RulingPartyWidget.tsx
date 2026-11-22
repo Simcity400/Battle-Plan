@@ -41,6 +41,7 @@ import './rulingParty.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { SPEC, pickedAt } from '../../dashboard/regionTime';
 
 const NO_WARNINGS: string[] = [];
 export const EVENT_PAGE = 128;
@@ -218,7 +219,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     .filter(row => row.hour >= shownPage.cluster.firstHour && row.hour <= shownPage.cluster.lastHour) : [];
   return <div className="ruling-party" ref={root}>
     {header}
-    <CountryPeople runtime={runtime} widget={widget} track={track} tag={tag} hoverHour={hover} active={active} view="politics" onWarnings={setPeopleWarnings} />
+    <CountryPeople runtime={runtime} widget={widget} track={track} tag={tag} time={hover === null ? SPEC : pickedAt(track, hover)} active={active} view="politics" onWarnings={setPeopleWarnings} />
     { }
     <Legend label="Parties" items={list.map(band => {
       const value = headValue(band, head);

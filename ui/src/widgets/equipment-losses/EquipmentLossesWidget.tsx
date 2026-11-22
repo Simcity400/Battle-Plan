@@ -53,6 +53,8 @@ import { exactLossHour, stretchWindow, useLossHistory } from './lossesSource';
 import type { LossSelection } from './lossesSource';
 import type { LandSource, LossHeadReply, LossLeaf, LossesReply } from '../../generated/dashboard';
 import './equipmentLosses.css';
+import { drillAction, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
 const rowKey = (row: LossRow) => row.id;
@@ -117,6 +119,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
     identity: { slot: selectedCountry.slot, countryId: selectedCountry.countryId },
   } : null, [track, selectedCountry, actorSpans, options.landSource]);
   const following = followView && (drill.breakdown === null || drill.follow);
+  const drillRegion = useRegion(widget, drill.breakdown !== null ? drillAction(drill, track) : SPEC);
   const pinnedDetail = !following && drill.breakdown !== null ? drill.hour : null;
   const product = useLossHistory(runtime.client, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
@@ -327,7 +330,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
     onClose={() => setDrill(CLOSED)} onFollow={() => setDrill(state => ({ ...state, breakdown: DETAIL.id, follow: true, hour: null }))}
     onPin={detailView ? () => runtime.addWidgetBelow(widget.id,
       pinLosses(widget, track, tag, following && headLive ? headLive.hour() : detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
-    anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
+    anchor={anchor} main={main} time={{ runtime, region: drillRegion }}>{detail}</DrillHost>}{menu.menu}</div>;
 }
 
 export default function EquipmentLossesWidget(props: WidgetProps) {

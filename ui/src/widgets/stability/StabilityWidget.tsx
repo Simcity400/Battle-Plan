@@ -7,7 +7,7 @@ import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { countryDrillTagAt } from '../../dashboard/countryIdentity';
 import { chooseDrillCountry, drillCountrySpans, readDrillCountry } from '../country-measure/drillCountry';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import StabilityDrill, { MEASURE_NAMES } from './StabilityDrill';
 import CountryPicker from '../../components/CountryPicker';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -77,6 +77,8 @@ import type { StabilityPick } from './stabilityDrillData';
 import './stability.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { busyWait } from '../../shell/busy.ts';
+import { drillAction, SPEC, FOLLOW, pickedAt } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
@@ -273,20 +275,27 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const drillTag = chosen ? chosen.tag : single;
   const choosingActor = chosen !== null && chosen.tag === null;
   useEffect(() => { dispatchDrill({ type: 'close' }); setActorPick(null); }, [pickOwner]);
+  const pinnedRegion = useRegion(widget, localHour === undefined ? SPEC : localHour === null ? FOLLOW : pickedAt(track, localHour));
+  const pinnedRegionAt = useRegionHour(runtime, pinnedRegion, active && !!pinnedMeasure);
+  const pinnedCoverage = useRegionCoverage(runtime, pinnedRegion);
   const origin = useRef<{ owner: typeof bindingOwner; hour: number } | null>(null);
   if (origin.current?.owner !== bindingOwner) origin.current = null;
-  if (pinnedMeasure && window && !origin.current) origin.current = { owner: bindingOwner, hour: window.lastHour };
+  if (pinnedMeasure && pinnedRegionAt !== null && !origin.current) origin.current = { owner: bindingOwner, hour: pinnedRegionAt };
   useEffect(() => setLocalPick(null), [bindingOwner]);
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.stabilityCountry, track, widget.countries), [widget.options?.stabilityCountry, track, widget.countries]);
   const selectedCountry = useMemo(() => savedCountry ?? (hasSavedCountry ? null
-    : groupData && track && drillTag ? chooseDrillCountry(groupData.countryIdentities, track, drillTag, chosen?.hour ?? origin.current?.hour ?? window?.lastHour ?? lastHour) : null),
+    : groupData && track && drillTag && (chosen?.hour ?? origin.current?.hour) !== undefined
+      ? chooseDrillCountry(groupData.countryIdentities, track, drillTag, (chosen?.hour ?? origin.current?.hour)!) : null),
   [savedCountry, hasSavedCountry, groupData, track, drillTag, chosen?.hour, bindingOwner]);
   const actorSpans = useMemo(() => selectedCountry && groupData && track ? drillCountrySpans(groupData.countryIdentities, selectedCountry, track, resolved.membership) : null,
     [selectedCountry, groupData, track, resolved.membership]);
   const liveHour = track ? Math.floor(clockHour) + track.axisOffset : null;
   const pinnedFollowing = localHour === null || localHour === undefined && following;
-  const pinnedAt = localHour === undefined ? playhead ?? extent[1] : localHour === null ? liveHour : localHour;
-  const drillAt = pinnedMeasure ? pinnedAt : drillOpen ? drillHour(drill, liveHour) : null;
+  const pinnedAt = pinnedRegionAt;
+  const drillRegion = useRegion(widget, drillOpen ? drillAction(drill, track) : SPEC);
+  const regionAt = useRegionHour(runtime, drillRegion, active && drillOpen);
+  const drillCoverage = useRegionCoverage(runtime, drillRegion);
+  const drillAt = pinnedMeasure ? pinnedAt : drillOpen ? regionAt : null;
   const drillFollows = pinnedMeasure ? pinnedFollowing && following : drillOpen && drill.follow;
   const drillPlayhead = pinnedMeasure ? pinnedAt : drillOpen && drill.follow ? liveHour : playhead;
   const shownTag = actorSpans && drillAt !== null ? countryDrillTagAt(actorSpans, Math.floor(drillAt)) : null;
@@ -344,7 +353,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       within={drillWithin} extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
       branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} onDiagnostics={setDrillNotes} />;
   if (pinnedMeasure) {
-    const body = !single ? resolved.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
+    const body = pinnedAt === null ? <WidgetState kind="outside" read={pinnedCoverage} /> : !single ? resolved.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
       : <WidgetState kind="loading" label="Loading what makes up the values…" />
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans)) ? <WidgetState kind="unavailable" message={actorReason!} />
         : groups.error && !groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
@@ -473,7 +482,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   return <div className="stability" ref={rootRef} onFocus={() => setFocused(true)}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
     {groupNotice}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`}
       day={drillAt == null ? '' : drillFollows ? <LiveText live={dayText} at="day" /> : dayLabel(Math.floor(drillAt))}
       following={drill.follow} canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
@@ -491,7 +500,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           setDrillMeasure(next.measure);
           dispatchDrill({ type: 'pick', hour: next.hour });
         }} />}
-      {choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
+      {drillOpen && drillAt === null ? <WidgetState kind="outside" read={drillCoverage} />
+        : choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
         : hasSavedCountry && !savedCountry ? <WidgetState kind="unavailable" message={actorReason!} />
         : groupData && (!selectedCountry || !actorSpans) ? <WidgetState kind="unavailable" message={actorReason!} />
         : groups.error && !groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />

@@ -8,9 +8,10 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { parseStoredOptions, resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { buildDiagram, decodeTrade, flowCountryAt, flowValue } from './tradeData.ts';
-import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, contributionHour, linkSelection, nodeSelections,
+import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, linkSelection, nodeSelections,
   contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment,
   observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, selectionToken, tradeContext } from './tradeDrill.ts';
+import { drillAction, regionHour, type AxisHour } from '../../dashboard/regionTime.ts';
 import { createElement } from 'react';
 import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -335,10 +336,11 @@ test('campaign drill Follow uses the actual aligned clock; day pick and Pin pres
     countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 500, lastOffset: 6000 }, options: { measure: 'total', drill: 'popout' } };
   const selection = { kind: 'node', side: 'source', holders: [identity(7)] } as const;
   const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'contributions', hour: 9999, playing: true, playhead: 4000 });
-  assert.equal(contributionHour(opened, track, 3000.8), 4000);
+  const at = (state: typeof opened, clock: number) => regionHour({ widget: source, action: drillAction(state, track) }, track, [track], clock as AxisHour);
+  assert.equal(at(opened, 3000.8), 4000);
   const picked = reduceDrill(opened, { type: 'pick', hour: 5500.8 });
-  assert.equal(contributionHour(picked, track, 3500), 5500);
-  assert.equal(contributionHour(reduceDrill(picked, { type: 'follow' }), track, 3600), 4600);
+  assert.equal(at(picked, 3500), 5500);
+  assert.equal(at(reduceDrill(picked, { type: 'follow' }), 3600), 4600);
   const pinned = pinContributions(source, track, selection, 5500.8, false, [2500, 8000]);
   assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
   assert.deepEqual(readSelection(pinned.options?.tradeSelection, tradeContext(track)), selection);

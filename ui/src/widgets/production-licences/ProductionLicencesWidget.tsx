@@ -2,7 +2,7 @@ import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import FlowDiagram from '../../charts/flow/FlowDiagram';
 import type { FlowHit } from '../../charts/flow/FlowDiagram';
@@ -34,6 +34,8 @@ import { COUNTRY, OPTIONS } from './definition';
 import { countryLicences, groupReasonAt, licencePairs, licenceRevision, licencesAt, pickedTag, PRODUCTION_LICENCES, slotOf, validateLicences } from './licencesData';
 import type { LicenceRow, LicenceWidth, PickedCountry } from './licencesData';
 import './productionLicences.css';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
@@ -128,8 +130,8 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     setPicked({ slot: slotOf(data, tag), tag });
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const at = drillHour(drill, hour) ?? hour;
-  const drillAt = drill.follow ? hour : at;
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null) ?? hour;
   const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track ? { sourceId: track.source.id, revision: track.source.revision,
     product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillAt } } : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
@@ -160,7 +162,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   </div>;
   return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
       title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(drillAt)} following={drill.follow}
       canFollow={widget.time.mode === 'follow'} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && (own.error && ownDay ? <WidgetState kind="error" failure={own.error} onRetry={own.retry} />

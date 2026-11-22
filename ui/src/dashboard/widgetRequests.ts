@@ -3,6 +3,7 @@ import type { BoundTrack, HourWindow, WidgetSpec } from './model';
 type Track = BoundTrack | undefined;
 export function clockRequest(widget: WidgetSpec, track: Track, window: HourWindow | null) {
   if (!track || !window) return null;
+  if (widget.time.mode !== 'range' && (window.lastHour < track.branch.firstHour || window.lastHour >= track.branch.lastHour + 1)) return null;
   const firstHour = widget.time.mode !== 'range'
     ? track.branch.firstHour : Math.max(track.branch.firstHour, Math.floor(window.firstHour));
   const lastHour = Math.min(track.branch.lastHour, Math.floor(window.lastHour));

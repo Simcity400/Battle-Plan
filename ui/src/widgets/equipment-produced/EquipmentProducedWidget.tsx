@@ -37,6 +37,7 @@ import { useProducedAt, useProducedTypes } from './useProduced';
 import './equipmentProduced.css';
 import type { EquipmentProducedReply, ProducedCountryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const same = <T,>(reply: T) => reply;
 
@@ -59,6 +60,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
@@ -193,10 +195,11 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
   const warnings = useMemo(() => [...(merged?.warnings ?? []), ...(types.data?.warnings ?? []), ...(groups.data?.warnings ?? [])],
     [merged, types.data, groups.data]);
-  const none = noMembersAt(widget.countries, resolved, groups.data, moment, lastHour);
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+    if (coverage.outside && view === 'race') return <WidgetState kind="outside" read={coverage} />;
     if (failure) return <WidgetState kind="error" failure={failure} onRetry={windows.retry} />;
     if (types.error && pickingDefault) return <WidgetState kind="error" failure={types.error} onRetry={types.retry} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

@@ -21,7 +21,7 @@ import { useFactionColours } from '../../dashboard/FactionColours';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { BoundTrack, GroupMembership, WidgetSpec } from '../../dashboard/model';
 import DrillHost from '../drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../drill/drillState';
+import { CLOSED, pinnedBreakdown, reduceDrill } from '../drill/drillState';
 import type { DrillAction, DrillState } from '../drill/drillState';
 import type { Live } from '../live';
 import FactionMembers from './FactionMembers';
@@ -35,6 +35,8 @@ import type { GroupTotal } from './factionTotalsData';
 import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
+import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 export interface FactionTotalsViewProps extends WidgetProps {
   options: Readonly<Record<string, OptionValue>>;
@@ -162,7 +164,9 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const allGroups = useCountryGroups(runtime, track, active && memberFaction !== null);
   const factionGroup = useMemo(() => allGroups.data?.factions.find(faction => faction.id === memberFaction) ?? null, [allGroups.data, memberFaction]);
   const membersFollow = pushed && (drill.breakdown == null || drill.follow);
-  const membersHour = Math.floor(drill.breakdown != null ? drillHour(drill, moment) ?? moment : moment);
+  const drillRegion = useRegion(widget, drill.breakdown != null ? drillAction(drill, track) : SPEC);
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
+  const membersHour = Math.floor(drill.breakdown != null ? regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock)) ?? moment : moment);
   const membersHead = useMemo<Live<ReadonlyMap<string, number>> | null>(() => membersFollow && valuesEntry ? {
     read: () => answerValues(valuesEntry.answer, named, DECIMALS),
     subscribe: wake => { memberWakes.add(wake); return () => { memberWakes.delete(wake); }; },
@@ -205,7 +209,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   if (group || !track) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); }}>{raceView(true)}</div>;
   const opened = drill.breakdown;
   return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={opened != null} anchor={anchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={opened != null} anchor={anchor}
       title={opened ? `${entityLooks.name(opened, membersHour)}: members` : 'Faction members'} day={dayLabel(membersHour)} following={drill.follow}
       canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       onPause={() => dispatch({ type: 'pick', hour: Math.floor(runtime.clock.getHour()) + axisOffset })}

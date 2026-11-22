@@ -40,6 +40,7 @@ import type { LinkAt, VolunteerKind } from './volunteersData';
 import './volunteers.css';
 import type { VolunteersExpeditionariesReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumber.format(count)} ${count === 1 ? 'division' : 'divisions'}`
@@ -56,6 +57,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const mainRegion = useRegion(widget);
   const all = widget.countries.kind === 'all';
   const groups = useCountryGroups(runtime, track, active && !all);
   const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -170,7 +172,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     description={`${current.links.length} links at ${dayLabel(at)}.`} active={active && (!picked || options.drill === 'popout')} />;
   return <div ref={anchor} className="volunteers">{groupFailure}
     {setOption && <div className="volunteers-caption"><Segmented value={kind} options={KINDS} label="Kind" onChange={value => setOption('kind', value)} /></div>}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title={pickedName} day={dayLabel(at)}
+    <DrillHost time={{ runtime, region: mainRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title={pickedName} day={dayLabel(at)}
       following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setDrillRows([]); }} onFollow={() => {}} main={main}>
       {picked && (partners.length ? <Table rowRevision={row => [row, columns]} label={`${pickedName} ${kind === 'land' ? 'volunteers' : 'expeditionary forces'}`} rows={partners} columns={columns}
         rowKey={row => `${row.direction}:${row.key}`} sort={{ column: 'divisions', direction: 'descending' }} cellBars={false} rankMarkers={false}

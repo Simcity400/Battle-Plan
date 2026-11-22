@@ -2,7 +2,6 @@ import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
-import { drillHour } from '../../charts/drill/drillState';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 import CountryPicker from '../../components/CountryPicker';
 import { armyDrillActors, armyDrillNumbers, pinArmyDrill } from './armyDrill';
@@ -57,6 +56,8 @@ import { useHeadHour } from './headHour.ts';
 import { followedArmy, liveArmy, replyEntries } from './liveArmy.ts';
 import type { LiveArmy } from './liveArmy';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((warning, at) => warning === b[at]);
 
@@ -262,7 +263,9 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const drillTag = drill.breakdown;
   const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : drillHour(drill, clockHour)) ?? moment);
+  const drillRegion = useRegion(widget, drill.breakdown === null ? SPEC : drillAction(drill, track));
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
+  const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock))) ?? moment);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
   const pinSlots = useSlotTags(runtime.client, track, active && !!drillTag && isSlotKey(drillTag));
@@ -437,7 +440,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
   return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
       onPin={track && pinTag ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(

@@ -4,6 +4,7 @@ import { useHeadProduct } from '../../dashboard/headProduct.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { StockpileArtworkReply } from '../../generated/dashboard';
+import { SPEC, type RegionAction } from '../../dashboard/regionTime.ts';
 
 const text = (value: unknown) => value === null || typeof value === 'string';
 
@@ -20,7 +21,7 @@ export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
 }
 
 export function useStockpileArtwork(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, variants: readonly string[], active: boolean,
-  hoverHour: number | null = null) {
+  time: RegionAction = SPEC) {
   return useHeadProduct<StockpileArtworkReply>(runtime, widget, 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
-    { active, validate: validateStockpileArtwork, hoverHour });
+    { active, validate: validateStockpileArtwork, time });
 }

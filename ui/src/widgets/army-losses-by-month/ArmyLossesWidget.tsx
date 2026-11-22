@@ -21,7 +21,6 @@ import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useWidgetIdentityHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -35,6 +34,8 @@ import type { ArmyLossesData, EquipmentStack, Ledger, ManpowerStack, Measure, Mo
 import type { ArmyLossesReply } from './types';
 import { LEDGER_CHOICES, MEASURES, OPTIONS } from './definition';
 import './armyLosses.css';
+import { SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
 
 const armyKey = (row: MonthArmy) => row.army.reference;
 const SORT = { column: 'army', direction: 'ascending' } as const;
@@ -45,13 +46,12 @@ const structureOf = (reply: ArmyLossesReply) => JSON.stringify([reply.absent, re
 export default function ArmyLossesWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const shown = useShownHour();
-  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const following = widget.time.mode === 'follow';
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const hour = useWidgetIdentityHour(runtime, widget, chosen, active);
-  const hourAt = useCallback((position: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? hour),
-    [track, widget, runtime.tracks, hour]);
-  const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
+  const mainRegion = useRegion(widget);
+  const hourAt = useRegionHourAt(runtime, mainRegion);
+  const country = useReachedCountry(widget, runtime, SPEC, active, widget.options?.country, setOption);
+  const hour = country.hour;
   const tag = country.tag;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
@@ -68,15 +68,15 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   useDiagnostics(onDiagnostics, reply?.warnings ?? null);
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
   const structureHour = state.at ?? hour;
-  const data = useMemo(() => reply ? resolveArmyLosses(reply, structureHour, state.live.read()) : null, [reply, structureHour, state.live]);
+  const data = useMemo(() => reply && structureHour !== null ? resolveArmyLosses(reply, structureHour, state.live.read()) : null, [reply, structureHour, state.live]);
   const bars = useMemo(() => data ? monthBars(data, measure, stack, ledger, first, data.hour, CATEGORY_LIMIT) : null,
     [data, measure, stack, ledger, first]);
   const liveData = useMemo<Live<{ data: ArmyLossesData; bars: MonthBars }> | null>(() => {
-    if (!reply) return null;
+    if (!reply || structureHour === null) return null;
     let made: { at: number; cells: LiveValues<number>; value: { data: ArmyLossesData; bars: MonthBars } } | null = null;
     return {
       read: () => {
-        const cells = state.live.read(), at = following ? Math.max(structureHour, hourAt(runtime.clock.getSnapshot().position)) : structureHour;
+        const cells = state.live.read(), at = following ? Math.max(structureHour, hourAt(runtime.clock.getSnapshot().position) ?? structureHour) : structureHour;
         if (!made || made.cells !== cells || made.at !== at) {
           const resolved = resolveArmyLosses(reply, at, cells);
           made = { at, cells, value: { data: resolved, bars: monthBars(resolved, measure, stack, ledger, first, at, CATEGORY_LIMIT) } };
@@ -101,7 +101,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     extent: range => { const now = liveData.read().bars; return columnsLayer(now.periods, now.parts.map(part => colour(part.key)), BAR_STYLE).extent?.(range) ?? null; },
   }] : [], [liveData, colour]);
   const chartData = useMemo(() => liveData ? { revision: () => [liveData.read()], subscribe: liveData.subscribe } : undefined, [liveData]);
-  const liveHead = useMemo<LiveHead | undefined>(() => following ? { read: () => hourAt(runtime.clock.getSnapshot().position), subscribe: runtime.clock.subscribeFrame } : undefined,
+  const liveHead = useMemo<LiveHead | undefined>(() => following ? { read: () => hourAt(runtime.clock.getSnapshot().position) ?? Number.NaN, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, hourAt, runtime.clock]);
   const monthAt = (at: number) => { const now = liveData?.read().bars; return now?.periods[columnAt(now.periods, Math.floor(at))] ?? null; };
   const caption = measure === 'manpower' ? 'Manpower lost' : LEDGER_LABELS[ledger];
@@ -120,10 +120,10 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const pinned = following || widget.time.mode === 'pin';
   const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, playing: false, playhead: null });
   const kinds = LEDGERS[ledger];
-  const drillData = useMemo(() => drillReply ? resolveArmyLosses(drillReply, drillHour, drillState.live.read()) : null, [drillReply, drillHour, drillState.live]);
+  const drillData = useMemo(() => drillReply && drillHour !== null ? resolveArmyLosses(drillReply, drillHour, drillState.live.read()) : null, [drillReply, drillHour, drillState.live]);
   const drillRows = useMemo(() => drillData && month !== null ? monthArmies(drillData, month, kinds) : [], [drillData, month, kinds]);
   const drillNow = useMemo(() => {
-    if (!drillReply) return null;
+    if (!drillReply || drillHour === null) return null;
     let made: { cells: LiveValues<number>; data: ArmyLossesData } | null = null;
     return () => {
       const cells = drillState.live.read();
@@ -196,7 +196,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={month !== null} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} following={false} canFollow={false} anchor={anchor}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}
+      onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} time={{ runtime, region: mainRegion }} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}
         {unrecorded && <p className="army-losses-key"><i aria-hidden="true" style={hatchStyle(tokens)} />Not recorded: these months’ totals are unknown</p>}</div>}>
       {month !== null && track && <div className="army-losses-drill">
         {drillState.error ? <WidgetState kind="error" failure={drillState.error} onRetry={drillState.retry} />

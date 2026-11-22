@@ -19,6 +19,7 @@ import { pausedKey, useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
 import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
@@ -55,6 +56,8 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   const extent: [number, number] = track ? widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const playhead = (widget.time.mode === 'follow' || widget.time.mode === 'pin') && window ? window.lastHour : null;
   const moment = Math.floor(playhead ?? extent[1]);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
+  const outside = coverage.outside && view === 'race';
   useShownEachFrame(runtime.clock, () => live ? live.hour() : data ? moment : null);
   const report = useShownHour();
   useEffect(() => { report(live ? live.hour() : data ? moment : null); }, [report, live, data, moment]);
@@ -80,7 +83,8 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (data.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid types available." detail={data.unavailable ?? undefined} /></>;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={resolved.reason} /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
-  const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
+  if (outside) return <>{groupFailure}<WidgetState kind="outside" read={coverage} /></>;
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="target" /></>;
   if (resolved.top == null && !tally.series.some(item => item.runs.length)) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /></>;
   const recorded = !data.missing.some(gap => gap.firstHour <= moment && moment <= gap.lastHour);

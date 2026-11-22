@@ -9,7 +9,7 @@ import RunLines from '../../charts/RunLines';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { liveKey } from '../../charts/live';
 import type { LiveValues } from '../../charts/live';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -39,6 +39,8 @@ import type { RegionRow } from './minefieldsData';
 import { OPTIONS } from './definition';
 import './minefields.css';
 import type { MineReport, MinefieldReportsReply } from '../../generated/dashboard';
+import { drillAction, type RegionAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
 
@@ -55,13 +57,14 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const { data, error, retry } = head;
   const live = head.live;
   const attach = useCallback((element: HTMLDivElement | null) => { anchor.current = element; head.root(element); }, [head.root]);
-  const shownHour = () => head.at ?? head.hour ?? Math.floor(runtime.clock.getHour());
+  const mainAt = useRegionHour(runtime, useRegion(widget), active);
+  const shownHour = () => head.at ?? head.hour ?? mainAt;
   useShownEachFrame(runtime.clock, () => data ? head.shownAt() : null, head.live);
   const chosen = contentSet(options.regions).map(contentKey);
   const shown = useMemo(() => data ? regionRows(data, chosen) : null, [data, JSON.stringify(chosen)]);
   const rows = useMemo(() => shown ? orderRegions(shown.rows, options.order === 'name' ? 'name' : 'mines') : [], [shown, options.order]);
   const owners = useMemo(() => [...new Set(rows.flatMap(row => row.owners.map(owner => owner.tag)))], [rows]);
-  const lookHour = shownHour();
+  const lookHour = shownHour() ?? 0;
   const looks = useCountryLooks(runtime.client, track, owners, lookHour, active);
   const colour = useCountryColours(owners, looks.color, tokens, looks);
   useLayoutEffect(() => {
@@ -88,9 +91,13 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
     return row && data ? regionTooltip(row, live.read(), tag => looks.name(tag, lookHour), tag => colour(tag, lookHour), data.scale, dayLabel(lookHour)) : null;
   }, [rows, data, looks, colour, lookHour, live]);
   const tips = useRowTooltips<string>({ owner: `minefields:${widget.id}`, active, content: tooltip, revision: `${lookHour}`,
-    onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, shownHour())]); } });
+    onMenu: (_, x, y) => { const at = shownHour(); if (track && at !== null) menu.open(x, y, [jumpItem(runtime, track.id, at)]); } });
   const [picked, setPicked] = useState<RegionRow | null>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillTime = drillAction(drill, track);
+  const drillRegion = useRegion(widget, drillTime);
+  const drillOpen = picked !== null && drill.breakdown !== null;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
   useEffect(() => { setPicked(null); dispatch({ type: 'close' }); }, [track?.source.id, track?.branch.id]);
   const following = widget.time.mode === 'follow';
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
@@ -98,15 +105,17 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const more = !!shown && (shown.unlisted > 0 || rows.some(row => !row.owners.length));
   const pill = headerSlot && data && createPortal(<span className="pill">{mined}{more ? '+' : ''} {mined === 1 && !more ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <div ref={attach} className="minefields"><WidgetState kind="loading" label="Loading minefields…" /></div>;
-  const main = <div className="minefields-rows">
+  const parent = head.outside ? <WidgetState kind="outside" read={head} /> : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : !data ? <WidgetState kind="loading" label="Loading minefields…" /> : null;
+  if (parent && !drillOpen) return error ? parent : <div ref={attach} className="minefields">{parent}</div>;
+  const main = parent ?? <div className="minefields-rows">
     <WindowedRows items={rows.map(row => ({ key: row.region, item: row }))} rowHeight={38} fit minRowHeight={16} className="minefields-scroll" label="Minefields by sea region"
       empty={shown?.unlisted ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />
         : <WidgetState kind="empty" message="No minefields at this date." />}>
       {({ item: row }) => <div className="minefields-row" {...tips.rowProps(row.region)} onClick={() => {
         setPicked(row);
-        dispatch({ type: 'open', breakdown: 'region', hour: shownHour(), playing: following, playhead: following ? shownHour() : null });
+        const at = shownHour();
+        if (at !== null) dispatch({ type: 'open', breakdown: 'region', hour: at, playing: following, playhead: following ? at : null });
       }}>
         {tips.hovered === row.region && <span id={tips.descriptionId(row.region)} className="sr-only">{tooltipText(tooltip(row.region)!)}</span>}
         <span className="minefields-name">{row.name}</span>
@@ -115,27 +124,27 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
             style={{ width: '0%', background: colour(owner.tag, lookHour) }} />)}
           {row.unknownOwners > 0 && <span className="minefields-segment" style={{ ...hatchStyle(tokens), flex: '1 1 0' }} aria-label="Some owners not recorded" />}
         </div>
-        <span className="minefields-total" data-mines={row.region}>{regionTotalText(row, live.read(), data.scale)}</span>
+        <span className="minefields-total" data-mines={row.region}>{data ? regionTotalText(row, live.read(), data.scale) : ''}</span>
       </div>}
     </WindowedRows>
     <Legend label="Mine owners" items={legend} always windowed />
   </div>;
   return <div ref={attach} className="minefields">
     {pill}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked !== null && drill.breakdown !== null} title={picked?.name ?? 'Region'}
-      day={dayLabel(drillHour(drill, lookHour) ?? lookHour)} following={drill.follow} canFollow={following}
-      onClose={() => { setPicked(null); dispatch({ type: 'close' }); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} title={picked?.name ?? 'Region'}
+      day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow={following}
+      onClose={() => { setPicked(null); dispatch({ type: 'close' }); }} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}>
       {picked && <RegionDrill widget={widget} runtime={runtime} active={active} region={picked} hoursPerSecond={hoursPerSecond}
-        name={tag => looks.name(tag, lookHour)} colour={tag => colour(tag, lookHour)} at={drill.follow ? null : drill.hour}
+        name={tag => looks.name(tag, lookHour)} colour={tag => colour(tag, lookHour)} time={drillTime}
         onPick={hour => dispatch({ type: 'pick', hour })} />}
     </DrillHost>
     {menu.menu}
   </div>;
 }
 
-function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, colour, at, onPick }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
+function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, colour, time, onPick }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   region: RegionRow; hoursPerSecond: number | undefined; name: (tag: string) => string; colour: (tag: string) => string;
-  at: number | null; onPick: (hour: number) => void;
+  time: RegionAction; onPick: (hour: number) => void;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
   const menu = useContextMenu('Minefields');
@@ -143,7 +152,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const history = useProduct(runtime.client, tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
     params: { branchId: track.branch.id, region: Number(region.region), countries: tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
   active, validateHistory, track.source);
-  const reports = useHeadProduct<MinefieldReportsReply>(runtime, widget, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports, hoverHour: at });
+  const reports = useHeadProduct<MinefieldReportsReply>(runtime, widget, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports, time });
   const namedAt = reports.at;
   const reportTags = useMemo(() => namedAt === null || !reports.data ? [] : [...new Set(reports.data.reports.flatMap(report => [report.victim, report.mineOwner])
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);

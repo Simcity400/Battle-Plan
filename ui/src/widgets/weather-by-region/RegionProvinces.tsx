@@ -7,17 +7,18 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { temperatureText, validateProvinces } from './weatherData';
 import type { ProvinceWeather, ProvincesReply } from './weatherData';
+import { type RegionAction } from '../../dashboard/regionTime';
 
 const fixedText = (raw: string | null) => raw === null ? '—' : (Number(raw) / 100000).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const rowKey = (row: ProvinceWeather) => row.id;
 const structure = (reply: ProvincesReply) => JSON.stringify(reply);
 
-export default function RegionProvinces({ runtime, widget, region, hour, active, onWarnings, onHour }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; region: string; hour: number | null; active: boolean; onWarnings: (warnings: readonly string[]) => void;
+export default function RegionProvinces({ runtime, widget, region, time, active, onWarnings, onHour }: {
+  runtime: WidgetRuntime; widget: WidgetSpec; region: string; time: RegionAction; active: boolean; onWarnings: (warnings: readonly string[]) => void;
   onHour?: (hour: number | null) => void;
 }) {
   const params = useMemo(() => ({ region }), [region]);
-  const read = useHeadProduct<ProvincesReply>(runtime, widget, 'regional-weather-provinces', params, { active, validate: validateProvinces, structure, hoverHour: hour });
+  const read = useHeadProduct<ProvincesReply>(runtime, widget, 'regional-weather-provinces', params, { active, validate: validateProvinces, structure, time });
   useEffect(() => { if (read.data) onWarnings(read.data.warnings); }, [read.data]);
   useEffect(() => { onHour?.(read.data?.readHour ?? read.hour); }, [read.data, read.hour]);
   useEffect(() => () => onHour?.(null), []);

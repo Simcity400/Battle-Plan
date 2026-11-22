@@ -14,15 +14,20 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { divisionName, entryText, entryTooltip, headerDetail, recordRows, recordStructure, validateDivisionRecord } from './careersData';
 import type { RecordItem } from './careersData';
 import './serviceRecord.css';
+import { regionFollows, type RegionAction } from '../../dashboard/regionTime';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime';
 
-export default function RecordView({ runtime, widget, trackId, division, hour, show, log, live, active, onDiagnostics, caption, onAnswered }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; trackId: string; division: string; hour: number; show: string; log: LogSettings; live: boolean; active: boolean;
+export default function RecordView({ runtime, widget, trackId, division, time, show, log, active, onDiagnostics, caption, onAnswered }: {
+  runtime: WidgetRuntime; widget: WidgetSpec; trackId: string; division: string; time: RegionAction; show: string; log: LogSettings; active: boolean;
   onDiagnostics: WidgetProps['onDiagnostics']; caption?: ReactNode;
   onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(t => t.id === trackId);
+  const region = useRegion(widget, time);
+  const live = regionFollows(region);
+  const hour = useRegionHour(runtime, region, active);
   const state = useHeadProduct(runtime, widget, 'division-record', track ? { division } : null,
-    { active, validate: validateDivisionRecord, structure: recordStructure, hoverHour: live ? null : hour });
+    { active, validate: validateDivisionRecord, structure: recordStructure, time });
   const data = state.data;
   const answered = data === undefined ? undefined : state.hour ?? undefined;
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
@@ -32,6 +37,7 @@ export default function RecordView({ runtime, widget, trackId, division, hour, s
   }, [onAnswered, answered]);
   const rows = useMemo(() => data ? recordRows(data, show) : [], [data, show]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a division’s record." />;
+  if (state.outside) return <WidgetState kind="outside" read={state} />;
   if (state.error) return <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the record…" read={state} />;
   if (data.absent) return <WidgetState kind="unavailable" message="This division is not in service at this date." />;

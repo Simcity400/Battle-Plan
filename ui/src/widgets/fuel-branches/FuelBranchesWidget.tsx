@@ -4,7 +4,7 @@ import { useCallback, useId, useMemo, useReducer, useRef, useState } from 'react
 import { setStyle, setText } from '../../charts/domText';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawEndLabels } from '../../charts/draw';
 import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
@@ -38,6 +38,8 @@ import { FUEL_BRANCHES, FUEL_CONSUMERS, barWidths, branchName, branchesAt, fuelA
 import type { BranchAt } from './fuelBranchesData';
 import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const UNNAMED = 'Country name unavailable';
@@ -104,8 +106,11 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   }, [digits, data?.readHour]);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const open = () => {
-    const at = head.at ?? Math.floor(runtime.clock.getHour());
+    const at = head.at ?? head.hour;
+    if (at === null) return;
     dispatch({ type: 'open', breakdown: CONSUMPTION.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? at : null });
   };
   const rowTips = useRowTooltips<number>({ owner, active, revision: `${data?.readHour}:${digits}:${fuelStructure(data ?? EMPTY)}`,
@@ -152,11 +157,11 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
     </ol>
     {menu.menu}
   </div>;
-  const at = drillHour(drill, head.at) ?? head.at;
+  const at = drillAt;
   return <div ref={anchor} className="fuel-branches-host">
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} anchor={anchor} title={CONSUMPTION.label}
       day={at === null ? '' : dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })}
-      onFollow={() => dispatch({ type: 'follow' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>}>
+      onFollow={() => dispatch({ type: 'follow' })} main={<div ref={head.root} className="fuel-branches-host">{body}</div>} time={{ runtime, region: drillRegion }}>
       <FuelConsumptionDrill />
     </DrillHost>
   </div>;

@@ -3,15 +3,19 @@ import type { ReactNode, RefObject } from 'react';
 import { Icon } from '../../components/Icons';
 import { Popover, usePopover } from '../../components/Popover';
 import FollowControl from './FollowControl';
+import { TimeRegion } from '../../dashboard/widgetTime';
+import type { Region } from '../../dashboard/regionTime';
+import type { WidgetRuntime } from '../../dashboard/definitions';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
-export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children }: {
+export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children, time }: {
   mode: 'inline' | 'popout'; open: boolean; title: string; day: import('react').ReactNode; following: boolean; canFollow: boolean;
   onClose: () => void; onFollow: () => void; onPause?: () => void; onPin?: () => void;
   anchor: RefObject<HTMLElement | null>;
   returnFocus?: string;
   main: ReactNode; children: ReactNode;
+  time: { runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; region: Region };
 }) {
   const panel = usePopover('start');
   const panelRef = useRef(panel);
@@ -71,6 +75,7 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     return () => window.removeEventListener('keydown', key);
   }, [popout, open, anchor]);
 
+  const body = <TimeRegion runtime={time.runtime} region={time.region}>{children}</TimeRegion>;
   const header = <div className="drill-header">
     {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     <strong>{title}</strong>
@@ -83,13 +88,13 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
   if (popout) return <>
     {main}
     <Popover menu={panel} manual className="drill-popout" aria-label={title} onToggle={event => { if (event.newState === 'closed' && open) requestClose(); }}>
-      {open && <>{header}<div className="drill-body">{mounted && children}</div></>}
+      {open && <>{header}<div className="drill-body">{mounted && body}</div></>}
     </Popover>
   </>;
   return <div className="drill-host" data-open={open || undefined}>
     <div className="drill-face drill-main" inert={open}>{main}</div>
     <div className="drill-face drill-view" inert={!open} role="region" aria-label={title}>
-      {open && <>{header}<div className="drill-body">{mounted && children}</div></>}
+      {open && <>{header}<div className="drill-body">{mounted && body}</div></>}
     </div>
   </div>;
 }

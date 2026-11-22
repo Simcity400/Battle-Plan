@@ -1,7 +1,6 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
-import { resolveWindow } from './model.ts';
 import { useFollowedProduct } from './products.ts';
 import type { ProductState } from './products';
 import type { Failure } from './queryError';
@@ -14,22 +13,13 @@ import { canonical } from './follow/canonical.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
-import { outsideDetail, readsHostTime, WidgetTimeContext, type ReadCoverage } from './widgetTime.ts';
+import { useOutsideTime, useReadsRegion, useRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
+import { regionDetail, regionFollows, regionHour, type AxisHour, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
-import type { PlaybackController } from './playback';
-import { pageClock } from './widgetClock.ts';
 
-export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>, track: BoundTrack | undefined, tracks: BoundTrack[],
-  hoverHour: number | null): { follows: boolean; hourAt: (clockHour: number) => number | null } {
-  return {
-    follows: widget.time.mode === 'follow' && hoverHour === null,
-    hourAt: clockHour => {
-      if (!track) return null;
-      const hour = hoverHour ?? resolveWindow(widget as WidgetSpec, track, tracks, clockHour)?.lastHour;
-      return hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
-    },
-  };
+export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (clockHour: number) => TrackHour | null } {
+  return { follows: regionFollows(region), hourAt: clockHour => regionHour(region, track, tracks, clockHour as AxisHour) };
 }
 
 export function headSource(following: boolean, status: 'off' | FollowEntry['status'], landed: boolean, hidden = false): 'pushed' | 'fallback' | 'asked' | 'idle' {
@@ -38,42 +28,7 @@ export function headSource(following: boolean, status: 'off' | FollowEntry['stat
   return status === 'followed' && landed ? 'pushed' : 'fallback';
 }
 
-interface Boundary { holds: () => boolean; was: boolean; changed: () => void }
-interface Boundaries { watches: Set<Boundary>; sequence: number; stop: () => void }
-const boundaries = new WeakMap<PlaybackController, Boundaries>();
-
-export function watchBoundary(clock: PlaybackController, holds: () => boolean, changed: () => void): () => void {
-  const page = pageClock(clock);
-  let shared = boundaries.get(page);
-  if (!shared) {
-    const made: Boundaries = { watches: new Set(), sequence: page.getSnapshot().sequence, stop: () => {} };
-    const check = () => {
-      const { sequence } = page.getSnapshot();
-      if (sequence === made.sequence) return;
-      made.sequence = sequence;
-      for (const watch of made.watches) {
-        const now = watch.holds();
-        if (now !== watch.was) { watch.was = now; watch.changed(); }
-      }
-    };
-    const stopFrame = page.subscribeFrame(check), stopAnchor = page.subscribe(check);
-    made.stop = () => { stopFrame(); stopAnchor(); };
-    boundaries.set(page, shared = made);
-  }
-  const watch: Boundary = { holds, was: holds(), changed };
-  const watches = shared.watches;
-  watches.add(watch);
-  return () => {
-    watches.delete(watch);
-    if (!watches.size && boundaries.get(page) === shared) { shared.stop(); boundaries.delete(page); }
-  };
-}
-
-export function useOutsideTime(clock: PlaybackController, bounded: boolean, hourAt: (clockHour: number) => number | null): boolean {
-  const outsideNow = useCallback(() => bounded && hourAt(clock.getHour()) === null, [bounded, hourAt, clock]);
-  const watchClock = useCallback((changed: () => void) => bounded ? watchBoundary(clock, outsideNow, changed) : () => {}, [bounded, clock, outsideNow]);
-  return useSyncExternalStore(watchClock, outsideNow, outsideNow);
-}
+export { useOutsideTime, watchBoundary };
 
 export const heldPanel = (entry: FollowEntry | null): Landed | undefined => entry && !entry.panel ? entry.landed ?? undefined : undefined;
 
@@ -109,7 +64,7 @@ export interface HeadProductOptions<T> {
   active: boolean;
   validate: (data: unknown) => T;
   structure?: (reply: T, hour: number) => string;
-  hoverHour?: number | null;
+  time?: RegionAction;
 }
 
 export interface HeadProduct<T> extends ProductState<T>, ReadCoverage {
@@ -161,9 +116,10 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
 
 export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, product: string, params: Readonly<Record<string, unknown>> | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
-  const { active, validate, structure, paint, hoverHour = null } = options;
+  const { active, validate, structure, paint } = options;
+  const region = useRegion(widget, options.time);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const { follows, hourAt } = useMemo(() => headRead(widget, track, runtime.tracks, hoverHour), [widget, track, runtime.tracks, hoverHour]);
+  const { follows, hourAt } = useMemo(() => headRead(region, track, runtime.tracks), [region, track, runtime.tracks]);
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
   const paramsKey = params ? canonical(params) : null;
@@ -187,14 +143,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
   const outside = useOutsideTime(runtime.clock, !!track, hourAt);
-  const host = useContext(WidgetTimeContext);
-  const heads = readsHostTime(host, widget, hoverHour) ? host!.heads : null;
-  const [token] = useState(() => ({}));
-  useLayoutEffect(() => {
-    if (!heads || !active) return;
-    heads.set(token, true);
-    return () => heads.set(token, false);
-  }, [heads, token, active]);
+  useReadsRegion(region, active);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
   const idle = source === 'idle';
@@ -242,7 +191,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);
   return {
-    data, error, retry: asked.retry, root, hour, live, outside, outsideDetail: outside ? outsideDetail(widget, hoverHour) : undefined,
+    data, error, retry: asked.retry, root, hour, live, outside, outsideDetail: outside ? regionDetail(region, null) : undefined,
     exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,

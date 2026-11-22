@@ -23,6 +23,8 @@ import { partColours } from './countryRace';
 import { bindCountryParts, countryPartsRemainder, countryPartsSelection, exactPartAmount, exactPartShare, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
 import type { CountryPartsData } from './countryPartsDrillData';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
+import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
@@ -59,8 +61,11 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const clockHour = track ? Math.floor(playbackHour) + offset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const following = drill.breakdown == null ? widget.time.mode === 'follow' : drill.follow;
-  const hour = Math.floor(drill.choices ? drill.hour ?? moment : drill.breakdown == null ? moment
-    : following ? clockHour ?? moment : drill.hour ?? moment);
+  const drillRegion = useRegion(widget, drill.breakdown == null ? SPEC : drillAction(drill, track));
+  const drillCoverage = useRegionCoverage(runtime, drillRegion);
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
+  const drillOutside = drill.breakdown != null && !drill.choices && regionAt === null;
+  const hour = Math.floor(drill.choices ? drill.hour ?? moment : drill.breakdown == null ? moment : regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock)) ?? moment);
   const chartPlayhead = drill.breakdown != null && drill.follow ? hour : playhead;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) } : null;
   const reply = useProduct(runtime.client, request, active, validate, track?.source);
@@ -171,12 +176,12 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   };
   if (pinned) return <div className="parts-race-drill">{header}{selection ?? breakdown}</div>;
   return <div className="parts-race" ref={anchor}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null || drill.choices != null} anchor={anchor}
-      title={title} day={dayLabel(hour)} following={following} canFollow={tag != null && liveHour != null}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null || drill.choices != null} anchor={anchor}
+      title={title} day={drillOutside ? '' : dayLabel(hour)} following={following} canFollow={tag != null && liveHour != null}
       returnFocus=".country-race-chart canvas" onClose={() => { if (current()) dispatch({ type: 'close' }); }} onFollow={follow}
       onPause={pause}
-      onPin={track && nativeSelection ? () => { if (current()) runtime.addWidgetBelow(widget.id,
+      onPin={track && nativeSelection && !drillOutside ? () => { if (current()) runtime.addWidgetBelow(widget.id,
         pinNativeCountryParts(widget, track, nativeSelection, hour, following, title)); } : undefined}
-      main={main(open, (drill.breakdown == null && drill.choices == null) || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>
+      main={main(open, (drill.breakdown == null && drill.choices == null) || options.drill === 'popout')}>{drillOutside ? <WidgetState kind="outside" read={drillCoverage} /> : selection ?? breakdown}</DrillHost>
   </div>;
 }

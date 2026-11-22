@@ -6,7 +6,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
 import { subjectHandle } from '../../dashboard/chosen';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
-import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
+import { useCountriesRequest, useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { leaderRequestSelection, leaderRows, leadersStructure, topLeader, validateLeaders, withheldLeaderState, withheldLeaders } from '../generals/generalsData';
 import { OPTIONS } from './definition';
 import CareerView from './CareerView';
@@ -28,22 +28,22 @@ function TopGeneralCareer(props: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const dashboard = widget.countries.kind === 'selected';
   const tag = dashboard ? defaultCountryKey(track) : null;
-  const lastHour = track?.branch.lastHour ?? 0;
-  const selection = useCountriesSelectionAt(widget, runtime, lastHour, active);
+  const selection = useCountriesRequest(widget, runtime, active);
   const params = useMemo(() => selection.requestTags === undefined ? null : { selection: leaderRequestSelection(selection.requestTags), leaders: 'land' },
     [selection.requestTags]);
   const head = useHeadProduct<UnitLeadersReply>(runtime, widget, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
-  const read = head.at ?? lastHour;
-  const atRead = useCountriesSelectionAt(widget, runtime, read, active);
-  const rows = useMemo(() => head.data && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
+  const atRead = useCountriesSelectionAt(widget, runtime, active);
+  const read = atRead.hour;
+  const rows = useMemo(() => head.data && read !== null && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
   const top = useMemo(() => topLeader(rows), [rows]);
   const country = useCountryNameAt(runtime.client, track, tag, read, active);
   const nameDetail = dashboard && country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : undefined;
   const body = () => {
     if (dashboard && !tag) return <WidgetState kind="empty" message="Choose a dashboard country or a leader in the widget settings." />;
-    if (head.outside) return <WidgetState kind="outside" read={head} />;
+    if (head.outside || atRead.outside) return <WidgetState kind="outside" read={head} />;
     if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
     if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
+    if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (!head.data || atRead.countries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
     if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? nameDetail ?? `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;

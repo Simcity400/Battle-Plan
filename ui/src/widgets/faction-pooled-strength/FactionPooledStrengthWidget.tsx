@@ -35,6 +35,8 @@ import type { MemberAmount } from './poolsData';
 import '../resource-balance/resourceBalance.css';
 import './factionPooledStrength.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { drillAction, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TAGS: readonly string[] = [];
@@ -90,7 +92,8 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   useEffect(() => { dispatch({ type: 'close' }); setOpenedFor(null); }, [drillOwner]);
   const drill = openedFor === drillOwner ? savedDrill : CLOSED;
   const picked = drill.breakdown;
-  const pickedHour = drill.hour ?? dataHour;
+  const drillRegion = useRegion(widget, drill.breakdown !== null ? drillAction(drill, track) : SPEC);
+  const pickedHour = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null) ?? dataHour;
   const pickedHolder = useMemo(() => picked ? [{ key: 'picked', tag: picked, hour: pickedHour }] : [], [picked, pickedHour]);
   const pickedLook = useHolderLooks(runtime.client, track, pickedHolder, active, tokens);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
@@ -192,7 +195,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
         <Segmented value={pool} options={POOL_CHOICES.filter(choice => offered.includes(choice.value))} label="Pool" onChange={value => setOption('pool', value)} />
       </div>}
       <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title="Manpower over time" day={dayLabel(pickedHour)}
-        following={false} canFollow={false} anchor={anchor} onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={main}>
+        following={false} canFollow={false} anchor={anchor} onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={main} time={{ runtime, region: drillRegion }}>
         {picked && <ManpowerHistory runtime={runtime} track={track} faction={faction.id} tag={picked} picked={pickedHour} name={pickedLook.name('picked')}
           colour={pickedLook.colour('picked')} following={following} active={active} />}
       </DrillHost></>;

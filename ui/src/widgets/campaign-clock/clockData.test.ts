@@ -13,6 +13,8 @@ test('the live campaign clock accumulates from the start instead of using a trai
     { branchId: '4', firstHour: 100, lastHour: 1000 });
   assert.deepEqual(clockRequest({ ...widget, time: { mode: 'pin', windows: {} } }, track, { firstHour: 900, lastHour: 900 })?.params,
     { branchId: '4', firstHour: 100, lastHour: 900 });
+  for (const time of [{ mode: 'follow' }, { mode: 'pin', windows: {} }] as const) for (const at of [99, 1001])
+    assert.equal(clockRequest({ ...widget, time }, track, { firstHour: at, lastHour: at }), null, `a ${time.mode} moment at ${at} is outside the recording, never its edge`);
 });
 
 test('explicit periods clip to recorded branch hours and do not invent outside coverage', () => {

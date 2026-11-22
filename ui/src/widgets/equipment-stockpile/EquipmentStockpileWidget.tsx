@@ -9,7 +9,7 @@ import { dayLabel, drawValueRule, placeEndLabels } from '../../charts/draw';
 import { drawLineSummary, extentOfSummary, pickSummaryLines, summaryGeometry } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import type { DrillAction } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
 import { lineStyles } from '../../charts/palette';
@@ -54,6 +54,8 @@ import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { StockpileHolder } from '../../generated/dashboard';
+import { drillAction, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const END_LABEL_ROOM = 136;
@@ -77,7 +79,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const head = Math.floor(playhead ?? extent[1]);
+  const head = useRegionHour(runtime, useRegion(widget), active);
   const menu = useContextMenu('Stockpile actions');
   const grouping = pinnedGrouping(widget.options);
   const count: StockCount = options.count === 'ic' ? 'ic' : 'units';
@@ -93,19 +95,21 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
   const mode: StockpileMode = selection?.mode ?? 'stock';
   const playbackHour = Math.floor(runtime.clock.getHour()) + axisOffset;
-  const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? playbackHour : playhead ?? head;
-  const at = saved && shownDrill.breakdown === null ? head : drillHour(shownDrill, playbackHour) ?? head;
+  const detailTime = shownDrill.breakdown !== null ? drillAction(shownDrill, track) : SPEC;
+  const detailRegion = useRegion(widget, detailTime);
+  const detailCoverage = useRegionCoverage(runtime, detailRegion);
+  const at = useRegionHour(runtime, detailRegion, active && (saved || shownDrill.breakdown !== null));
+  const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? recordedHour(track, playbackHour) : playhead ?? head;
   const [automaticOrigin, setAutomaticOrigin] = useState<{ owner: object; hour: number } | null>(null);
-  if (saved && !options.stockpileCountry && automaticOrigin?.owner !== pickOwner) setAutomaticOrigin({ owner: pickOwner, hour: head });
+  if (saved && !options.stockpileCountry && head !== null && automaticOrigin?.owner !== pickOwner) setAutomaticOrigin({ owner: pickOwner, hour: head });
   const origin = automaticOrigin?.owner === pickOwner ? automaticOrigin.hour : head;
-  const savedCountry = useMemo(() => saved && track ? chosenDatedCountry(options.stockpileCountry, track.source.metadata.campaignKey,
-    track.branch.id, widget.countries, tag, track.branch.firstHour, track.branch.lastHour, origin) : null,
+  const savedCountry = useMemo(() => saved && track && (options.stockpileCountry || origin !== null) ? chosenDatedCountry(options.stockpileCountry, track.source.metadata.campaignKey,
+    track.branch.id, widget.countries, tag, track.branch.firstHour, track.branch.lastHour, origin ?? Number.NaN) : null,
   [saved, options.stockpileCountry, widget.countries, tag, origin, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
   const [countryPick, setCountryPick] = useState<{ owner: object; selection: DatedCountrySelection } | null>(null);
   const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
   const missingSavedDate = saved && shownDrill.breakdown === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  const detailFollows = shownDrill.breakdown !== null ? shownDrill.follow : saved && widget.time.mode === 'follow';
-  const actor = useStockpileCountry(selectedCountry, runtime, track, widget, active && (saved || shownDrill.breakdown !== null), at, detailFollows, included);
+  const actor = useStockpileCountry(selectedCountry, runtime, track, widget, active && (saved || shownDrill.breakdown !== null), detailTime, included);
   const detailData = selectedCountry ? actor.data : undefined;
   useEffect(() => {
     const warnings = (saved || shownDrill.breakdown !== null ? detailData : data)?.warnings;
@@ -115,14 +119,14 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const detailGroups = useMemo(() => detailData ? stockGroups(detailData, grouping, Infinity, included) : [], [detailData, grouping, included]);
   const picked = saved ? stockpileDrillGroup(detailGroups, String(options.partGroup ?? ''))
     : selection?.owner === pickOwner ? detailGroups.find(group => group.key === selection.key) : undefined;
-  const headerTag = actor.spans ? countryDrillTagAt(actor.spans, at) : null;
-  const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? options.stockpileCountry
+  const headerTag = actor.spans && at !== null ? countryDrillTagAt(actor.spans, at) : null;
+  const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : at === null ? 'This time is outside the recording.' : !selectedCountry ? options.stockpileCountry
     ? 'Choose a country again.'
     : 'Choose a country for this widget.'
     : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
-  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason ? [{ tag: headerTag, hour: at }] : [], active);
+  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason && at !== null ? [{ tag: headerTag, hour: at }] : [], active);
   const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={missingSavedDate ? null : at} reason={headerReason}
-    label={headerTag && !headerReason ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
+    label={headerTag && !headerReason && at !== null ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
   const detailPickOwner = useMemo(() => ({ pickOwner, selectedCountry }), [pickOwner, selectedCountry]);
   const showingDetail = saved || shownDrill.breakdown !== null;
   const shown = useShownHour();
@@ -152,9 +156,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
       tag, originOffset: Math.floor(hour) - track.branch.firstHour } });
     const playing = runtime.clock.getSnapshot().playing;
-    act({ type: 'open', breakdown: BREAKDOWN.id, hour, playing, playhead: playhead ?? (playing ? playbackHour : null) });
+    act({ type: 'open', breakdown: BREAKDOWN.id, hour, playing, playhead: widget.time.mode === 'follow' ? playhead : playing ? playbackHour : null });
   };
-  const main = !saved && data ? <div className="equipment-stockpile">
+  const main = !saved && data && viewHour !== null ? <div className="equipment-stockpile">
     {options.view === 'time'
       ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track}
         extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
@@ -166,10 +170,11 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
   const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
-  const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
+  const detail = at === null ? <WidgetState kind="outside" read={detailCoverage} />
+    : !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
-        : picked && detailData ? <StockpileDrill data={detailData} catalogue={actor.catalogue} holders={actor.holders} included={included} group={picked}
+        : picked && detailData && actor.hour !== null ? <StockpileDrill data={detailData} catalogue={actor.catalogue} holders={actor.holders} included={included} group={picked}
     hour={actor.hour}
     client={runtime.client} track={track}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
@@ -184,10 +189,10 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
         onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{identityNotice}{detail}
     </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={shownDrill.breakdown !== null}
-      title={picked ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={dayLabel(at)} following={shownDrill.follow}
+      title={picked && at !== null ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={at === null ? '' : dayLabel(at)} following={shownDrill.follow}
       returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
-      canFollow onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })} main={main}
-      onPin={picked && selectedCountry && !actor.reason && choiceKey(picked, at) !== null ? () => {
+      canFollow onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })} main={main} time={{ runtime, region: detailRegion }}
+      onPin={picked && selectedCountry && !actor.reason && at !== null && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
         const pinned = pinStockpileDrill(widget, track, selectedCountry.tag, picked, grouping, mode, at, shownDrill.follow, selectedCountry);
         if (pinned) runtime.addWidgetBelow(widget.id, pinned);

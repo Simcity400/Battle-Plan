@@ -5,19 +5,24 @@ import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, breakdownTitle, breakdownVariants, CLOSED, DRILL_OPTION, drillHour, FOLLOW_NEAR_HOURS, pinnedBreakdown, reduceDrill } from './drillState.ts';
+import { breakdownOption, breakdownTitle, breakdownVariants, CLOSED, DRILL_OPTION, FOLLOW_NEAR_HOURS, pinnedBreakdown, reduceDrill } from './drillState.ts';
+import { axisAt, drillAction, regionHour } from '../../dashboard/regionTime.ts';
+
+const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
+const drillAt = (state: { follow: boolean; hour: number | null }, playhead: number) =>
+  regionHour({ widget: { trackIds: ['wide'], time: { mode: 'follow' } } as unknown as WidgetSpec, action: drillAction(state, WIDE) }, WIDE, [WIDE], axisAt(playhead));
 
 test('a breakdown follows playback when playing or opened near the playhead, and pins a picked day', () => {
   const near = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS });
   assert.deepEqual(near, { breakdown: 'income', follow: true, hour: null });
-  assert.equal(drillHour(near, 5000), 5000);
+  assert.equal(drillAt(near, 5000), 5000);
   const far = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000.7, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS + 1 });
   assert.deepEqual(far, { breakdown: 'income', follow: false, hour: 1000 });
   assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: true, playhead: 99_999 }).follow, true);
   assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: false, playhead: null }).follow, false);
   const picked = reduceDrill(near, { type: 'pick', hour: 2222 });
   assert.deepEqual(picked, { breakdown: 'income', follow: false, hour: 2222 });
-  assert.equal(drillHour(picked, 9999), 2222);
+  assert.equal(drillAt(picked, 9999), 2222);
   assert.deepEqual(reduceDrill(picked, { type: 'follow' }), near);
   assert.deepEqual(reduceDrill(picked, { type: 'close' }), CLOSED);
   assert.deepEqual(reduceDrill(CLOSED, { type: 'pick', hour: 5 }), CLOSED);

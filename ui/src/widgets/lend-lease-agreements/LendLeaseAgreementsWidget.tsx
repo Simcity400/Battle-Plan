@@ -4,7 +4,7 @@ import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -37,6 +37,8 @@ import type { AgreementRow, Direction } from './agreementsData';
 import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
 import './lendLeaseAgreements.css';
 import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../../generated/dashboard';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly AgreementRow[] = [];
 const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributed: 0, membership: null };
@@ -133,19 +135,24 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     setPick({ owner: pickOwner, row });
     dispatch(openAgreement(row, AGREEMENT.id, runtime.clock.getSnapshot().playing, widget.time.mode === 'follow' ? hour : null));
   };
-  const at = drillHour(drill, hour) ?? hour;
+  const drillTime = drillAction(drill, track);
+  const drillRegion = useRegion(widget, drillTime);
+  const drillOpen = drill.breakdown !== null && !!picked;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
+  const drillDay = drillShown ?? drillAt;
   const drillTags = picked ? partyTags(picked.giver, picked.receiver) : null;
   const active_ = new Set(rows.filter(row => !row.ended).map(row => row.terms.key)).size;
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see lend-lease." />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!data || !match.ready) return <>{groupFailure}<div ref={head.root} className="lend-lease-agreements-host"><WidgetState kind="loading" label="Loading lend-lease…" /></div></>;
+  const parent = head.outside ? <WidgetState kind="outside" read={head} />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : groupFailure && !groups.data ? groupFailure
+    : match.reason ? <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>
+    : !data || !match.ready ? <>{groupFailure}<div ref={head.root} className="lend-lease-agreements-host"><WidgetState kind="loading" label="Loading lend-lease…" /></div></> : null;
+  if (parent && !drillOpen) return parent;
   const subject = fallback.length === 1 ? name(fallback[0], hour) : 'These countries';
-  const body = data.agreements === null ? <WidgetState kind="unavailable" message="Lend-lease terms were not recorded." />
+  const body = !data ? null : data.agreements === null ? <WidgetState kind="unavailable" message="Lend-lease terms were not recorded." />
     : !rows.length ? listed.membership ? <WidgetState kind="unavailable" message={listed.membership} />
       : listed.unattributed ? <WidgetState kind="unavailable" message={`Some agreements' ${direction === 'sent' ? 'givers' : 'receivers'} were not recorded at this date.`} />
       : showEnded && !history.data && !history.error ? <WidgetState kind="loading" label="Loading ended agreements…" />
@@ -155,20 +162,20 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
         sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
         rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} muted={row => row.ended}
         onRowClick={open} menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={live} />;
-  const main = <div className="lend-lease-agreements" ref={head.root}>
+  const main = parent ?? <div className="lend-lease-agreements" ref={head.root}>
     <div className="lend-lease-caption-line">
       <span>{dayLabel(hour)}</span>
       <Segmented value={direction} options={DIRECTIONS} label="Direction" onChange={value => setOption?.('direction', value)} />
     </div>
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;
-  return <div ref={anchor} className="lend-lease-agreements-host">{groupFailure}
-    {headerSlot && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(drillShown ?? at)}
+  return <div ref={anchor} className="lend-lease-agreements-host">{parent ? null : groupFailure}
+    {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
+      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={main}>
-      {picked && (drillTags ? <MarketDrill runtime={runtime} widget={widget} hour={at} following={drill.follow} active={active} onAnswered={setDrillShown}
+      main={main} time={{ runtime, region: drillRegion }}>
+      {picked && (drillTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={drillTags} selected={`agreement:${picked.terms.id}`} />
         : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}
     </DrillHost>

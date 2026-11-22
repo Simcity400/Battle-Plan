@@ -6,7 +6,7 @@ import { Segmented } from '../../components/Segmented';
 import { ButterflyChart } from '../../charts/butterfly';
 import type { ButterflyItem } from '../../charts/butterfly';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel, drawEndLabels, drawLine } from '../../charts/draw';
 import Legend from '../../charts/Legend';
 import { liveAt, mapLive } from '../../charts/live';
@@ -32,6 +32,8 @@ import { LEND_LEASE_BALANCE, LEND_LEASE_PARTNERS, amountLabel, amountText, balan
 import type { BalanceMeasure, BalanceRow } from './lendLeaseBalanceData';
 import './lendLeaseBalance.css';
 import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../generated/dashboard';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 type BalanceItem = ButterflyItem & { row: BalanceRow };
@@ -83,7 +85,9 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     dispatch({ type: 'open', breakdown: PARTNERS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const shownPick = picked && picked.branch === track?.branch.id ? picked : null;
-  const at = drillHour(shownPick ? drill : CLOSED, hour) ?? hour;
+  const drillRegion = useRegion(widget, drillAction(shownPick ? drill : CLOSED, track));
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null && !!shownPick);
+  const at = drillAt ?? hour;
 
   let main;
   if (!track) main = <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
@@ -113,7 +117,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   if (!track) return main;
   return <div ref={anchor} className="lend-lease-balance-host">
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!shownPick} anchor={anchor}
-      title={shownPick ? `${shownPick.name}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
+      title={shownPick ? `${shownPick.name}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={drillAt === null ? '' : dayLabel(drillAt)} time={{ runtime, region: drillRegion }}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={<div ref={head.root} className="lend-lease-balance-host">{main}</div>}>
       {shownPick && <Partners widget={widget} runtime={runtime} active={active} tag={shownPick.tag} name={shownPick.name} hour={at} measure={measure}

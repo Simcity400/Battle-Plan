@@ -22,6 +22,9 @@ import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateSt
 import type { Grouping } from './stockpileData';
 import { pinnedGrouping } from './stockpileDrill';
 import type { StockpileCatalogueReply } from './types';
+import { SPEC, type RegionAction, regionFollows } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
+import { useAtHead } from '../../dashboard/atHead.ts';
 
 export const includedTypes = (widget: WidgetSpec) => contentSet(typeof widget.options?.included === 'string' ? widget.options.included : '').map(contentKey);
 
@@ -37,16 +40,16 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
   }, track?.source);
 }
 
-export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, hoverHour: number | null = null) {
+export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, time: RegionAction = SPEC) {
   return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), hoverHour });
+    { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), time });
 }
 
 function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, tag?: string) {
   const values = useSyncExternalStore(at.live.subscribe, at.live.read, at.live.read);
-  const hour = (at.read === 'followed' ? at.shownAt() ?? at.at : at.hour) ?? track?.branch.lastHour ?? 0;
-  const view = useMemo<PreparedStockpileReply | undefined>(() => catalogue && track
-    ? stockpileView(catalogue, at.data ? atReply(at.data, values, hour, track.branch.id) : undefined, hour, tag) : undefined,
+  const hour = at.read === 'followed' ? at.shownAt() ?? at.at : at.hour;
+  const view = useMemo<PreparedStockpileReply | undefined>(() => catalogue && track && hour !== null && at.data
+    ? stockpileView(catalogue, atReply(at.data, values, hour, track.branch.id), hour, tag) : undefined,
   [catalogue, at.data, values, hour, track, tag]);
   return { view, hour };
 }
@@ -82,7 +85,7 @@ export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime):
 }
 
 export function useStockpileCountry(selection: DatedCountrySelection | null, runtime: WidgetRuntime, track: BoundTrack | undefined, widget: WidgetSpec,
-  active: boolean, hour: number, follows: boolean, included: readonly string[]) {
+  active: boolean, time: RegionAction, included: readonly string[]) {
   const groups = useCountryGroups(runtime, track, active && !!selection);
   const identities = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
   const history = identities.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]), groups.data, groupNumbers);
@@ -93,9 +96,10 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const holders = useMemo(() => spans ? stockpileHolders(spans) : [], [spans]);
   const live = active && !!selection;
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, live);
-  const tag = holderAt(holders, follows ? Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0) : hour);
-  const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: follows ? { mode: 'follow' } : widget.time }), [widget, follows]);
-  const at = useStockpileAt(runtime, spec, tag, live, follows ? null : hour);
+  const region = useRegion(widget, time);
+  const hourAt = useRegionHourAt(runtime, region);
+  const tag = useAtHead(runtime.clock, live && regionFollows(region), clockHour => { const at = hourAt(clockHour); return at === null ? null : holderAt(holders, at); });
+  const at = useStockpileAt(runtime, widget, tag, live, time);
   const { view, hour: shownHour } = useView(catalogue.data, at, track, selection?.tag);
   const error = catalogue.error ?? at.error;
   const failure = (history ? undefined : groups.error) ?? error;

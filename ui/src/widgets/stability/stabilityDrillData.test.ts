@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { plotFrame } from '../../charts/frame.ts';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState.ts';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
+import { axisAt, drillAction, regionHour } from '../../dashboard/regionTime.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
-import type { BoundTrack } from '../../dashboard/model';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import '../../widgets/definitions.ts';
 import { chooseStabilityActor, pickStabilityLine, pinStabilityDrill, stabilityPickAction } from './stabilityDrillData.ts';
 import type { StabilityLine } from './stabilityDrillData';
@@ -12,6 +13,10 @@ const frame = plotFrame(300, 200, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 
 const line = (tag: string, measure: StabilityLine['measure'], value: number): StabilityLine => ({ tag, measure,
   runs: [{ firstHour: 0, lastHour: 100, value }] });
 const pointer = (value: number, hour = 49) => ({ frame, until: null, point: { x: frame.toX(hour), y: frame.toY(value) } });
+const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
+const drillAt = (state: { follow: boolean; hour: number | null }, playhead: number) =>
+  regionHour({ widget: { trackIds: ['wide'], time: { mode: 'follow' } } as unknown as WidgetSpec, action: drillAction(state, WIDE) }, WIDE, [WIDE], axisAt(playhead));
+
 test('a comparison click chooses its nearest drawn actor and measure without using raw values', () => {
   const lines = [line('a:warSupport', 'stability', 10), line('b', 'stability', 90), line('b', 'warSupport', 40)];
   const picked = pickStabilityLine(lines, 49, pointer(40))!;
@@ -31,13 +36,13 @@ test('overlap and keyboard choices retain actor-specific measure and held hour w
     assert.deepEqual(picked.candidates, ['a', 'b']);
     let drill = reduceDrill(CLOSED, stabilityPickAction(picked, false, 'follow', true, 50));
     assert.equal(drill.follow, false);
-    assert.equal(drillHour(drill, 100), 49);
+    assert.equal(drillAt(drill, 100), 49);
     assert.equal(chooseStabilityActor(picked, 'missing'), picked);
     const chosen = chooseStabilityActor(picked, 'b');
     assert.equal(chosen.measure, 'warSupport');
     assert.equal(chosen.tag, 'b');
     drill = reduceDrill(drill, stabilityPickAction(chosen, true, 'follow', true, 100));
-    assert.equal(drillHour(drill, 100), 49);
+    assert.equal(drillAt(drill, 100), 49);
   }
 });
 
@@ -55,9 +60,9 @@ test('Campaign, Pin and Range opens hold the drawn hour even while the global cl
   for (const mode of ['campaign', 'pin', 'range'] as const) {
     const drill = reduceDrill(CLOSED, stabilityPickAction(pick, false, mode, true, 100));
     assert.equal(drill.follow, false);
-    assert.equal(drillHour(drill, 100), 20);
+    assert.equal(drillAt(drill, 100), 20);
     const following = reduceDrill(drill, { type: 'follow' });
-    assert.equal(drillHour(following, 80), 80, 'explicit Follow reads the actual aligned source clock');
+    assert.equal(drillAt(following, 80), 80, 'explicit Follow reads the actual aligned source clock');
   }
   assert.equal(reduceDrill(CLOSED, stabilityPickAction(pick, false, 'follow', true, 100)).follow, true);
 });

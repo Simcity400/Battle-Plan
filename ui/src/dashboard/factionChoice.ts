@@ -13,6 +13,7 @@ import { detailsStructure, validateFactionDetails } from './factionDetails.ts';
 import { useCountryGroups } from './useCountryGroups';
 import { useCampaignSettings } from './campaignSettings';
 import { useHeadHour } from '../widgets/army-size/headHour.ts';
+import { SPEC } from './regionTime.ts';
 
 export { FACTION_OPTION } from './factionOption.ts';
 
@@ -62,7 +63,7 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   const groups = useCountryGroups(runtime, track, active);
   const saved = typeof widget.options?.faction === 'string' && widget.options.faction ? contentKey(widget.options.faction) : null;
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const { hourAt } = headRead(widget, track, runtime.tracks, null);
+  const { hourAt } = headRead({ widget, action: SPEC }, track, runtime.tracks);
   const data = groups.data;
   const following = active && widget.time.mode === 'follow' && !!data;
   const key = useCallback((clockHour: number) => {

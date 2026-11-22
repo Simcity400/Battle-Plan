@@ -54,6 +54,8 @@ import type { Balance, LineAt, RowOrder } from './resourceData';
 import ResourceBreakdown from './ResourceBreakdown';
 import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
+import { drillAction, regionFollows, SPEC } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const SUPPLY = { kind: RESOURCE_BALANCE, measure: 'supply' } as const;
@@ -112,11 +114,12 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); }, [track.source.id, track.source.revision, track.branch.id, tag, options.show]);
 
   const shown = !!saved || drill.breakdown !== null;
-  const drillFollows = following && (drill.breakdown === null ? !!saved : drill.follow);
-  const drillAt = drillFollows ? null : drill.breakdown !== null && drill.hour !== null ? drill.hour : playhead ?? extent[1];
-  const followSpec = useMemo<WidgetSpec>(() => ({ ...widget, time: { mode: 'follow' } }), [widget]);
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillFollows ? followSpec : widget, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
-    { active: active && shown, validate: validateResourceBalance, hoverHour: drillFollows ? null : drillAt });
+  const drillTime = drill.breakdown !== null ? drillAction(drill, track) : SPEC;
+  const drillRegion = useRegion(widget, drillTime);
+  const drillFollows = regionFollows(drillRegion);
+  const drillAt = useRegionHour(runtime, drillRegion, active && shown);
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
+    { active: active && shown, validate: validateResourceBalance, time: drillTime });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
   const picked = saved && savedKey ? drillData?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
@@ -137,8 +140,8 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   };
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
 
-  const detail = breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
-    : breakdown.read === 'off' && !drillData ? <WidgetState kind="unavailable" message="This time is outside the recording." />
+  const detail = breakdown.outside ? <WidgetState kind="outside" read={breakdown} />
+    : breakdown.error ? <WidgetState kind="error" failure={breakdown.error} onRetry={breakdown.retry} />
       : !drillData ? <WidgetState kind="loading" label="Loading resources…" read={breakdown} />
         : drillData.poolsMissing ? <WidgetState kind="unavailable" message={drillData.poolsMissing} />
           : !picked ? <p className="drill-empty">Resource unavailable. Choose another in settings.</p>
@@ -164,10 +167,10 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   return <div ref={anchor} className="resource-balance-host">
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
       title={picked ? resourceName(picked) : 'Resource breakdown'} day={dayAt === null ? '' : dayLabel(dayAt)} following={drillFollows} canFollow={following}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
-      onPin={picked ? () => {
+      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}
+      onPin={picked && dayAt !== null ? () => {
         const pinned = pinnedBreakdown(widget, { ...BREAKDOWN, label: resourceName(picked) }, track.id);
-        const origin = (dayAt ?? extent[1]) - track.branch.firstHour;
+        const origin = dayAt - track.branch.firstHour;
         pinned.countries = { kind: 'tags', tags: [tag] };
         pinned.options = { ...pinned.options, partResource: setToken(JSON.stringify([picked.token, picked.ordinal])),
           resourceCountry: datedCountryToken({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, originOffset: origin,

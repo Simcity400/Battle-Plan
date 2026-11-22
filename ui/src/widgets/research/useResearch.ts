@@ -37,22 +37,22 @@ export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, act
 }
 
 export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, structure: (reply: ResearchSlotsReply) => string,
-  root: RefObject<HTMLElement | null>, hoverHour: number | null = null) {
+  root: RefObject<HTMLElement | null>) {
   const { tag, track } = researchTarget(widget, runtime);
   const params = useMemo(() => tag ? { country: countryFromKey(tag) } : null, [tag]);
   const now = useHeadProduct<ResearchSlotsReply>(runtime, widget, 'research-slots', params,
-    { active, validate: validateResearchSlots, structure, hoverHour });
+    { active, validate: validateResearchSlots, structure });
   const attach = useCallback((element: HTMLElement | null) => {
     root.current = element;
     now.root(element);
   }, [root, now.root]);
   const offset = track?.axisOffset ?? 0;
-  const fixed = widget.time.mode !== 'follow' || hoverHour !== null;
+  const fixed = widget.time.mode !== 'follow';
   const shown = withHeld(now);
   const fallback = shown.at;
   const headHour = () => fixed ? fallback : runtime.clock.getHour() + offset;
   const feed = panelFeed('research-slots', now, structure, widget, runtime);
-  useDrawnPanel(root, runtime.clock, feed && hoverHour !== null ? { ...feed, fixed: hoverHour - offset } : feed, active);
+  useDrawnPanel(root, runtime.clock, feed, active);
   const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; } };
   const data = useMemo<ResearchSlotsAt | undefined>(() => shown.data && fallback !== null ? { ...shown.data, hour: fallback } : undefined, [shown.data, fallback]);
   return { ...shown, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };

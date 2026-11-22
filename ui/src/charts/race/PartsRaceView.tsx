@@ -3,7 +3,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import type { ComponentType } from 'react';
 import CountryPicker from '../../components/CountryPicker';
 import DrillHost from '../drill/DrillHost';
-import { drillHour } from '../drill/drillState';
 import LiveText, { liveTexts } from '../LiveText';
 import ForcePartsBreakdown from './ForcePartsBreakdown';
 import type { PartsRaceDetailProps } from './ForcePartsBreakdown';
@@ -50,6 +49,8 @@ import type { TimeChartProps } from '../TimeChart';
 import type { ForceSizeReply, MissingSpan } from '../../generated/dashboard';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
+import { drillAction, SPEC, regionClockHour, axisHour } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 export interface PartsRaceViewConfig {
   product: string; title: string; subject: string; icon: IconName;
@@ -281,7 +282,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const pinnedTag = restored?.tag ?? (widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : mixTag);
   const breakdownTag = pinned ? restored === null ? null : pinnedTag : drill.breakdown;
   const savedOrigin = typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : null;
-  const drillAt = Math.floor((pinned || (drill.breakdown === null && choices === null) ? moment : drillHour(drill, clockHour)) ?? moment);
+  const drillRegion = useRegion(widget, pinned || drill.breakdown === null ? SPEC : drillAction(drill, track));
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
+  const drillAt = Math.floor((pinned || (drill.breakdown === null && choices === null) ? moment : regionAt ?? regionClockHour(drillRegion, track, runtime.tracks, axisHour(runtime.clock))) ?? moment);
   const originHour = pinned ? restored?.hour ?? savedOrigin ?? moment : origin?.tag === breakdownTag ? origin.hour : drillAt;
   const breakdownFollows = pinned ? widget.time.mode === 'follow' : drill.breakdown !== null && drill.follow;
   const selection = breakdownTag && reply ? countryPartsSelection(reply.series, breakdownTag, originHour) : null;
@@ -320,7 +323,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       }} />
   </div> : breakdown;
   return <div className="parts-race" ref={anchor}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
+    <DrillHost time={{ runtime, region: drillRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
       title={partsLabel} day={drill.breakdown !== null && drill.follow && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)}
       following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })}

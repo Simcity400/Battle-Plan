@@ -15,6 +15,9 @@ import { datedCountryToken, readDatedCountry, type DatedCountrySelection } from 
 import { useCountryGroups } from './useCountryGroups';
 import { reachedKeys, reachedView, type ReachedState } from './reachedState.ts';
 import { useViewRead } from './viewRead';
+import type { CountryIdentityHistory } from '../generated/dashboard';
+import type { RegionAction, TrackHour } from './regionTime.ts';
+import { useRegion, useRegionHour } from './widgetTime.ts';
 
 export type { ReachedState };
 
@@ -27,12 +30,21 @@ export function useReachedProduct<T>(client: DashboardClient, source: DashboardS
   return { ...reachedView(read, key), retry: read.retry };
 }
 
-export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, hour: number, active: boolean, stored: unknown,
+export function identityEpochs(histories: readonly CountryIdentityHistory[] | undefined): readonly number[] | undefined {
+  if (!histories) return undefined;
+  const edges = new Set<number>();
+  for (const history of histories) for (const run of history.identities) { edges.add(run.firstHour); edges.add(run.lastHour + 1); }
+  return [...edges].sort((a, b) => a - b);
+}
+
+export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, time: RegionAction, active: boolean, stored: unknown,
   setOption?: (key: string, value: string) => void)
-  : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean } {
+  : ReachedCountry & { hour: TrackHour | null; holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean } {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const histories = groups.data?.countryIdentities;
+  const epochs = useMemo(() => identityEpochs(histories), [histories]);
+  const hour = useRegionHour(runtime, useRegion(widget, time), active, epochs);
   const chosen = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const slot = chosen === null ? null : countryFromKey(chosen);
   const bySlot = typeof slot === 'number';
@@ -49,10 +61,9 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     setLocal({ owner, selection });
     setOption?.('country', datedCountryToken(selection));
   };
-  const recorded = !!track && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
-  const fresh = !bySlot && !held && chosen && track && recorded && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
+  const fresh = !bySlot && !held && chosen && track && hour !== null && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
   const selection = bySlot ? null : held ?? fresh;
-  const resolved = useMemo(() => selection && histories && track
+  const resolved = useMemo(() => selection && histories && track && hour !== null
     ? resolveChoice(histories, groups.complete, selection, track.branch.firstHour, track.branch.lastHour, hour) : null,
   [selection, histories, groups.complete, track, hour]);
   const kept = fresh ? datedCountryToken(fresh) : resolved?.rebind ? datedCountryToken(resolved.rebind) : null;
@@ -60,20 +71,20 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     const next = fresh ?? resolved?.rebind;
     if (next) keep(next);
   }, [kept]);
-  const slotTag = typeof slot === 'number' && slots ? slots.tagAt(slot, hour) : null;
+  const slotTag = typeof slot === 'number' && slots && hour !== null ? slots.tagAt(slot, hour) : null;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
-    : track && !recorded ? outsideCountry(chosen)
+    : track && hour === null ? outsideCountry(chosen)
     : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
     : resolved?.country ?? { chosen, tag: null, absent: false, reason: null };
-  return { ...country, holders: resolved?.holders ?? null,
+  return { ...country, hour, holders: resolved?.holders ?? null,
     pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)
       keep({ campaign, branch, tag: chosen, originOffset: holder.origin - track.branch.firstHour }); },
     error: groups.error, retry: groups.retry, historyHeld: bySlot || !!histories };
 }
 
-export function useCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tag: string | null, hour: number, active: boolean) {
-  const available = !!track && !!tag && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
-  const wanted = useMemo(() => available && tag ? [{ hour, tag }] : [], [available, tag, hour]);
+export function useCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tag: string | null, hour: number | null, active: boolean) {
+  const available = !!track && !!tag && hour !== null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const wanted = useMemo(() => available && tag && hour !== null ? [{ hour, tag }] : [], [available, tag, hour]);
   const names = useCountryNamesAt(client, track, wanted, active && available);
-  return nameReadMetadata(available && tag ? names.get(nameKey(hour, tag)) : undefined);
+  return nameReadMetadata(available && tag && hour !== null ? names.get(nameKey(hour, tag)) : undefined);
 }

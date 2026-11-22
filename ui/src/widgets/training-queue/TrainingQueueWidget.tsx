@@ -16,13 +16,13 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import { useWidgetIdentityHour } from '../../dashboard/atHead';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
 import { divisionName, divisionTooltip, orderIcon, equipmentFill, lowestFill, orderName, orderTooltip, percent, queueRows, queueStructure, trainingRatio, validateTrainingQueue } from './trainingQueueData';
 import type { QueueRow } from './trainingQueueData';
 import './trainingQueue.css';
+import { SPEC } from '../../dashboard/regionTime.ts';
 
 const rowKey = (row: QueueRow) => row.key;
 const NO_SORT = { column: 'name', direction: 'ascending' } as const;
@@ -34,10 +34,9 @@ function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
 
 export default function TrainingQueueWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const hour = useWidgetIdentityHour(runtime, widget, chosen, active);
-  const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
+  const country = useReachedCountry(widget, runtime, SPEC, active, widget.options?.country, setOption);
+  const hour = country.hour;
   const tag = country.tag;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
@@ -85,8 +84,8 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
         ? <span className="training-queue-missing" data-tooltip={row.order.priorityMissing ?? 'Not recorded'}>—</span>
         : <span title={row.order.priorityName}>{row.order.priorityName}</span> : '' },
   ], [closed]);
-  const tooltip = useCallback((row: QueueRow) => fitTooltip([row.kind === 'order' ? orderTooltip(row.order, data?.readHour ?? hour)
-    : divisionTooltip(row.division, data?.readHour ?? hour)], viewportHeight), [data, hour, viewportHeight]);
+  const tooltip = useCallback((row: QueueRow) => { const at = data?.readHour ?? hour ?? Number.NaN;
+    return fitTooltip([row.kind === 'order' ? orderTooltip(row.order, at) : divisionTooltip(row.division, at)], viewportHeight); }, [data, hour, viewportHeight]);
   const training = data ? data.orders.reduce((sum, order) => sum + order.divisions.length, 0) : 0;
   const pill = headerSlot && data && data.missing === null && createPortal(<span className="pill">{training} in training</span>, headerSlot);
   let body;

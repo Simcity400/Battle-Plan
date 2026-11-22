@@ -33,6 +33,7 @@ import type { OverlordOrder, SubjectOrder } from './subjectsData';
 import './subjects.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -61,7 +62,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const at = Math.floor(playhead ?? last);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const identityChanges = groups.data?.identityChanges;
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);

@@ -7,6 +7,7 @@ import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { SPEC, type RegionAction } from '../../dashboard/regionTime';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { factTexts, peopleStructure, peopleValue, validatePeople } from './peopleData';
 import './people.css';
@@ -14,8 +15,8 @@ import type { PeopleReply } from '../../generated/dashboard';
 
 const staticRow = () => false;
 
-export default function CountryPeople({ runtime, widget, track, tag, hoverHour = null, active, view, onWarnings }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack | undefined; tag: string | null | undefined; hoverHour?: number | null; active: boolean;
+export default function CountryPeople({ runtime, widget, track, tag, time = SPEC, active, view, onWarnings }: {
+  runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack | undefined; tag: string | null | undefined; time?: RegionAction; active: boolean;
   view: 'manpower' | 'politics'; onWarnings?: (warnings: string[]) => void;
 }) {
   const exileScroll = useRef<HTMLDivElement>(null);
@@ -31,7 +32,7 @@ export default function CountryPeople({ runtime, widget, track, tag, hoverHour =
     }
   }, [view]);
   const structure = useCallback((reply: PeopleReply) => peopleStructure(reply, view), [view]);
-  const head = useHeadProduct(runtime, widget, 'country-people', params, { active, validate: validatePeople, structure, paint, hoverHour });
+  const head = useHeadProduct(runtime, widget, 'country-people', params, { active, validate: validatePeople, structure, paint, time });
   const data = head.data;
   const current = answersKey(data?.asked, tag) && data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, data, onWarnings]);

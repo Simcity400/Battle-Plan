@@ -4,7 +4,7 @@ import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import { liveKey } from '../../charts/live';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -35,6 +35,8 @@ import { cic, cicLabel, collectedText, contractRows, firstWithMore, levelText, o
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import './internationalMarket.css';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_CONTRACTS: ReturnType<typeof contractRows> = { rows: [], unattributed: 0 };
@@ -128,25 +130,29 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     setPick({ owner: pickOwner, title, tags: tagsOf, selected });
     dispatch({ type: 'open', breakdown: DETAILS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const at = drillHour(drill, hour) ?? hour;
+  const drillTime = drillAction(drill, track);
+  const drillRegion = useRegion(widget, drillTime);
+  const drillOpen = drill.breakdown !== null && !!picked;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
   const count = data && ready ? `${(view === 'inventory' ? offers.length : contracts.length).toLocaleString()}${listed.unattributed ? '+' : ''}` : null;
   const section = view === 'inventory' ? data?.offers : data?.contracts;
 
   if (!track) return <WidgetState kind="empty" icon="globe" message="Load a campaign to see the market." />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  const parent = head.outside ? <WidgetState kind="outside" read={head} />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : groupFailure && !groups.data ? groupFailure
+    : match.reason ? <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></> : null;
+  if (parent && !drillOpen) return parent;
   const header = headerSlot && createPortal(<>
     <Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Market view" />
     {count !== null && section && <span className="pill">{count} {view === 'contracts' ? 'active contracts' : view === 'requests' ? 'open requests' : 'listed'}</span>}
   </>, headerSlot);
-  if (!ready) return <>{groupFailure}{header}<div ref={head.root} className="international-market"><WidgetState kind="loading" label="Loading the market…" /></div></>;
+  if (!parent && !ready && !drillOpen) return <>{groupFailure}{header}<div ref={head.root} className="international-market"><WidgetState kind="loading" label="Loading the market…" /></div></>;
   const common = { sort, setOption: (key: string, value: Parameters<NonNullable<WidgetProps['setOption']>>[1]) => setOption?.(key === 'tableSort' ? `sort-${view}` : key, value),
     cellBars: options.cellBars === true, density: (options.density === 'compact' ? 'compact' : 'comfortable') as 'compact' | 'comfortable',
     rowHeight: 2 * (tokens.fontSize.title + tokens.fontSize.small), narrow: narrowTableOf(options), hoursPerSecond };
-  const body = !section
+  const body = parent ?? (!ready ? <WidgetState kind="loading" label="Loading the market…" /> : !section
     ? <WidgetState kind="unavailable" message={view === 'inventory' ? 'Market inventory was not recorded.' : 'Contract terms unavailable.'} />
     : view === 'inventory'
       ? offers.length ? <Table rowRevision={row => [row, row.seller === null ? null : labelAt(hour)(row.seller)]} key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment"
@@ -159,14 +165,15 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
         onRowClick={row => open(`${label(row.seller)} → ${label(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.terms.id}`)}
         live={view === 'contracts' ? live : undefined} {...common} />
         : listed.unattributed ? <WidgetState kind="unavailable" message={`Some ${view === 'contracts' ? 'contracts' : 'requests'}' countries were not recorded at this date.`} />
-          : <WidgetState kind="empty" icon="globe" message={view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'} />;
+          : <WidgetState kind="empty" icon="globe" message={view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'} />);
+  const drillDay = drillShown ?? drillAt;
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked?.title ?? DETAILS.label} day={dayLabel(drillShown ?? at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
+      title={picked?.title ?? DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      main={<div ref={head.root} className="international-market-table">{body}</div>}>
-      {picked && <MarketDrill runtime={runtime} widget={widget} hour={at} following={drill.follow} tags={picked.tags} selected={picked.selected} active={active} onAnswered={setDrillShown} />}
+      main={<div ref={head.root} className="international-market-table">{body}</div>} time={{ runtime, region: drillRegion }}>
+      {picked && <MarketDrill runtime={runtime} widget={widget} time={drillTime} tags={picked.tags} selected={picked.selected} active={active} onAnswered={setDrillShown} />}
     </DrillHost>
   </div>;
 }

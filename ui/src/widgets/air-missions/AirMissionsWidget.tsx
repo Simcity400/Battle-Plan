@@ -32,6 +32,8 @@ import type { MissionRow } from './airMissionsData';
 import type { AirMissionWing, AirMissionWingsReply } from '../../generated/dashboard';
 import { useAirMissions } from './useAirMissions';
 import './airMissions.css';
+import { SPEC, drillAction } from '../../dashboard/regionTime';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const rowKey = (row: MissionRow) => row.key;
 const wingKey = (row: AirMissionWing) => row.id;
@@ -80,14 +82,16 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   useEffect(() => { dispatch({ type: 'close' }); setRegion(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const following = widget.time.mode === 'follow';
   const onRowClick = useCallback((row: MissionRow) => {
-    const hour = headRead(widget, track, runtime.tracks, null).hourAt(runtime.clock.getHour());
+    const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(runtime.clock.getHour());
     if (hour === null) return;
     setRegion(row);
     dispatch(openWings(hour, following));
   }, [widget, track, runtime, following]);
   const open = drill.breakdown !== null && region !== null;
+  const drillTime = drillAction(drill, track);
+  const drillRegion = useRegion(widget, drillTime);
   const wings = useHeadProduct<AirMissionWingsReply>(runtime, widget, 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
-    { active: active && open, validate: validateAirWings, structure: wingsStructure, hoverHour: drill.follow ? null : drill.hour });
+    { active: active && open, validate: validateAirWings, structure: wingsStructure, time: drillTime });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => wingsShown.current() ?? Number.NaN,
@@ -113,7 +117,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     {pill}
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
       title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)}
-      following={drill.follow} canFollow={following} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+      following={drill.follow} canFollow={following} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main} time={{ runtime, region: drillRegion }}>
       <div ref={wings.root} className="air-missions">
         <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
       </div>

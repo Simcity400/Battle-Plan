@@ -7,7 +7,6 @@ import { ButterflyChart } from '../charts/butterfly';
 import type { ButterflyItem } from '../charts/butterfly';
 import { formatRatio } from '../charts/butterfly/layout';
 import DrillHost from '../charts/drill/DrillHost';
-import { drillHour } from '../charts/drill/drillState';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from '../charts/race/partsRaceDrill';
 import { jumpItem } from '../charts/jump';
 import { useChartTokens } from '../charts/useChartTokens';
@@ -44,6 +43,8 @@ import type { CountryRaceEntry } from '../charts/race/countryRace';
 import './militaryAirLedger.css';
 import type { MilitaryAirFamily } from '../generated/dashboard';
 import type { MilitaryAirLedger } from './militaryAirLedger';
+import { drillAction, SPEC, regionClockHour, axisHour } from './regionTime.ts';
+import { useRegion, useRegionHour } from './widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const airOperands = (reply: MilitaryAirLedger): MilitaryAirLedger => ({ ...reply, regions: [], buildings: [], warnings: [] });
@@ -180,7 +181,9 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const airPlaybackHour = useHeadHour(runtime.clock, active && air && airState.breakdown != null && airState.follow, position => airDrillKey.current(position));
   const clockHour = track ? Math.floor(airPlaybackHour) + track.axisOffset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
-  const airAt = Math.floor((airState.breakdown == null ? airState.hour ?? hour : drillHour(airState, clockHour)) ?? hour);
+  const airRegion = useRegion(widget, airState.breakdown == null ? SPEC : drillAction(airState, track));
+  const airRegionAt = useRegionHour(runtime, airRegion, active && air && airState.breakdown != null);
+  const airAt = Math.floor((airState.breakdown == null ? airState.hour ?? hour : airRegionAt ?? regionClockHour(airRegion, track, runtime.tracks, axisHour(runtime.clock))) ?? hour);
   const airChoices = airState.choices;
   const pinnedTag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : fallback[0] ?? selected.rows[0]?.tag;
   const pinnedIdentity = track && pinnedTag ? ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, pinnedTag) : undefined;
@@ -191,6 +194,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   airDrillKey.current = drillKey(airActor);
   const airHead = active && air && airFollowing && airActor && liveHour !== null ? headTrackHour : null;
   const drill = bombingDrill?.owner === airScope ? bombingDrill : null;
+  const bombingRegion = useRegion(widget, drill ? drillAction({ follow: drill.hour === null, hour: drill.hour }, track) : SPEC);
   const detail = { data: pending ? undefined : data, error, retry };
   const bombingDrillKey = useRef<(position: number) => string>(() => '');
   bombingDrillKey.current = drillKey(drill && { tag: drill.tag, identity: drill.identity });
@@ -286,7 +290,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         && <FollowControl following={airFollowing} onFollow={followAir} onPause={() => pickAirDay(airAt)} />}</p>{detail}
     </div>;
     return <div ref={root} className="military-air-ledger">{groupFailure}
-      <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={airOpen} title={metric === 'dealt' ? 'Enemy losses by cause' : 'Own losses by cause'}
+      <DrillHost time={{ runtime, region: airRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={airOpen} title={metric === 'dealt' ? 'Enemy losses by cause' : 'Own losses by cause'}
         day={dayText(airAt)} following={airFollowing} canFollow={!airChoices && !!airActor && liveHour != null} anchor={root} returnFocus=".country-race-chart canvas"
         onClose={() => { if (active && airPickRef.current === airPickOwner) dispatchAir({ type: 'close' }); }} onFollow={followAir} onPause={() => pickAirDay(airAt)}
         onPin={airActor && !airChoices && airAt >= from && airAt <= end ? () => {
@@ -309,7 +313,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   }
   const shown = drill ? drill.hour ?? bombingHour ?? hour : hour;
   return <div ref={root} className="military-air-ledger">{groupFailure}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={dayText(shown)} following={drill?.hour === null}
+    <DrillHost time={{ runtime, region: bombingRegion }} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={dayText(shown)} following={drill?.hour === null}
       canFollow={!!drill && bombingLive != null} anchor={root}
       onClose={() => { if (active && airPickRef.current === airPickOwner) setDrill(null); }}
       onFollow={() => { if (active && airPickRef.current === airPickOwner && bombingLive != null)

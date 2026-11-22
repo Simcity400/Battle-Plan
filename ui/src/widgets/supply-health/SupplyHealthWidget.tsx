@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import DrillHost from '../../charts/drill/DrillHost';
-import { drillHour } from '../../charts/drill/drillState';
 import { CLOSED_PARTS_RACE, pinPartsRace, reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 import CountryPicker from '../../components/CountryPicker';
 import SupplyBreakdown from './SupplyBreakdown';
@@ -40,6 +39,8 @@ import { useSupplySeries } from './supplySeries';
 import './supplyHealth.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { drillAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -106,7 +107,9 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const choices = drill.choices?.key === resetKey ? drill.choices : null;
   const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = Math.floor((drill.breakdown === null && choices === null ? head : drillHour(drill, clockHour)) ?? head);
+  const drillRegion = useRegion(widget, drillAction(drill, track));
+  const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
+  const drillAt = Math.floor((drill.breakdown === null && choices === null ? head : regionAt) ?? head);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };
   const drillTag = drill.breakdown;
@@ -253,7 +256,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {neutralHeader}
     {headerSlot && createPortal(<small className="dash-widget-subtitle"> · share of divisions</small>, headerSlot)}
-    <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost
+    <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost time={{ runtime, region: drillRegion }}
       mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={body} title="Supply classification"
       day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".supply-health-country-chart" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}

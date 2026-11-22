@@ -40,6 +40,7 @@ import type { CivilWarLaneInfo, Look } from './civilWarsData';
 import './civilWars.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { CivilWarsReply } from '../../generated/dashboard';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
@@ -74,7 +75,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour, identities),

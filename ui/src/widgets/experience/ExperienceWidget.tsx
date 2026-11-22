@@ -37,6 +37,7 @@ import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, exp
 import type { ExperienceBranch } from './experienceData';
 import { summaryEnd } from '../country-measure/measureData';
 import './experience.css';
+import { SPEC, pickedAt, recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_PAINT = () => {};
@@ -84,7 +85,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
   const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { country: countryFromKey(first)} : null,
-    { active, validate: validateExperienceReply, structure: experienceStructure, hoverHour: hover });
+    { active, validate: validateExperienceReply, structure: experienceStructure, time: hover === null ? SPEC : pickedAt(track, hover) });
   const setRoots = useCallback((element: HTMLDivElement | null) => { setRoot(element); card.root(element); }, [card.root]);
   const styleAt = Math.max(extent[0], Math.min(moment, extent[1]));
   const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
@@ -149,7 +150,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
         onHover={hour => setHover(hour === null ? null : Math.floor(hour))}
         formatValue={value => formatExperience(value * SCALE, measure !== 'banked')}
         tooltip={hour => ({ title: dayLabel(hour), subtitle: first ? `${labels.labelAt(Math.floor(hour))(first).name}: ${title}` : title,
-          rows: head && card.at === Math.floor(hour) ? branches.flatMap(branch => experienceCard(head, branch).rows.filter(row => row.label === MEASURE_LABELS[measure])
+          rows: recordedHour(track, hour) === null ? [{ label: 'Outside the recording', tone: 'muted' as const }]
+            : head && card.at === Math.floor(hour) ? branches.flatMap(branch => experienceCard(head, branch).rows.filter(row => row.label === MEASURE_LABELS[measure])
             .map(row => ({ ...row, label: BRANCH_LABELS[branch] }))) : [{ label: 'Loading…', tone: 'muted' as const }] })}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;
