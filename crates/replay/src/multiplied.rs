@@ -754,6 +754,15 @@ impl JournalTables {
         Self { columns: self.columns[..tables].to_vec(), places: self.places[..tables].to_vec(), removed: self.removed.iter().copied().filter(|&(at, _, _)| at < tables).collect() }
     }
 
+    fn relax_derived(mut self, derived: &[bool]) -> Self {
+        for (at, place) in self.places.iter().enumerate() {
+            if place.is_some_and(|table| derived[table]) {
+                self.columns[at] = self.columns[at].next_multiple_of(64).max(64);
+            }
+        }
+        self
+    }
+
     fn read<'a>(&self, bytes: &'a [u8], tables: usize) -> io::Result<Manifest<'a>> {
         let mut manifest = Manifest::read(bytes, &self.columns)?;
         if self.removed.is_empty() {
@@ -838,7 +847,7 @@ fn journal_candidates(
         if layout.is_empty() && !candidates.is_empty() {
             continue;
         }
-        let written = JournalTables::written(kinds, layout);
+        let written = JournalTables::written(kinds, layout).relax_derived(derived);
         let first_derived = written
             .places
             .iter()
@@ -2208,6 +2217,54 @@ mod tests {
             source.advance();
         }
         assert_eq!(tables, [(TableId::Campaign.index(), vec![1]), (land_order, vec![2]), (building_inputs, vec![3])]);
+
+        let folder = Folder::new("unknown-post-removal-derived-drift-ambiguous");
+        let army_mix = TableId::ArmyMix.index();
+        let mut drifted = kinds.clone();
+        drifted[army_mix].push(Kind::I64);
+        let drifted_identity = Identity { schema: schema_digest(&drifted), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let mut writer = JournalWriter::create(&folder.0, 0, &drifted_identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let sections = vec![
+            insert_section(&drifted, army_mix, 1, &[Values::I64(&[5]), Values::I64(&[6])]),
+            insert_section(&drifted, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }]),
+        ];
+        write_hour(&mut writer, &drifted, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+        writer.finish(None).unwrap();
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
+            .err()
+            .expect("drifted derived column count must not drop current layout and silently discard LandUnitOrder");
+        assert!(refused.to_string().contains("more than one table layout"), "{refused}");
+
+        let folder = Folder::new("unknown-post-removal-derived-drift-unique");
+        let mut writer = JournalWriter::create(&folder.0, 0, &drifted_identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let sections = vec![
+            insert_section(&drifted, army_mix, 1, &[Values::I64(&[5]), Values::I64(&[6])]),
+            insert_section(&drifted, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }]),
+            insert_section(&drifted, building_inputs, 3, &building),
+        ];
+        write_hour(&mut writer, &drifted, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+        writer.finish(None).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
+        assert!(!source.exact_schema);
+        let mut tables = Vec::new();
+        while let Some(record) = source.record().unwrap() {
+            if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
+                let manifest = Manifest::read(manifest, &columns).unwrap();
+                assert_eq!(manifest.statuses[army_mix], Status::NotRecorded);
+                assert_eq!(manifest.statuses[land_order], Status::Complete);
+                assert_eq!(manifest.statuses[building_inputs], Status::Complete);
+                for entry in &manifest.sections {
+                    let decoded = Decoded::read(read_sections.next(entry.bytes).unwrap(), &kinds[entry.table], false).unwrap();
+                    tables.push((entry.table, decoded.keys));
+                }
+            }
+            source.advance();
+        }
+        assert_eq!(tables, [(land_order, vec![2]), (building_inputs, vec![3])]);
 
         let folder = Folder::new("unknown-pre-addition-equivalent");
         let earlier = &kinds[..land_order];
