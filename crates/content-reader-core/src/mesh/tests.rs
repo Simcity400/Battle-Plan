@@ -2251,7 +2251,7 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     let unsettled = br#"
         @unused = m
         @color = rgb { }
-        entity = { name = early locator = { position = { @z = 1 } } name = late }
+        entity = { name = early locator = { position = { @z = 1 } } name = @only_skipped }
         entity = {
             game_data = { atlas_size = { @extra = overlay_only x = 4 } }
             name = @extra
@@ -2363,6 +2363,7 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert!(roster.refused_declaration("@liquid").is_some());
     assert!(roster.refused_declaration("rgb").is_some());
     assert!(roster.refused_declaration("early").is_some());
+    assert!(roster.refused_declaration("@only_skipped").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
