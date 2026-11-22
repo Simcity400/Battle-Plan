@@ -135,3 +135,45 @@ pub const MESHES_GFX: &[u8] = br#"objectTypes = {
 
 pub const PLANE_ASSET: &[u8] =
     br#"entity = { name = plane pdxmesh = body scale = 1 state = { name = idle } }"#;
+
+pub fn animated_root_fixture(
+    scale: f32,
+    label: &'static str,
+    instance: ModelInstance,
+) -> (ModelPass, ModelInstance) {
+    let mut rig = entity_animation::pose_rig(2.0, true, true);
+    let root = &mut rig.nodes[0];
+    root.mesh_scale = scale.signum();
+    root.scale = scale;
+    let source = Arc::make_mut(root.native.as_mut().unwrap());
+    source.mesh_scale = scale.signum();
+    source.entity_scale = 2.0;
+    for node in &mut rig.nodes {
+        Arc::make_mut(node.native.as_mut().unwrap()).frozen = node.clips[0].animation.clone();
+    }
+    let library = ModelLibrary {
+        rigs: vec![Arc::new(rig)],
+        meshes: vec![ModelMesh {
+            asset: AssetKey::synthetic("unit"),
+            name: "unit".into(),
+            path: String::new(),
+            scale,
+            lod_distances: Vec::new(),
+            native: Vec::new(),
+            radius: 1.0,
+            height: 1.0,
+            visual: false,
+            own_radius: 1.0,
+            bound: 1.0,
+            convoy_radius: None,
+            attachments: 0,
+            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        }],
+        ..Default::default()
+    };
+    let mut pass = ModelPass::new(&library, label);
+    pass.update_placed(vec![(0, instance)], 256.0);
+    pass.animate(0.5, None, &[0.0]);
+    let drawn = pass.field.instances[0];
+    (pass, drawn)
+}

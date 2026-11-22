@@ -1,13 +1,13 @@
 use super::*;
-use std::fs;
 use replay::campaign::{
     Replay,
     live::{Admit, Asked, Host, LiveWriter, Progress},
 };
 use replay::columnar_file::Settings;
-use replay::columnar_journal::{Journal, Record as Journaled, Source};
 use replay::columnar_frames::{Recording, Segment};
+use replay::columnar_journal::{Journal, Record as Journaled, Source};
 use replay::native_frame::{OneThread, RowFrame};
+use std::fs;
 
 fn journal_thread() -> Arc<JournalThread> {
     JournalThread::start().unwrap()
@@ -270,8 +270,16 @@ fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
     let folder = Folder::new("blocked");
     let blocker = folder.0.join("blocker");
     fs::write(&blocker, b"").unwrap();
-    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session(), &journal_thread());
-    let prepared = columnar.prepare(&frame(1, 1), row(), &OneThread).unwrap().expect("prepared");
+    let mut columnar = Columnar::open(
+        &blocker.join("campaign"),
+        "campaign",
+        &session(),
+        &journal_thread(),
+    );
+    let prepared = columnar
+        .prepare(&frame(1, 1), row(), &OneThread)
+        .unwrap()
+        .expect("prepared");
     assert!(columnar.commit(prepared, false, &OneThread).is_ok());
     columnar.settle();
     assert!(columnar.prepare(&frame(1, 2), row(), &OneThread).is_err());
@@ -583,7 +591,9 @@ fn a_held_journal_never_holds_the_spool_and_stays_a_whole_record_prefix() {
         std::thread::spawn(move || {
             let guard = lane.hold_writer();
             held.send(()).unwrap();
-            let in_time = released.recv_timeout(crate::TEST_HANG_GUARD).is_ok();
+            let in_time = released
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .is_ok();
             drop(guard);
             in_time
         })

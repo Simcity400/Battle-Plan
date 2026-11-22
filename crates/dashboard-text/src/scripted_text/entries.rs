@@ -130,9 +130,7 @@ fn read_state_templates(
     StateNames,
     Vec<content_reader_states::states::Diagnostic>,
 )> {
-    let map = content_reader_core::terrain::read_default_map(layers)?;
-    let provinces =
-        content_reader_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+    let provinces = content_reader_core::map::load_definitions(layers)?;
     let (states, warnings) =
         content_reader_states::states::read_with_diagnostics(layers, defines, &provinces)?;
     let names = states

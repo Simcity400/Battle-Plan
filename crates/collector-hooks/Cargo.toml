@@ -11,8 +11,10 @@ doctest = false
 
 [features]
 test-support = []
+tap-foreign-probe = []
 
 [dependencies]
+engine-sites.workspace = true
 engine-native.workspace = true
 engine-allocation.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -20,6 +22,10 @@ collector-primitives.workspace = true
 collector-status.workspace = true
 retour = "0.3"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[[example]]
+name = "tap_foreign_unwind"
+required-features = ["tap-foreign-probe"]
 
 [dev-dependencies]
 serde_json.workspace = true

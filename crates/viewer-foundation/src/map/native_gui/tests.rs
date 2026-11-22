@@ -3062,6 +3062,7 @@ Effect Text { VertexShader = V PixelShader = P }
     let part = Part {
         path: "mod.text".into(),
         child: None,
+        background_index: None,
         kind: PartKind::Text {
             font: "Main_14".into(),
             glyphs: vec![DrawnGlyph {
@@ -3487,6 +3488,7 @@ fn compiled_part(
     Part {
         path: "w.a".into(),
         child: None,
+        background_index: None,
         kind,
         clip: None,
         color: [1.; 4],

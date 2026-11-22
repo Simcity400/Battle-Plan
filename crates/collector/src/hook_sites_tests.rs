@@ -3,7 +3,7 @@ use engine_mutations::{
 };
 use engine_production::market_mutations;
 
-use crate::hook_inventory::{PATCH, Patch, patches};
+use collector_hook_failures::hook_inventory::{PATCH, Patch, patches};
 use engine_sites::Rva;
 
 fn runtime_hook_families() -> std::collections::BTreeSet<&'static str> {

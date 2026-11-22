@@ -5,7 +5,7 @@ use std::sync::{MutexGuard, Weak};
 type Parts = [Option<RangeTicket>; ship_models::MAX_PARTS];
 
 pub(crate) struct ShipDetailsDispatch {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     state: Mutex<State>,
 }
@@ -21,7 +21,7 @@ struct State {
 }
 impl ShipDetailsDispatch {
     pub(super) fn new(
-        executor: &Arc<acquisition::Pool<Job, Report>>,
+        executor: &Arc<collector_workers::acquisition::Pool<Job, Report>>,
         calibration: &Arc<SharedCalibration>,
     ) -> Self {
         Self {
@@ -90,7 +90,7 @@ impl ShipDetailsDispatch {
         };
     }
 }
-impl acquisition::Publication for ShipDetailsDispatch {
+impl collector_workers::acquisition::Publication for ShipDetailsDispatch {
     fn failed(&self) {
         self.lock().failure = Some(Failure::Panicked);
     }

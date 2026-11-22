@@ -1,5 +1,4 @@
-
-use crate::snapshot_plan::SnapshotPlan;
+use collector_snapshots::snapshot_plan::SnapshotPlan;
 use engine_native::Memory;
 use std::cell::RefCell;
 
@@ -36,7 +35,7 @@ pub(crate) fn allocation_failure_exercise() {
 
 #[test]
 fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
-    use crate::extended::characters::characters_test_kit as kit;
+    use collector_characters::extended::characters::characters_test_kit as kit;
     use engine_native::{ccharacter, character_portrait_entry, walk};
     struct Source<'a> {
         bytes: &'a [u8],

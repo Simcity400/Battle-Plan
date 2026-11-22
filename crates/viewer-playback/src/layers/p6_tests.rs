@@ -751,7 +751,16 @@ fn play_ahead(units: Units, layers: Vec<Box<dyn Layer>>, last: i32, made: impl F
             }
             std::thread::yield_now();
         }
-        let frame = side.frame(next).unwrap();
+        let mut stepped = None;
+        for _ in 0..50_000_000u64 {
+            let frame = side.frame(next).unwrap();
+            if frame.steps > 0 {
+                stepped = Some(frame);
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let frame = stepped.unwrap_or_else(|| panic!("no frame took the step to hour {next}"));
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "a step of four hours a frame");
         each(&frame, &mut side);
         seen += 1;

@@ -47,7 +47,11 @@ impl Shape {
                 std::array::from_fn(|axis| max[axis].max(next.max[axis])),
             )
         });
-        Some(Self::Bounds { min: min.map(|v| v * scale), max: max.map(|v| v * scale) })
+        let (a, b) = (min.map(|v| v * scale), max.map(|v| v * scale));
+        Some(Self::Bounds {
+            min: std::array::from_fn(|axis| a[axis].min(b[axis])),
+            max: std::array::from_fn(|axis| a[axis].max(b[axis])),
+        })
     }
 
     pub fn reach(&self) -> Option<f32> {
@@ -70,8 +74,16 @@ impl Shape {
                     }),
                     None => (*min, *max),
                 };
-                let place = |corner: [f32; 3]| std::array::from_fn(|axis| corner[axis] * instance.scale + instance.position[axis]);
-                slab(place(min), place(max), origin, direction)
+                let place = |corner: [f32; 3]| -> [f32; 3] {
+                    std::array::from_fn(|axis| corner[axis] * instance.scale + instance.position[axis])
+                };
+                let (a, b) = (place(min), place(max));
+                slab(
+                    std::array::from_fn(|axis| a[axis].min(b[axis])),
+                    std::array::from_fn(|axis| a[axis].max(b[axis])),
+                    origin,
+                    direction,
+                )
             }
         }
     }
@@ -420,6 +432,70 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Shape::bounds(&decoded, 2.0), Some(Shape::Bounds { min: [-2.0, 0.0, 0.0], max: [2.0, 4.0, 2.0] }));
+        let mirrored = Shape::bounds(&decoded, -2.0).unwrap();
+        assert_eq!(mirrored, Shape::Bounds { min: [-2.0, -4.0, -2.0], max: [2.0, 0.0, 0.0] });
+        assert!(mirrored.hit(at([10.0, 0.0, 10.0]), &[], [9.0, 5.0, 9.0], DOWN));
+        assert!(mirrored.hit(ModelInstance { position: [10.0, 0.0, 10.0], scale: -1.0, ..Default::default() }, &[], [11.0, 5.0, 11.0], DOWN));
         assert_eq!(Shape::bounds(&mesh::Mesh::default(), 1.0), None);
+    }
+
+    #[test]
+    fn root_joints_supports_mirrored_models_with_negative_pdxmesh_scale() {
+        use viewer_models::{entity_animation, test_support::animated_root_fixture};
+
+        let instance = ModelInstance {
+            position: [10.0, 0.0, 20.0],
+            scale: 1.0,
+            animation: entity_animation::IDLE,
+            animation_seed: 1,
+            animation_identity: 1,
+            ..Default::default()
+        };
+        let (positive, positive_instance) = animated_root_fixture(2.0, "positive", instance);
+        let (mirrored, mirrored_instance) = animated_root_fixture(-2.0, "mirrored", instance);
+        let positive_joints = positive
+            .root_joints(0, &positive_instance)
+            .unwrap()
+            .unwrap();
+        let mirrored_joints = mirrored
+            .root_joints(0, &mirrored_instance)
+            .unwrap()
+            .unwrap();
+        assert!(!mirrored_joints.is_empty());
+        let expected: Vec<[f32; 3]> = positive_joints
+            .iter()
+            .map(|joint| joint.map(|v| -v))
+            .collect();
+        for (actual, want) in mirrored_joints.iter().zip(&expected) {
+            for axis in 0..3 {
+                assert!(
+                    (actual[axis] - want[axis]).abs() < 1e-5,
+                    "axis {axis}: actual {:?} vs want {:?}",
+                    actual,
+                    want
+                );
+            }
+        }
+        let shape = Shape::Bounds {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        let center = [0, 1, 2].map(|axis| {
+            let lo = mirrored_joints
+                .iter()
+                .map(|j| j[axis])
+                .fold(f32::INFINITY, f32::min);
+            let hi = mirrored_joints
+                .iter()
+                .map(|j| j[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            0.5 * (lo + hi) + instance.position[axis]
+        });
+        assert!(shape.hit(
+            mirrored_instance,
+            &mirrored_joints,
+            [center[0], center[1] + 10.0, center[2]],
+            [0.0, -1.0, 0.0],
+        ));
     }
 }

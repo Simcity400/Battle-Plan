@@ -624,7 +624,10 @@ fn scenario_source(
         ),
         skeleton,
         mesh_scale: definition.scale,
-        entity_scale: descriptors.resolve_entity(entity).unwrap().scale,
+        entity_scale: descriptors
+            .inherit(entity)
+            .and_then(|inherited| inherited.scale)
+            .unwrap_or(1.0),
         frozen: None,
         game_data: None,
     })

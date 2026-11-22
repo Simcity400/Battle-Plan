@@ -606,7 +606,7 @@ fn frame_to(side: &mut crate::playhead_host::MapSide, sets: &mut Vec<Set>, targe
             assert_eq!(side.applied(), Some(target), "the steps end at the hours a test names: {}", crate::layers::recorded::seen(side));
             return;
         }
-        assert!(!ready || frame.steps > 0, "the frame at {target} took the steps built through it: {}", crate::layers::recorded::seen(side));
+        assert!(!ready || frame.steps == 0, "the frame at {target} took only part of the steps built through it: {}", crate::layers::recorded::seen(side));
         if frame.steps == 0 && frame.swapped.is_none() {
             std::thread::yield_now();
         }

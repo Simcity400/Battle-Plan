@@ -11,7 +11,10 @@ use replay_data::{
         TableId,
     },
 };
-use std::{collections::HashMap, io};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
 
 pub(super) fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -231,8 +234,76 @@ pub(super) fn costs_of(hour: &Hour<'_>, country: u32) -> io::Result<Vec<CountryP
     batch(&hour.table(TableId::CountryPowerDailyCosts), country)
 }
 
-pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
-    Ok(costs_complete(hour) && hour.table(TableId::CountryPowerDailyCosts).slot(u128::from(country) << 32).is_none())
+pub(super) struct ZeroDaily {
+    pub country: u32,
+    pub epoch: u64,
+    pub day: i32,
+    pub sequence: u64,
+}
+
+pub(super) fn fresh_zero_dailies(hour: &Hour<'_>) -> Vec<ZeroDaily> {
+    if !daily_complete(hour) {
+        return Vec::new();
+    }
+    let view = hour.table(TableId::CountryPowerDaily);
+    if view.sampled_at() != Some(hour.hour) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for slot in view.rows() {
+        if view.number(DAILY[3], slot) != Some(0) {
+            continue;
+        }
+        let (Some(key), Some(epoch), Some(day_hour), Some(sequence)) = (
+            view.key(slot),
+            view.number(DAILY[0], slot),
+            view.number(DAILY[1], slot),
+            view.number(DAILY[6], slot),
+        ) else {
+            continue;
+        };
+        out.push(ZeroDaily {
+            country: key as u32,
+            epoch: epoch as u64,
+            day: super::midnight(day_hour as i32),
+            sequence: sequence as u64,
+        });
+    }
+    out.sort_unstable_by_key(|row| row.country);
+    out
+}
+
+pub(super) fn no_nonzero_costs_for(hour: &Hour<'_>, country: u32, epoch: u64, day: i32, sequence: u64) -> io::Result<bool> {
+    if !costs_complete(hour) {
+        return Ok(false);
+    }
+    Ok(costs_of(hour, country)?
+        .into_iter()
+        .all(|cost| cost.epoch == epoch && super::midnight(cost.day_hour) == day && cost.pp_sequence == sequence && cost.cost_raw == 0))
+}
+
+pub(super) fn written_cost_days(hour: &Hour<'_>) -> io::Result<HashSet<(u32, i32)>> {
+    let table = TableId::CountryPowerDailyCosts;
+    if !costs_complete(hour) {
+        return Ok(HashSet::new());
+    }
+    let mut slots = hour.written_rows(table, Columns::Every);
+    slots.sort_unstable();
+    slots.dedup();
+    let mut days = HashSet::new();
+    for slot in slots {
+        let cost = row::<CountryPowerDailyCostRow>(hour, table, slot)?;
+        days.insert((cost.country, super::midnight(cost.day_hour)));
+    }
+    Ok(days)
+}
+
+pub(super) fn deleted_cost_countries(hour: &Hour<'_>) -> HashSet<u32> {
+    let table = TableId::CountryPowerDailyCosts;
+    if !costs_complete(hour) {
+        return HashSet::new();
+    }
+    hour.deleted_keys(table).map(|key| (key >> 32) as u32).collect()
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {

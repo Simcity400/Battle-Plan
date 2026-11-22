@@ -119,7 +119,9 @@ fn census_publication_releases_details_before_collection_with_identical_bytes_an
         let ticket = unsafe { batch.submit(&mut Some(Job::ShipModels(request))) }.unwrap();
         let count = ship_models::parts_for(ships);
         for _ in 0..count {
-            running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            running
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .unwrap();
         }
         assert!(batch.is_complete(ticket));
         let mut completion = None;
@@ -172,7 +174,7 @@ fn callback_winning_the_publication_race_retains_the_original_detail_fallback() 
     dispatch.store(&mut request.captured, &Ok(Report::ShipModels));
     assert_eq!(request.captured.allocated_bytes(), 0);
     assert!(dispatch.take(&mut request.captured).unwrap().is_none());
-    acquisition::Publication::published(&*dispatch);
+    collector_workers::acquisition::Publication::published(&*dispatch);
     assert!(dispatch.lock().pending.iter().all(Option::is_none));
     assert_eq!(request.captured.census_len(), 1200);
     assert_eq!(
@@ -197,7 +199,7 @@ fn failed_census_never_releases_details_and_retains_its_original_capture() {
         batch.arm_ship_details(&mut request);
         let dispatch = request.details.take().unwrap();
         dispatch.store(&mut request.captured, &Err(failure));
-        acquisition::Publication::published(&*dispatch);
+        collector_workers::acquisition::Publication::published(&*dispatch);
         assert!(dispatch.take(&mut request.captured).unwrap().is_none());
         assert_eq!(request.captured.allocated_bytes(), bytes);
         assert_eq!(request.captured.census_len(), 1200);
@@ -213,7 +215,7 @@ fn rejected_detail_continuations_are_retained_and_unadopted_children_drain() {
         let dispatch = request.details.take().unwrap();
         dispatch.store(&mut request.captured, &Ok(Report::ShipModels));
         pool.executor.stop_for_contained_panic();
-        acquisition::Publication::published(&*dispatch);
+        collector_workers::acquisition::Publication::published(&*dispatch);
         let state = dispatch.lock();
         assert!(state.dispatched);
         assert_eq!(state.pending.iter().flatten().count(), 3);
@@ -246,7 +248,9 @@ fn unwinding_callback_drains_publisher_released_children_without_adopting_them()
         let mut request = request(1200);
         batch.arm_ship_details(&mut request);
         unsafe { batch.submit(&mut Some(Job::ShipModels(request))) }.unwrap();
-        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
         panic!("synthetic callback unwind");
     }));
     assert!(unwound.is_err());

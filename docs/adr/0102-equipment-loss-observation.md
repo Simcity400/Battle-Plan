@@ -10,4 +10,4 @@ The land entry shim preserves the native stack arguments and supplies the actual
 
 The fixtures exercise real guarded reads and authored native callers, including incomparable overlaps, nonempty fake pools, refusing originals that still run, and a native return whose complete value survives the wrapper. Shared fixture state is serialized, with the observation assigned to the fixture thread. Each attachment resets counters and recovers poisoned shared test state. An isolated process tests the first installation refusal so its attachment-scoped diagnostic cannot affect neighboring fixtures.
 
-[Destruction event collection and fold](../../crates/collector/src/equipment_destruction.rs) · [Equipment observer regressions](../../crates/collector/src/equipment_destruction/tests.rs)
+[Destruction event collection and fold](../../crates/collector-equipment-destruction/src/equipment_destruction.rs) · [Equipment observer regressions](../../crates/collector-equipment-destruction/src/equipment_destruction/tests.rs)

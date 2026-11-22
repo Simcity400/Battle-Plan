@@ -358,7 +358,7 @@ mod tests {
         let changed = ProvinceAreas::read(&layers).unwrap_err();
         assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
         let changed = changed.to_string();
-        assert!(changed.contains("content generation changed"), "{changed}");
+        assert!(changed.contains("changed since verification"), "{changed}");
         assert!(changed.contains("custom-territory.bmp"), "{changed}");
         let layers = ResolvedLayers::from_folders(&[
             (&base, &[]),

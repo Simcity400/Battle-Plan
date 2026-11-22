@@ -2147,13 +2147,13 @@ impl ModelPass {
         let rig = self.rigs.get(slot)?;
         let player = self.player(mesh, instance)?;
         let root = rig.nodes.first()?;
-        if root.native.as_ref().is_none_or(|source| source.skeleton.is_empty()) {
+        let Some(source) = root.native.as_ref() else {
+            return Some(Ok(Vec::new()));
+        };
+        if source.skeleton.is_empty() {
             return Some(Ok(Vec::new()));
         }
-        if !(root.mesh_scale > 0.0) {
-            return Some(Err(format!("unit model {mesh} has no pdxmesh scale to take its joints out of")));
-        }
-        let entity = root.scale / root.mesh_scale;
+        let entity = source.entity_scale;
         let actors = self.actors(slot, self.player_key(mesh, instance), rig, Some(player), false);
         let pose = match actors.first().map(|actor| &actor.pose) {
             Some(Ok(pose)) => pose,

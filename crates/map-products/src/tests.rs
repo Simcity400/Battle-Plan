@@ -481,9 +481,7 @@ fn retained_readers_keep_canonical_layer_indices_across_recorded_subsets() {
         Entry::Read { layer: Some(layer), .. } if layer.index == 1 && layer.id == "test1")));
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn witness_hashes_bytes_not_sizes_or_timestamps_and_logs_verification_errors() {
     use std::{
         fs::{File, FileTimes},

@@ -3,6 +3,13 @@ use super::{Node, Shaper};
 use crate::parser::native::{Field, Shape};
 
 impl Shaper<'_> {
+    pub(super) fn body_value_needs_names(token: u32, field: &Field<'_>) -> bool {
+        matches!(
+            (token, field.keyword().as_deref()),
+            (0x3BE4 | 0x37DC, Some(b"building"))
+        )
+    }
+
     pub(super) fn body_value(&mut self, token: u32, field: &Field<'_>) -> Shape<Node> {
         let key = field.keyword();
         match (token, key.as_deref()) {
