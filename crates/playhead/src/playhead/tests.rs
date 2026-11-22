@@ -2770,8 +2770,8 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
     loop {
         let before = playhead.step_state();
         let head = before.0.unwrap_or(0).min(mid);
-        consumer.advance(head);
-        consumer.take(head, &mut steps);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
         if steps.last().is_some_and(|step| step.last() >= mid) {
             break;
         }
@@ -2795,8 +2795,8 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
     loop {
         let before = playhead.step_state();
         let head = before.0.unwrap_or(0);
-        consumer.advance(head);
-        consumer.take(head, &mut steps);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
         if steps.last().is_some_and(|step| step.last() >= last) {
             break;
         }
@@ -2832,7 +2832,7 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
         "a join step already queued in the ring is observed even when published_steps has not moved since",
     );
     let before_take = steps.len();
-    consumer.take(last, &mut steps);
+    take_steps(&mut consumer, last, &mut steps);
     assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "the same-hour join step carries table 1");
     let drained = playhead.step_state();
     assert!(!consumer.wait_step_after(drained, last).unwrap(), "once the join step is drained at end, wait_step_after reports exhausted again");
@@ -2902,8 +2902,8 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     loop {
         let before = playhead.step_state();
         let head = before.0.unwrap_or(0);
-        consumer.advance(head);
-        consumer.take(head, &mut steps);
+        consumer_advance(&consumer, head);
+        take_steps(&mut consumer, head, &mut steps);
         if steps.last().is_some_and(|step| step.last() >= last) {
             break;
         }
@@ -2925,7 +2925,7 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     }
     wait_hook(2);
     let before_take = steps.len();
-    consumer.take(last, &mut steps);
+    take_steps(&mut consumer, last, &mut steps);
     assert!(steps[before_take..].iter().any(|step| step.table(1).is_some()), "table 1 landed while table 2 is still joining");
     assert!(steps[before_take..].iter().all(|step| step.table(2).is_none()), "table 2 has not landed yet");
     let after_t1 = playhead.step_state();
@@ -2945,7 +2945,7 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
             && playhead.held().2.declarations_applied == playhead.declarations()
     });
     let before_t2 = steps.len();
-    consumer.take(last, &mut steps);
+    take_steps(&mut consumer, last, &mut steps);
     assert!(steps[before_t2..].iter().any(|step| step.table(2).is_some()), "table 2 landed after release");
     let drained = playhead.step_state();
     assert!(!consumer.wait_step_after(drained, last).unwrap(), "after both joins drain at end, wait_step_after reports exhausted");
