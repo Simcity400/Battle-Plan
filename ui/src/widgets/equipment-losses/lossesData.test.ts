@@ -6,7 +6,8 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { nearest, shipLeaves, stepHours, withEdges, withHead } from './lossesData.ts';
-import { LEVELS, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
+import { LEVELS, atHead, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 
 const ROOT = { id: 'all', label: 'All losses' };
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
@@ -574,6 +575,27 @@ test('withHead records explicit exact absence for missing live cells and preserv
   const roundedFloatHead = withHead(betweenBase, 106, () => Number(9007199254740993n));
   assert.equal(pointAt(roundedFloatHead.causes[0].leaves[0], 106), null);
   assert.equal(lossesTotal(lossItems(roundedFloatHead, live(106))).exact, null);
+
+  const fallbackHeadJson = JSON.parse(JSON.stringify({
+    leaves: ['0'],
+    warnings: [],
+    live: {
+      groups: [{
+        table: 70,
+        columns: [0],
+        keys: ['0'],
+        values: [Number(9007199254740993n)],
+        rawValues: ['9007199254740993'],
+      }],
+      rows: ['0'],
+      kinds: [{ id: 'total', op: 'value', scale: 1 }],
+      cells: [0, 0, 1, 0, 0, 0],
+    },
+  }));
+  const fallbackOverlay = atHead(betweenBase, 106, repliedCells(fallbackHeadJson).read(), new Set(fallbackHeadJson.leaves));
+  assert.equal(pointAt(fallbackOverlay.causes[0].leaves[0], 106)?.totalRaw, '9007199254740993');
+  assert.equal(lossesTotal(lossItems(fallbackOverlay, live(106))).exact, 9007199254740993n);
+  assert.deepEqual(fallbackOverlay.causes[0].unknownSpans, []);
 
   const coarseZero = destruction();
   coarseZero.from = 120;

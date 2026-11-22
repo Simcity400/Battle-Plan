@@ -499,8 +499,17 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
         for (&key, &(_, incomplete_from)) in &last {
             leaves.entry(key).or_default().incomplete_from = incomplete_from;
         }
-        let keys: Vec<u128> = stretch_keys.iter().copied().collect();
         let (first, end) = (stretch.first.max(from), stretch.last.min(to));
+        if first <= end {
+            let lives = dashboard_query::cost::lifetimes(recording, stretch.run, TableId::EquipmentLossTotals)?;
+            let start = lives.partition_point(|&(key, ..)| key < low);
+            for &(key, lived_first, lived_last) in lives[start..].iter().take_while(|&&(key, ..)| key <= high) {
+                if lived_last >= i64::from(first) && lived_first <= i64::from(end) {
+                    stretch_keys.insert(key);
+                }
+            }
+        }
+        let keys: Vec<u128> = stretch_keys.iter().copied().collect();
         if !keys.is_empty() && first <= end {
             let charts = dashboard_query::series::charts_within(recording, stretch.run, (TableId::EquipmentLossTotals, column), Some(&keys[..]), (first, end), level, bin_hours)?;
             for (chart, (first, end)) in charts {
@@ -516,8 +525,12 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
                     if leaf_first > leaf_end {
                         continue;
                     }
+                    let points = bin_points_for(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end, &stretch_reads);
+                    if points.is_empty() {
+                        continue;
+                    }
                     let leaf = leaves.entry(key).or_default();
-                    for (hour, value) in bin_points_for(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end, &stretch_reads) {
+                    for (hour, value) in points {
                         leaf.points.insert(hour, value);
                     }
                 }

@@ -5,6 +5,8 @@ import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';
 import { formatRate } from '../../charts/valueAxis.ts';
+import { liveKey } from '../../charts/live.ts';
+import type { LiveValues } from '../../charts/live';
 import { entryAt } from '../../dashboard/reads.ts';
 import { int, object } from '../../dashboard/validation.ts';
 
@@ -151,6 +153,14 @@ export function withHead(reply: LossesReply, hour: number, total: (leaf: LossLea
     });
     return { ...cause, leaves, unknownSpans: missing.length ? [...cause.unknownSpans, missing[0]] : cause.unknownSpans };
   }) };
+}
+
+export function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, named: ReadonlySet<string>): LossesReply {
+  return withHead(withShips(reply, hour), hour, (leaf: LossLeaf) => {
+    if (!named.has(leaf.key)) return null;
+    const key = liveKey(leaf.key, 'total');
+    return cells.raw?.(key) ?? cells.get(key) ?? cells.missing(key);
+  });
 }
 
 export function exactPointAt(leaf: LossLeaf, hour: number): ExactLossPoint | null {

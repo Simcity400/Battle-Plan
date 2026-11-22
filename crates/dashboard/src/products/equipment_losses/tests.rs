@@ -1033,6 +1033,29 @@ fn exact_read_at_unavailable_totals_hour_records_explicit_absence() {
         short_land.leaves[0].exact,
         vec![ExactLossPoint { hour: 101, total_raw: Some("500000".to_owned()) }, ExactLossPoint { hour: 102, total_raw: None }]
     );
+
+    let endpoint_only = LossesParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 100,
+        to: 102,
+        width: 64,
+        reads: vec![100, 102],
+    };
+    let range = EquipmentLosses::load(&source, &endpoint_only, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let range_land = range
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(range_land.leaves.len(), 1, "endpoint-only reads [100, 102] must still discover the loss at 101");
+    assert_eq!(range_land.leaves[0].points, vec![LossPoint { hour: 101, total_raw: "500000".to_owned() }]);
+    assert_eq!(
+        range_land.leaves[0].exact,
+        vec![ExactLossPoint { hour: 100, total_raw: None }, ExactLossPoint { hour: 102, total_raw: None }]
+    );
 }
 
 #[test]

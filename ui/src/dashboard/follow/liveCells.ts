@@ -13,10 +13,11 @@ export const ZERO_DIVISOR = 'Its divisor is zero at this hour';
 
 export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
 export interface LiveKind { id: string; op: LiveOp; scale: number }
-export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; follow?: number; seedHour?: number; unavailable?: string }
+export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; rawValues?: (string | null)[]; follow?: number; seedHour?: number; unavailable?: string }
 export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: LiveKind[]; cells: number[] }
 
 const OPS = new Set<LiveOp>(['value', 'sum', 'difference', 'ratio']);
+const RAW_INT = /^-?\d+$/;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
@@ -32,6 +33,8 @@ export function liveSection(reply: unknown): LiveSection | null {
       || (group.values !== undefined || group.follow !== undefined) === (group.unavailable !== undefined)
       || (group.values !== undefined && group.follow !== undefined) !== (group.seedHour !== undefined)
       || group.values !== undefined && (!Array.isArray(group.values) || group.values.length !== size || !group.values.every(value => typeof value === 'string' || Number.isFinite(value)))
+      || group.rawValues !== undefined && (group.values === undefined || !Array.isArray(group.rawValues) || group.rawValues.length !== size
+        || !group.rawValues.every((value, at) => value === null || typeof value === 'string' && RAW_INT.test(value) && typeof group.values![at] === 'number'))
       || group.seedHour !== undefined && (!Number.isSafeInteger(group.seedHour) || !group.values?.every(value => typeof value === 'string' || Number.isSafeInteger(value)))
       || group.follow !== undefined && !(integer(group.follow) && isCellsId(group.follow))
       || group.unavailable !== undefined && typeof group.unavailable !== 'string')
@@ -70,9 +73,17 @@ const missingGroup = (reason: string): GroupValues => ({ get: () => undefined, m
 
 function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
   const width = spec.columns.length;
+  const rawValues = spec.rawValues;
   return {
     get: (row, column) => { const value = values[row * width + column]; return typeof value === 'number' ? value : undefined; },
-    raw: (row, column) => { const value = values[row * width + column]; return typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined; },
+    raw: (row, column) => {
+      const at = row * width + column;
+      const value = values[at];
+      if (typeof value !== 'number') return undefined;
+      const exact = rawValues?.[at];
+      if (typeof exact === 'string') return BigInt(exact);
+      return Number.isSafeInteger(value) ? BigInt(value) : undefined;
+    },
     missing: (row, column) => { const value = values[row * width + column]; return typeof value === 'string' ? value : NOT_READ; },
   };
 }

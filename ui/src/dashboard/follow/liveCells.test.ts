@@ -87,3 +87,44 @@ test('CellGroup and sectionValues preserve unsafe 64-bit integers through raw()'
   assert.equal(values.raw?.(liveKey('k', 'total')), 9007199254740993n);
   assert.equal(values.get(liveKey('k', 'total')), Number(9007199254740993n));
 });
+
+test('repliedCells preserves unsafe 64-bit integers from ordinary JSON head replies via rawValues', () => {
+  const jsonText = JSON.stringify({
+    leaves: ['k', 'm'],
+    warnings: [],
+    live: {
+      groups: [{
+        table: 70,
+        columns: [0],
+        keys: ['k', 'm'],
+        values: [Number(9007199254740993n), 'Not recorded at this hour'],
+        rawValues: ['9007199254740993', null],
+      }],
+      rows: ['k', 'm'],
+      kinds: [{ id: 'total', op: 'value', scale: 1 }],
+      cells: [0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0],
+    },
+  });
+  const values = repliedCells(JSON.parse(jsonText)).read();
+  assert.equal(values.raw?.(liveKey('k', 'total')), 9007199254740993n);
+  assert.equal(values.get(liveKey('k', 'total')), Number(9007199254740993n));
+  assert.equal(values.raw?.(liveKey('m', 'total')), undefined);
+  assert.equal(values.missing(liveKey('m', 'total')), 'Not recorded at this hour');
+
+  assert.throws(() => liveSection({
+    live: {
+      groups: [{ table: 70, columns: [0], keys: ['k'], values: [1], rawValues: ['1.5'] }],
+      rows: ['k'],
+      kinds: [{ id: 'total', op: 'value', scale: 1 }],
+      cells: [0, 0, 1, 0, 0, 0],
+    },
+  }), /malformed/);
+  assert.throws(() => liveSection({
+    live: {
+      groups: [{ table: 70, columns: [0], keys: ['k'], values: ['Not recorded'], rawValues: ['1'] }],
+      rows: ['k'],
+      kinds: [{ id: 'total', op: 'value', scale: 1 }],
+      cells: [0, 0, 1, 0, 0, 0],
+    },
+  }), /malformed/);
+});
