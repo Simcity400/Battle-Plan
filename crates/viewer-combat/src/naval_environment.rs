@@ -487,7 +487,10 @@ pub(super) fn convoy_weapon_bound_from_database(
                     .checked_add(stat_term(&equipment.module_multiply_stats_multiplier, stat))?;
                 let mut pure_add_range = [equipment.stats[stat], equipment.stats[stat]];
                 let mut pure_mul_range = [0_i64, 0_i64];
-                let mut pure_zero_avg_count = 0_i64;
+                let mut pure_avg_by_ratio: BTreeMap<(i64, i64), (i64, i64)> = BTreeMap::new();
+                let mut pure_avg_delta_range = [0_i64, 0_i64];
+                let mut pure_avg_pos_sum = 0_i64;
+                let mut pure_avg_neg_sum = 0_i64;
                 let mut correlated: Vec<(i64, i64, Vec<i64>)> = Vec::new();
                 for (_, module) in &equipment.default_modules {
                     let Some(group) = database.module_stats(module) else {
@@ -511,10 +514,40 @@ pub(super) fn convoy_weapon_bound_from_database(
                     if mod_add == 0 && mod_mul == 0 && mod_avg.is_empty() {
                         continue;
                     }
-                    if mod_add == 0 && mod_mul == 0 && mod_avg.iter().all(|&delta| delta == 0) {
-                        pure_zero_avg_count =
-                            pure_zero_avg_count.checked_add(i64::try_from(mod_avg.len()).ok()?)?;
-                        pure_zero_avg_count.checked_mul(100_000)?;
+                    if mod_add == 0 && mod_mul == 0 {
+                        let mut mod_avg_sum = 0_i64;
+                        for &delta in &mod_avg {
+                            mod_avg_sum = mod_avg_sum.checked_add(delta)?;
+                            if delta > 0 {
+                                pure_avg_pos_sum = pure_avg_pos_sum.checked_add(delta)?;
+                                pure_avg_pos_sum.checked_mul(100_000)?;
+                            } else if delta < 0 {
+                                pure_avg_neg_sum = pure_avg_neg_sum.checked_add(delta)?;
+                                pure_avg_neg_sum.checked_mul(100_000)?;
+                            }
+                            pure_avg_delta_range = [
+                                pure_avg_delta_range[0].min(delta),
+                                pure_avg_delta_range[1].max(delta),
+                            ];
+                        }
+                        let mod_avg_cnt = i64::try_from(mod_avg.len()).ok()?;
+                        mod_avg_sum.checked_mul(100_000)?;
+                        mod_avg_cnt.checked_mul(100_000)?;
+                        let mut a = mod_avg_sum.unsigned_abs();
+                        let mut b = mod_avg_cnt as u64;
+                        while b != 0 {
+                            let r = a % b;
+                            a = b;
+                            b = r;
+                        }
+                        let g = i64::try_from(a.max(1)).ok()?;
+                        let entry = pure_avg_by_ratio
+                            .entry((mod_avg_sum / g, mod_avg_cnt / g))
+                            .or_insert((0, 0));
+                        entry.0 = entry.0.checked_add(mod_avg_sum)?;
+                        entry.1 = entry.1.checked_add(mod_avg_cnt)?;
+                        entry.0.checked_mul(100_000)?;
+                        entry.1.checked_mul(100_000)?;
                         continue;
                     }
                     if mod_mul == 0 && mod_avg.is_empty() {
@@ -531,6 +564,11 @@ pub(super) fn convoy_weapon_bound_from_database(
                         correlated.push((mod_add, mod_mul, mod_avg));
                     }
                 }
+                let mut pure_avg_groups: Vec<(i64, i64)> = pure_avg_by_ratio.into_values().collect();
+                pure_avg_groups.sort_by(|&(a_sum, a_cnt), &(b_sum, b_cnt)| {
+                    (i128::from(a_sum) * i128::from(b_cnt))
+                        .cmp(&(i128::from(b_sum) * i128::from(a_cnt)))
+                });
                 for term in equipment
                     .scaled_by_reliability
                     .iter()
@@ -560,16 +598,30 @@ pub(super) fn convoy_weapon_bound_from_database(
                                 avg_count = avg_count.checked_add(1)?;
                             }
                         }
-                        let total_avg_count = avg_count.checked_add(pure_zero_avg_count)?;
-                        total_avg_count.checked_mul(100_000)?;
-                        let avg_bounds = if avg_count > 0 {
-                            let num = avg_sum.checked_mul(100_000)?;
-                            let at_zero = num / avg_count.checked_mul(100_000)?;
-                            let at_max = num / total_avg_count.checked_mul(100_000)?;
-                            [at_zero.min(at_max), at_zero.max(at_max)]
+                        let base_avg = if avg_count > 0 {
+                            avg_sum.checked_mul(100_000)? / avg_count.checked_mul(100_000)?
                         } else {
-                            [0, 0]
+                            0
                         };
+                        let mut avg_bounds = [base_avg, base_avg];
+                        let mut pref_sum = avg_sum;
+                        let mut pref_cnt = avg_count;
+                        for &(g_sum, g_cnt) in &pure_avg_groups {
+                            pref_sum = pref_sum.checked_add(g_sum)?;
+                            pref_cnt = pref_cnt.checked_add(g_cnt)?;
+                            let val =
+                                pref_sum.checked_mul(100_000)? / pref_cnt.checked_mul(100_000)?;
+                            avg_bounds = [avg_bounds[0].min(val), avg_bounds[1].max(val)];
+                        }
+                        let mut suff_sum = avg_sum;
+                        let mut suff_cnt = avg_count;
+                        for &(g_sum, g_cnt) in pure_avg_groups.iter().rev() {
+                            suff_sum = suff_sum.checked_add(g_sum)?;
+                            suff_cnt = suff_cnt.checked_add(g_cnt)?;
+                            let val =
+                                suff_sum.checked_mul(100_000)? / suff_cnt.checked_mul(100_000)?;
+                            avg_bounds = [avg_bounds[0].min(val), avg_bounds[1].max(val)];
+                        }
                         let value_range = [
                             pure_add_range[0]
                                 .checked_add(corr_add)?
@@ -601,9 +653,9 @@ pub(super) fn convoy_weapon_bound_from_database(
                     .into_iter()
                     .partition(|(_, mod_mul, _)| *mod_mul != 0);
                 let mut add_range = pure_add_range;
-                let mut avg_range = [0_i64, 0_i64];
-                let mut avg_pos_sum = 0_i64;
-                let mut avg_neg_sum = 0_i64;
+                let mut avg_range = pure_avg_delta_range;
+                let mut avg_pos_sum = pure_avg_pos_sum;
+                let mut avg_neg_sum = pure_avg_neg_sum;
                 for (mod_add, _, mod_avg) in &non_mul {
                     add_range = [
                         add_range[0].checked_add((*mod_add).min(0))?,

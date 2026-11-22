@@ -237,6 +237,52 @@ impl Pool {
 type PoolRank = (std::cmp::Reverse<i64>, usize, u8);
 type RankedPools<'p, 'a> = (Vec<(&'p Pool, usize, u8)>, Option<(PoolRank, &'a str)>);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateBranch {
+    pub items: Vec<String>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SinglePlan {
+    pub branches: Vec<CandidateBranch>,
+    pub ambiguity: Option<String>,
+}
+
+impl SinglePlan {
+    pub fn resolve(&self, accept: impl Fn(&str) -> bool) -> Result<Option<String>, String> {
+        let mut cache: BTreeMap<&str, bool> = BTreeMap::new();
+        let mut agreed: Option<Option<&str>> = None;
+        for branch in &self.branches {
+            let mut found = None;
+            for item in &branch.items {
+                let hit = *cache.entry(item.as_str()).or_insert_with(|| accept(item));
+                if hit {
+                    found = Some(item.as_str());
+                    break;
+                }
+            }
+            if found.is_none() && branch.truncated {
+                return Err(self
+                    .ambiguity
+                    .clone()
+                    .unwrap_or_else(|| "continent unknown".to_owned()));
+            }
+            match agreed {
+                None => agreed = Some(found),
+                Some(prev) if prev == found => {}
+                Some(_) => {
+                    return Err(self
+                        .ambiguity
+                        .clone()
+                        .unwrap_or_else(|| "continent unknown".to_owned()));
+                }
+            }
+        }
+        Ok(agreed.flatten().map(str::to_owned))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     buckets: BTreeMap<Bucket, BTreeMap<String, Vec<Pool>>>,
@@ -532,14 +578,14 @@ impl Content {
         limits: &impl PoolLimits,
         declared: impl Fn(&str) -> bool,
     ) -> Result<Option<String>, String> {
-        self.resolve_single(
+        self.plan_single(
             context,
             limits,
             |pool| !pool.models.is_empty(),
             Pool::weight,
             |pool| pool.models.as_slice(),
-            declared,
-        )
+        )?
+        .resolve(declared)
     }
 
     pub fn lookup_icon(
@@ -548,25 +594,31 @@ impl Content {
         has_dlc: impl Fn(&str) -> Option<bool>,
         exists: impl Fn(&str) -> bool,
     ) -> Result<Option<String>, String> {
-        self.resolve_single(
+        self.lookup_icon_plan(context, has_dlc)?.resolve(exists)
+    }
+
+    pub fn lookup_icon_plan(
+        &self,
+        context: &Context<'_>,
+        has_dlc: impl Fn(&str) -> Option<bool>,
+    ) -> Result<SinglePlan, String> {
+        self.plan_single(
             context,
             &has_dlc,
             |pool| !pool.icons.is_empty(),
             Pool::icons_weight,
             |pool| pool.icons.as_slice(),
-            exists,
         )
     }
 
-    fn resolve_single<'b>(
-        &'b self,
+    fn plan_single(
+        &self,
         context: &Context<'_>,
         limits: &impl PoolLimits,
         wanted: impl Fn(&Pool) -> bool,
         weight_of: impl Fn(&Pool) -> i64,
         items_of: impl Fn(&Pool) -> &[String],
-        accept: impl Fn(&str) -> bool,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<SinglePlan, String> {
         let mut buckets = Vec::new();
         let unknown_continent = match (context.country, context.capital_continent) {
             (Some(country), Ok(continent)) => {
@@ -632,17 +684,9 @@ impl Content {
                 }
             }
         }
-        let Some(why) = unknown_continent else {
-            known_pools.sort_by_key(|&(pool, _, _, _)| std::cmp::Reverse(weight_of(pool)));
-            return Ok(known_pools
-                .into_iter()
-                .flat_map(|(pool, _, _, _)| items_of(pool).iter().rev())
-                .find(|item| accept(item))
-                .cloned());
-        };
-        let unique_sequence = |pools: &[(&'b Pool, usize, u8, usize)],
+        let unique_sequence = |pools: &[(&Pool, usize, u8, usize)],
                                cutoff: Option<(std::cmp::Reverse<i64>, usize, u8, usize)>|
-         -> Vec<&'b str> {
+         -> Vec<String> {
             let mut sorted: Vec<_> = pools.to_vec();
             sorted.sort_by_key(|&(pool, context_index, phase, visit)| {
                 (std::cmp::Reverse(weight_of(pool)), context_index, phase, visit)
@@ -657,15 +701,23 @@ impl Content {
                 }
                 for item in items_of(pool).iter().rev() {
                     if seen.insert(item.as_str()) {
-                        items.push(item.as_str());
+                        items.push(item.clone());
                     }
                 }
             }
             items
         };
-        let base_seq = unique_sequence(&known_pools, None);
-        let mut common_len = base_seq.len();
-        let mut diverged = false;
+        let base_branch = CandidateBranch {
+            items: unique_sequence(&known_pools, None),
+            truncated: false,
+        };
+        let Some(why) = unknown_continent else {
+            return Ok(SinglePlan {
+                branches: vec![base_branch],
+                ambiguity: None,
+            });
+        };
+        let mut branches = vec![base_branch];
         for (bucket, definitions) in &self.buckets {
             if !matches!(bucket, Bucket::Continent(_)) {
                 continue;
@@ -707,29 +759,20 @@ impl Content {
             }
             let mut combined = known_pools.clone();
             combined.extend(continent_pools);
-            let seq = unique_sequence(&combined, unknown_limit_cutoff);
-            let prefix = base_seq
-                .iter()
-                .zip(&seq)
-                .take_while(|(a, b)| a == b)
-                .count();
-            common_len = common_len.min(prefix);
-            if unknown_limit_cutoff.is_some()
-                || seq.len() != base_seq.len()
-                || prefix < base_seq.len()
-            {
-                diverged = true;
+            let branch = CandidateBranch {
+                items: unique_sequence(&combined, unknown_limit_cutoff),
+                truncated: unknown_limit_cutoff.is_some(),
+            };
+            if !branches.contains(&branch) {
+                branches.push(branch);
             }
         }
-        for &item in &base_seq[..common_len] {
-            if accept(item) {
-                return Ok(Some(item.to_owned()));
-            }
-        }
-        if diverged {
-            return Err(why.to_owned());
-        }
-        Ok(None)
+        let ambiguity = (branches.len() > 1 || branches.iter().any(|branch| branch.truncated))
+            .then(|| why.to_owned());
+        Ok(SinglePlan {
+            branches,
+            ambiguity,
+        })
     }
 
     fn matching_ranked<'a>(
@@ -1544,6 +1587,42 @@ mod tests {
         assert_eq!(
             shared_prefix.lookup_icon(&unknown, |_| Some(true), |name| name != "GFX_shared_icon"),
             Err("continent unknown".to_owned())
+        );
+
+        let missing_continent_asset = content(
+            br#"
+            GER = { tank_1 = { pool = { weight = 10 models = { shared_model } icons = { GFX_shared } } } }
+            europe = { tank_1 = { pool = { weight = 20 models = { europe_model } icons = { GFX_europe } } } }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            missing_continent_asset.lookup_icon(&unknown, |_| Some(true), |name| name == "GFX_shared"),
+            Ok(Some("GFX_shared".to_owned()))
+        );
+        assert_eq!(
+            missing_continent_asset.aircraft_override(
+                &unknown,
+                &(|_: &str| Some(true)),
+                |name| name == "shared_model"
+            ),
+            Ok(Some("shared_model".to_owned()))
+        );
+        assert_eq!(
+            missing_continent_asset.lookup_icon(&unknown, |_| Some(true), |_| true),
+            Err("continent unknown".to_owned())
+        );
+        assert_eq!(
+            missing_continent_asset.aircraft_override(&unknown, &(|_: &str| Some(true)), |_| true),
+            Err("continent unknown".to_owned())
+        );
+        assert_eq!(
+            missing_continent_asset.lookup_icon(&unknown, |_| Some(true), |_| false),
+            Ok(None)
+        );
+        assert_eq!(
+            missing_continent_asset.aircraft_override(&unknown, &(|_: &str| Some(true)), |_| false),
+            Ok(None)
         );
     }
 }

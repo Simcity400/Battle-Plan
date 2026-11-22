@@ -1564,4 +1564,66 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
     );
     let diverging_hour = IconHour::read(&frame, &diverging).unwrap();
     assert!(chosen(&diverging, &diverging_hour, &from_germany, "tanks_1").is_err());
+
+    let fallback_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            GER = { tanks_1 = { pool = { weight = 10 icons = { GFX_shared } } } }
+            europe = { tanks_1 = { pool = { weight = 20 icons = { GFX_europe } } } }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let fallback_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        fallback_pools,
+        Default::default(),
+        ["GFX_shared".to_owned()].into(),
+        Default::default(),
+    );
+    let fallback_hour = IconHour::read(&frame, &fallback_content).unwrap();
+    assert_eq!(
+        chosen(&fallback_content, &fallback_hour, &from_germany, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_shared".into())))
+    );
+    let prepared = super::icon_choice(&fallback_content, &fallback_hour, &from_germany, "tanks_1");
+    assert_eq!(
+        prepared.walk(|probe| match probe {
+            super::Probe::Existing(name) if name == "GFX_shared" => {
+                Ok(Some(Icon::Sprite(name.clone())))
+            }
+            _ => Ok(None),
+        }),
+        Ok(Some(Icon::Sprite("GFX_shared".into())))
+    );
+    assert!(
+        prepared
+            .walk(|probe| match probe {
+                super::Probe::Existing(name) if name == "GFX_shared" || name == "GFX_europe" => {
+                    Ok(Some(Icon::Sprite(name.clone())))
+                }
+                _ => Ok(None),
+            })
+            .is_err()
+    );
+    assert!(
+        prepared
+            .walk(|probe| match probe {
+                super::Probe::Existing(name) if name == "GFX_europe" => {
+                    Ok(Some(Icon::Sprite(name.clone())))
+                }
+                _ => Ok(None),
+            })
+            .is_err()
+    );
+    assert_eq!(prepared.walk(|_| Ok(None)), Ok(None));
 }

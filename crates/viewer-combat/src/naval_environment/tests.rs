@@ -855,6 +855,59 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
     assert!(misreads.is_empty(), "{misreads:?}");
     assert_eq!(bound, Ok([0, 0]));
     assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            lead = { add_stats = { lg_attack = 1 } add_average_stats = { lg_attack = -0.1 } }
+            avg_only = { add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_avg_defaults = { type = convoy
+                default_modules = {
+                    main = lead
+                    a1 = avg_only a2 = avg_only a3 = avg_only a4 = avg_only
+                    a5 = avg_only a6 = avg_only a7 = avg_only a8 = avg_only
+                    a9 = avg_only a10 = avg_only a11 = avg_only a12 = avg_only
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-10_000, 90_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            lead = { add_stats = { lg_attack = 1 } add_average_stats = { lg_attack = -0.1 } }
+            d1 = { add_average_stats = { lg_attack = -0.1 } }
+            d2 = { add_average_stats = { lg_attack = -0.11 } }
+            d3 = { add_average_stats = { lg_attack = -0.12 } }
+            d4 = { add_average_stats = { lg_attack = -0.13 } }
+            d5 = { add_average_stats = { lg_attack = -0.14 } }
+            d6 = { add_average_stats = { lg_attack = -0.15 } }
+            d7 = { add_average_stats = { lg_attack = -0.16 } }
+            d8 = { add_average_stats = { lg_attack = -0.17 } }
+            d9 = { add_average_stats = { lg_attack = -0.18 } }
+            d10 = { add_average_stats = { lg_attack = -0.19 } }
+            d11 = { add_average_stats = { lg_attack = -0.2 } }
+            d12 = { add_average_stats = { lg_attack = -0.21 } }
+            d13 = { add_average_stats = { lg_attack = -0.22 } }
+         }
+         equipments = {
+            fourteen_distinct_avg = { type = convoy
+                default_modules = {
+                    main = lead
+                    s1 = d1 s2 = d2 s3 = d3 s4 = d4 s5 = d5 s6 = d6 s7 = d7
+                    s8 = d8 s9 = d9 s10 = d10 s11 = d11 s12 = d12 s13 = d13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-22_000, 90_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }
 
 #[test]

@@ -60,15 +60,30 @@ pub enum Probe {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+struct PoolBranch {
+    candidates: Vec<String>,
+    truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+enum ChoiceStep {
+    Probe(Probe),
+    Pool {
+        branches: Vec<PoolBranch>,
+        ambiguity: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct IconChoice {
-    pub probes: Vec<Probe>,
+    steps: Vec<ChoiceStep>,
     pub otherwise: Result<(), String>,
 }
 
 impl IconChoice {
     pub fn unknown(reason: String) -> Self {
         Self {
-            probes: Vec::new(),
+            steps: Vec::new(),
             otherwise: Err(reason),
         }
     }
@@ -77,12 +92,7 @@ impl IconChoice {
         &self,
         answer: impl Fn(&Probe) -> Result<Option<Icon>, String>,
     ) -> Result<Option<Icon>, String> {
-        for probe in &self.probes {
-            if let Some(icon) = answer(probe)? {
-                return Ok(Some(icon));
-            }
-        }
-        self.otherwise.clone().map(|()| None)
+        walk_from(&self.steps, &self.otherwise, &answer, &mut BTreeMap::new())
     }
 
     pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
@@ -766,15 +776,79 @@ impl IconHour {
     }
 }
 
+fn probe_cached(
+    probe: &Probe,
+    answer: &impl Fn(&Probe) -> Result<Option<Icon>, String>,
+    cache: &mut BTreeMap<Probe, Option<Icon>>,
+) -> Result<Option<Icon>, String> {
+    if let Some(cached) = cache.get(probe) {
+        return Ok(cached.clone());
+    }
+    let result = answer(probe)?;
+    cache.insert(probe.clone(), result.clone());
+    Ok(result)
+}
+
+fn walk_from(
+    steps: &[ChoiceStep],
+    otherwise: &Result<(), String>,
+    answer: &impl Fn(&Probe) -> Result<Option<Icon>, String>,
+    cache: &mut BTreeMap<Probe, Option<Icon>>,
+) -> Result<Option<Icon>, String> {
+    let Some((first, rest)) = steps.split_first() else {
+        return otherwise.clone().map(|()| None);
+    };
+    match first {
+        ChoiceStep::Probe(probe) => match probe_cached(probe, answer, cache)? {
+            Some(icon) => Ok(Some(icon)),
+            None => walk_from(rest, otherwise, answer, cache),
+        },
+        ChoiceStep::Pool {
+            branches,
+            ambiguity,
+        } => {
+            let mut agreed: Option<Option<Icon>> = None;
+            let mut tail_result: Option<Result<Option<Icon>, String>> = None;
+            for branch in branches {
+                let mut found = None;
+                for candidate in &branch.candidates {
+                    if let Some(icon) =
+                        probe_cached(&Probe::Existing(candidate.clone()), answer, cache)?
+                    {
+                        found = Some(icon);
+                        break;
+                    }
+                }
+                let outcome = match found {
+                    Some(icon) => Some(icon),
+                    None if branch.truncated => return Err(ambiguity.clone()),
+                    None => match &tail_result {
+                        Some(result) => result.clone()?,
+                        None => {
+                            let result = walk_from(rest, otherwise, answer, cache);
+                            tail_result = Some(result.clone());
+                            result?
+                        }
+                    },
+                };
+                match &agreed {
+                    None => agreed = Some(outcome),
+                    Some(prev) if prev == &outcome => {}
+                    Some(_) => return Err(ambiguity.clone()),
+                }
+            }
+            Ok(agreed.flatten())
+        }
+    }
+}
+
 pub fn variant_icon(
     content: &IconContent,
     hour: &IconHour,
     variant: &VariantDefinitionRow,
     spelling: &str,
 ) -> Result<Option<Icon>, String> {
-    rule(content, hour, variant, spelling, &|probe| {
-        content.answer(&probe)
-    })
+    icon_choice(content, hour, variant, spelling).walk(|probe| content.answer(probe))
 }
 
 pub fn icon_choice(
@@ -783,26 +857,18 @@ pub fn icon_choice(
     variant: &VariantDefinitionRow,
     spelling: &str,
 ) -> IconChoice {
-    let probes = std::cell::RefCell::new(Vec::new());
-    let otherwise = rule(content, hour, variant, spelling, &|probe| {
-        probes.borrow_mut().push(probe);
-        Ok(None)
-    });
-    IconChoice {
-        probes: probes.into_inner(),
-        otherwise: otherwise.map(|_| ()),
-    }
+    let mut steps = Vec::new();
+    let otherwise = rule(content, hour, variant, spelling, &mut steps);
+    IconChoice { steps, otherwise }
 }
-
-type Ask<'a> = dyn Fn(Probe) -> Result<Option<Icon>, String> + 'a;
 
 fn rule(
     content: &IconContent,
     hour: &IconHour,
     variant: &VariantDefinitionRow,
     spelling: &str,
-    ask: &Ask,
-) -> Result<Option<Icon>, String> {
+    steps: &mut Vec<ChoiceStep>,
+) -> Result<(), String> {
     let key = content
         .units
         .named(spelling)
@@ -836,17 +902,15 @@ fn rule(
                 Some(culture),
             )
         };
-        if let Some(icon) = pool(
+        pool(
             content,
             hour,
             key,
             country,
             ideology.as_deref(),
             culture.as_deref(),
-            ask,
-        )? {
-            return Ok(Some(icon));
-        }
+            steps,
+        )?;
     } else if variant.icon_active != 0 {
         if variant.icon_kind > 1 {
             return Err(format!(
@@ -854,14 +918,12 @@ fn rule(
                 variant.id, variant.icon_kind
             ));
         }
-        let found = if variant.icon_kind == 0 {
-            ask(Probe::Sprite(entry.clone().into_owned()))?
+        let probe = if variant.icon_kind == 0 {
+            Probe::Sprite(entry.clone().into_owned())
         } else {
-            ask(Probe::File(entry.clone().into_owned()))?
+            Probe::File(entry.clone().into_owned())
         };
-        if found.is_some() {
-            return Ok(found);
-        }
+        steps.push(ChoiceStep::Probe(probe));
     }
     let (l_link, l_slot) = if (variant.origin_link as i32) > 0 {
         let slot = *hour.links.get(&variant.origin_link).ok_or_else(|| {
@@ -948,7 +1010,7 @@ fn rule(
         capital,
         l_link,
         &mut BTreeSet::new(),
-        ask,
+        steps,
     )
 }
 
@@ -967,23 +1029,23 @@ fn fallback(
     capital: bool,
     country: Option<u32>,
     visited: &mut BTreeSet<String>,
-    ask: &Ask,
-) -> Result<Option<Icon>, String> {
+    steps: &mut Vec<ChoiceStep>,
+) -> Result<(), String> {
     let model = type_model(&content.units, key)?;
     if !visited.insert(key.to_owned()) {
-        return Ok(None);
+        return Ok(());
     }
     let suffixes = icon_suffixes(capital);
     for suffix in suffixes {
         for name in [Some(key), model.archetype].into_iter().flatten() {
-            if let Some(tag) = names.tag.clone()?
-                && let Some(icon) = ask(Probe::Sprite(format!("GFX_{tag}_{name}{suffix}")))?
-            {
-                return Ok(Some(icon));
+            if let Some(tag) = names.tag.clone()? {
+                steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
+                    "GFX_{tag}_{name}{suffix}"
+                ))));
             }
-            if let Some(icon) = ask(Probe::Sprite(format!("GFX_{name}{suffix}")))? {
-                return Ok(Some(icon));
-            }
+            steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
+                "GFX_{name}{suffix}"
+            ))));
         }
     }
     for name in [Some(key), model.archetype].into_iter().flatten() {
@@ -998,26 +1060,24 @@ fn fallback(
                 let Some(technology) = technology.map_err(Clone::clone)? else {
                     continue;
                 };
-                if let Some(tag) = names.technology_tag.clone()?
-                    && let Some(icon) =
-                        ask(Probe::Sprite(format!("GFX_{tag}_{technology}{suffix}")))?
-                {
-                    return Ok(Some(icon));
+                if let Some(tag) = names.technology_tag.clone()? {
+                    steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
+                        "GFX_{tag}_{technology}{suffix}"
+                    ))));
                 }
-                if let Some(culture) = names.culture_2d.clone()?
-                    && let Some(icon) =
-                        ask(Probe::Sprite(format!("GFX_{culture}_{technology}{suffix}")))?
-                {
-                    return Ok(Some(icon));
+                if let Some(culture) = names.culture_2d.clone()? {
+                    steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
+                        "GFX_{culture}_{technology}{suffix}"
+                    ))));
                 }
-                if let Some(icon) = ask(Probe::Sprite(format!("GFX_{technology}{suffix}")))? {
-                    return Ok(Some(icon));
-                }
+                steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
+                    "GFX_{technology}{suffix}"
+                ))));
             }
         }
     }
-    if let Some(family) = model.family
-        && let Some(icon) = fallback(
+    if let Some(family) = model.family {
+        fallback(
             content,
             hour,
             family,
@@ -1025,12 +1085,10 @@ fn fallback(
             capital,
             country,
             visited,
-            ask,
-        )?
-    {
-        return Ok(Some(icon));
+            steps,
+        )?;
     }
-    pool(content, hour, key, country, None, None, ask)
+    pool(content, hour, key, country, None, None, steps)
 }
 
 fn pool(
@@ -1040,8 +1098,8 @@ fn pool(
     country: Option<u32>,
     ideology: Option<&str>,
     culture: Option<&str>,
-    ask: &Ask,
-) -> Result<Option<Icon>, String> {
+    steps: &mut Vec<ChoiceStep>,
+) -> Result<(), String> {
     let model = type_model(&content.units, key)?;
     let family = model
         .family
@@ -1067,9 +1125,7 @@ fn pool(
         }
         None => (None, None, Ok(None)),
     };
-    let failed = std::cell::RefCell::new(None::<String>);
-    let shown = std::cell::RefCell::new(None::<Icon>);
-    let found = content.pools.lookup_icon(
+    let plan = content.pools.lookup_icon_plan(
         &Context {
             equipment: key,
             archetype: model.archetype,
@@ -1082,22 +1138,25 @@ fn pool(
             capital_continent,
         },
         |name| Some(content.dlc.contains(name)),
-        |name| match ask(Probe::Existing(name.to_owned())) {
-            Ok(Some(icon)) => {
-                shown.borrow_mut().get_or_insert(icon);
-                true
-            }
-            Ok(None) => false,
-            Err(reason) => {
-                failed.borrow_mut().get_or_insert(reason);
-                true
-            }
-        },
     )?;
-    if let Some(reason) = failed.into_inner() {
-        return Err(reason);
+    if let Some(ambiguity) = plan.ambiguity {
+        steps.push(ChoiceStep::Pool {
+            branches: plan
+                .branches
+                .into_iter()
+                .map(|branch| PoolBranch {
+                    candidates: branch.items,
+                    truncated: branch.truncated,
+                })
+                .collect(),
+            ambiguity,
+        });
+    } else if let Some(branch) = plan.branches.into_iter().next() {
+        for candidate in branch.items {
+            steps.push(ChoiceStep::Probe(Probe::Existing(candidate)));
+        }
     }
-    Ok(found.and(shown.into_inner()))
+    Ok(())
 }
 
 #[cfg(test)]
