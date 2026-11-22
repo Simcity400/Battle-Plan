@@ -2319,6 +2319,12 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
 
     assert_eq!(roster.descriptors.resolve("first").unwrap().scale, 2.0);
     assert_eq!(roster.descriptors.resolve("second").unwrap().scale, 4.0);
+    assert_eq!(roster.refused_declaration("first"), None);
+    assert_eq!(roster.refused_declaration("second"), None);
+    assert_eq!(roster.unreadable_names.get("m"), None);
+    assert!(roster.refused_declaration("overlay_only").is_some());
+    assert!(roster.refused_declaration("broken_first").is_some());
+    assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
         roster.unreadable_names.get("overlay_only").map(String::as_str),
         Some("gfx/entities/a.asset")

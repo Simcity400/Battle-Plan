@@ -990,45 +990,58 @@ impl Roster {
         }) {
             return Ok(None);
         }
-        let read = |bytes: &[u8]| -> io::Result<_> {
-            let document = parser::parse(bytes)
-                .or_else(|_| parser::parse(&balanced_blocks(bytes)))?;
-            settled_state_carriers(&document, path)?;
-            let (items, misreads) = native(bytes, path)?;
-            Ok((document, items, misreads))
+        let parse_tree = |bytes: &[u8]| {
+            parser::parse(bytes).or_else(|_| parser::parse(&balanced_blocks(bytes)))
         };
-        match read(&bytes) {
-            Ok((document, items, misreads)) => {
-                self.logged.extend(misreads);
-                Ok(Some((document, items)))
-            }
-            Err(error) => {
-                if layers.supplied_by_visual_mod(file)
-                    && let Some(recorded) = layers.without_overlays()
-                    && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
-                    && let Ok((document, items, misreads)) = read(&recorded_bytes)
-                {
-                    layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
-                    let declared = lexical_names(&recorded_bytes);
-                    for name in lexical_names(&bytes) {
-                        if !declared.contains(&name) {
-                            self.unreadable_names
-                                .entry(name)
-                                .or_insert_with(|| path.to_owned());
-                        }
-                    }
+        let validate = |bytes: &[u8], document: &parser::Document| -> io::Result<_> {
+            settled_state_carriers(document, path)?;
+            native(bytes, path)
+        };
+        let (error, parsed) = match parse_tree(&bytes) {
+            Ok(document) => match validate(&bytes, &document) {
+                Ok((items, misreads)) => {
                     self.logged.extend(misreads);
                     return Ok(Some((document, items)));
                 }
-                for name in lexical_names(&bytes) {
+                Err(error) => (error, Some(document)),
+            },
+            Err(error) => (error, None),
+        };
+        if layers.supplied_by_visual_mod(file)
+            && let Some(recorded) = layers.without_overlays()
+            && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
+            && let Ok(document) = parse_tree(&recorded_bytes)
+            && let Ok((items, misreads)) = validate(&recorded_bytes, &document)
+        {
+            layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
+            let (overlay_names, recorded_names) = match &parsed {
+                Some(overlay) => (
+                    declared_names(overlay, words),
+                    declared_names(&document, words),
+                ),
+                None => (lexical_names(&bytes), lexical_names(&recorded_bytes)),
+            };
+            for name in overlay_names {
+                if !recorded_names.contains(&name) {
                     self.unreadable_names
                         .entry(name)
                         .or_insert_with(|| path.to_owned());
                 }
-                self.unreadable.push(format!("{path} ({error})"));
-                Ok(None)
             }
+            self.logged.extend(misreads);
+            return Ok(Some((document, items)));
         }
+        let names = match &parsed {
+            Some(document) => declared_names(document, words),
+            None => lexical_names(&bytes),
+        };
+        for name in names {
+            self.unreadable_names
+                .entry(name)
+                .or_insert_with(|| path.to_owned());
+        }
+        self.unreadable.push(format!("{path} ({error})"));
+        Ok(None)
     }
 
     pub fn unreadable(&self, name: &str) -> Option<String> {
@@ -1294,6 +1307,30 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .find(|item| item.keyword_is(key))
         .and_then(|item| item.value.scalar_str())
         .map(unquote)
+}
+
+fn declared_names(document: &parser::Document, words: &[&str]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut record = |item: &parser::Item| {
+        let Some(fields) = item.value.items() else {
+            return;
+        };
+        if let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) {
+            names.insert(name);
+        }
+    };
+    for item in &document.items {
+        if item.keyword_is("objectTypes") {
+            for block in item.value.items().unwrap_or(&[]) {
+                if words.iter().any(|word| block.keyword_is(word)) {
+                    record(block);
+                }
+            }
+        } else if words.iter().any(|word| item.keyword_is(word)) {
+            record(item);
+        }
+    }
+    names
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
