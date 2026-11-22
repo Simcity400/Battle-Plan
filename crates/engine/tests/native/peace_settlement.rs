@@ -4,9 +4,7 @@ use engine_peace::{
     peace_settlement::Subject, peace_settlement::Transfer,
 };
 
-#[path = "support/peace_world.rs"]
-mod fixture;
-use fixture::Fixture;
+use crate::support::peace_world::Fixture;
 
 use engine_native::walk::Buffer;
 
