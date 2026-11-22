@@ -1014,5 +1014,5 @@ fn status_recorded_and_naval_transfer_stay_distinct_from_bar_maxima() {
     let (_, without_status) = member(&side, 102).unwrap();
     assert!(!without_status.bars);
     assert!(!without_status.status_recorded);
-    assert_eq!(without_status.status.naval_transfer, None);
+    assert_eq!(without_status.status.naval_transfer, Some(false));
 }

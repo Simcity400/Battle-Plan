@@ -1,6 +1,6 @@
 
 use super::{
-    Segment, columns_at, derived_withheld,
+    DerivedCoverage, REQUIRED_DERIVED_VERSIONS, Segment, columns_at, decode_derived_from, derived_withheld,
     input::{Held, Source},
     invalid, schema, withheld_at,
 };
@@ -175,6 +175,13 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
     Ok(Framing { columns, withheld, tables, format })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableCoverage<'a> {
+    Valid,
+    WithheldAll(&'a str),
+    WithheldBefore { ordinal: u32, reason: &'a str },
+}
+
 pub struct Recording {
     source: Arc<Source>,
     root: Root,
@@ -187,6 +194,7 @@ pub struct Recording {
     tables: usize,
     format: u16,
     withheld: Box<[(usize, String)]>,
+    derived_coverage: Box<[DerivedCoverage]>,
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     recorded: Box<[Segment]>,
@@ -238,6 +246,7 @@ impl Recording {
             tables: TABLE_COUNT,
             format: crate::format::FormatVersion::CURRENT.version(),
             withheld: Box::default(),
+            derived_coverage: Box::default(),
             runs: Box::default(),
             segments: Box::default(),
             recorded: Box::default(),
@@ -261,6 +270,27 @@ impl Recording {
         recording.tables = framing.tables;
         recording.format = framing.format;
         recording.withheld = framing.withheld.into();
+        let mut derived_coverage = Vec::new();
+        for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
+            let index = table.index();
+            if index >= recording.tables || recording.withheld_reason(index).is_some() {
+                continue;
+            }
+            let key = SectionKey::derived(index as u32);
+            let Some(section) = recording.root.section(key) else { continue };
+            if section.version < required || section.is_empty() {
+                continue;
+            }
+            let extents = recording.section(key, section.version).map_err(unlocated)?;
+            let [extent] = extents.as_slice() else {
+                return Err(unlocated(invalid(format!("{key} holds {} extents; expected 1", extents.len()))));
+            };
+            let (from_run, from_ordinal) = decode_derived_from(&recording.raw(extent).map_err(unlocated)?).map_err(unlocated)?;
+            if (from_run, from_ordinal) != (0, 0) {
+                derived_coverage.push(DerivedCoverage { table: index, from_run, from_ordinal, reason: reason.to_owned() });
+            }
+        }
+        recording.derived_coverage = derived_coverage.into();
         let mut damage = Vec::new();
         let mut runs = Vec::with_capacity(recording.directories.len());
         let mut segments = Vec::new();
@@ -342,6 +372,7 @@ impl Recording {
             tables: self.tables,
             format: self.format,
             withheld: self.withheld.clone(),
+            derived_coverage: self.derived_coverage.clone(),
             runs: self.runs.clone(),
             segments: self.segments.clone(),
             recorded: self.recorded.clone(),
@@ -392,6 +423,23 @@ impl Recording {
 
     pub fn withheld_reason(&self, table: usize) -> Option<&str> {
         self.withheld.iter().find(|(held, _)| *held == table).map(|(_, reason)| reason.as_str())
+    }
+
+    pub fn table_coverage(&self, table: usize, run: u32) -> TableCoverage<'_> {
+        if let Some(reason) = self.withheld_reason(table) {
+            return TableCoverage::WithheldAll(reason);
+        }
+        let Some(coverage) = self.derived_coverage.iter().find(|held| held.table == table) else {
+            return TableCoverage::Valid;
+        };
+        match run.cmp(&coverage.from_run) {
+            std::cmp::Ordering::Less => TableCoverage::WithheldAll(coverage.reason.as_str()),
+            std::cmp::Ordering::Equal if coverage.from_ordinal > 0 => TableCoverage::WithheldBefore {
+                ordinal: coverage.from_ordinal,
+                reason: coverage.reason.as_str(),
+            },
+            _ => TableCoverage::Valid,
+        }
     }
 
     pub fn predates(&self, table: usize) -> Option<&str> {

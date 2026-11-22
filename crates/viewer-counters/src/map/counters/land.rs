@@ -1335,6 +1335,7 @@ impl Movements {
 pub(super) struct DivisionStatuses {
     pub(super) by_division: BTreeMap<u64, DivisionStatus>,
     pub(super) witnessed: BTreeMap<u64, Option<bool>>,
+    pub(super) transfers: BTreeMap<u64, bool>,
     by_key: Option<Arc<KeyedStatuses>>,
 }
 
@@ -1349,13 +1350,22 @@ impl DivisionStatuses {
     const MISSING: DivisionStatus = DivisionStatus::MISSING;
 
     pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
+        let movements: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
+            .rows()
+            .iter()
+            .map(|row| (row.division, row))
+            .collect();
+        let transfers: BTreeMap<u64, bool> = movements
+            .iter()
+            .map(|(&division, row)| (division, row.naval_transfer != 0))
+            .collect();
         if !frame.recorded(replay_data::rows::TableId::DivisionStatus) {
             let witnessed = rows::<tables::DivisionModelInputs>(frame)?
                 .rows()
                 .iter()
                 .map(|row| (row.division, row.exercising.map(|value| value != 0)))
                 .collect();
-            return Ok(Self { witnessed, ..Self::default() });
+            return Ok(Self { witnessed, transfers, ..Self::default() });
         }
         let panels: BTreeMap<u64, _> = rows::<tables::DivisionPanelStats>(frame)?
             .rows()
@@ -1363,24 +1373,19 @@ impl DivisionStatuses {
             .map(|row| (row.division, row))
             .collect();
         let statuses = rows::<tables::DivisionStatus>(frame)?.rows();
-        let movements: BTreeMap<u64, _> = rows::<tables::DivisionMovement>(frame)?
-            .rows()
-            .iter()
-            .map(|row| (row.division, row))
-            .collect();
         let by_division = statuses
             .iter()
             .map(|row| (row.division, status_of(row, panels.get(&row.division).copied(), movements.get(&row.division).copied())))
             .collect();
-        Ok(Self { by_division, ..Self::default() })
+        Ok(Self { by_division, transfers, ..Self::default() })
     }
 
     pub(super) fn read_by_key(frame: &Arc<DecodedFrame>, lookups: super::Lookups) -> io::Result<Self> {
         let recorded = frame.recorded(replay_data::rows::TableId::DivisionStatus);
+        rows::<tables::DivisionMovement>(frame)?;
         if recorded {
             rows::<tables::DivisionPanelStats>(frame)?;
             rows::<tables::DivisionStatus>(frame)?;
-            rows::<tables::DivisionMovement>(frame)?;
         } else {
             rows::<tables::DivisionModelInputs>(frame)?;
         }
@@ -1397,6 +1402,7 @@ impl DivisionStatuses {
         }
         .unwrap_or(DivisionStatus {
             exercising: self.witnessed(division),
+            naval_transfer: self.transfer(division),
             ..Self::MISSING
         })
     }
@@ -1406,6 +1412,13 @@ impl DivisionStatuses {
             Some(keyed) if !keyed.recorded => keyed.witnessed(division),
             Some(_) => None,
             None => self.witnessed.get(&division).copied().flatten(),
+        }
+    }
+
+    fn transfer(&self, division: u64) -> Option<bool> {
+        match &self.by_key {
+            Some(keyed) => keyed.transfer(division),
+            None => self.transfers.get(&division).copied(),
         }
     }
 
@@ -1442,6 +1455,11 @@ impl KeyedStatuses {
     fn witnessed(&self, division: u64) -> Option<bool> {
         self.lookups.made();
         keyed::<tables::DivisionModelInputs>(&self.frame, division, |row| row.division).and_then(|row| row.exercising.map(|value| value != 0))
+    }
+
+    fn transfer(&self, division: u64) -> Option<bool> {
+        self.lookups.made();
+        keyed::<tables::DivisionMovement>(&self.frame, division, |row| row.division).map(|row| row.naval_transfer != 0)
     }
 }
 
@@ -2508,6 +2526,10 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
                 counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
             } else {
                 counter_status::Glyphs {
+                    supply: counter_status::stack_supply_frame(
+                        &stack.members,
+                        inputs.content.defines.supply,
+                    ),
                     training: counter_status::stack_training(&stack.members),
                     ..Default::default()
                 }

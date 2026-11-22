@@ -76,7 +76,7 @@ impl SectionKind {
             Self::MapRestore | Self::FamilyAnswers | Self::Catalogue | Self::FinalState => {
                 matches!(kind, Kind::Data | Kind::Stored)
             }
-            Self::DerivedVersion => false,
+            Self::DerivedVersion => kind == Kind::Stored,
         }
     }
 

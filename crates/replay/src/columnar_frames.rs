@@ -12,7 +12,7 @@ use std::{io, sync::Arc, time::Instant};
 mod input;
 mod reader;
 pub use input::{NotSaved, Source, is_not_saved};
-pub use reader::{Damage, DamageScope, Recording, Run, strings_frame, strings_of, table_name};
+pub use reader::{Damage, DamageScope, Recording, Run, TableCoverage, strings_frame, strings_of, table_name};
 pub use replay_columnar::container::Open;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -69,11 +69,34 @@ pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
     Ok(withheld)
 }
 
-const REQUIRED_DERIVED_VERSIONS: &[(TableId, u32, &str)] = &[(
+pub(crate) const REQUIRED_DERIVED_VERSIONS: &[(TableId, u32, &str)] = &[(
     TableId::SupplyHealth,
     2,
     "SupplyHealth was derived by version 1 (from rounded display supply ratios) and cannot decide off-grid supply thresholds",
 )];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DerivedCoverage {
+    pub(crate) table: usize,
+    pub(crate) from_run: u32,
+    pub(crate) from_ordinal: u32,
+    pub(crate) reason: String,
+}
+
+pub(crate) fn encode_derived_from(from_run: u32, from_ordinal: u32) -> io::Result<Vec<u8>> {
+    let mut writer = replay_columnar::leaf::Writer::new();
+    writer.varint(u64::from(from_run))?;
+    writer.varint(u64::from(from_ordinal))?;
+    Ok(writer.into_bytes())
+}
+
+pub(crate) fn decode_derived_from(bytes: &[u8]) -> io::Result<(u32, u32)> {
+    let mut reader = replay_columnar::leaf::Reader::new(bytes);
+    let from_run = reader.varint_u32()?;
+    let from_ordinal = reader.varint_u32()?;
+    reader.finish()?;
+    Ok((from_run, from_ordinal))
+}
 
 pub(crate) fn derived_withheld(root: &replay_columnar::container::Root, tables: usize, withheld: &mut Vec<(usize, String)>) {
     for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {

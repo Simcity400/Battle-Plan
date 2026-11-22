@@ -2367,7 +2367,7 @@ fn division_status_accepts_always_exact_supply_at_zero_days_and_historical_absen
         supply_ratio: Some(35_000),
         supply_ratio_exact: Recorded::NotRecorded,
         supply_grace_exact: Recorded::NotRecorded,
-        ..base
+        ..base.clone()
     });
     assert!(pre_format.differences.is_empty(), "{:?}", pre_format.differences);
     assert!(
@@ -2378,4 +2378,17 @@ fn division_status_accepts_always_exact_supply_at_zero_days_and_historical_absen
         "{:?}",
         pre_format.limitations
     );
+    let pre_format_missing_legacy = run(DivisionStatusRow {
+        supply_ratio: None,
+        supply_ratio_exact: Recorded::NotRecorded,
+        supply_grace_exact: Recorded::NotRecorded,
+        ..base
+    });
+    assert_eq!(
+        pre_format_missing_legacy.differences.len(),
+        1,
+        "{:?}",
+        pre_format_missing_legacy.differences
+    );
+    assert!(pre_format_missing_legacy.differences[0].contains("supply_ratio"));
 }

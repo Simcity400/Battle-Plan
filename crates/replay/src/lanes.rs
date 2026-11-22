@@ -64,6 +64,7 @@ pub fn at(recording: &Recording, run: u32, table: TableId, hour: i32, columns: O
 }
 
 pub fn at_keys(recording: &Recording, run: u32, table: TableId, hour: i32, columns: Option<&[usize]>, keys: Keys<'_>) -> io::Result<Snapshot> {
+    check_withheld_run(recording, run, table, hour, hour)?;
     let ordinal = ordinal_of(recording, run, hour)?;
     let mut reader = TableReader::new(recording, run, table, columns)?;
     reader.seek(recording, ordinal)?;
@@ -109,6 +110,13 @@ pub fn at_each(
     let mut asks = asks.to_vec();
     asks.sort_unstable();
     asks.dedup();
+    if let (Some(first), Some(last)) = (asks.first(), asks.last()) {
+        if let Some(valid) = check_withheld_run(recording, run, table, first.0, last.0)?
+            && first.0 < valid
+        {
+            check_withheld_run(recording, run, table, first.0, first.0)?;
+        }
+    }
     let mut reader = TableReader::new(recording, run, table, columns)?;
     reader.index_keys();
     for hour_asks in asks.chunk_by(|a, b| a.0 == b.0) {
@@ -328,17 +336,12 @@ pub fn log_span(
     if recording.predates(index).is_some() {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
-    if let Some(reason) = recording.withheld_reason(index) {
-        return Err(crate::columnar_frames::Damage::wrap(
-            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
-            invalid(reason.to_owned()),
-        ));
-    }
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
     if held.ordinals == 0 {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     if from > to {
         return Ok(LogSpan { columns: columns.to_vec(), texts: Vec::new(), gaps: Vec::new() });
     }
@@ -553,23 +556,34 @@ pub fn log_span(
     Ok(LogSpan { columns: columns.to_vec(), texts: sink.texts, gaps })
 }
 
-fn check_withheld(recording: &Recording, table: TableId) -> io::Result<()> {
+fn check_withheld_run(recording: &Recording, run: u32, table: TableId, _from: i32, to: i32) -> io::Result<Option<i32>> {
     let index = table.index();
-    if recording.predates(index).is_none()
-        && let Some(reason) = recording.withheld_reason(index)
-    {
-        return Err(crate::columnar_frames::Damage::wrap(
+    if recording.predates(index).is_some() {
+        return Ok(None);
+    }
+    match recording.table_coverage(index, run) {
+        crate::columnar_frames::TableCoverage::Valid => Ok(None),
+        crate::columnar_frames::TableCoverage::WithheldAll(reason) => Err(crate::columnar_frames::Damage::wrap(
             crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
             invalid(reason.to_owned()),
-        ));
+        )),
+        crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+            let valid = recording.run(run)?.first_hour + ordinal as i32;
+            if to < valid {
+                return Err(crate::columnar_frames::Damage::wrap(
+                    crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+                    invalid(reason.to_owned()),
+                ));
+            }
+            Ok(Some(valid))
+        }
     }
-    Ok(())
 }
 
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
-    check_withheld(recording, table)?;
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
     if first > last {
         return Ok(Vec::new());
@@ -626,9 +640,9 @@ pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i3
 }
 
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<StatusRun>> {
-    check_withheld(recording, table)?;
+    let valid = check_withheld_run(recording, run, table, from, to)?;
     let held = recording.run(run)?;
-    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    let (from, to) = (from.max(held.first_hour).max(valid.unwrap_or(i32::MIN)), to.min(held.last_hour()));
     let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else { return Ok(Vec::new()) };
     if first > last {
         return Ok(Vec::new());
@@ -945,10 +959,32 @@ pub fn chart_at(
     level: u8,
     bin_hours: i64,
 ) -> io::Result<Chart> {
-    check_withheld(recording, table)?;
+    let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let first_bin_hour = i64::from(from).div_euclid(bin_hours) * bin_hours;
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
-    let (first, last) = (ordinal_of(recording, run, from)?, ordinal_of(recording, run, to)?);
+    let (read_from, min_bucket_hour) = match valid_hour {
+        Some(valid) if from < valid => {
+            let aligned = first_bin_hour + ((i64::from(valid) - first_bin_hour + bin_hours - 1) / bin_hours) * bin_hours;
+            if aligned > i64::from(to) {
+                return Ok(Chart {
+                    level,
+                    bin_hours,
+                    first_bin_hour,
+                    bins,
+                    keys: Vec::new(),
+                    values: Vec::new(),
+                    totals: Vec::new(),
+                    life: Vec::new(),
+                    pieces: 0,
+                    walked: 0,
+                });
+            }
+            (aligned as i32, aligned)
+        }
+        Some(valid) => (from, i64::from(valid)),
+        None => (from, i64::MIN),
+    };
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = match level {
         WALKED => Vec::new(),
@@ -987,7 +1023,17 @@ pub fn chart_at(
         .collect::<io::Result<Vec<_>>>()?;
     let covered: Vec<(i64, i64)> = decoded
         .iter()
-        .map(|(piece, _)| (piece.directory.first_hour, piece.directory.first_hour + i64::from(piece.directory.hours)))
+        .filter_map(|(piece, _)| {
+            let size = summary::bucket_hours(piece.directory.level);
+            let floor = if min_bucket_hour > i64::MIN {
+                ((min_bucket_hour + size - 1) / size) * size
+            } else {
+                i64::MIN
+            };
+            let lo = piece.directory.first_hour.max(floor);
+            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
+            (lo < hi).then_some((lo, hi))
+        })
         .collect();
     let mut asked: Vec<u128> = match keys {
         Some(keys) => keys.iter().copied().filter(|&key| decoded.iter().any(|(piece, _)| piece.key_at(key).is_some())).collect(),
@@ -996,11 +1042,12 @@ pub fn chart_at(
     asked.sort_unstable();
     asked.dedup();
     let grid = Grid {
-        from: i64::from(from),
+        from: i64::from(read_from),
         to: i64::from(to),
         first_bin_hour,
         bin_hours,
         bins,
+        min_bucket_hour,
     };
     chart.values = vec![Bin::default(); asked.len() * bins];
     chart.life = vec![0; asked.len() * bins];
@@ -1048,8 +1095,22 @@ pub fn chart_at(
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
-    check_withheld(recording, table)?;
     let held = recording.run(run)?;
+    let valid_hour = match recording.predates(table.index()) {
+        Some(_) => None,
+        None => match recording.table_coverage(table.index(), run) {
+            crate::columnar_frames::TableCoverage::Valid => None,
+            crate::columnar_frames::TableCoverage::WithheldAll(reason) => {
+                return Err(crate::columnar_frames::Damage::wrap(
+                    crate::columnar_frames::DamageScope::Withheld { table: table.index() as u32 },
+                    invalid(reason.to_owned()),
+                ));
+            }
+            crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => {
+                Some(i64::from(held.first_hour) + i64::from(ordinal))
+            }
+        },
+    };
     let blocks = held.pages() as u32;
     let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;
     let mut spans: HashMap<u128, (i64, i64), foldhash::fast::RandomState> = HashMap::default();
@@ -1090,7 +1151,13 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
             }
         }
     }
-    let mut out: Vec<(u128, i64, i64)> = spans.into_iter().map(|(key, (first, last))| (key, first, last)).collect();
+    let mut out: Vec<(u128, i64, i64)> = spans
+        .into_iter()
+        .filter_map(|(key, (first, last))| {
+            let first = valid_hour.map_or(first, |floor| first.max(floor));
+            (first <= last).then_some((key, first, last))
+        })
+        .collect();
     out.sort_unstable();
     Ok(out)
 }
@@ -1418,13 +1485,14 @@ struct Grid {
     first_bin_hour: i64,
     bin_hours: i64,
     bins: usize,
+    min_bucket_hour: i64,
 }
 
 impl Grid {
     fn bin(&self, directory: &summary::Directory, bucket: u32) -> Option<usize> {
         let size = summary::bucket_hours(directory.level);
         let start = (directory.first_bucket + i64::from(bucket)) * size;
-        if start + size <= self.from || start > self.to {
+        if start < self.min_bucket_hour || start + size <= self.from || start > self.to {
             return None;
         }
         usize::try_from((start - self.first_bin_hour).div_euclid(self.bin_hours))
@@ -1572,6 +1640,7 @@ fn top_with(
     by: By,
     ranked: bool,
 ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+    let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let per_pixel = ((i64::from(to) - i64::from(from) + 1) / i64::from(width.max(1))).max(1);
     if per_pixel < summary::bucket_hours(0) {
         return Err(invalid("A top-N view's bins are six hours or wider"));
@@ -1586,7 +1655,17 @@ fn top_with(
     if n == 0 {
         return Ok(vec![Vec::new(); bins]);
     }
-    let (first, last) = (ordinal_of(recording, run, from)?, ordinal_of(recording, run, to)?);
+    let (read_from, min_bucket_hour) = match valid_hour {
+        Some(valid) => {
+            let aligned = first_bin_hour + ((i64::from(valid) - first_bin_hour + bin_hours - 1) / bin_hours) * bin_hours;
+            if aligned > i64::from(to) {
+                return Ok(vec![Vec::new(); bins]);
+            }
+            (aligned as i32, aligned)
+        }
+        None => (from, i64::MIN),
+    };
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let extents = pieces(recording, run, table.index(), first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1, level)?;
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
@@ -1608,11 +1687,12 @@ fn top_with(
     };
     let decoded: Vec<(Piece<'_>, ColumnFrame)> = decoded.into_iter().map(|(piece, frame, _)| (piece, frame)).collect();
     let grid = Grid {
-        from: i64::from(from),
+        from: i64::from(read_from),
         to: i64::from(to),
         first_bin_hour,
         bin_hours,
         bins,
+        min_bucket_hour,
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),

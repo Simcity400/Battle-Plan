@@ -818,6 +818,26 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
 
     assert!(line.rank_at_by(first + 2, 5, false).unwrap().is_empty());
 
+    let top_err = replay::lanes::top(
+        replay.recording(),
+        0,
+        TableId::SupplyHealth,
+        0,
+        first,
+        last,
+        2,
+        5,
+        replay::lanes::By::Last,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            replay::columnar_frames::Damage::of(&top_err).map(|damage| &damage.scope),
+            Some(replay::columnar_frames::DamageScope::Withheld { table }) if *table == TableId::SupplyHealth.index() as u32
+        ),
+        "lanes::top must withhold unmarked v1 SupplyHealth: {top_err}"
+    );
+
     let board = board::at(
         &[board::Column { line: Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap(), partial: None }],
         board::Rows::Countries(&["GER".into()]),
@@ -831,4 +851,252 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         "{:?}",
         board.rows[0]
     );
+}
+
+#[test]
+fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() {
+    use recorder_derive::framework::{
+        Definitions,
+        definitions::{Define, Form},
+    };
+    use replay::{
+        campaign::{Records, Replay},
+        columnar_file::{FileWriter, HourWriter, Resumed, Settings},
+        columnar_frames::{
+            Damage, DamageScope, schema,
+            synthetic::{Input, Sample, Synthetic},
+        },
+    };
+    use replay_columnar::{
+        container::{self, SectionKey, Tags},
+        envelope::{self, Kind},
+    };
+    use replay_data::{
+        format::FormatVersion,
+        identity::{CaptureMode, Identity, IdentityCodec, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{
+            CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+            Recorded, TABLE_COUNT,
+        },
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use std::io::Cursor;
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let first_v1 = 100;
+    let last_v1 = 111;
+    let first_v2 = 112;
+    let last_v2 = 123;
+    let branch = BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: None,
+        first_hour: first_v1,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    };
+    let records = Records { sessions: vec![session.clone()], branches: vec![branch], ..Records::default() };
+    let kinds = schema().unwrap();
+    let mut content = Vec::new();
+    session.identity.encode(&mut content).unwrap();
+    let identity = envelope::Identity {
+        schema: envelope::schema_digest(&kinds),
+        campaign: b"mixed-supply".to_vec(),
+        content,
+        capture_mode: CaptureMode::Full.byte(),
+    };
+    let definitions = || {
+        Definitions::read_none()
+            .with_define(Define { section: "NMilitary", name: "SUPPLY_GRACE", form: Form::Int32 }, Ok(72))
+            .with_define(Define { section: "NMilitary", name: "LOW_SUPPLY", form: Form::Fixed5 }, Ok(50_000))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(15_500))
+            .with_define(Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_LOW_THRESHOLD", form: Form::Fixed5 }, Ok(35_000))
+    };
+    let campaign = [CampaignRow { id: b"mixed-supply".to_vec() }];
+    let countries = [CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() }];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }];
+    let divisions = [DivisionRow { id: 1, roster_owner: 9001, logical_owner: 9001, province: 1, ..Default::default() }];
+    let land = [DivisionLandInputsRow { division: 1, naval_transfer: false, ..Default::default() }];
+    let statuses = [DivisionStatusRow {
+        division: 1,
+        supply_ratio: None,
+        supply_grace_maximum: Recorded::Value(7_200_000),
+        supply_grace_remaining: Recorded::Value(0),
+        supply_ratio_exact: Recorded::Value(Some(15_000)),
+        supply_grace_exact: Recorded::Value(Some(0)),
+        ..Default::default()
+    }];
+    let write_hours = |writer: &mut HourWriter<Cursor<Vec<u8>>>, start: i32, end: i32| {
+        writer.start_run(1, envelope::epoch::START, start).unwrap();
+        let mut synthetic = Synthetic::new(1, start).unwrap();
+        for hour in start..=end {
+            synthetic.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..Default::default() }], partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Campaign, Input::Snapshot { rows: &campaign, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::Divisions, Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::DivisionLandInputs, Input::Snapshot { rows: &land, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.table(TableId::DivisionStatus, Input::Snapshot { rows: &statuses, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+            synthetic.end_encoded(|manifest, sections| writer.hour(manifest, sections)).unwrap().unwrap();
+        }
+    };
+
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v1, last_v1);
+    let mut file = writer.finish().unwrap();
+    let encoded = records.encode(FormatVersion::CURRENT).unwrap();
+    let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &encoded, 1).unwrap();
+    file.container().append(SectionKey::RECORDS, extent).unwrap();
+    let v1_with_marker = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+
+    let (extent, length) = container::locate(v1_with_marker.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let mut root = container::read_root(v1_with_marker.as_slice(), &extent).unwrap();
+    let key = SectionKey::derived(TableId::SupplyHealth.index() as u32);
+    root.sections.retain(|section| section.key != key);
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let mut stripped = container::ContainerWriter::resume(Cursor::new(v1_with_marker), root, at, 1, None).unwrap();
+    stripped.commit(None, true, |_| Ok(())).unwrap();
+    let v1_bytes = stripped.into_inner().into_inner();
+
+    let (extent, length) = container::locate(v1_bytes.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let root = container::read_root(v1_bytes.as_slice(), &extent).unwrap();
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let resumed = Resumed { root, at, last: Some((1, last_v1)), open: None };
+    let file = FileWriter::resume(Cursor::new(v1_bytes), resumed, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v2, last_v2);
+    let file = writer.finish().unwrap();
+    let mixed_bytes = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+
+    let replay = Replay::open(mixed_bytes).unwrap();
+    let timeline = Arc::new(crate::timeline::Timeline {
+        id: 1,
+        first: first_v1,
+        last: last_v2,
+        stretches: vec![
+            crate::timeline::Stretch { run: 0, first: first_v1, last: last_v1, join: crate::timeline::Join::Start },
+            crate::timeline::Stretch { run: 1, first: first_v2, last: last_v2, join: crate::timeline::Join::Break },
+        ],
+        unheld: Vec::new(),
+    });
+    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let query = Query { replay: &replay, timeline, holders };
+    let series = dashboard_declare::series("supply-health").unwrap();
+    let line = Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap();
+
+    let states = line.states(&[read("GER", last_v1, None), read("GER", first_v2, None)], None).unwrap();
+    assert!(states[0].run.is_none(), "last v1 hour must be withheld: {:?}", states[0]);
+    assert!(states[0].missing.as_deref().is_some_and(|why| why.contains("SupplyHealth")), "{:?}", states[0]);
+    assert_eq!(states[1].missing, None, "first v2 hour must be admitted: {:?}", states[1]);
+    assert_eq!(states[1].run.as_ref().map(|run| run.value_raw.as_str()), Some("1"));
+
+    assert!(line.rank_at_by(last_v1, 5, false).unwrap().is_empty());
+    assert_eq!(line.rank_at_by(first_v2, 5, false).unwrap(), vec!["GER"]);
+
+    let v1_top = replay::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v1, 2, 5, replay::lanes::By::Last).unwrap_err();
+    assert!(
+        matches!(
+            Damage::of(&v1_top).map(|damage| &damage.scope),
+            Some(DamageScope::Withheld { table }) if *table == TableId::SupplyHealth.index() as u32
+        ),
+        "v1 run must be withheld by lanes::top: {v1_top}"
+    );
+    let v2_top = replay::lanes::top(replay.recording(), 1, TableId::SupplyHealth, 0, first_v2, last_v2, 2, 5, replay::lanes::By::Last).unwrap();
+    assert!(v2_top.iter().any(|bin| !bin.is_empty()), "v2 run must be admitted by lanes::top: {v2_top:?}");
+
+    let (summary, missing) = line.summary("GER", first_v1, last_v2, 4).unwrap();
+    assert_eq!(summary.buckets.len(), 5, "{:?}", summary.buckets);
+    assert!(summary.buckets[0].is_none(), "pure v1 bin [96,101] must be withheld");
+    assert!(summary.buckets[1].is_none(), "pure v1 bin [102,107] must be withheld");
+    assert!(summary.buckets[2].is_none(), "spanning v1+v2 bin [108,113] must be withheld: {:?}", summary.buckets[2]);
+    assert_eq!(summary.buckets[3].map(|bucket| bucket.last_value), Some(1.0), "pure v2 bin [114,119] must be admitted");
+    assert_eq!(summary.buckets[4].map(|bucket| bucket.last_value), Some(1.0), "pure v2 bin [120,125] must be admitted");
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!((missing[0].first_hour, missing[0].last_hour), (first_v1, last_v1));
+    assert!(missing[0].reason.contains("SupplyHealth"), "{missing:?}");
+
+    let tile_binned = tile::tile(&line, "1", &[Ask::whole("GER")], None, 6, i64::from(first_v1).div_euclid(BINS as i64 * 6), false).unwrap();
+    let flags = unbase64(&tile_binned.bins);
+    let bin_of = |hour: i32| ((i64::from(hour) - i64::from(tile_binned.first_hour)) / 6) as usize;
+    assert_eq!(flags[bin_of(108)] & PRESENT, 0, "spanning v1+v2 tile bin [108,113] must be withheld");
+    assert_ne!(flags[bin_of(114)] & PRESENT, 0, "pure v2 tile bin [114,119] must be admitted");
+
+    let tile_hourly = tile::tile(&line, "1", &[Ask::whole("GER")], None, 1, i64::from(first_v1).div_euclid(BINS as i64), false).unwrap();
+    let hourly_flags = unbase64(&tile_hourly.bins);
+    let hour_slot = |hour: i32| (hour - tile_hourly.first_hour) as usize;
+    assert_eq!(hourly_flags[hour_slot(last_v1)] & PRESENT, 0, "last v1 hour must be withheld in hourly tile");
+    assert_ne!(hourly_flags[hour_slot(first_v2)] & PRESENT, 0, "first v2 hour must be admitted in hourly tile");
+
+    let file = FileWriter::create(Cursor::new(Vec::new()), replay.recording().root().identity.clone(), TABLE_COUNT, Settings { level: 1 }, None).unwrap();
+    let mut writer = HourWriter::new(file, 1).unwrap();
+    writer.define(definitions());
+    write_hours(&mut writer, first_v1, last_v2);
+    let mut file = writer.finish().unwrap();
+    let encoded = records.encode(FormatVersion::CURRENT).unwrap();
+    let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &encoded, 1).unwrap();
+    file.container().append(SectionKey::RECORDS, extent).unwrap();
+    let single_run = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+    let (extent, length) = container::locate(single_run.as_slice(), container::Open::Newest).unwrap().unwrap();
+    let mut root = container::read_root(single_run.as_slice(), &extent).unwrap();
+    root.sections.retain(|section| section.key != key);
+    let at = container::Revision { number: root.revision, length, root: extent.digest };
+    let mut rewritten = container::ContainerWriter::resume(Cursor::new(single_run), root, at, 1, None).unwrap();
+    rewritten.section(key, 2).unwrap();
+    let mut payload = replay_columnar::leaf::Writer::new();
+    payload.varint(0).unwrap();
+    payload.varint(12).unwrap();
+    let payload = payload.into_bytes();
+    let payload_extent = rewritten.put(Kind::Stored, Tags::default(), payload.len() as u64, &payload).unwrap();
+    rewritten.append(key, payload_extent).unwrap();
+    rewritten.commit(None, true, |_| Ok(())).unwrap();
+    let mid_run_bytes = rewritten.into_inner().into_inner();
+
+    let mid_replay = Replay::open(mid_run_bytes).unwrap();
+    let mid_top = replay::lanes::top(mid_replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v2, 4, 5, replay::lanes::By::Last).unwrap();
+    assert_eq!(mid_top.len(), 5, "{mid_top:?}");
+    assert!(mid_top[0].is_empty() && mid_top[1].is_empty() && mid_top[2].is_empty(), "v1 and spanning bins must be empty in mid-run lanes::top: {mid_top:?}");
+    assert!(!mid_top[3].is_empty() && !mid_top[4].is_empty(), "pure v2 bins must be admitted in mid-run lanes::top: {mid_top:?}");
+    let mid_timeline = Arc::new(crate::timeline::Timeline {
+        id: 1,
+        first: first_v1,
+        last: last_v2,
+        stretches: vec![crate::timeline::Stretch { run: 0, first: first_v1, last: last_v2, join: crate::timeline::Join::Start }],
+        unheld: Vec::new(),
+    });
+    let mid_holders = Arc::new(crate::identity::holders(mid_replay.recording(), &mid_timeline).unwrap());
+    let mid_query = Query { replay: &mid_replay, timeline: mid_timeline, holders: mid_holders };
+    let mid_line = Line::new(&mid_query, series, series.measure("noSupply").unwrap()).unwrap();
+    let mid_states = mid_line.states(&[read("GER", last_v1, None), read("GER", first_v2, None)], None).unwrap();
+    assert!(mid_states[0].run.is_none() && mid_states[0].missing.is_some());
+    assert_eq!(mid_states[1].missing, None);
+    assert_eq!(mid_states[1].run.as_ref().map(|run| (run.first_hour, run.value_raw.as_str())), Some((first_v2, "1")));
+    let (mid_summary, mid_missing) = mid_line.summary("GER", first_v1, last_v2, 4).unwrap();
+    assert!(mid_summary.buckets[0].is_none() && mid_summary.buckets[1].is_none() && mid_summary.buckets[2].is_none());
+    assert_eq!(mid_summary.buckets[3].map(|bucket| bucket.last_value), Some(1.0));
+    assert_eq!(mid_summary.buckets[4].map(|bucket| bucket.last_value), Some(1.0));
+    assert_eq!(mid_missing.len(), 1);
+    assert_eq!((mid_missing[0].first_hour, mid_missing[0].last_hour), (first_v1, last_v1));
 }

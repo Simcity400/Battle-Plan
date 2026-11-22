@@ -680,6 +680,14 @@ pub fn compare_division_status(
                     "DivisionStatus.supply_ratio_exact",
                     format!("division status {}.supply_ratio_exact", row.division),
                 );
+                report.scalar_checks += 1;
+                if row.supply_ratio.is_none() {
+                    report.difference(
+                        format!("division status {}.supply_ratio", row.division),
+                        "None",
+                        "recorded legacy supply_ratio when exact supply columns are not recorded",
+                    );
+                }
             }
             (Recorded::Value(Some(_)), Recorded::Value(Some(grace))) => {
                 let label = format!("division status {}", row.division);

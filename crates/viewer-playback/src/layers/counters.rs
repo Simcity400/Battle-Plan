@@ -550,7 +550,18 @@ impl MemberJoins for Joins<'_> {
 
     fn status(&self, _division: u64) -> DivisionStatus {
         let columns = self.columns;
-        let Some((status, slot)) = self.status_at() else { return DivisionStatus::MISSING };
+        let naval_transfer = self.movement().and_then(|(movement, slot)| {
+            movement
+                .number(columns.naval_transfer, slot)
+                .value()
+                .map(|value| value != 0)
+        });
+        let Some((status, slot)) = self.status_at() else {
+            return DivisionStatus {
+                naval_transfer,
+                ..DivisionStatus::MISSING
+            };
+        };
         let number = |column: Num<i64>| native(status, column, slot).value().unwrap_or(0);
         let byte = |column: Num<u8>| status.number(column, slot).value().unwrap_or(0);
         let fields = StatusFields {
@@ -563,12 +574,6 @@ impl MemberJoins for Joins<'_> {
             invalid_orders: byte(columns.invalid_orders),
             strength_factor: number(columns.strength_factor),
         };
-        let naval_transfer = self.movement().and_then(|(movement, slot)| {
-            movement
-                .number(columns.naval_transfer, slot)
-                .value()
-                .map(|value| value != 0)
-        });
         DivisionStatus::recorded(fields, self.maxima(), naval_transfer)
     }
 

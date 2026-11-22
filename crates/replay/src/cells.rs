@@ -161,7 +161,9 @@ impl TableReader {
         let held = recording.run(run)?;
         let index = table.index();
         let absent = recording.predates(index).is_some();
-        if let Some(reason) = recording.withheld_reason(index).filter(|_| !absent) {
+        if !absent
+            && let crate::columnar_frames::TableCoverage::WithheldAll(reason) = recording.table_coverage(index, run)
+        {
             return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
         }
         let kinds = crate::columnar_frames::schema()?.swap_remove(index);

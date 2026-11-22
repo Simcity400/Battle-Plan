@@ -494,7 +494,31 @@ fn read<L: Look>(
     look: impl FnOnce(Vec<usize>, Vec<Kind>) -> L,
     each: &mut dyn FnMut(i32, u128, &L::State) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
-    let (first, last) = ordinals(recording, run, from, to)?;
+    let (mut first, last) = ordinals(recording, run, from, to)?;
+    let mut from = from;
+    if recording.predates(table.index()).is_none() {
+        match recording.table_coverage(table.index(), run) {
+            crate::columnar_frames::TableCoverage::Valid => {}
+            crate::columnar_frames::TableCoverage::WithheldAll(reason) => {
+                return Err(crate::columnar_frames::Damage::wrap(
+                    crate::columnar_frames::DamageScope::Withheld { table: table.index() as u32 },
+                    invalid(reason.to_owned()),
+                ));
+            }
+            crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+                if last < ordinal {
+                    return Err(crate::columnar_frames::Damage::wrap(
+                        crate::columnar_frames::DamageScope::Withheld { table: table.index() as u32 },
+                        invalid(reason.to_owned()),
+                    ));
+                }
+                if first < ordinal {
+                    from += (ordinal - first) as i32;
+                    first = ordinal;
+                }
+            }
+        }
+    }
     let mut asked = columns.to_vec();
     asked.sort_unstable();
     asked.dedup();
