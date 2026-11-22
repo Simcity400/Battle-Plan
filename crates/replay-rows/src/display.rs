@@ -25,6 +25,10 @@ const fn sentinel(value: i64) -> bool {
     value == SENTINELS[0] || value == SENTINELS[1] || value == SENTINELS[2]
 }
 
+pub const fn is_sentinel(value: i64) -> bool {
+    sentinel(value)
+}
+
 impl Step {
     pub const fn fixed5(raw: i64, rounding: Rounding) -> Self {
         assert!(raw > 1 && (100_000 % raw == 0 || raw % 100_000 == 0));
@@ -75,6 +79,22 @@ impl Step {
             value
         } else {
             self.units(value) * self.raw
+        }
+    }
+
+    pub const fn toward_zero_bounds(self, value: i64) -> [i64; 2] {
+        if sentinel(value) || value % self.raw != 0 {
+            return [value, value];
+        }
+        let span = self.raw - 1;
+        if value > 0 {
+            let high = value.saturating_add(span);
+            [value, if high == i64::MAX { i64::MAX - 1 } else { high }]
+        } else if value < 0 {
+            let low = value.saturating_sub(span);
+            [if low <= i64::MIN + 1 { i64::MIN + 2 } else { low }, value]
+        } else {
+            [-span, span]
         }
     }
 

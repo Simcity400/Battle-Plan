@@ -550,20 +550,30 @@ impl MemberJoins for Joins<'_> {
 
     fn status(&self, _division: u64) -> DivisionStatus {
         let columns = self.columns;
-        let Some((status, slot)) = self.status_at() else { return DivisionStatus::MISSING };
+        let naval_transfer = self.movement().and_then(|(movement, slot)| {
+            movement
+                .number(columns.naval_transfer, slot)
+                .value()
+                .map(|value| value != 0)
+        });
+        let Some((status, slot)) = self.status_at() else {
+            return DivisionStatus {
+                naval_transfer,
+                ..DivisionStatus::MISSING
+            };
+        };
         let number = |column: Num<i64>| native(status, column, slot).value().unwrap_or(0);
         let byte = |column: Num<u8>| status.number(column, slot).value().unwrap_or(0);
         let fields = StatusFields {
             entrenchment: number(columns.entrenchment),
             entrenchment_cap: number(columns.entrenchment_cap),
-            supply_ratio: DivisionStatusRow::displayed_supply(native(status, columns.supply_ratio, slot).value(), native(status, columns.supply_ratio_exact, slot).value()),
+            supply_ratio: DivisionStatusRow::supply_ratio_bounds(native(status, columns.supply_ratio, slot).value(), native(status, columns.supply_ratio_exact, slot).value()),
             attrition: DivisionStatusRow::attrition(number(columns.attrition_threshold), number(columns.attrition_value)),
             exercising: byte(columns.exercising),
             has_order: byte(columns.has_order),
             invalid_orders: byte(columns.invalid_orders),
             strength_factor: number(columns.strength_factor),
         };
-        let naval_transfer = self.movement().is_some_and(|(movement, slot)| movement.number(columns.naval_transfer, slot).value().unwrap_or(0) != 0);
         DivisionStatus::recorded(fields, self.maxima(), naval_transfer)
     }
 

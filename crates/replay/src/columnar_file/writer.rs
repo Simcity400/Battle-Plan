@@ -196,6 +196,31 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         self.run.is_some()
     }
 
+    pub fn next_write(&self) -> (u32, u32) {
+        match &self.run {
+            Some(run) => (run.run, run.hours),
+            None => (self.runs.len() as u32, 0),
+        }
+    }
+
+    pub fn record_derived_versions(&mut self, tables: usize, versions: &[(usize, u32)]) -> io::Result<()> {
+        let next = self.next_write();
+        for &(table, version) in versions {
+            if table < tables {
+                let key = SectionKey::derived(table as u32);
+                if self.container.section_of(key).is_none() {
+                    self.container.section(key, version)?;
+                    if next != (0, 0) {
+                        let bytes = crate::columnar_frames::encode_derived_from(next.0, next.1)?;
+                        let extent = self.container.put(envelope::Kind::Stored, Tags::default(), bytes.len() as u64, &bytes)?;
+                        self.container.append(key, extent)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn open_run(&self) -> Option<RunCursor> {
         self.run.as_ref().filter(|run| run.hours > 0).map(|run| RunCursor {
             run: run.run,
