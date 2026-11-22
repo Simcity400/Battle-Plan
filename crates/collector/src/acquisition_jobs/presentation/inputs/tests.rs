@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn closing_a_busy_fanin_never_blocks_and_keeps_the_ordered_fallback() {
     let executor = Arc::new(
-        acquisition::Pool::start(1, 8, |_: &mut Job| Report::DivisionInputs(false)).unwrap(),
+        collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
+            Report::DivisionInputs(false)
+        })
+        .unwrap(),
     );
     let calibration = Arc::new(SharedCalibration::default());
     let inputs = PresentationInputs::new(&executor, &calibration);
@@ -21,9 +24,12 @@ fn closing_a_busy_fanin_never_blocks_and_keeps_the_ordered_fallback() {
 
 #[test]
 fn failed_input_closes_before_the_last_notification_and_keeps_ordered_fallback() {
-    use acquisition::Publication;
+    use collector_workers::acquisition::Publication;
     let executor = Arc::new(
-        acquisition::Pool::start(1, 8, |_: &mut Job| Report::DivisionInputs(false)).unwrap(),
+        collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
+            Report::DivisionInputs(false)
+        })
+        .unwrap(),
     );
     let calibration = Arc::new(SharedCalibration::default());
     let inputs = PresentationInputs::new(&executor, &calibration);
@@ -46,9 +52,12 @@ fn failed_input_closes_before_the_last_notification_and_keeps_ordered_fallback()
 
 #[test]
 fn successful_inputs_wait_for_the_last_notification_without_closing_the_fanin() {
-    use acquisition::Publication;
+    use collector_workers::acquisition::Publication;
     let executor = Arc::new(
-        acquisition::Pool::start(1, 8, |_: &mut Job| Report::DivisionInputs(false)).unwrap(),
+        collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
+            Report::DivisionInputs(false)
+        })
+        .unwrap(),
     );
     let calibration = Arc::new(SharedCalibration::default());
     let inputs = PresentationInputs::new(&executor, &calibration);
@@ -82,7 +91,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         PublicationUnwind::BeforeSubmit | PublicationUnwind::BeforeFailureOutcome
     );
     struct AbortParkedCallback<'a> {
-        executor: &'a acquisition::Pool<Job, Report>,
+        executor: &'a collector_workers::acquisition::Pool<Job, Report>,
         abort: &'a AtomicBool,
     }
     impl Drop for AbortParkedCallback<'_> {
@@ -92,7 +101,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         }
     }
     let executor = Arc::new(
-        acquisition::Pool::start(1, 8, |job: &mut Job| match job {
+        collector_workers::acquisition::Pool::start(1, 8, |job: &mut Job| match job {
             Job::DivisionInputs(_) => Report::DivisionInputs(true),
             Job::Presentation(_) => Report::Presentation(Default::default()),
             _ => panic!("unexpected handoff fixture job"),
@@ -119,7 +128,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
                 resumed
                     .lock()
                     .unwrap()
-                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap();
                 assert!(
                     unwind != PublicationUnwind::BeforeStore,
@@ -169,7 +178,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         failure_allowed
             .lock()
             .unwrap()
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .unwrap();
     });
     let failure_window = AtomicBool::new(false);
@@ -211,7 +220,9 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         })))
     }
     .unwrap();
-    published.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    published
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     assert!(executor.is_complete(ticket));
     assert!(inputs.try_close().is_none());
     let (finish, finished) = mpsc::channel();
@@ -252,14 +263,18 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             drop(handoff);
             finish.send((restored, dispatched, retained)).unwrap();
         });
-        parked.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        parked
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
         assert!(
             finished.try_recv().is_err(),
             "callback closed the publisher's locked handoff"
         );
         resume.send(()).unwrap();
         if unwind != PublicationUnwind::None {
-            failed.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            failed
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .unwrap();
             assert!(inputs.state.is_poisoned());
             {
                 let state = inputs
@@ -279,14 +294,17 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             failure_window.store(true, Ordering::Release);
             executor.notify_ready();
             assert!(
-                !probed.recv_timeout(crate::TEST_HANG_GUARD).unwrap(),
+                !probed
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap(),
                 "production readiness accepted the unfinished failure outcome"
             );
             assert!(finished.try_recv().is_err());
             allow_failure.send(()).unwrap();
         }
-        let ((joined, failure), dispatched, retained) =
-            finished.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        let ((joined, failure), dispatched, retained) = finished
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
         assert!(joined);
         if unwind != PublicationUnwind::None {
             assert_eq!(

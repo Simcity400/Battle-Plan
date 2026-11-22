@@ -260,6 +260,17 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT {
+                expected.extend([
+                    TableId::VariantStats,
+                    TableId::VariantChanges,
+                    TableId::RaidSpeedInputs,
+                    TableId::RocketProductionOutput,
+                ]);
+            }
+            if version < crate::rows::compatibility::POWER_LEDGER_DAY_LOG_FORMAT {
+                expected.push(TableId::PowerSpendDays);
+            }
             if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
                 expected.push(TableId::StrategicRegionWeights);
             }

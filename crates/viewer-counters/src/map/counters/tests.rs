@@ -1043,6 +1043,7 @@ fn layouts() -> Layouts {
         at,
         max_width,
         align: text::Align::Centre,
+        truncate: true,
     };
     Layouts {
         land: Ok(LandCounter {
@@ -1453,6 +1454,7 @@ fn draw_land_action_fixture_with(
                 flotillas: Vec::new(),
                 positions: Vec::new(),
                 units: Vec::new(),
+                layout: counter_move::DrawnLayout::new(inputs.hour),
                 icons: Vec::new(),
                 source_kinds: Vec::new(),
                 groups: Vec::new(),
@@ -3635,7 +3637,11 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
         Vision::read(&frame, &links, &tags, &choice, Err("no fog content")).unwrap()
     };
     let missing = SharingUnknown::Relations("FactionMembers");
-    let countries = Countries::default();
+    let countries = countries([
+        (0, Allegiance::Ours),
+        (1, Allegiance::Other),
+        (2, Allegiance::Other),
+    ]);
     let templates = TemplateIcons {
         by_template: [(
             10,
@@ -3968,10 +3974,25 @@ fn the_naval_base_frame_pairs_ships_with_the_known_and_foreign_arms() {
 fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
     let layouts = layouts();
     let origin = [943.0, 846.0];
-    let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_org, [3.0, 17.0], origin);
-    assert_eq!(rect, [957.0, 861.0, 17.0, 3.0]);
-    let rect = turned_rect(&layouts.land.as_ref().unwrap().bar_str, [3.0, 17.0], origin);
-    assert_eq!(rect, [957.0, 865.0, 17.0, 3.0]);
+    let land = layouts.land.as_ref().unwrap();
+    let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &bar, &land.bar_org, origin, 0.5);
+    draw_bar(&mut batch, &bar, &land.bar_str, origin, 0.5);
+    for (got, want) in batch.quads[0]
+        .screen_bounds()
+        .iter()
+        .zip([957.5, 861.0, 10.0, 3.0])
+    {
+        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[0].screen_bounds());
+    }
+    for (got, want) in batch.quads[1]
+        .screen_bounds()
+        .iter()
+        .zip([957.5, 865.0, 10.0, 3.0])
+    {
+        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[1].screen_bounds());
+    }
     let upright = Child {
         sprite: "GFX_test".into(),
         at: [4.0, 5.0],
@@ -3981,10 +4002,9 @@ fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
         centered: false,
         order: 0,
     };
-    assert_eq!(
-        turned_rect(&upright, [10.0, 10.0], origin),
-        [947.0, 851.0, 10.0, 10.0]
-    );
+    let square = sheet("GFX_test", 1, [10, 10]);
+    draw_bar(&mut batch, &square, &upright, origin, 0.9);
+    assert_eq!(batch.quads[2].rect, [947.0, 851.0, 10.0, 10.0]);
 }
 
 #[test]
@@ -4318,7 +4338,7 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     let tints = allegiance::Tints::VANILLA;
     let countries = Countries {
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0])]),
+            colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0])), (6, None)]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()
@@ -4337,9 +4357,15 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     assert_eq!(color(country, Some(4)), Ok([0.5, 0.25, 0.125, 1.0]));
     assert!(color(country, None).unwrap_err().contains("logical owner"));
     assert!(color(country, Some(9)).is_err());
+    let non_finite = color(country, Some(6)).unwrap_err();
+    assert!(non_finite.contains("non-finite"), "{non_finite}");
+    assert!(non_finite.contains("slot 6"), "{non_finite}");
     let undecided = Countries {
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0]), (5, [1.0; 4])]),
+            colors: BTreeMap::from([
+                (3, Some([0.5, 0.25, 0.125, 1.0])),
+                (5, Some([1.0; 4])),
+            ]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 undecided: BTreeMap::from([(5, "Subjects is truncated".to_owned())]),
                 ..Default::default()
@@ -4955,14 +4981,38 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     batch.scaled(&plate, 0, [10.0, 20.0], [66.0, 27.0], [1.0; 4]);
     assert_eq!(batch.quads[0].rect, [10.0, 20.0, 66.0, 27.0]);
     let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 8.5, [1.0; 4]);
-    assert_eq!(batch.quads[1].rect, [24.0, 28.0, 8.0, 3.0]);
-    assert_eq!(batch.quads[1].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 0.0, [1.0; 4]);
+    batch.bar(
+        &bar,
+        [26.5, 21.0],
+        [3.0, 17.0],
+        8.5,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
+    assert_eq!(batch.quads[1].rotation, Some(std::f32::consts::FRAC_PI_2));
+    assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
+    batch.bar(
+        &bar,
+        [26.5, 21.0],
+        [3.0, 17.0],
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
     assert_eq!(batch.quads.len(), 2);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 30.0, [1.0; 4]);
-    assert_eq!(batch.quads[2].rect, [24.0, 28.0, 18.0, 3.0]);
+    batch.bar(
+        &bar,
+        [31.5, 21.0],
+        [3.0, 17.0],
+        30.0,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 1.0]);
+    let bounds = batch.quads[2].screen_bounds();
+    for (got, want) in bounds.iter().zip([24.0, 28.0, 18.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
 }
 
 #[test]
@@ -5590,4 +5640,346 @@ fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
             assert_eq!((*tables.naval_dominance_sources()).as_ref().map(BTreeMap::len), Ok(0), "naval mission icons drawn: {naval_missions}");
         }
     });
+}
+
+#[test]
+fn unknown_relations_keep_distinct_foreign_owners_apart_in_land_and_naval_grouping() {
+    let countries = countries([(0, Allegiance::Ours)]);
+    let templates = TemplateIcons {
+        grouping: [(10, (b"infantry".to_vec(), -1, 0))].into(),
+        ..Default::default()
+    };
+    let foreign_a = land_unit(1, 1, 10, 10, false);
+    let foreign_a2 = land_unit(2, 1, 10, 10, false);
+    let foreign_b = land_unit(3, 2, 10, 10, false);
+    assert_eq!(
+        foreign_a2.can_join(&foreign_a, &templates, &countries, rules(true)),
+        Ok(true)
+    );
+    assert_eq!(
+        foreign_b.can_join(&foreign_a, &templates, &countries, rules(true)),
+        Ok(false)
+    );
+    assert_eq!(
+        foreign_b.can_join(&foreign_a, &templates, &countries, rules(false)),
+        Ok(false)
+    );
+
+    let vision = Vision::default();
+    let native = NativeInputs::default();
+    let context = naval_context(&vision, &native, BTreeMap::new());
+    let force = |id| replay_data::rows::TaskForceRow {
+        id,
+        mission: 1,
+        ..Default::default()
+    };
+    let (fa, fa2, fb) = (force(10), force(11), force(12));
+    fn unit(force: &replay_data::rows::TaskForceRow, slot: u32) -> NavalUnit<'_> {
+        NavalUnit {
+            force,
+            ordinal: 0,
+            slot,
+            logical: Some(slot),
+            flag_owner: slot,
+            sight: Sight::Full,
+            byte: 255,
+            ships: Some(1),
+            position: None,
+            strength: counter_status::FIXED,
+        }
+    }
+    assert!(naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fa2, 1),
+        rules(true),
+        &countries,
+        &context
+    ));
+    assert!(!naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fb, 2),
+        rules(true),
+        &countries,
+        &context
+    ));
+    assert!(!naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fb, 2),
+        rules(false),
+        &countries,
+        &context
+    ));
+}
+
+#[test]
+fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
+    let layouts = layouts();
+    let bar_org = &layouts.land.as_ref().unwrap().bar_org;
+    let patterned = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 0.5);
+    assert_eq!(batch.quads.len(), 1);
+    let partial = &batch.quads[0];
+    assert_eq!(partial.rotation, Some(bar_org.rotation));
+    assert_eq!(partial.uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
+    let bounds = partial.screen_bounds();
+    for (got, want) in bounds.iter().zip([957.5, 861.0, 10.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
+    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 1.0);
+    assert_eq!(batch.quads.len(), 2);
+    let full = &batch.quads[1];
+    assert_eq!(full.rotation, Some(bar_org.rotation));
+    assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
+    let bounds = full.screen_bounds();
+    for (got, want) in bounds.iter().zip([957.5, 861.0, 18.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
+    let upright = Child {
+        sprite: "GFX_horizontal_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: 0.0,
+        centered: false,
+        order: 0,
+    };
+    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
+    draw_bar(&mut batch, &horizontal, &upright, [943.0, 846.0], 0.5);
+    assert_eq!(batch.quads[2].rotation, Some(0.0));
+    assert_eq!(batch.quads[2].rect, [957.0, 854.0, 10.0, 3.0]);
+    assert_eq!(batch.quads[2].uv, [0.0, 0.0, 10.0 / 17.0, 1.0]);
+    let upright_tall = Child {
+        sprite: "GFX_mapicon_unit_bar_org".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: 0.0,
+        centered: false,
+        order: 0,
+    };
+    draw_bar(&mut batch, &patterned, &upright_tall, [0.0, 0.0], 0.5);
+    assert_eq!(batch.quads[3].rotation, Some(0.0));
+    assert_eq!(batch.quads[3].rect, [18.0, 11.5, 3.0, 10.0]);
+    assert_eq!(batch.quads[3].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
+}
+
+#[test]
+fn land_stack_refuses_non_finite_group_marker_and_preserves_valid_ones() {
+    let countries = Arc::new(Countries::default());
+    let templates = Arc::new(TemplateIcons::default());
+    let vision = Arc::new(Vision::sharing(1, []));
+    let abilities = AbilityInputs::default();
+    let mut orders = counter_inputs::OrdersIndex::default();
+    orders.groups.insert(
+        10,
+        counter_inputs::GroupFacts {
+            parent: 20,
+            army_group: false,
+        },
+    );
+    orders.colors.insert(10, None);
+    orders.colors.insert(20, Some([0.2, 0.6, 0.8, 1.0]));
+    let tables = CounterTables {
+        type_tints: &Default::default(),
+        countries: &countries,
+        icons: &templates,
+        status: &Default::default(),
+        movement: &Default::default(),
+        actions: &Default::default(),
+        vision: &vision,
+        order: None,
+        native: &Default::default(),
+        orders: &orders,
+        guns: &Default::default(),
+        abilities: &abilities,
+        task_forces: &Default::default(),
+        hq_providers: &Default::default(),
+        portraits: &Default::default(),
+        icon_inputs: &Default::default(),
+    };
+    let mut bad_own = land_unit(1, 1, 10, 10, true);
+    bad_own.orders_group = 10;
+    bad_own.parent_branch = Some(false);
+    let stack = land::land_stack(&[&bad_own], &tables, &Default::default(), false, &|_| false, false);
+    let err = stack.marker.expect_err("non-finite land group colour must be refused");
+    assert!(err.contains("non-finite") && err.contains("10"), "{err}");
+
+    let mut good_parent = bad_own.clone();
+    good_parent.parent_branch = Some(true);
+    let stack =
+        land::land_stack(&[&good_parent], &tables, &Default::default(), false, &|_| false, false);
+    assert_eq!(stack.marker, Ok(Some([0.2, 0.6, 0.8, 1.0])));
+
+    let mut foreign = bad_own;
+    foreign.owner = 2;
+    let stack = land::land_stack(&[&foreign], &tables, &Default::default(), false, &|_| false, false);
+    assert_eq!(stack.marker, Ok(None));
+}
+
+#[test]
+fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
+    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
+    let child = |degrees: f32| Child {
+        sprite: "GFX_horizontal_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: degrees.to_radians(),
+        centered: false,
+        order: 0,
+    };
+    let origin = [100.0, 200.0];
+    let mut below = Batch::default();
+    draw_bar(&mut below, &horizontal, &child(44.9), origin, 1.0);
+    let mut above = Batch::default();
+    draw_bar(&mut above, &horizontal, &child(45.1), origin, 1.0);
+    let q_below = &below.quads[0];
+    let q_above = &above.quads[0];
+    assert_eq!(q_below.rect[2], 18.0);
+    assert_eq!(q_above.rect[2], 18.0);
+    let centre = |q: &sprites::Quad| [q.rect[0] + q.rect[2] * 0.5, q.rect[1] + q.rect[3] * 0.5];
+    let (c_below, c_above) = (centre(q_below), centre(q_above));
+    assert!(
+        (c_below[0] - c_above[0]).abs() < 0.05 && (c_below[1] - c_above[1]).abs() < 0.05,
+        "45-degree jump: {c_below:?} vs {c_above:?}"
+    );
+
+    let corner0 = |q: &sprites::Quad| {
+        let cx = q.rect[0] + q.rect[2] * 0.5;
+        let cy = q.rect[1] + q.rect[3] * 0.5;
+        let (dx, dy) = (q.rect[0] - cx, q.rect[1] - cy);
+        let (sin, cos) = q.rotation.unwrap_or(0.0).sin_cos();
+        [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
+    };
+    let mut full = Batch::default();
+    draw_bar(&mut full, &horizontal, &child(30.0), origin, 1.0);
+    let mut partial = Batch::default();
+    draw_bar(&mut partial, &horizontal, &child(30.0), origin, 0.5);
+    let (p_full, p_partial) = (corner0(&full.quads[0]), corner0(&partial.quads[0]));
+    assert!(
+        (p_full[0] - p_partial[0]).abs() < 1e-4 && (p_full[1] - p_partial[1]).abs() < 1e-4,
+        "source texel moved under partial fill: {p_full:?} vs {p_partial:?}"
+    );
+
+    let vertical = sheet("GFX_vertical_bar", 1, [3, 17]);
+    let tall = |degrees: f32| Child {
+        sprite: "GFX_vertical_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: degrees.to_radians(),
+        centered: false,
+        order: 0,
+    };
+    let mut tall_below = Batch::default();
+    draw_bar(&mut tall_below, &vertical, &tall(44.9), origin, 1.0);
+    let mut tall_above = Batch::default();
+    draw_bar(&mut tall_above, &vertical, &tall(45.1), origin, 1.0);
+    assert_eq!(tall_below.quads[0].rect[3], 18.0);
+    assert_eq!(tall_above.quads[0].rect[3], 18.0);
+    assert_eq!(centre(&tall_below.quads[0]), centre(&tall_above.quads[0]));
+}
+
+#[test]
+fn tall_bar_matches_native_geometry_across_rotations() {
+    let quad_corners = |q: &sprites::Quad| {
+        let [x, y, w, h] = q.rect;
+        let cx = x + w * 0.5;
+        let cy = y + h * 0.5;
+        let angle = q.rotation.unwrap_or(0.0);
+        let (sin, cos) = angle.sin_cos();
+        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|[px, py]| {
+            if angle == 0.0 {
+                [px, py]
+            } else {
+                let (dx, dy) = (px - cx, py - cy);
+                [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
+            }
+        })
+    };
+    let bar = sheet("GFX_bar_2x16", 1, [2, 16]);
+    let fill = 0.9_f32;
+    let step = counter_inputs::bar_step(fill, 16.0) as f32;
+    assert_eq!(step, 7.0);
+    assert_eq!(counter_inputs::bar_pixels(fill, 16.0), 16.0);
+    for rotation in [
+        0.0_f32,
+        std::f32::consts::FRAC_PI_4,
+        std::f32::consts::FRAC_PI_2,
+        -std::f32::consts::FRAC_PI_2,
+    ] {
+        let child = Child {
+            sprite: "GFX_bar_2x16".into(),
+            at: [14.0, 8.0],
+            scale: 1.0,
+            frame: 0,
+            rotation,
+            centered: false,
+            order: 0,
+        };
+        let mut batch = Batch::default();
+        draw_bar(&mut batch, &bar, &child, [0.0, 0.0], fill);
+        assert_eq!(batch.quads.len(), 1);
+        let quad = &batch.quads[0];
+        let x = 14.0 + step;
+        let native = viewer_foundation::map::native_gui::Geometry {
+            rect: [x, 8.0, 2.0, 16.0],
+            rotation,
+            pivot: [x + 1.0, 16.0],
+            local: [0.0, 0.0, 2.0, 16.0],
+        };
+        let got_center = [
+            quad.rect[0] + quad.rect[2] * 0.5,
+            quad.rect[1] + quad.rect[3] * 0.5,
+        ];
+        assert!(
+            (got_center[0] - native.pivot[0]).abs() < 1e-4
+                && (got_center[1] - native.pivot[1]).abs() < 1e-4,
+            "rotation {rotation}: pivot {got_center:?} vs {:?}",
+            native.pivot
+        );
+        for (got, want) in quad_corners(quad).iter().zip(native.corners()) {
+            assert!(
+                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+                "rotation {rotation}: corner {got:?} vs {want:?}"
+            );
+        }
+    }
+
+    let scaled_bar = sheet("GFX_bar_3x17", 1, [3, 17]);
+    let scale = 0.69_f32;
+    let rotation = 15708.0_f32 / 10_000.0;
+    let child = Child {
+        sprite: "GFX_bar_3x17".into(),
+        at: [13.0, 15.0],
+        scale,
+        frame: 0,
+        rotation,
+        centered: false,
+        order: 0,
+    };
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &scaled_bar, &child, [0.0, 0.0], fill);
+    let extent_h = (17.0 * scale).trunc();
+    let scaled_step = counter_inputs::bar_step(fill, extent_h) as f32;
+    let drawn = counter_inputs::bar_pixels(fill, 17.0 * scale);
+    let x = 13.0 + scaled_step;
+    let bottom = 15.0 + extent_h;
+    let inset = (17.0 * scale - drawn) * 0.5;
+    let native_scaled = viewer_foundation::map::native_gui::Geometry {
+        rect: [x, bottom - inset - drawn, 3.0 * scale, drawn],
+        rotation,
+        pivot: [x + 1.5, bottom - 8.5],
+        local: [0.0, inset, 3.0 * scale, drawn],
+    };
+    for (got, want) in quad_corners(&batch.quads[0])
+        .iter()
+        .zip(native_scaled.corners())
+    {
+        assert!(
+            (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
+            "scaled corner {got:?} vs {want:?}"
+        );
+    }
 }

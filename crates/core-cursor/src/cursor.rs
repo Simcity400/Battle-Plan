@@ -327,6 +327,7 @@ enum Payload<D: PageDecoder> {
 struct WindowPage<D: PageDecoder> {
     info: PageInfo,
     payload: Payload<D>,
+    coverage_runs: usize,
     _metadata: Reservation,
 }
 impl<D: PageDecoder> WindowPage<D> {
@@ -351,6 +352,12 @@ impl<D: PageDecoder> crate::window::Entry for WindowPage<D> {
                     + ring._metadata.bytes()
             }
         }
+    }
+    fn coverage(&self) -> &[Coverage] {
+        WindowPage::coverage(self)
+    }
+    fn coverage_runs(&self) -> usize {
+        self.coverage_runs
     }
 }
 struct Snapshot<D: PageDecoder> {
@@ -402,10 +409,7 @@ impl<D: PageDecoder> Snapshot<D> {
                 }
                 next = i64::from(item.hours.last) + 1;
                 if let Some(previous) = &mut pending {
-                    if previous.missing == item.missing
-                        && previous.accepted_through(item.hours.first.saturating_sub(1))
-                            == item.accepted_before
-                    {
+                    if crate::window::can_merge(previous, &item) {
                         previous.hours.last = item.hours.last;
                         continue;
                     }
@@ -472,6 +476,9 @@ impl<S: LogSource> PreparedScope<'_, S> {
                 .restoring
                 .store(!ready.rebase, Ordering::Release);
             self.request
+                .ready_rates
+                .store(ready.state.active_rates(), Ordering::Release);
+            self.request
                 .ready
                 .store(Box::into_raw(ready), Ordering::Release);
         }
@@ -513,7 +520,10 @@ struct Request<S: LogSource> {
     workspace_retired: AtomicPtr<Workspace>,
     coverage_capacity: AtomicUsize,
     change_capacity: AtomicUsize,
+    prepared_coverage: AtomicUsize,
+    prepared_changes: AtomicUsize,
     active_rates: AtomicUsize,
+    ready_rates: AtomicUsize,
     completed: Mutex<u64>,
     completion: Condvar,
     error: ErrorMailbox,
@@ -667,7 +677,10 @@ impl<S: LogSource> Cursor<S> {
             workspace_retired: AtomicPtr::new(std::ptr::null_mut()),
             coverage_capacity: AtomicUsize::new(0),
             change_capacity: AtomicUsize::new(0),
+            prepared_coverage: AtomicUsize::new(0),
+            prepared_changes: AtomicUsize::new(0),
             active_rates: AtomicUsize::new(state.active_rates()),
+            ready_rates: AtomicUsize::new(0),
             completed: Mutex::new(0),
             completion: Condvar::new(),
             error: ErrorMailbox::new(),
@@ -1383,7 +1396,12 @@ fn reader_loop<S: LogSource>(pool: &Arc<Pool<S>>) {
                     fill(pool, &request, base, target, reverse, speed, refresh, None)?;
                 }
                 let cycles = thread_cycles();
-                prepare_frame(&request, hour, target, reverse, speed, refresh)?;
+                let prepare_hour = if request.restoring.load(Ordering::Acquire) {
+                    request.restore_hour.load(Ordering::Acquire)
+                } else {
+                    hour
+                };
+                prepare_frame(&request, prepare_hour, target, reverse, speed, refresh)?;
                 add_cycles(&request.counters.preparation, cycles);
                 Ok(())
             })();
@@ -1504,6 +1522,7 @@ fn collect_retired<S: LogSource>(request: &Request<S>) {
         unsafe {
             let ready = Box::from_raw(retired);
             request.restoring.store(false, Ordering::Release);
+            request.ready_rates.store(0, Ordering::Release);
             if !ready.adopted {
                 *request.selection.lock().unwrap() = ready.previous.selection.clone();
                 *request.slots.lock().unwrap() = ready.previous.clone();
@@ -1579,46 +1598,134 @@ fn prepare_frame<S: LogSource>(
 ) -> io::Result<()> {
     let read = request.published.read();
     if let Some(snapshot) = read.get() {
-        let span =
-            window(hour, target, reverse, speed, refresh, true).intersection(snapshot.served);
-        if let Some(span) = span {
-            let changes = frame_capacity(
-                snapshot,
-                span,
-                snapshot.selection.len(),
-                request.active_rates.load(Ordering::Acquire),
-            );
-            let coverage = snapshot.coverage(span, |_| Ok(()))?;
-            prepare_workspace(request, coverage, changes)?;
-        }
+        let pending_rates = request.ready_rates.load(Ordering::Acquire);
+        prepare_frame_for(
+            request,
+            snapshot,
+            hour,
+            target,
+            reverse,
+            speed,
+            refresh,
+            pending_rates,
+        )?;
+    }
+    Ok(())
+}
+fn prepare_frame_for<S: LogSource>(
+    request: &Request<S>,
+    snapshot: &Snapshot<S::Decoder>,
+    hour: Hour,
+    target: Hour,
+    reverse: bool,
+    speed: f64,
+    refresh: f64,
+    pending_rates: usize,
+) -> io::Result<()> {
+    let span = window(hour, target, reverse, speed, refresh, true).intersection(snapshot.served);
+    if let Some(span) = span {
+        let rates = request
+            .active_rates
+            .load(Ordering::Acquire)
+            .max(pending_rates);
+        let changes = frame_capacity(snapshot, span, snapshot.selection.len(), rates);
+        let coverage = snapshot.pages.coverage_runs_for(snapshot.served);
+        prepare_workspace(request, coverage, changes)?;
     }
     Ok(())
 }
 fn prepare_workspace<S: LogSource>(
     request: &Request<S>,
-    coverage: usize,
-    changes: usize,
+    requested_coverage: usize,
+    requested_changes: usize,
 ) -> io::Result<()> {
-    let coverage = coverage.max(request.coverage_capacity.load(Ordering::Acquire));
-    let changes = changes.max(request.change_capacity.load(Ordering::Acquire));
-    if (coverage == request.coverage_capacity.load(Ordering::Acquire)
-        && changes == request.change_capacity.load(Ordering::Acquire))
-        || !request.workspace.load(Ordering::Acquire).is_null()
-    {
+    let prepared_coverage = request.prepared_coverage.load(Ordering::Acquire);
+    let prepared_changes = request.prepared_changes.load(Ordering::Acquire);
+    let current_coverage = request.coverage_capacity.load(Ordering::Acquire);
+    let current_changes = request.change_capacity.load(Ordering::Acquire);
+    let mut coverage = requested_coverage
+        .max(current_coverage)
+        .max(prepared_coverage);
+    let mut changes = requested_changes
+        .max(current_changes)
+        .max(prepared_changes);
+    if coverage == prepared_coverage && changes == prepared_changes {
         return Ok(());
     }
-    let metadata = request
-        .memory
-        .reserve(Owner::Metadata, size_of::<Workspace>())?;
-    let workspace = Box::new(Workspace {
-        coverage: Buffer::new(&request.memory, Owner::Delta, coverage)?,
-        changes: Buffer::new(&request.memory, Owner::Delta, changes)?,
-        _metadata: metadata,
-    });
-    request
+    let build = |coverage, changes| -> io::Result<Box<Workspace>> {
+        let metadata = request
+            .memory
+            .reserve(Owner::Metadata, size_of::<Workspace>())?;
+        Ok(Box::new(Workspace {
+            coverage: Buffer::new(&request.memory, Owner::Delta, coverage)?,
+            changes: Buffer::new(&request.memory, Owner::Delta, changes)?,
+            _metadata: metadata,
+        }))
+    };
+    let workspace = match build(coverage, changes) {
+        Ok(workspace) => workspace,
+        Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+            let old = request
+                .workspace
+                .swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if old.is_null() {
+                return Err(error);
+            }
+            // SAFETY: `old` came from `Box::into_raw` in `prepare_workspace` and was uniquely claimed by `swap`.
+            unsafe {
+                drop(Box::from_raw(old));
+            }
+            let current_coverage = request.coverage_capacity.load(Ordering::Acquire);
+            let current_changes = request.change_capacity.load(Ordering::Acquire);
+            request
+                .prepared_coverage
+                .store(current_coverage, Ordering::Release);
+            request
+                .prepared_changes
+                .store(current_changes, Ordering::Release);
+            coverage = requested_coverage.max(current_coverage);
+            changes = requested_changes.max(current_changes);
+            if coverage == current_coverage && changes == current_changes {
+                return Ok(());
+            }
+            build(coverage, changes)?
+        }
+        Err(error) => return Err(error),
+    };
+    let previous = request
         .workspace
-        .store(Box::into_raw(workspace), Ordering::Release);
+        .swap(Box::into_raw(workspace), Ordering::AcqRel);
+    if !previous.is_null() {
+        // SAFETY: `previous` came from `Box::into_raw` in `prepare_workspace` and was uniquely claimed by `swap`.
+        unsafe {
+            drop(Box::from_raw(previous));
+        }
+    }
+    request
+        .prepared_coverage
+        .store(coverage, Ordering::Release);
+    request.prepared_changes.store(changes, Ordering::Release);
     Ok(())
+}
+fn available_hours<S: LogSource>(
+    pool: &Pool<S>,
+    request: &Request<S>,
+    desired: Hours,
+) -> io::Result<Option<Hours>> {
+    let mut span: Option<Hours> = None;
+    pool.log.pages(&request.keys, desired, &mut |page| {
+        if let Some(part) = page.hours.intersection(desired) {
+            span = Some(match span {
+                Some(held) => Hours {
+                    first: held.first.min(part.first),
+                    last: held.last.max(part.last),
+                },
+                None => part,
+            });
+        }
+        ControlFlow::Continue(())
+    })?;
+    Ok(span)
 }
 fn plan<S: LogSource>(
     pool: &Pool<S>,
@@ -1737,9 +1844,14 @@ fn window_page<S: LogSource>(
         Owner::Metadata,
         size_of::<WindowPage<S::Decoder>>() + 2 * size_of::<usize>(),
     )?;
+    let coverage_runs = crate::window::coverage_runs(match &payload {
+        Payload::Forward(page) => &page.coverage,
+        Payload::Reverse(ring) => &ring.coverage,
+    });
     Ok(Arc::new(WindowPage {
         info,
         payload,
+        coverage_runs,
         _metadata: metadata,
     }))
 }
@@ -1780,15 +1892,29 @@ fn fill<S: LogSource>(
         && matches!(request.keys, KeyFilter::All)
         && !matches!(previous.selection.ordinals(), Selection::All { .. })
         && (desired.first < scope.first || desired.last > scope.last)
+        && let Some(available) = available_hours(pool, request, desired)?
+            .filter(|available| available.first < scope.first || available.last > scope.last)
     {
         let preparation = thread_cycles();
         let ahead = {
             let read = request.published.read();
             read.get()
                 .filter(|s| s.reverse == reverse && s.served.contains(hour))
-                .map_or(desired, |s| s.served)
+                .map_or(available, |s| s.served)
         };
-        let frame = window(hour, target, reverse, speed, refresh, true);
+        let ahead = ahead
+            .intersection(available)
+            .and_then(|span| span.intersection(scope))
+            .unwrap_or(Hours {
+                first: hour,
+                last: hour,
+            });
+        let frame = window(hour, target, reverse, speed, refresh, true)
+            .intersection(available)
+            .unwrap_or(Hours {
+                first: hour,
+                last: hour,
+            });
         let cut = if frame.first < scope.first || frame.last > scope.last {
             hour
         } else if reverse {
@@ -1796,7 +1922,7 @@ fn fill<S: LogSource>(
         } else {
             hour + ((i64::from(ahead.last) - i64::from(hour)) / 2) as Hour
         };
-        let scope = slot_scope(desired, reverse);
+        let scope = slot_scope(available, reverse);
         let state = pool
             .log
             .version_at(&request.keys, cut, scope, &request.memory)?;
@@ -1832,18 +1958,25 @@ fn fill<S: LogSource>(
         pages = crate::window::Tree::default();
     }
     if let Some(served) = existing {
-        publish(request, snapshot(request, pages.clone(), served, reverse)?);
-    }
-    add_cycles(&request.counters.publication, cycles);
-    if pending.ready.is_some() {
-        if let Some(served) = existing {
-            let publication = thread_cycles();
-            publish(request, snapshot(request, pages.clone(), served, reverse)?);
-            prepare_frame(request, hour, target, reverse, speed, refresh)?;
+        let next = snapshot(request, pages.clone(), served, reverse)?;
+        if let Some(ready) = pending.ready.as_ref() {
+            prepare_frame_for(
+                request,
+                &next,
+                hour,
+                target,
+                reverse,
+                speed,
+                refresh,
+                ready.state.active_rates(),
+            )?;
+        }
+        publish(request, next);
+        if pending.ready.is_some() {
             pending.handoff(served, false);
-            add_cycles(&request.counters.publication, publication);
         }
     }
+    add_cycles(&request.counters.publication, cycles);
     let extension = match existing {
         Some(span) if reverse => Hours {
             first: desired.first,
@@ -1915,6 +2048,16 @@ fn fill<S: LogSource>(
             end += 1;
             (first, end)
         };
+        let mut covered_last = plan[first].hours.last;
+        for info in &plan[first + 1..last] {
+            if i64::from(info.hours.first) > i64::from(covered_last) + 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "page directory omitted served hours",
+                ));
+            }
+            covered_last = covered_last.max(info.hours.last);
+        }
         let mut missing = Buffer::new(&request.memory.soft(), Owner::Metadata, last - first)?;
         for info in &plan[first..last] {
             if pages.get(info.id).is_none() {
@@ -1999,6 +2142,20 @@ fn fill<S: LogSource>(
             }
             if span.first <= span.last {
                 let next = snapshot(request, next_pages.clone(), span, reverse)?;
+                let pending_rates = pending.ready.as_ref().map_or_else(
+                    || request.ready_rates.load(Ordering::Acquire),
+                    |ready| ready.state.active_rates(),
+                );
+                prepare_frame_for(
+                    request,
+                    &next,
+                    hour,
+                    target,
+                    reverse,
+                    speed,
+                    refresh,
+                    pending_rates,
+                )?;
                 request
                     .counters
                     .peak
@@ -2006,7 +2163,6 @@ fn fill<S: LogSource>(
                 publish(request, next);
                 pages = next_pages;
                 served = Some(next_served);
-                prepare_frame(request, hour, target, reverse, speed, refresh)?;
                 pending.handoff(
                     span,
                     if reverse {
@@ -2122,12 +2278,6 @@ fn prepare_inverse<S: LogSource>(
             None
         });
     }
-    let frame_changes = pages
-        .iter()
-        .fold(0usize, |n, page| n.saturating_add(page.records))
-        .min(selection.len());
-    let frame_coverage = pages.iter().map(|page| page.coverage).sum();
-    prepare_workspace(request, frame_coverage, frame_changes)?;
     let decode_bytes = pages.iter().try_fold(0usize, |bytes, page| {
         bytes.checked_add(page.resident_bytes).ok_or_else(oom)
     })?;

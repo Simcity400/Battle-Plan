@@ -1,4 +1,5 @@
-
+#[cfg(test)]
+use std::os::windows::ffi::OsStrExt;
 mod history_requests;
 use history_requests::{HistoryWorker, SpoolHistory};
 
@@ -18,6 +19,7 @@ use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory,
 use replay_data::identity::IdentityCodec;
 use replay_data::{codec::Decoder, identity::SessionStart};
 
+use crate::status_file::{write_status, write_status_bytes};
 use serde::Deserialize;
 #[cfg(test)]
 use serde_json::{Value, json};
@@ -26,7 +28,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek},
     os::windows::{
-        ffi::{OsStrExt, OsStringExt},
+        ffi::OsStringExt,
         fs::OpenOptionsExt,
         io::{AsRawHandle, FromRawHandle},
     },
@@ -44,9 +46,8 @@ use windows_sys::Win32::{
         HMODULE, SetLastError, WAIT_OBJECT_0,
     },
     Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, GetFileSizeEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, OPEN_EXISTING,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileSizeEx, OPEN_EXISTING,
     },
     System::{
         LibraryLoader::{FreeLibraryAndExitThread, GetModuleFileNameW, GetModuleHandleW},
@@ -58,7 +59,7 @@ use windows_sys::Win32::{
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
-        crate::land_events::stop_observation();
+        collector_land_events::land_events::stop_observation();
         collector_combat_log::history_events::stop();
         ($retain)(reason);
         return Err(reason);
@@ -74,7 +75,7 @@ pub(crate) fn refuse_land_detach_for_test(retain: impl FnOnce()) -> Result<(), &
 #[serde(deny_unknown_fields)]
 struct Config {
     #[serde(default)]
-    scripted_maps: crate::scripted_maps::Demand,
+    scripted_maps: collector_states::scripted_maps::Demand,
     #[serde(default)]
     without_history: Vec<String>,
     #[serde(default = "observer_default")]
@@ -295,7 +296,7 @@ pub(crate) fn installation_message(message: impl Into<String>) -> &'static str {
 /// # Safety
 /// Only the attach thread `DllMain` creates runs this, with `module` the collector's own handle.
 pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
-    crate::private_heap::off_hold_path();
+    collector_workers::private_heap::off_hold_path();
     let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
     crate::allocation::install_hooks();
     let witness = bootstrap_witness(module);
@@ -469,96 +470,6 @@ mod bootstrap_witness_tests {
         let _ = fs::remove_dir_all(&directory);
     }
 }
-pub(crate) fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
-    write_status_bytes(path, &crate::status::serialize(status)?)
-}
-pub(crate) fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, bytes)?;
-    replace_status(&temp, path)
-}
-
-const STATUS_RENAME_RETRY_BUDGET: Duration = Duration::from_millis(30);
-
-fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Duration> {
-    if !matches!(error.raw_os_error(), Some(5 | 32)) {
-        return None;
-    }
-    STATUS_RENAME_RETRY_BUDGET
-        .checked_sub(elapsed)
-        .filter(|remaining| !remaining.is_zero())
-        .map(|remaining| remaining.min(Duration::from_millis(1)))
-}
-
-fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
-    let handle = unsafe {
-        CreateFileW(
-            source.as_ptr(),
-            DELETE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
-    }
-    let file = unsafe { File::from_raw_handle(handle) };
-    replay::publication::posix_replace(&file, target)
-}
-
-static POSIX_RENAME_UNSUPPORTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-fn replace_once(source: &[u16], target: &[u16]) -> io::Result<()> {
-    if !POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed) {
-        match posix_replace(source, target) {
-            Ok(true) => return Ok(()),
-            Ok(false) => POSIX_RENAME_UNSUPPORTED.store(true, Ordering::Relaxed),
-            Err(error) => return Err(error),
-        }
-    }
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } != 0
-    {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>()
-    };
-    let source = wide(temp);
-    let target = wide(path);
-    let started = Instant::now();
-    loop {
-        let error = match replace_once(&source, &target) {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
-        let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
-            return Err(error);
-        };
-        std::thread::sleep(delay);
-        if started.elapsed() >= STATUS_RENAME_RETRY_BUDGET {
-            return Err(error);
-        }
-    }
-}
-
 fn run(
     module: HMODULE,
     prepared_session: u64,
@@ -638,7 +549,7 @@ fn run(
         config.scripted_maps.victory_point,
         config.scripted_maps.all_controllers || !config.scripted_maps.controller_states.is_empty(),
     );
-    crate::scripted_maps::configure(config.scripted_maps.clone());
+    collector_states::scripted_maps::configure(config.scripted_maps.clone());
     engine_research::research_modifiers::scripted_sharing_roster(
         config.scripted_maps.sharing_roster,
     );
@@ -657,7 +568,12 @@ fn run(
     let done = Event::create(&config.done_event)?;
     let idle = Event::create(&config.idle_event)?;
     let status_path = config.output_dir.join("status.json");
-    crate::hook_failures::configure(&config.output_dir, session.id, process_start);
+    collector_hook_failures::configure(
+        &config.output_dir,
+        session.id,
+        process_start,
+        write_status_bytes,
+    );
     write_status(
         &status_path,
         &crate::status::status!({
@@ -718,13 +634,13 @@ fn run(
             );
         }
     }
-    crate::hook_failures::admit_essential()?;
+    collector_hook_failures::admit_essential(installation_message)?;
     let hourly = engine_sites::hook(base, cgame_state::HOURLY_UPDATE_RVA)
         .and_then(|code| Ok((code.address, code.sentinel::<16>()?)));
     let (hourly_site, sentinel) = match hourly {
         Ok(site) => site,
         Err(cause) => {
-            let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "sentinel", cause);
+            let _ = collector_hook_failures::refuse(RestoreFamily::Hourly, "sentinel", cause);
             return Err(cause);
         }
     };
@@ -748,10 +664,14 @@ fn run(
         history.without_history(campaign);
     }
     crate::politics_changes::restore_epoch(history.politics_epoch())?;
-    crate::operation_outcomes::restore_sequence(history.completion_sequence())?;
+    collector_operation_outcomes::operation_outcomes::restore_sequence(
+        history.completion_sequence(),
+    )?;
     let (map_event_epoch, map_event_sequence) = history.map_events();
     crate::map_events::interval::begin(map_event_epoch, map_event_sequence)?;
-    crate::naval_result_sources::restore_sequence(history.naval_result_sequence())?;
+    collector_naval_results::naval_result_sources::restore_sequence(
+        history.naval_result_sequence(),
+    )?;
     progress.step("history_loaded", None);
     let event_feed_sequence = history.event_feed_sequence();
     let event_feed_generation = history.event_feed_generation().unwrap_or(1).max(1);
@@ -771,7 +691,8 @@ fn run(
     let mut hook =
         unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }.map_err(
             |cause| {
-                let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
+                let _ =
+                    collector_hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
                 installation_message(format!("hourly hook construction failed: {cause}"))
             },
         )?;
@@ -779,10 +700,10 @@ fn run(
         crate::command_batch::Hooks::new(&memory, base)
     })?;
     let mut portrait_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::portrait_changes::Hooks::new(&memory, base)
+        collector_characters::portrait_changes::Hooks::new(&memory, base)
     })?;
     let mut advisor_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::advisor_changes::Hooks::new(&memory, base)
+        collector_characters::advisor_changes::Hooks::new(&memory, base)
     })?;
     let mut relation_hooks = FamilyHooks::construct(base, || unsafe {
         crate::relation_changes::Hooks::new(&memory, base)
@@ -818,7 +739,7 @@ fn run(
         crate::political_status_changes::Hooks::new(&memory, base)
     })?;
     let mut mission_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::mission_changes::Hooks::new(&memory, base)
+        collector_missions::mission_changes::Hooks::new(&memory, base)
     })?;
     let mut rail_hooks = FamilyHooks::construct(base, || unsafe {
         crate::rail_changes::Hooks::new(&memory, base)
@@ -854,7 +775,7 @@ fn run(
         crate::local_subunit_changes::Hooks::new(&memory, base)
     })?;
     let mut template_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::template_changes::Hooks::new(&memory, base)
+        collector_division_templates::template_changes::Hooks::new(&memory, base)
     })?;
     let mut membership_hooks = FamilyHooks::construct(base, || unsafe {
         crate::order_membership_changes::Hooks::new(&memory, base)
@@ -866,7 +787,7 @@ fn run(
         crate::ship_model_changes::Hooks::new(&memory, base)
     })?;
     let mut province_unit_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::province_unit_changes::Hooks::new(&memory, base)
+        collector_divisions::province_unit_changes::Hooks::new(&memory, base)
     })?;
     let mut province_combat_hooks = FamilyHooks::construct(base, || unsafe {
         crate::province_combat_changes::Hooks::new(&memory, base)
@@ -879,7 +800,7 @@ fn run(
         crate::propaganda_changes::Hooks::new(
             &memory,
             base,
-            crate::extended::records_any(
+            collector_extended_support::outcomes::records_any(
                 session.capture_mode,
                 &[replay_data::rows::TableId::PropagandaEfforts],
             ),
@@ -889,7 +810,7 @@ fn run(
         crate::intel_source_changes::Hooks::new(
             &memory,
             base,
-            crate::extended::records_any(
+            collector_extended_support::outcomes::records_any(
                 session.capture_mode,
                 &[
                     replay_data::rows::TableId::IntelContributions,
@@ -902,7 +823,7 @@ fn run(
         crate::network_auxiliary::Hooks::new(
             &memory,
             base,
-            crate::extended::records_any(
+            collector_extended_support::outcomes::records_any(
                 session.capture_mode,
                 &[replay_data::rows::TableId::IntelNetworkAuxiliaries],
             ),
@@ -922,20 +843,24 @@ fn run(
         crate::design_changes::Hooks::new(&memory, base)
     })?;
     let mut faction_goal_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::faction_goal_changes::Hooks::new(&memory, base)
+        collector_factions::faction_goal_changes::Hooks::new(&memory, base)
     })?;
     let mut faction_companion_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::faction_companion_changes::Hooks::new(&memory, base)
+        collector_factions::faction_companion_changes::Hooks::new(&memory, base)
     })?;
     let _division_panel_forwarder = crate::division_panel_forwarder::attach();
     let mut opinion_hooks = FamilyHooks::construct(base, || unsafe {
         crate::opinion_changes::Hooks::new(&memory, base)
     })?;
     let mut destruction_hooks = FamilyHooks::construct(base, || {
-        Ok::<_, &'static str>(unsafe { crate::equipment_destruction::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe {
+            collector_equipment_destruction::equipment_destruction::Hooks::new(&memory, base)
+        })
     })?;
     let mut naval_result_hooks = FamilyHooks::construct(base, || {
-        Ok::<_, &'static str>(unsafe { crate::naval_result_sources::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe {
+            collector_naval_results::naval_result_sources::Hooks::new(&memory, base)
+        })
     })?;
     let mut experience_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { crate::experience_gains::Hooks::new(&memory, base) })
@@ -973,7 +898,9 @@ fn run(
         crate::world_lifetime::Hooks::new(&memory, base, event_feed_generation)
     })?;
     let mut land_hooks = FamilyHooks::construct(base, || {
-        Ok::<_, &'static str>(unsafe { crate::land_events::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe {
+            collector_land_events::land_events::Hooks::new(&memory, base)
+        })
     })?;
     let mut prune_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { crate::combat_log_prune::Hooks::new(&memory, base) })
@@ -990,12 +917,18 @@ fn run(
         Ok::<_, &'static str>(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
     })?;
     let operation_outcomes = config.operation_outcomes
-        && crate::extended::records_any(
+        && collector_extended_support::outcomes::records_any(
             session.capture_mode,
-            &crate::extended::operation_outcomes::TABLES,
+            &collector_operation_outcomes::extended::operation_outcomes::TABLES,
         );
     let mut operation_hooks = FamilyHooks::construct(base, || {
-        Ok::<_, &'static str>(unsafe { crate::operation_outcomes::Hooks::new(&memory, base, operation_outcomes) })
+        Ok::<_, &'static str>(unsafe {
+            collector_operation_outcomes::operation_outcomes::Hooks::new(
+                &memory,
+                base,
+                operation_outcomes,
+            )
+        })
     })?;
     let mut politics_hooks = FamilyHooks::construct(base, || {
         Ok::<_, &'static str>(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })
@@ -1013,7 +946,7 @@ fn run(
             event_feed_sequence,
             event_feed_counts,
             slots,
-            crate::extended::records_any(
+            collector_extended_support::outcomes::records_any(
                 session.capture_mode,
                 &[replay_data::rows::TableId::EventFeedHistory],
             ),
@@ -1051,7 +984,7 @@ fn run(
     if let Err(reason) = sizing.extended.presize_live_inputs(&memory, base) {
         processor.observe_input_demand_error(reason);
     }
-    crate::land_events::install_offered();
+    collector_land_events::land_events::install_offered();
     sizing.extended.logistics.raise(logistics_rows);
     crate::fuel_awards::presize(&memory, base);
     crate::fuel_awards::install_offered();
@@ -1059,16 +992,17 @@ fn run(
     sizing.extended.fuel_awards = crate::extended::fuel_awards::Capacities { entries, names };
     sizing.extended.game_score.enabled = config.game_score;
     if config.game_score
-        && let Some(observed) = crate::country_scale::observe_game_score(&memory, base)
+        && let Some(observed) = collector_air::sizing::observe_game_score(&memory, base)
             .map_err(|error| error_reason(error, "game score sizing allocation failed"))?
     {
         sizing.extended.game_score.raise(observed.demand);
     }
     let _ = sizing.extended.combat_progress.presize(&memory, base);
     crate::experience_gains::prepare(slots);
-    sizing.extended.equipment_destruction = crate::equipment_destruction::demand();
-    crate::naval_result_sources::prepare(&memory, base);
-    sizing.extended.naval_result_sources = crate::naval_result_sources::demand();
+    sizing.extended.equipment_destruction =
+        collector_equipment_destruction::equipment_destruction::demand();
+    collector_naval_results::naval_result_sources::prepare(&memory, base);
+    sizing.extended.naval_result_sources = collector_naval_results::naval_result_sources::demand();
     crate::air_losses::prepare(&memory, base, slots);
     crate::building_bombing::prepare(&memory, base, slots);
     crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
@@ -1086,16 +1020,16 @@ fn run(
         sizing.extended.raise_for_country_intel(rows);
     }
     if let Some(demand) = processor
-        .observe_input_demand(crate::country_scale::observe_ace_names(&memory, base))
+        .observe_input_demand(collector_air::sizing::observe_ace_names(&memory, base))
         .flatten()
     {
         sizing.extended.air.raise_for_names(demand);
     }
     if let Some(bytes) = processor
-        .observe_input_demand(crate::country_scale::observe_air_wing_names(&memory, base))
+        .observe_input_demand(collector_air::sizing::observe_air_wing_names(&memory, base))
         .flatten()
     {
-        crate::country_scale::note_air_wing_name_bytes(bytes);
+        collector_air::sizing::note_air_wing_name_bytes(bytes);
         sizing.map.raise_for_air_wing_names(bytes);
     }
     if let Some(demand) = processor
@@ -1118,7 +1052,7 @@ fn run(
             processor.observe_input_demand_error(reason);
         }
         if let Ok(carrier) = demand.carrier {
-            crate::country_scale::note_carrier_demand(carrier);
+            collector_air::sizing::note_carrier_demand(carrier);
         }
         sizing.raise_for_map(&demand);
         sizing
@@ -1308,8 +1242,8 @@ fn run(
         &mut spool_state.applied_combat_hints,
     );
     let acquisition = acquisition::Pool::start(
-        crate::acquisition::recommended_worker_count(),
-        acquisition::MAX_JOBS,
+        collector_workers::acquisition::recommended_worker_count(),
+        collector_workers::roles::MAX_JOBS,
     )?;
     shared
         .pool_bytes
@@ -1379,7 +1313,7 @@ fn run(
         .name("hoi4-spool".into())
         .stack_size(BACKGROUND_STACK_BYTES)
         .spawn(move || {
-            crate::private_heap::off_hold_path();
+            collector_workers::private_heap::off_hold_path();
             spool_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
             crate::thread_cpu::register(crate::thread_cpu::Role::Spool);
             spool_loop(
@@ -1395,7 +1329,7 @@ fn run(
             )
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
-    let decode_panic_hook = decode::PanicHook::install();
+    let decode_panic_hook = collector_workers::panic_failure::HookGuard::install();
     let mut installation_error = decode::start_worker().err();
     while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
         std::thread::yield_now();
@@ -1403,7 +1337,7 @@ fn run(
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
     let mut capture_thread = crate::capture_point::Thread::start(BACKGROUND_STACK_BYTES).ok();
     owned_workers.extend(capture_thread.as_ref().map(|thread| thread.id()));
-    crate::hook_failures::workers_started();
+    collector_hook_failures::workers_started();
     progress.step("workers_started", None);
     #[cfg(feature = "worker_sampler")]
     let mut sampler = match crate::worker_sampler::start(
@@ -1539,8 +1473,12 @@ fn run(
                     ("line_output", &mut || line_hooks.set_enabled(true)),
                     ("peace_settlements", &mut || peace_hooks.set_enabled(true)),
                     ("land_events", &mut || land_hooks.set_enabled(true)),
-                    ("construction_ic", &mut || construction_hooks.set_enabled(true)),
-                    ("logistics_balance", &mut || logistics_hooks.set_enabled(true)),
+                    ("construction_ic", &mut || {
+                        construction_hooks.set_enabled(true)
+                    }),
+                    ("logistics_balance", &mut || {
+                        logistics_hooks.set_enabled(true)
+                    }),
                     ("combat_log_prune", &mut || prune_hooks.set_enabled(true)),
                     ("equipment_destruction", &mut || {
                         destruction_hooks.set_enabled(true)
@@ -1584,14 +1522,14 @@ fn run(
                     .into_iter()
                     .find(|family| family.name() == stage.get())
                     .unwrap();
-                if crate::hook_failures::failed(family) {
+                if collector_hook_failures::failed(family) {
                     installation_error = Some(installation_message(format!(
                         "{} rollback failed: {reason}",
                         family.name()
                     )));
                     break;
                 }
-                match crate::hook_failures::refuse(family, "publication deadline", &reason) {
+                match collector_hook_failures::refuse(family, "publication deadline", &reason) {
                     Ok(()) => deadline = Instant::now() + Duration::from_secs(15),
                     Err(_) => {
                         installation_error =
@@ -1605,11 +1543,13 @@ fn run(
                     .into_iter()
                     .find(|family| family.name() == stage.get())
                     .unwrap();
-                match crate::hook_failures::install_failed(family, reason) {
+                match collector_hook_failures::install_failed(family, reason, installation_message)
+                {
                     Ok(()) => deadline = Instant::now() + Duration::from_secs(15),
                     Err(error) => {
-                        installation_error =
-                            Some(crate::hook_failures::fatal_installation_error().unwrap_or(error));
+                        installation_error = Some(
+                            collector_hook_failures::fatal_installation_error().unwrap_or(error),
+                        );
                         break;
                     }
                 }
@@ -1665,7 +1605,7 @@ fn run(
             let reason: &'static str = $reason;
             let fault: Option<&'static str> = $fault;
             let error = fault
-                .or_else(decode::panic_failure)
+                .or_else(collector_workers::panic_failure::first)
                 .or_else(crate::worker_panic::first)
                 .unwrap_or(reason);
             refuse_detach!(error, |_error| {
@@ -2034,15 +1974,15 @@ fn run(
         };
         unsafe {
             crate::logistics_balance::release();
-            crate::operation_outcomes::release();
+            collector_operation_outcomes::operation_outcomes::release();
             crate::politics_changes::release();
             crate::map_events::lanes::release();
         }
-        if let Err(reason) = crate::land_events::release()
+        if let Err(reason) = collector_land_events::land_events::release()
             .and_then(|()| collector_combat_log::history_events::release_storage())
             .and_then(|()| crate::combat_log_prune::release_storage())
-            .and_then(|()| crate::equipment_destruction::release())
-            .and_then(|()| crate::naval_result_sources::release())
+            .and_then(|()| collector_equipment_destruction::equipment_destruction::release())
+            .and_then(|()| collector_naval_results::naval_result_sources::release())
             .and_then(|()| crate::fuel_awards::release())
         {
             retain_detach!(reason, spool_result.as_ref().err().copied(), ());
@@ -2178,9 +2118,15 @@ fn run(
     spool_result
 }
 
-use crate::hook_failures::{Family as RestoreFamily, FamilyHooks};
+use crate::hook_failures::FamilyHooks;
+use collector_hook_failures::Family as RestoreFamily;
 
-impl RestoreFamily {
+trait ObserverState {
+    fn observer_state(self) -> (bool, &'static str);
+    fn shared(self) -> bool;
+}
+
+impl ObserverState for RestoreFamily {
     fn observer_state(self) -> (bool, &'static str) {
         match self {
             Self::PlayerCommands => (
@@ -2192,11 +2138,11 @@ impl RestoreFamily {
                 "hourly callbacks did not quiesce; collector retained",
             ),
             Self::EquipmentDestruction => (
-                crate::equipment_destruction::active() != 0,
+                collector_equipment_destruction::equipment_destruction::active() != 0,
                 "equipment destruction callbacks did not quiesce; collector retained",
             ),
             Self::Land => (
-                crate::land_events::active() != 0,
+                collector_land_events::land_events::active() != 0,
                 "land event callbacks did not quiesce; collector retained",
             ),
             Self::CommandBatch => (
@@ -2204,7 +2150,7 @@ impl RestoreFamily {
                 "command batch callbacks did not quiesce; collector retained",
             ),
             Self::Portrait => (
-                crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_characters::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0,
                 "portrait callbacks did not quiesce; collector retained",
             ),
             Self::Opinion => (
@@ -2227,7 +2173,7 @@ impl RestoreFamily {
                 "combat log prune callbacks did not quiesce; collector retained",
             ),
             Self::Advisor => (
-                crate::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
+                collector_characters::advisor_changes::ACTIVE.load(Ordering::SeqCst) != 0
                     || crate::character_changes::active() != 0,
                 "advisor callbacks did not quiesce; collector retained",
             ),
@@ -2288,7 +2234,7 @@ impl RestoreFamily {
                 "political status callbacks did not quiesce; collector retained",
             ),
             Self::Missions => (
-                crate::mission_changes::active() != 0,
+                collector_missions::mission_changes::active() != 0,
                 "registered air mission callbacks did not quiesce; collector retained",
             ),
             Self::Rails => (
@@ -2359,15 +2305,15 @@ impl RestoreFamily {
                 "equipment design callbacks did not quiesce; collector retained",
             ),
             Self::FactionCompanions => (
-                crate::faction_companion_changes::active() != 0,
+                collector_factions::faction_companion_changes::active() != 0,
                 "faction companion callbacks did not quiesce; collector retained",
             ),
             Self::FactionGoals => (
-                crate::faction_goal_changes::active() != 0,
+                collector_factions::faction_goal_changes::active() != 0,
                 "faction goal callbacks did not quiesce; collector retained",
             ),
             Self::Templates => (
-                crate::template_changes::active() != 0,
+                collector_division_templates::template_changes::active() != 0,
                 "division template name-key callbacks did not quiesce; collector retained",
             ),
             Self::ShipModels => (
@@ -2375,7 +2321,7 @@ impl RestoreFamily {
                 "ship model input callbacks did not quiesce; collector retained",
             ),
             Self::ProvinceUnits => (
-                crate::province_unit_changes::active() != 0,
+                collector_divisions::province_unit_changes::active() != 0,
                 "province occupant list callbacks did not quiesce; collector retained",
             ),
             Self::ProvinceCombats => (
@@ -2395,7 +2341,8 @@ impl RestoreFamily {
                 "fuel callbacks did not quiesce; collector retained",
             ),
             Self::OperationOutcomes => (
-                crate::operation_outcomes::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_operation_outcomes::operation_outcomes::ACTIVE.load(Ordering::SeqCst)
+                    != 0,
                 "operation completion callbacks did not quiesce; collector retained",
             ),
             Self::Politics => (
@@ -2411,7 +2358,7 @@ impl RestoreFamily {
                 "peace settlement callbacks did not quiesce; collector retained",
             ),
             Self::NavalResultSources => (
-                crate::naval_result_sources::active() != 0,
+                collector_naval_results::naval_result_sources::active() != 0,
                 "naval result callbacks did not quiesce; collector retained",
             ),
             Self::AirLosses => (
@@ -2445,7 +2392,7 @@ impl RestoreFamily {
         }
     }
 
-    const fn shared(self) -> bool {
+    fn shared(self) -> bool {
         matches!(
             self,
             Self::Portrait
@@ -2581,7 +2528,7 @@ pub(crate) fn install_attach_batch(
             crate::hook::publication::select_family(Some(*name));
             let _ = crate::hook::shared::take_collect_allocation_failure();
             let outcome = install();
-            if let Some(error) = crate::hook_failures::fatal_installation_error() {
+            if let Some(error) = collector_hook_failures::fatal_installation_error() {
                 stage.set(name);
                 return Err(error);
             }
@@ -2594,8 +2541,11 @@ pub(crate) fn install_attach_batch(
         round.publish();
         let mut rollback_error = None;
         round.for_each_attach_rollback_failure(|family, failure| {
-            if let Err(error) = crate::hook_failures::shared_rollback_failed(family, failure)
-                && rollback_error.is_none()
+            if let Err(error) = collector_hook_failures::shared_rollback_failed(
+                family,
+                failure,
+                installation_message,
+            ) && rollback_error.is_none()
             {
                 stage.set(family.unwrap_or("unregistered shared rollback"));
                 rollback_error = Some(error);
@@ -2878,7 +2828,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "worker_panic": crate::worker_panic::first(),
         "hook_timing": crate::hook_timing::status(),
         "capture": crate::capture_point::status(),
-        "equipment_destruction": crate::equipment_destruction::status(),
+        "equipment_destruction": collector_equipment_destruction::equipment_destruction::status(),
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
         "order_membership_signals": crate::order_membership_changes::status(),
         "player_commands": crate::player_commands::status(),
@@ -2886,6 +2836,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "intel_sources": collector_intel::source_changes::status(),
         "combat_log_history": collector_combat_log::history_events::refusals(),
         "politics_changes": crate::politics_changes::refusals(),
+        "variant_stat_witness": crate::design_changes::stat_witness_status(),
+        "supply_truck_demand_witness": collector_supply_trains::supply_trains::truck_demand_witness_status(),
         "certificate_registries": crate::watch_registry::status(crate::army_stat_changes::registries()),
     });
     #[cfg(feature = "order_membership_oracle")]
@@ -2896,7 +2848,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     #[cfg(feature = "acquisition_profile")]
     let base = base.join(status!({
         "native_acquisition": collector_memory::acquisition_profile::status(),
-        "division_acquisition_phase_ticks": crate::extended::division_presentation::profile(),
+        "division_acquisition_phase_ticks": collector_divisions::extended::division_presentation::profile(),
     }));
     #[cfg(feature = "callback_profile")]
     let base = base.join(status!({
@@ -2910,7 +2862,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let base = base.join(status!({"phase_cpu": crate::spool_phases::status()}));
     #[cfg(feature = "advisor_profile")]
     let base = base.join(
-        status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
+        status!({"advisor_profile": collector_characters::extended::characters::advisors::profile::status()}),
     );
     let shared = shared.map(|shared| {
         status!({
@@ -2919,7 +2871,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
             },
             "acquisition_work": acquisition_work(shared),
-            "hour_stages": crate::hour_stages::status(),
+            "hour_stages": collector_workers::hour_stages::status(),
             "collector_thread_cpu": crate::thread_cpu::status(
                 shared
                     .acquisition
@@ -2960,7 +2912,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         }
     }
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS)
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS)
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     assert!(shared.acquisition.set(pool).is_ok());
     shared.native_tick_calls.store(3, Ordering::Relaxed);
@@ -3290,7 +3242,10 @@ mod detach_policy_tests {
             let (site, bytes) = code.stub(offset, target as *const () as usize);
             unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()
         };
-        let hooks = crate::equipment_destruction::synthetic_restore_hooks(make(0), make(64));
+        let hooks = collector_equipment_destruction::equipment_destruction::synthetic_restore_hooks(
+            make(0),
+            make(64),
+        );
         let mut hooks =
             crate::hook_failures::FamilyHooks::new(RestoreFamily::EquipmentDestruction, Ok(hooks))
                 .unwrap();
@@ -3410,6 +3365,29 @@ mod detach_policy_tests {
 #[cfg(test)]
 mod detach_tests {
     use super::*;
+
+    #[test]
+    fn observers_active_tracks_in_flight_domain_callbacks() {
+        if !crate::hook_failures::contract_tests::isolated(
+            "runtime::detach_tests::observers_active_tracks_in_flight_domain_callbacks",
+        ) {
+            return;
+        }
+
+        assert!(!observers_active());
+        collector_equipment_destruction::equipment_destruction::tests::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+        collector_land_events::land_events::test_support::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+        collector_naval_results::naval_result_sources::tests::with_active_observer(|| {
+            assert!(observers_active());
+        });
+        assert!(!observers_active());
+    }
 
     #[test]
     fn expired_detach_budget_does_not_restart_or_reset_acquisition_leases() {
@@ -3593,7 +3571,7 @@ struct RegistryWatch {
     last_intel: Option<Instant>,
     intel_rows: usize,
     last_ace_names: Option<Instant>,
-    ace_names: crate::country_scale::AceNamesDemand,
+    ace_names: collector_air::sizing::AceNamesDemand,
     last_air_wing_names: Option<Instant>,
     air_wing_names: usize,
     last_railway_gun_names: Option<Instant>,
@@ -3654,7 +3632,7 @@ impl RegistryWatch {
             return None;
         }
         self.last_game_score = Some(Instant::now());
-        match crate::country_scale::observe_game_score(memory, base) {
+        match collector_air::sizing::observe_game_score(memory, base) {
             Ok(Some(observed)) => Some(Ok(observed)),
             Ok(None) => None,
             Err(error) => Some(Err(error)),
@@ -3744,7 +3722,7 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Result<Option<crate::country_scale::AceNamesDemand>, &'static str> {
+    ) -> Result<Option<collector_air::sizing::AceNamesDemand>, &'static str> {
         if self
             .last_ace_names
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -3752,7 +3730,7 @@ impl RegistryWatch {
             return Ok(None);
         }
         self.last_ace_names = Some(Instant::now());
-        let Some(demand) = crate::country_scale::observe_ace_names(memory, base)? else {
+        let Some(demand) = collector_air::sizing::observe_ace_names(memory, base)? else {
             return Ok(None);
         };
         let before = self.ace_names;
@@ -3773,7 +3751,7 @@ impl RegistryWatch {
             return Ok(None);
         }
         self.last_air_wing_names = Some(Instant::now());
-        let Some(bytes) = crate::country_scale::observe_air_wing_names(memory, base)? else {
+        let Some(bytes) = collector_air::sizing::observe_air_wing_names(memory, base)? else {
             return Ok(None);
         };
         Ok((bytes > self.air_wing_names).then(|| {
@@ -4057,13 +4035,7 @@ fn grow_combat_hints(
     hints: &CombatHints,
     applied: &mut AppliedHints,
 ) -> bool {
-    let generation = |index: usize| {
-        shared
-            .frames
-            .slot(index)
-            .generation
-            .load(Ordering::Acquire)
-    };
+    let generation = |index: usize| shared.frames.slot(index).generation.load(Ordering::Acquire);
     let made = shared.frames.made();
     if (0..made).all(|index| {
         let hint = hints.pending(capacities, &applied.get(index, generation(index)));
@@ -4123,14 +4095,17 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
 
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
     let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits.read();
-    let calls = |calls: crate::private_heap::Calls| {
+    let calls = |calls: collector_workers::private_heap::Calls| {
         crate::status::status!({
             "calls": calls.calls,
             "ns": shared.ns(calls.ticks as i64),
             "max_ns": shared.ns(calls.max_ticks as i64),
         })
     };
-    let (hold, other) = (crate::ALLOCATOR.hold(), crate::ALLOCATOR.other());
+    let (hold, other) = (
+        collector_workers::private_heap::PRIVATE_HEAP.hold(),
+        collector_workers::private_heap::PRIVATE_HEAP.other(),
+    );
     let frames = shared.frames.gauge();
     crate::status::status!({
         "buffer_wait_calls": 0,
@@ -4436,13 +4411,13 @@ fn spool_loop(
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
                 Ok(prepared) => {
                     if let Err(error) = processor.write_prepared(prepared) {
-                        crate::equipment_destruction::lost_drain();
-                        crate::naval_result_sources::lost_drain();
+                        collector_equipment_destruction::equipment_destruction::lost_drain();
+                        collector_naval_results::naval_result_sources::lost_drain();
                         crate::experience_gains::lost_drain();
                         crate::event_feed_observer::lost_drain();
-                        crate::operation_outcomes::lost_drain();
+                        collector_operation_outcomes::operation_outcomes::lost_drain();
                         crate::politics_changes::invalidate();
-                        crate::land_events::fail();
+                        collector_land_events::land_events::fail();
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
                         crate::nuclear_strikes::lost_drain();
@@ -4454,13 +4429,13 @@ fn spool_loop(
                 }
                 Err(error) => {
                     frame.extended.discard_event_feed();
-                    crate::equipment_destruction::lost_drain();
-                    crate::naval_result_sources::lost_drain();
+                    collector_equipment_destruction::equipment_destruction::lost_drain();
+                    collector_naval_results::naval_result_sources::lost_drain();
                     crate::experience_gains::lost_drain();
                     crate::event_feed_observer::lost_drain();
-                    crate::operation_outcomes::lost_drain();
+                    collector_operation_outcomes::operation_outcomes::lost_drain();
                     crate::politics_changes::invalidate();
-                    crate::land_events::fail();
+                    collector_land_events::land_events::fail();
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
                     crate::nuclear_strikes::lost_drain();
@@ -4491,13 +4466,13 @@ fn spool_loop(
             if let Some(prepared) = pending_write
                 && let Err(error) = processor.write_prepared(prepared)
             {
-                crate::equipment_destruction::lost_drain();
-                crate::naval_result_sources::lost_drain();
+                collector_equipment_destruction::equipment_destruction::lost_drain();
+                collector_naval_results::naval_result_sources::lost_drain();
                 crate::experience_gains::lost_drain();
                 crate::event_feed_observer::lost_drain();
-                crate::operation_outcomes::lost_drain();
+                collector_operation_outcomes::operation_outcomes::lost_drain();
                 crate::politics_changes::invalidate();
-                crate::land_events::fail();
+                collector_land_events::land_events::fail();
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
                 crate::nuclear_strikes::lost_drain();
@@ -4532,13 +4507,13 @@ fn spool_loop(
             return Err("collector allocation failed");
         }
         if let Err(error) = processor.flush() {
-            crate::equipment_destruction::lost_drain();
-            crate::naval_result_sources::lost_drain();
+            collector_equipment_destruction::equipment_destruction::lost_drain();
+            collector_naval_results::naval_result_sources::lost_drain();
             crate::experience_gains::lost_drain();
             crate::event_feed_observer::lost_drain();
-            crate::operation_outcomes::lost_drain();
+            collector_operation_outcomes::operation_outcomes::lost_drain();
             crate::politics_changes::invalidate();
-            crate::land_events::fail();
+            collector_land_events::land_events::fail();
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
             crate::nuclear_strikes::lost_drain();
@@ -4856,7 +4831,9 @@ impl SizingShared {
                 &self.country_intel_accounted,
             ),
             (
-                crate::extended::division_templates::home_allocated_bytes(&shared.template_home),
+                collector_division_templates::extended::division_templates::home_allocated_bytes(
+                    &shared.template_home,
+                ),
                 &self.template_home_accounted,
             ),
             (
@@ -4959,7 +4936,7 @@ impl SizingThread {
                 .name("hoi4-frame-builder".into())
                 .stack_size(BACKGROUND_STACK_BYTES)
                 .spawn(move || {
-                    crate::private_heap::off_hold_path();
+                    collector_workers::private_heap::off_hold_path();
                     crate::thread_cpu::register(crate::thread_cpu::Role::FrameBuilder);
                     frame_builder(&shared, &sizing);
                 })
@@ -4970,7 +4947,7 @@ impl SizingThread {
             .name("hoi4-spool-sizing".into())
             .stack_size(BACKGROUND_STACK_BYTES)
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 crate::thread_cpu::register(crate::thread_cpu::Role::SpoolSizing);
                 sizing_loop(&shared, &worker);
             })
@@ -5059,7 +5036,7 @@ impl Drop for SizingThread {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
         if self.thread.is_some() {
-            crate::worker_sampler::stop_before_thread_exit();
+            collector_workers::worker_sampler::stop_before_thread_exit();
         }
         self.sizing.stop.store(true, Ordering::Release);
         for thread in [self.thread.take(), self.builder.take()].into_iter().flatten() {
@@ -5177,8 +5154,8 @@ fn sizing_pass(
     crate::party_changes::collect();
     crate::wing_changes::presize();
     crate::wing_changes::collect();
-    crate::mission_changes::presize();
-    crate::mission_changes::collect();
+    collector_missions::mission_changes::presize();
+    collector_missions::mission_changes::collect();
     crate::rail_changes::presize();
     crate::rail_changes::collect();
     crate::territory_changes::presize();
@@ -5204,21 +5181,23 @@ fn sizing_pass(
     crate::unit_leader_trait_changes::collect();
     crate::local_subunit_changes::presize();
     crate::local_subunit_changes::collect();
-    crate::province_unit_changes::presize();
-    crate::province_unit_changes::collect();
+    collector_divisions::province_unit_changes::presize();
+    collector_divisions::province_unit_changes::collect();
     crate::province_combat_changes::presize();
     crate::province_combat_changes::collect();
-    crate::faction_goal_changes::presize();
-    crate::faction_goal_changes::collect();
-    crate::faction_companion_changes::presize();
-    crate::faction_companion_changes::collect();
-    crate::template_changes::presize();
-    crate::template_changes::collect();
+    collector_factions::faction_goal_changes::presize();
+    collector_factions::faction_goal_changes::collect();
+    collector_factions::faction_companion_changes::presize();
+    collector_factions::faction_companion_changes::collect();
+    collector_division_templates::template_changes::presize();
+    collector_division_templates::template_changes::collect();
     crate::ship_model_changes::presize();
     crate::ship_model_changes::collect();
     crate::air_base_carry_changes::presize();
     crate::air_base_carry_changes::collect();
-    crate::character_changes::presize(crate::extended::characters::census::initial_len());
+    crate::character_changes::presize(
+        collector_characters::extended::characters::census::initial_len(),
+    );
     crate::character_changes::collect();
     crate::politics_changes::prepare();
     crate::air_losses::presize(0);
@@ -5230,12 +5209,12 @@ fn sizing_pass(
     {
         sizing.error(reason);
     }
-    crate::land_events::prepare();
+    collector_land_events::land_events::prepare();
     collector_combat_log::history_events::prepare(0);
     let air_loss_capacity = crate::air_losses::capacity();
     let bombing_capacity = crate::building_bombing::capacity();
     let nuclear_capacity = crate::nuclear_strikes::capacity();
-    let land_event_capacity = crate::land_events::capacity();
+    let land_event_capacity = collector_land_events::land_events::capacity();
     sizing.raise(shared, |capacities| {
         let extended = &mut capacities.extended;
         extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
@@ -5302,15 +5281,15 @@ fn sizing_pass(
     let span = span.switch(Phase::Observers);
     let peace = sizing.capacities.lock().extended.peace_settlements;
     crate::peace_settlements::presize(peace);
-    if crate::extended::records_any(
+    if collector_extended_support::outcomes::records_any(
         shared.capture_mode,
         &[replay_data::rows::TableId::EventFeedHistory],
     ) {
         crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
     }
     let span = span.switch(Phase::Sizing);
-    crate::naval_result_sources::prepare(&live, base);
-    let naval_result_capacity = crate::naval_result_sources::demand();
+    collector_naval_results::naval_result_sources::prepare(&live, base);
+    let naval_result_capacity = collector_naval_results::naval_result_sources::demand();
     sizing.raise(shared, |capacities| {
         let sources = &mut capacities.extended.naval_result_sources;
         *sources = (*sources).max(naval_result_capacity);
@@ -5338,7 +5317,7 @@ fn sizing_pass(
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
-        crate::operation_outcomes::resize(slots.max(1));
+        collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
         crate::politics_changes::resize(
             crate::country_scale::observe_politics_demand(&live, base, slots, shared.frames.live())
                 .unwrap_or(slots),
@@ -5424,7 +5403,7 @@ fn sizing_pass(
         if crate::world_lifetime::token().is_some() {
             collector_naval_management::changes::presize(&live, base);
         }
-        let destruction_demand = crate::equipment_destruction::demand();
+        let destruction_demand = collector_equipment_destruction::equipment_destruction::demand();
         sizing.raise(shared, |capacities| {
             let destruction = &mut capacities.extended.equipment_destruction;
             *destruction = (*destruction).max(destruction_demand);
@@ -5450,7 +5429,7 @@ fn sizing_pass(
             .demand(registry.poll_air_wing_names(&live, base))
             .flatten()
     {
-        crate::country_scale::note_air_wing_name_bytes(bytes);
+        collector_air::sizing::note_air_wing_name_bytes(bytes);
         decode::presize_air_wing_names();
         sizing.raise(shared, |capacities| {
             capacities.map.raise_for_air_wing_names(bytes)
@@ -5468,7 +5447,7 @@ fn sizing_pass(
     }
     if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
         if let Ok(carrier) = demand.carrier
-            && crate::country_scale::note_carrier_demand(carrier)
+            && collector_air::sizing::note_carrier_demand(carrier)
         {
             decode::presize_country_pools();
         }
@@ -5761,16 +5740,14 @@ fn confinement_availability() -> &'static str {
 }
 
 fn background_cpu_sets() -> &'static [u32] {
-    background_cpu_sets_with(|buffer, length, required| {
-        unsafe {
-            windows_sys::Win32::System::SystemInformation::GetSystemCpuSetInformation(
-                buffer.cast(),
-                length,
-                required,
-                std::ptr::null_mut(),
-                0,
-            ) != 0
-        }
+    background_cpu_sets_with(|buffer, length, required| unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemCpuSetInformation(
+            buffer.cast(),
+            length,
+            required,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
     })
 }
 
@@ -6189,8 +6166,9 @@ mod tests {
     #[test]
     fn a_stalled_spool_drops_hours_instead_of_growing_frames() {
         let shared = Shared::new(0, 0, 1);
-        let frames =
-            |shared: &Shared| serde_json::to_value(acquisition_work(shared)).unwrap()["frames"].clone();
+        let frames = |shared: &Shared| {
+            serde_json::to_value(acquisition_work(shared)).unwrap()["frames"].clone()
+        };
         let steady = crate::frame_pool::STEADY;
         shared.spool_stalled(true);
         let taken: Vec<_> = (0..2 * steady + 1).map(|_| shared.take_frame(&mut 0)).collect();
@@ -7252,7 +7230,7 @@ mod tests {
 
     #[test]
     fn recycle_merges_a_concurrent_raise_and_catches_up_before_publication() {
-        let _demand = crate::equipment_destruction::tests::fresh_demand();
+        let _demand = collector_equipment_destruction::equipment_destruction::tests::fresh_demand();
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let returning = shared.take_frame(&mut 0).unwrap();
@@ -7372,7 +7350,7 @@ mod tests {
         let (release, resume) = mpsc::channel::<()>();
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(move |_, _| {
             let _ = in_pass.send(());
-            let _ = resume.recv_timeout(crate::TEST_HANG_GUARD);
+            let _ = resume.recv_timeout(collector_test_support::TEST_HANG_GUARD);
         }));
         let (built, spare) = mpsc::channel::<()>();
         let built = Mutex::new(built);
@@ -7383,16 +7361,22 @@ mod tests {
         }));
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
-        crate::watched(
+        collector_test_support::watched(
             move || format!("{:?}", watching.0.frames.gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &*thread.sizing;
                 let builder = {
                     let fixture = Arc::clone(&fixture);
-                    crate::spawn_ending(move || frame_builder(&fixture.0, &fixture.1.sizing))
+                    collector_test_support::spawn_ending(move || {
+                        frame_builder(&fixture.0, &fixture.1.sizing)
+                    })
                 };
-                struct End<'a>(Option<mpsc::Sender<()>>, &'a AtomicBool, std::thread::Thread);
+                struct End<'a>(
+                    Option<mpsc::Sender<()>>,
+                    &'a AtomicBool,
+                    std::thread::Thread,
+                );
                 impl Drop for End<'_> {
                     fn drop(&mut self) {
                         drop(self.0.take());
@@ -7403,11 +7387,13 @@ mod tests {
                 let end = End(Some(release), &sizing.stop, builder.thread().clone());
                 let pass = {
                     let fixture = Arc::clone(&fixture);
-                    crate::spawn_ending(move || fixture.1.sizing.grow_idle(&fixture.0))
+                    collector_test_support::spawn_ending(move || {
+                        fixture.1.sizing.grow_idle(&fixture.0)
+                    })
                 };
                 steps.at("waiting for the pass to lease an idle frame");
                 pass_entered
-                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("the pass never leased an idle frame"));
                 assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
                 let held: Vec<_> = (0..sampling::BUFFERS - 2)
@@ -7420,10 +7406,15 @@ mod tests {
                     })
                     .collect();
                 steps.at("waiting for the spare while the pass is held");
-                spare.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
-                    panic!("the spare waited for the pass: {:?}", shared.frames.gauge())
-                });
-                assert!(!pass.is_finished(), "the pass ended before the spare was built");
+                spare
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| {
+                        panic!("the spare waited for the pass: {:?}", shared.frames.gauge())
+                    });
+                assert!(
+                    !pass.is_finished(),
+                    "the pass ended before the spare was built"
+                );
                 let gauge = shared.frames.gauge();
                 assert_eq!((gauge.grown, gauge.built_ahead), (0, 1), "{gauge:?}");
                 drop(end);
@@ -7458,10 +7449,10 @@ mod tests {
             assert!(sizing.capacities.try_lock().is_some());
             assert_eq!(shared.frames.len(), sampling::BUFFERS - 2);
             leased.send(()).unwrap();
-            let _ = resume.recv_timeout(crate::TEST_HANG_GUARD);
+            let _ = resume.recv_timeout(collector_test_support::TEST_HANG_GUARD);
         }));
         let watching = Arc::clone(&fixture);
-        crate::watched(
+        collector_test_support::watched(
             move || format!("{:?}", watching.0.frames.gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
@@ -7469,11 +7460,13 @@ mod tests {
                 let release = release;
                 let worker = {
                     let fixture = Arc::clone(&fixture);
-                    crate::spawn_ending(move || fixture.1.sizing.grow_idle(&fixture.0))
+                    collector_test_support::spawn_ending(move || {
+                        fixture.1.sizing.grow_idle(&fixture.0)
+                    })
                 };
                 steps.at("waiting for idle growth to lease a frame");
                 lease_seen
-                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("idle growth never leased a frame"));
                 let others: Vec<_> = (0..sampling::BUFFERS - 2)
                     .map(|hour| {
@@ -7516,11 +7509,11 @@ mod tests {
             let _ = released
                 .lock()
                 .unwrap()
-                .recv_timeout(crate::TEST_HANG_GUARD);
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD);
         }));
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
-        crate::watched(
+        collector_test_support::watched(
             move || format!("{:?}", watching.0.frames.gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
@@ -7547,16 +7540,23 @@ mod tests {
                 let surplus = taken.pop().unwrap();
                 let spool = {
                     let fixture = Arc::clone(&fixture);
-                    crate::spawn_ending(move || fixture.1.sizing.recycle_frame(&fixture.0, surplus))
+                    collector_test_support::spawn_ending(move || {
+                        fixture.1.sizing.recycle_frame(&fixture.0, surplus)
+                    })
                 };
                 steps.at("waiting for the spool to free the surplus frame");
-                free_held.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
-                    panic!("the spool never freed a surplus frame: {:?}", shared.frames.gauge())
-                });
+                free_held
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "the spool never freed a surplus frame: {:?}",
+                            shared.frames.gauge()
+                        )
+                    });
                 let hours = AHEAD + 2;
                 let game = {
                     let fixture = Arc::clone(&fixture);
-                    crate::spawn_ending(move || {
+                    collector_test_support::spawn_ending(move || {
                         (0..hours)
                             .map(|_| {
                                 let mut grow_ns = u64::MAX;
@@ -8411,43 +8411,7 @@ mod tests {
         assert!(matches!(error.raw_os_error(), Some(5 | 32)));
         drop(exclusive);
         write_status(&path, &json!({"hours": 4})).unwrap();
-        assert!(!POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn status_rename_retries_only_transient_errors_before_deadline() {
-        for code in [5, 32] {
-            let error = io::Error::from_raw_os_error(code);
-            assert_eq!(
-                status_rename_retry_delay(&error, Duration::ZERO),
-                Some(Duration::from_millis(1))
-            );
-            assert_eq!(
-                status_rename_retry_delay(&error, Duration::from_micros(29_500)),
-                Some(Duration::from_micros(500))
-            );
-            assert_eq!(
-                status_rename_retry_delay(&error, STATUS_RENAME_RETRY_BUDGET),
-                None
-            );
-            assert_eq!(
-                status_rename_retry_delay(&error, Duration::from_millis(31)),
-                None
-            );
-        }
-        for code in [2, 3, 87, 112] {
-            assert_eq!(
-                status_rename_retry_delay(&io::Error::from_raw_os_error(code), Duration::ZERO),
-                None
-            );
-        }
-        assert_eq!(
-            status_rename_retry_delay(
-                &io::Error::from(io::ErrorKind::PermissionDenied),
-                Duration::ZERO
-            ),
-            None
-        );
+        assert!(crate::status_file::posix_rename_supported_for_test());
     }
 
     #[test]

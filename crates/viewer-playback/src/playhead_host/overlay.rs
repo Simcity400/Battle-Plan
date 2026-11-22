@@ -215,12 +215,15 @@ pub fn shown(camera: &Camera, target: Option<f32>, view: &CounterView, defines: 
 }
 
 pub struct Made {
+    pub generation: u64,
     pub hour: Hour,
     pub branch: BranchId,
     pub prepared: PreparedOverlay,
     pub tables: Arc<OverlayTables>,
     pub rows: Arc<DecodedFrame>,
     pub placed_at: Camera,
+    pub placed_pixels: [u32; 2],
+    pub placed_ui_scale: f32,
     pub on: Arc<Presentation>,
     pub published: Layered,
     pub draws: Kinds,
@@ -537,6 +540,10 @@ impl Overlay {
             self.lay_owed = Owed::default();
         }
         made
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn hour(&self) -> Option<Hour> {
@@ -1039,12 +1046,15 @@ impl Maker {
         note_us("overlay.layout_us", started);
         self.laid = Some(laid);
         Some(Some(Made {
+            generation: want.generation,
             hour: stands,
             branch: rows.branch,
             prepared,
             tables: Arc::new(tables.clone()),
             rows: Arc::clone(rows),
             placed_at: ask.camera,
+            placed_pixels: ask.pixels,
+            placed_ui_scale: ask.ui_scale,
             on: laying,
             published: want.published.clone(),
             draws: want.draws,

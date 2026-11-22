@@ -52,7 +52,7 @@ fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_stor
 #[test]
 fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inputs() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
     let owner = engine_allocation::SharedBox::clone(payload.census.unit_inputs().unwrap());
@@ -68,8 +68,8 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     });
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
-    let completed = crate::test_support::with_allocations_denied(|| {
-        unsafe { finish_acquisition(&shared, &mut batch, rejected) }
+    let completed = crate::test_support::with_allocations_denied(|| unsafe {
+        finish_acquisition(&shared, &mut batch, rejected)
     });
     assert!(matches!(
         completed.report,
@@ -93,7 +93,8 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     ));
     assert!(!copy_divisions_core_refresh(&NoDivisionReads, context, &mut request.payload).raw_ok);
     assert_eq!(reads.finish(), crate::read_accounting::ZERO);
-    let counters = pool.calibration().roles[acquisition::Role::DivisionInputs as usize].counters;
+    let counters =
+        pool.calibration().roles[collector_workers::roles::Role::DivisionInputs as usize].counters;
     assert_eq!(counters.inline_completed, 0);
     assert_eq!(pool.calibration().executor.uncollected, 0);
 }
@@ -102,7 +103,7 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
 fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     assert!(size_of::<PendingAcquisition>() <= 2 * size_of::<acquisition::Ticket>());
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let payload = DivisionsJob::new_worker();
@@ -121,8 +122,8 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.queued, 0);
-    let completed = crate::test_support::with_allocations_denied(|| {
-        unsafe { finish_acquisition(&shared, &mut batch, pending) }
+    let completed = crate::test_support::with_allocations_denied(|| unsafe {
+        finish_acquisition(&shared, &mut batch, pending)
     });
     assert!(matches!(
         completed.report,
@@ -135,7 +136,8 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
         &owner,
         request.payload.census.unit_inputs().unwrap()
     ));
-    let counters = pool.calibration().roles[acquisition::Role::DivisionInputs as usize].counters;
+    let counters =
+        pool.calibration().roles[collector_workers::roles::Role::DivisionInputs as usize].counters;
     assert_eq!(counters.rejected, 1);
     assert_eq!(counters.inline_completed, 0);
 }
@@ -143,7 +145,7 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
 #[test]
 fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_refusals() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut captured = extended::Captured::with_capacities(&extended::Capacities::default());
@@ -178,7 +180,7 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
             }),
             metrics: Default::default(),
         };
-        for (table, view) in extended::air::TABLES.into_iter().zip(tables) {
+        for (table, view) in collector_air::extended::air::TABLES.into_iter().zip(tables) {
             if let replay_frame::frame::TableView::Unavailable { reason } = &view {
                 assert!(!reason.is_empty());
             }
@@ -193,18 +195,18 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
 #[test]
 fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut request = acquisition::PresentationRequest {
         dispatch: Default::default(),
         countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
-        context: extended::division_presentation::CaptureContext {
+        context: collector_divisions::extended::division_presentation::CaptureContext {
             base: 0,
             game_state: 0,
             hour: 0,
         },
-        captured: extended::division_presentation::Captured::vacant(),
+        captured: collector_divisions::extended::division_presentation::Captured::vacant(),
         inputs: None,
         army_stats: None,
     };
@@ -226,9 +228,11 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
         request
             .restore_movement(
                 movement,
-                Ok(extended::division_presentation::CaptureReport {
-                    ticks: [1, 3, 0, 2, 0, 0, 0, 5, 7, 11, 13, 17],
-                }),
+                Ok(
+                    collector_divisions::extended::division_presentation::CaptureReport {
+                        ticks: [1, 3, 0, 2, 0, 0, 0, 5, 7, 11, 13, 17],
+                    }
+                ),
                 report,
             )
             .err(),
@@ -238,10 +242,10 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
 
 #[test]
 fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
-    use crate::extended::plans::{Capacities, Captured};
+    use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (orders_failure, reason) in [
@@ -281,11 +285,11 @@ fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
 #[test]
 fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
-    let part = Box::new(crate::orders_parts::Part::new());
-    let at: *const crate::orders_parts::Part = &*part;
+    let part = Box::new(collector_divisions::orders_parts::Part::new());
+    let at: *const collector_divisions::orders_parts::Part = &*part;
     let request = acquisition::Job::OrdersPart(acquisition::OrdersPartRequest {
         base: 0,
         index: 2,
@@ -315,10 +319,10 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
 
 #[test]
 fn a_rejected_stitch_keeps_an_earlier_order_failure() {
-    use crate::extended::plans::{Capacities, Captured};
+    use collector_plans::extended::plans::{Capacities, Captured};
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     for (earlier, reason) in [
@@ -332,7 +336,7 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
             countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
             base: 0,
             game_state: 0,
-            orders: crate::map_capture::Orders::for_test(&Default::default()),
+            orders: crate::map_capture::MapCapacities::default().orders(),
             plans: Captured::with_capacities(&Capacities::default()),
             group_source: None,
         };
@@ -361,12 +365,12 @@ fn a_rejected_stitch_keeps_an_earlier_order_failure() {
 }
 
 fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::OrdersRequest {
-    use crate::extended::plans::{Capacities, Captured};
+    use collector_plans::extended::plans::{Capacities, Captured};
     let mut request = acquisition::OrdersRequest {
         countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
         base,
         game_state: 0,
-        orders: crate::map_capture::Orders::for_test(&Default::default()),
+        orders: crate::map_capture::MapCapacities::default().orders(),
         plans: Captured::with_capacities(&Capacities::default()),
         group_source: None,
     };
@@ -380,7 +384,7 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     use engine_native::walk::Outcome;
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job =
         || acquisition::Job::OrdersStitch(stitch_request(acquisition::STITCH_PANIC_BASE, None));
@@ -409,7 +413,7 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.panicked, 1);
     assert_eq!(
-        calibration.roles[acquisition::Role::OrdersStitch as usize]
+        calibration.roles[collector_workers::roles::Role::OrdersStitch as usize]
             .counters
             .panicked,
         1
@@ -422,7 +426,7 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
 #[test]
 fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let job = acquisition::Job::OrdersStitch(stitch_request(0, Some("original census refusal")));
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job) };
@@ -463,7 +467,7 @@ fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
 
 #[test]
 fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let ticket = batch
         .park(&mut Some(acquisition::Job::OrdersStitch(stitch_request(
@@ -505,7 +509,7 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
 fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
     let shared = Shared::new(0, 0, 1);
     for stopped_first in [false, true] {
-        let pool = acquisition::Pool::start(2, acquisition::MAX_JOBS).unwrap();
+        let pool = acquisition::Pool::start(2, collector_workers::roles::MAX_JOBS).unwrap();
         {
             let mut batch = acquisition::Batch::new(&pool);
             let job = acquisition::Job::OrdersStitch(stitch_request(
@@ -534,7 +538,7 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
             "{stopped_first}"
         );
         assert_eq!(
-            calibration.roles[acquisition::Role::OrdersStitch as usize]
+            calibration.roles[collector_workers::roles::Role::OrdersStitch as usize]
                 .counters
                 .panicked,
             u64::from(!stopped_first)
@@ -546,7 +550,7 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
     use engine_native::walk::Outcome;
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     pool.shutdown().unwrap();
     let batch = acquisition::Batch::new(&pool);
     let stopped = Some("acquisition worker stopped");
@@ -579,8 +583,9 @@ fn a_stitch_settles_with_the_reason_of_its_join_segment() {
 #[test]
 fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     use crate::extended::bench_world::{self, Shape};
-    use crate::map_capture::{MapCapacities, Orders};
-    use crate::orders_parts::{MAX_PARTS, Part};
+    use crate::map_capture::MapCapacities;
+    use collector_divisions::orders::Orders;
+    use collector_divisions::orders_parts::{MAX_PARTS, Part};
     let world = bench_world::build(
         40,
         Shape {
@@ -617,9 +622,9 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         count
     };
     let mut frames = [
-        Orders::for_test(&MapCapacities::default()),
-        Orders::for_test(&MapCapacities::default()),
-        Orders::for_test(&MapCapacities::default()),
+        MapCapacities::default().orders(),
+        MapCapacities::default().orders(),
+        MapCapacities::default().orders(),
     ];
     assert_eq!(hour(&mut frames[0], 3, false), 1);
     assert_eq!(hour(&mut frames[1], 0, true), MAX_PARTS);
@@ -686,7 +691,7 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
 #[test]
 fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
     use super::divisions_test_kit as kit;
-    use crate::division_census::UnitInputs;
+    use collector_divisions::division_census::UnitInputs;
     let bytes = kit::fixture();
     let memory = NoRosterRetry(&bytes);
     let countries = engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
@@ -697,33 +702,39 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
     };
     for inputs in [
         None,
-        Some(engine_allocation::shared(UnitInputs::fixture(
-            vec![seed],
-            Outcome::Rows { len: 2 },
-        )).unwrap()),
-        Some(engine_allocation::shared(UnitInputs::fixture(
-            vec![seed],
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1,
-            },
-        )).unwrap()),
-        Some(engine_allocation::shared(UnitInputs::fixture(
-            Vec::new(),
-            Outcome::Unavailable {
-                reason: "original division input read failed",
-            },
-        )).unwrap()),
+        Some(
+            engine_allocation::shared(UnitInputs::fixture(vec![seed], Outcome::Rows { len: 2 }))
+                .unwrap(),
+        ),
+        Some(
+            engine_allocation::shared(UnitInputs::fixture(
+                vec![seed],
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: 1,
+                },
+            ))
+            .unwrap(),
+        ),
+        Some(
+            engine_allocation::shared(UnitInputs::fixture(
+                Vec::new(),
+                Outcome::Unavailable {
+                    reason: "original division input read failed",
+                },
+            ))
+            .unwrap(),
+        ),
     ] {
         let mut request = acquisition::PresentationRequest {
             dispatch: Default::default(),
             countries: engine_allocation::SharedBox::clone(&countries),
-            context: extended::division_presentation::CaptureContext {
+            context: collector_divisions::extended::division_presentation::CaptureContext {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
                 hour: 0,
             },
-            captured: extended::division_presentation::Captured::vacant(),
+            captured: collector_divisions::extended::division_presentation::Captured::vacant(),
             inputs: inputs.clone(),
             army_stats: None,
         };
@@ -760,7 +771,7 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
 
         let mut intel = acquisition::Job::Intel(acquisition::IntelRequest {
             countries: engine_allocation::SharedBox::clone(&countries),
-            context: extended::fog::IntelCopyContext {
+            context: collector_air::extended::fog::IntelCopyContext {
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
                 row_limit: 0,
@@ -776,7 +787,7 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
         let acquisition::Job::Intel(intel) = intel else {
             unreachable!()
         };
-        let mut fog = extended::fog::Captured::vacant();
+        let mut fog = collector_air::extended::fog::Captured::vacant();
         fog.decode_intel_payload(&intel.payload, &mut [0; 1]);
         assert!(matches!(fog.outcomes()[4], Outcome::Unavailable { .. }));
     }
@@ -849,7 +860,7 @@ fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consum
 #[test]
 fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     let shared = Shared::new(0, 0, 1);
-    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let pool = acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut selection = crate::slicing::SliceSelection::new();
     selection.reset(5, false);
@@ -869,8 +880,8 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     });
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
-    let completed = crate::test_support::with_allocations_denied(|| {
-        unsafe { finish_acquisition(&shared, &mut batch, rejected) }
+    let completed = crate::test_support::with_allocations_denied(|| unsafe {
+        finish_acquisition(&shared, &mut batch, rejected)
     });
     assert!(matches!(
         completed.report,
@@ -1186,7 +1197,7 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
     let mut indices = Vec::new();
     for hour in 0..hours {
         let (index, grow_ns) = taken
-            .recv_timeout(crate::TEST_HANG_GUARD)
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
             .unwrap_or_else(|_| panic!("the game thread waited for a frame at hour {hour}"));
         assert_eq!(grow_ns == 0, hour < BUFFERS, "hour {hour} grew {grow_ns} ns");
         indices.push(index);
@@ -1224,7 +1235,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
     use std::sync::mpsc;
     let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
     let watching = Arc::clone(&shared);
-    crate::watched(
+    collector_test_support::watched(
         move || format!("{:?}", watching.frames.gauge()),
         move |steps| {
             let (started, builds) = mpsc::channel::<()>();
@@ -1236,7 +1247,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                     let _ = released
                         .lock()
                         .unwrap()
-                        .recv_timeout(crate::TEST_HANG_GUARD);
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 }
             }));
             assert!(installed.is_ok());
@@ -1254,7 +1265,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             let build_started = |at: usize| {
                 steps.at(format_args!("after hour {at}: waiting for a build ahead; {}", gauge()));
                 builds
-                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| {
                         panic!("no frame was being built ahead after hour {at}: {}", gauge())
                     });
@@ -1283,8 +1294,15 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             let burst = shared.frames.gauge();
             assert_eq!(burst.grown, 1, "{burst:?}");
             assert!(grew > 0, "{burst:?}");
-            assert!(grew < crate::TEST_HANG_GUARD.as_nanos() as u64, "{grew} ns: {burst:?}");
-            assert_eq!((burst.grow_ns, burst.grow_max_ns), (grew, grew), "{burst:?}");
+            assert!(
+                grew < collector_test_support::TEST_HANG_GUARD.as_nanos() as u64,
+                "{grew} ns: {burst:?}"
+            );
+            assert_eq!(
+                (burst.grow_ns, burst.grow_max_ns),
+                (grew, grew),
+                "{burst:?}"
+            );
             steps.at(format_args!("ending the builder; {}", gauge()));
             builder.end(gauge).unwrap();
             let behind = shared.frames.gauge();
@@ -1309,7 +1327,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
 struct TestBuilder {
     stop: Arc<std::sync::atomic::AtomicBool>,
     release: Option<std::sync::mpsc::Sender<()>>,
-    builder: Option<crate::Ending<std::io::Result<()>>>,
+    builder: Option<collector_test_support::Ending<std::io::Result<()>>>,
 }
 
 impl TestBuilder {
@@ -1325,7 +1343,7 @@ impl TestBuilder {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let builder = {
             let (shared, stop) = (Arc::clone(shared), Arc::clone(&stop));
-            crate::spawn_ending(move || shared.build_ahead_until(&stop, follow))
+            collector_test_support::spawn_ending(move || shared.build_ahead_until(&stop, follow))
         };
         Self {
             stop,
@@ -1379,7 +1397,7 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
     for stopped in [Stopped::Parked, Stopped::MidBuild, Stopped::BeforeItsLook] {
         let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
         let watching = Arc::clone(&shared);
-        crate::watched(
+        collector_test_support::watched(
             move || format!("{stopped:?}: {:?}", watching.frames.gauge()),
             move |steps| {
                 let gauge = || format!("{stopped:?}: {:?}", shared.frames.gauge());
@@ -1387,7 +1405,10 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                 let (release, released) = mpsc::channel::<()>();
                 let released = Arc::new(Mutex::new(released));
                 let hold = move || {
-                    let _ = released.lock().unwrap().recv_timeout(crate::TEST_HANG_GUARD);
+                    let _ = released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 };
                 let installed = shared.build_ahead_seam.set(Box::new({
                     let (seen, hold) = (Mutex::new(seen.clone()), hold.clone());
@@ -1412,7 +1433,7 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                     steps.at(format_args!("waiting for {wanted:?}; {}", gauge()));
                     loop {
                         let at = sightings
-                            .recv_timeout(crate::TEST_HANG_GUARD)
+                            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                             .unwrap_or_else(|_| panic!("never saw {wanted:?}: {}", gauge()));
                         starts += usize::from(at == Seen::Build(BuildAhead::Starting));
                         if at == wanted {
@@ -1733,7 +1754,7 @@ fn table_retry_preserves_admitted_politics_mutations() {
 
 #[test]
 fn wars_typed_walk_preserves_primary_native_rows() {
-    use super::wars_test_kit as kit;
+    use collector_states::wars_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let split = kit::direct(&memory, 64);
@@ -1749,7 +1770,7 @@ fn wars_typed_walk_preserves_primary_native_rows() {
 
 #[test]
 fn wars_typed_walk_keeps_full_validation_from_any_starting_storage() {
-    use super::wars_test_kit as kit;
+    use collector_states::wars_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     for cap in [0usize, 1, 2, 64] {
@@ -1760,7 +1781,7 @@ fn wars_typed_walk_keeps_full_validation_from_any_starting_storage() {
 
 #[test]
 fn wars_primary_faults_preserve_native_validation_scope() {
-    use super::wars_test_kit as kit;
+    use collector_states::wars_test_kit as kit;
     use engine_native::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
     struct Fault<'a> {
         memory: SliceMemory<'a>,
@@ -2130,7 +2151,7 @@ fn divisions_owned_census_survives_a_private_core_field_fault() {
         }
     }
     let bytes = kit::fixture();
-    let mut census = crate::division_census::Census::new();
+    let mut census = collector_divisions::division_census::Census::new();
     census.capture(&Fault(&bytes), kit::BASE, kit::GAME_STATE);
     assert_eq!(census.census_outcome(), Outcome::Rows { len: 3 });
     assert_eq!(
@@ -2157,12 +2178,22 @@ fn divisions_shared_empty_country_census_preserves_independent_fog_success() {
         bytes[address..address + 8].fill(0);
     }
     let memory = kit::memory(&bytes);
-    let mut census = crate::division_census::Census::new();
+    let mut census = collector_divisions::division_census::Census::new();
     census.capture(&memory, kit::BASE, kit::GAME_STATE);
-    let direct =
-        engine_visibility::unit_viewer_entry::walk(&memory, kit::BASE, kit::GAME_STATE, &mut Vec::new());
+    let direct = engine_visibility::unit_viewer_entry::walk(
+        &memory,
+        kit::BASE,
+        kit::GAME_STATE,
+        &mut Vec::new(),
+    );
     assert_eq!(direct, Outcome::Rows { len: 0 });
-    let shared = engine_visibility::unit_viewer_entry::walk_with_divisions_buffer(&memory, kit::BASE, kit::GAME_STATE, engine_native::walk::Buffer::Count, Some(census.intel_sources()));
+    let shared = engine_visibility::unit_viewer_entry::walk_with_divisions_buffer(
+        &memory,
+        kit::BASE,
+        kit::GAME_STATE,
+        engine_native::walk::Buffer::Count,
+        Some(census.intel_sources()),
+    );
     assert_eq!(shared, direct);
     assert_eq!(
         census.rows().1,
@@ -2204,7 +2235,7 @@ fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
         }
     );
     memory.pending.set(true);
-    let mut census = crate::division_census::Census::new();
+    let mut census = collector_divisions::division_census::Census::new();
     census.capture(&memory, kit::BASE, kit::GAME_STATE);
     assert_eq!(census.rows().1, direct.divisions_outcome);
 }
@@ -2373,7 +2404,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
         details_active: false,
     };
     let mut job = DivisionsJob {
-        census: crate::division_census::Census::new(),
+        census: collector_divisions::division_census::Census::new(),
         ..Default::default()
     };
     let reads = crate::read_accounting::Capture::new();
@@ -2395,7 +2426,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
             assert_eq!(*counts, ReadCounts::ZERO);
         }
     }
-    let mut census = crate::division_census::Census::new();
+    let mut census = collector_divisions::division_census::Census::new();
     census.capture_inputs(&reference, context.base, context.game_state);
     census.capture_core(&reference);
     assert_eq!(*memory.0.calls.borrow(), *reference.calls.borrow());
@@ -2472,7 +2503,10 @@ fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
 
 #[test]
 fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
-    use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
+    use collector_naval_results::{
+        naval_result_sources as sources,
+        naval_result_sources::{Entry, tests::Observation},
+    };
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
@@ -2517,7 +2551,10 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
 
 #[test]
 fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
-    use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
+    use collector_naval_results::{
+        naval_result_sources as sources,
+        naval_result_sources::{Entry, tests::Observation},
+    };
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
@@ -2704,25 +2741,25 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
         let _ = released
             .lock()
             .unwrap()
-            .recv_timeout(crate::TEST_HANG_GUARD);
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD);
     }));
     assert!(installed.is_ok());
     let shared = Arc::new(shared);
     let watching = Arc::clone(&shared);
-    crate::watched(
+    collector_test_support::watched(
         move || format!("{:?}", watching.frames.gauge()),
         move |steps| {
             let release = release;
             let spool = {
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
-                crate::spawn_ending(move || shared.prepare_frame_clocks(&*long))
+                collector_test_support::spawn_ending(move || shared.prepare_frame_clocks(&*long))
             };
             steps.at("waiting for the spool's clock preparation to hold a frame");
-            held.recv_timeout(crate::TEST_HANG_GUARD)
+            held.recv_timeout(collector_test_support::TEST_HANG_GUARD)
                 .unwrap_or_else(|_| panic!("the spool's clock preparation never held a frame"));
             let hour = {
                 let (shared, long) = (Arc::clone(&shared), Arc::clone(&long));
-                crate::spawn_ending(move || {
+                collector_test_support::spawn_ending(move || {
                     let capture = unsafe { shared.prepared_clock_capture(&*long) };
                     let index = shared.take_frame(&mut 0);
                     let read = capture.read(&*long, 0);
@@ -2732,7 +2769,12 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
                                 unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
                             frame.set_clock(Some(entry));
                             let clock = frame.clock.as_ref().unwrap();
-                            Ok((index, clock.hour, clock.campaign_id.as_bytes().to_vec(), epoch))
+                            Ok((
+                                index,
+                                clock.hour,
+                                clock.campaign_id.as_bytes().to_vec(),
+                                epoch,
+                            ))
                         }
                         (index, read) => Err(format!("frame {index:?}, read {:?}", read.err())),
                     }
@@ -2848,7 +2890,7 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
             let shared = Arc::clone(&shared);
             let release = Arc::clone(&release);
             let cancel = Arc::clone(&cancel);
-            crate::spawn_ending(move || {
+            collector_test_support::spawn_ending(move || {
                 shared.spool_waker.set(std::thread::current()).unwrap();
                 while shared.frames.ready_is_empty() && !cancel.load(Ordering::Acquire) {
                     admitted_tx.send(()).unwrap();
@@ -2864,7 +2906,11 @@ fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
         if wake_before_park {
             release.wait();
         }
-        if spool.done.recv_timeout(crate::TEST_HANG_GUARD).is_err() {
+        if spool
+            .done
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .is_err()
+        {
             let finished = spool.is_finished();
             cancel.store(true, Ordering::Release);
             spool.thread().unpark();
@@ -2949,4 +2995,3 @@ fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
         }
     }
 }
-

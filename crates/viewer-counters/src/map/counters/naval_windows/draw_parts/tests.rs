@@ -104,7 +104,7 @@ fn assert_batch_bits(a: &Batch, b: &Batch) {
         assert_eq!(a.rect.map(f32::to_bits), b.rect.map(f32::to_bits));
         assert_eq!(a.uv.map(f32::to_bits), b.uv.map(f32::to_bits));
         assert_eq!(a.color.map(f32::to_bits), b.color.map(f32::to_bits));
-        assert_eq!(a.rotation.to_bits(), b.rotation.to_bits());
+        assert_eq!(a.rotation.map(f32::to_bits), b.rotation.map(f32::to_bits));
         assert_eq!(a.shade.to_bits(), b.shade.to_bits());
         if let (Some(a), Some(b)) = (a.anchor, b.anchor) {
             assert_eq!(a.world.map(f32::to_bits), b.world.map(f32::to_bits));
@@ -411,6 +411,7 @@ fn borrowed_naval_parts_keep_empty_and_same_position_holder_attach_order() {
     let child = |name: &str| Part {
         path: name.into(),
         child: None,
+        background_index: None,
         kind: PartKind::Cell {
             texture: 1,
             masking: None,

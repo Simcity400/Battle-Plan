@@ -3,6 +3,7 @@ import type { HourWindow } from './model';
 import { OUTSIDE, perfLog } from '../shell/perf.ts';
 import { engine } from '../engine/frame.ts';
 import type { EngineTask, FrameEngine } from '../engine/frame.ts';
+import { PAGE_CLOCK_ID } from './mapPlayback.ts';
 
 export const MIN_PLAYBACK_SPEED = 0.25;
 export const MAX_PLAYBACK_SPEED = 1440;
@@ -40,10 +41,11 @@ export class PlaybackController {
   private lastTime = 0;
   private framing = OUTSIDE;
   private readonly engine: FrameEngine;
+  readonly clockId: string;
   private stepTask: EngineTask | null = null;
   private paintTask: EngineTask | null = null;
 
-  constructor(frames: FrameEngine = engine) { this.engine = frames; }
+  constructor(frames: FrameEngine = engine, clockId: string = PAGE_CLOCK_ID) { this.engine = frames; this.clockId = clockId; }
 
   get frameAt(): number { return this.framing; }
 

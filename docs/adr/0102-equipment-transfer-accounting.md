@@ -8,4 +8,4 @@ The queued disposition outranks a later direct caller once a transfer is proved,
 
 Foreign unwind regressions use authored native callers for both the HQ reserve-return path and land damage path. The fixture exercises the actual observation around the original call, with a foreign exception after the intended bookend. A new load does not establish that Windows and native callers have left the callback. Production does not clear an active count without a completion witness. The fixture may clear it in teardown after its handler and all callers have returned.
 
-[Transfer accounting](../../crates/collector/src/equipment_destruction/transfers.rs) · [Queue indexes](../../crates/collector/src/equipment_destruction/queue_index.rs) · [Foreign unwind regressions](../../crates/collector/src/equipment_destruction/tests/foreign_unwind.rs)
+[Transfer accounting](../../crates/collector-equipment-destruction/src/equipment_destruction/transfers.rs) · [Queue indexes](../../crates/collector-equipment-destruction/src/equipment_destruction/queue_index.rs) · [Foreign unwind regressions](../../crates/collector-equipment-destruction/src/equipment_destruction/tests/foreign_unwind.rs)

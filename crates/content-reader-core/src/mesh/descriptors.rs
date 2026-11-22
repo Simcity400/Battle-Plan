@@ -549,8 +549,10 @@ impl Descriptors {
 pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     settled_state_carriers(&document, path)?;
+    let (object_items, _) = read_object_items(bytes, path)?;
+    let (entity_items, _) = read_entity_items(bytes, path)?;
     let mut out = Descriptors::default();
-    let _ = collect(&document, path, &mut out);
+    let _ = collect(&document, &object_items, &entity_items, path, &mut out);
     Ok(out)
 }
 
@@ -597,36 +599,268 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     Ok(())
 }
 
-fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Vec<String> {
+fn check_native_read(
+    read: parser::native::Read,
+    path: &str,
+) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("{path}: {cause}; descriptor file refused")));
+    }
+    let misreads = read
+        .misreads
+        .into_iter()
+        .map(|misread| format!("{path}: {misread}"))
+        .collect();
+    Ok((read.items, misreads))
+}
+
+#[derive(Clone, Copy)]
+enum ObjectNode {
+    Top,
+    ObjectTypes,
+    Mesh,
+    MeshSettings,
+    MeshAnimation,
+    MeshVariant,
+    NamedObject,
+}
+
+fn object_dispatch(
+    node: ObjectNode,
+    field: &parser::native::Field<'_>,
+) -> parser::native::Shape<ObjectNode> {
+    use parser::native::Shape;
+    match node {
+        ObjectNode::Top => match field.keyword().as_deref() {
+            Some(b"objecttypes") => Shape::Object(ObjectNode::ObjectTypes),
+            _ => Shape::Skip,
+        },
+        ObjectNode::ObjectTypes => match field.keyword().as_deref() {
+            Some(b"pdxmesh") => Shape::Object(ObjectNode::Mesh),
+            Some(b"arrowtype" | b"animatedmaptext" | b"pdxparticle") => {
+                Shape::Object(ObjectNode::NamedObject)
+            }
+            _ => Shape::Skip,
+        },
+        ObjectNode::Mesh => match field.keyword().as_deref() {
+            Some(b"meshsettings") => Shape::Object(ObjectNode::MeshSettings),
+            Some(b"animation") => Shape::Object(ObjectNode::MeshAnimation),
+            Some(b"variant") => Shape::Object(ObjectNode::MeshVariant),
+            Some(b"name" | b"file" | b"scale" | b"cull_distance") => Shape::One,
+            _ => Shape::Skip,
+        },
+        ObjectNode::MeshSettings => match field.keyword().as_deref() {
+            Some(
+                b"name"
+                | b"index"
+                | b"texture_diffuse"
+                | b"texture_normal"
+                | b"texture_specular"
+                | b"shader"
+                | b"shader_file",
+            ) => Shape::One,
+            _ => Shape::Skip,
+        },
+        ObjectNode::MeshAnimation => match field.keyword().as_deref() {
+            Some(b"id" | b"type") => Shape::One,
+            _ => Shape::Skip,
+        },
+        ObjectNode::MeshVariant => match field.keyword().as_deref() {
+            Some(b"weight" | b"pdxmesh") => Shape::One,
+            _ => Shape::Skip,
+        },
+        ObjectNode::NamedObject => match field.keyword().as_deref() {
+            Some(b"name") => Shape::One,
+            _ => Shape::Skip,
+        },
+    }
+}
+
+fn read_object_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
+    let mut dispatch = object_dispatch;
+    let read = parser::native::read(
+        bytes,
+        parser::native::Mode::SkipMark,
+        parser::native::Top::File(ObjectNode::Top),
+        None,
+        &mut dispatch,
+    );
+    check_native_read(read, path)
+}
+
+fn read_object_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
+    let mut dispatch = object_dispatch;
+    parser::native::read_recovering(
+        bytes,
+        parser::native::Mode::SkipMark,
+        parser::native::Top::File(ObjectNode::Top),
+        None,
+        &mut dispatch,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum EntityNode {
+    Top,
+    Entity,
+    State,
+    StateEvent,
+    StateEventSound,
+    StatePropagate,
+    StateGameData,
+    HitMissEffect,
+    Attach,
+    Locator,
+    EntityGameData,
+}
+
+fn entity_dispatch(
+    node: EntityNode,
+    field: &parser::native::Field<'_>,
+) -> parser::native::Shape<EntityNode> {
+    use parser::native::Shape;
+    match node {
+        EntityNode::Top => match field.keyword().as_deref() {
+            Some(b"entity") => Shape::Object(EntityNode::Entity),
+            _ => Shape::Skip,
+        },
+        EntityNode::Entity => match field.keyword().as_deref() {
+            Some(b"state") => Shape::Object(EntityNode::State),
+            Some(b"attach") => Shape::Object(EntityNode::Attach),
+            Some(b"locator") => Shape::Object(EntityNode::Locator),
+            Some(b"game_data") => Shape::Object(EntityNode::EntityGameData),
+            Some(
+                b"name"
+                | b"pdxmesh"
+                | b"clone"
+                | b"scale"
+                | b"cull_radius"
+                | b"default_state"
+                | b"get_state_from_parent"
+                | b"version",
+            ) => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::State => match field.keyword().as_deref() {
+            Some(b"event") => Shape::Object(EntityNode::StateEvent),
+            Some(b"propagate_state") => Shape::Object(EntityNode::StatePropagate),
+            Some(b"game_data") => Shape::Object(EntityNode::StateGameData),
+            Some(
+                b"name"
+                | b"animation"
+                | b"looping"
+                | b"next_state"
+                | b"chance"
+                | b"animation_blend_time"
+                | b"animation_speed"
+                | b"animation_start_time"
+                | b"animation_random_start_time",
+            ) => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::StateEvent => match field.keyword().as_deref() {
+            Some(b"sound") => Shape::Object(EntityNode::StateEventSound),
+            Some(
+                b"id"
+                | b"time"
+                | b"node"
+                | b"light"
+                | b"particle"
+                | b"keep_particle"
+                | b"trigger_once",
+            ) => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::StateEventSound => match field.keyword().as_deref() {
+            Some(b"soundeffect") => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::StatePropagate | EntityNode::Attach => {
+            if field.opens() {
+                Shape::Skip
+            } else {
+                Shape::One
+            }
+        }
+        EntityNode::StateGameData => match field.keyword().as_deref() {
+            Some(b"hitmiss_effect") => Shape::Object(EntityNode::HitMissEffect),
+            _ => Shape::Skip,
+        },
+        EntityNode::HitMissEffect => match field.keyword().as_deref() {
+            Some(b"time" | b"type") => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::Locator => match field.keyword().as_deref() {
+            Some(b"position" | b"rotation") => Shape::ByKey,
+            Some(b"name" | b"parent_joint" | b"scale") => Shape::One,
+            _ => Shape::Skip,
+        },
+        EntityNode::EntityGameData => match field.keyword().as_deref() {
+            Some(b"atlas_size") => Shape::ByKey,
+            Some(b"texture_anim_speed") => Shape::One,
+            _ => Shape::Skip,
+        },
+    }
+}
+
+fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
+    let mut dispatch = entity_dispatch;
+    let read = parser::native::read(
+        bytes,
+        parser::native::Mode::SkipMark,
+        parser::native::Top::File(EntityNode::Top),
+        None,
+        &mut dispatch,
+    );
+    check_native_read(read, path)
+}
+
+fn read_entity_items_recovering(bytes: &[u8]) -> parser::native::RecoveredRead {
+    let mut dispatch = entity_dispatch;
+    parser::native::read_recovering(
+        bytes,
+        parser::native::Mode::SkipMark,
+        parser::native::Top::File(EntityNode::Top),
+        None,
+        &mut dispatch,
+    )
+}
+
+fn collect(
+    document: &parser::Document,
+    object_items: &[parser::Item],
+    entity_items: &[parser::Item],
+    path: &str,
+    out: &mut Descriptors,
+) -> Vec<String> {
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     let mut replaced = Vec::new();
+    for item in object_items {
+        if item.keyword_is("objectTypes") {
+            for block in item.value.items().unwrap_or(&[]) {
+                if block.keyword_is("pdxmesh")
+                    && let Some(definition) = mesh_definition(&block.value)
+                    && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
+                {
+                    replaced.push(old.name);
+                }
+            }
+        }
+    }
+    for item in entity_items {
+        if item.keyword_is("entity")
+            && let Some(definition) = entity_definition(&item.value)
+            && let Some(old) = out.entities.insert(definition.name.clone(), definition)
+        {
+            replaced.push(old.name);
+        }
+    }
     for item in &document.items {
-        match item.key.as_deref() {
-            Some(b"objectTypes") => {
-                for block in item.value.items().unwrap_or(&[]) {
-                    if block.key.as_deref() == Some(b"pdxmesh")
-                        && let Some(definition) = mesh_definition(&block.value)
-                        && let Some(old) = out.meshes.insert(definition.name.clone(), definition)
-                    {
-                        replaced.push(old.name);
-                    }
-                }
-            }
-            Some(b"entity") => {
-                if let Some(definition) = entity_definition(&item.value)
-                    && let Some(old) = out.entities.insert(definition.name.clone(), definition)
-                {
-                    replaced.push(old.name);
-                }
-            }
-            Some(b"animation") => {
-                if let Some(definition) = animation_definition(&item.value, directory)
-                    && let Some(old) = out.animations.insert(definition.name.clone(), definition)
-                {
-                    replaced.push(old.name);
-                }
-            }
-            _ => {}
+        if item.key.as_deref() == Some(b"animation")
+            && let Some(definition) = animation_definition(&item.value, directory)
+            && let Some(old) = out.animations.insert(definition.name.clone(), definition)
+        {
+            replaced.push(old.name);
         }
     }
     replaced
@@ -692,8 +926,14 @@ impl Roster {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         let mut objects = BTreeMap::new();
         for path in crate::particles::object_file_order(&interface, &gfx) {
-            if let Some(document) = roster.parse(layers, &path, &OBJECTS)? {
-                add_objects(&document, &mut objects);
+            if let Some((_, items)) = roster.parse(
+                layers,
+                &path,
+                &OBJECTS,
+                read_object_items,
+                read_object_items_recovering,
+            )? {
+                add_objects(&items, &mut objects);
             }
         }
         roster.descriptors.meshes = objects
@@ -703,7 +943,13 @@ impl Roster {
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
         for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
-            let Some(document) = roster.parse(layers, &file, &["entity", "animation", "light"])?
+            let Some((document, entity_items)) = roster.parse(
+                layers,
+                &file,
+                &["entity", "animation", "light"],
+                read_entity_items,
+                read_entity_items_recovering,
+            )?
             else {
                 continue;
             };
@@ -732,8 +978,6 @@ impl Roster {
                         .entry(animation.name.clone())
                         .or_default()
                         .push(animation);
-                } else if item.keyword_is("entity") {
-                    entities.declare(&item.value, &file, &mut roster)?;
                 } else if item.keyword_is("light")
                     && let Some(fields) = item.value.items()
                 {
@@ -744,6 +988,11 @@ impl Roster {
                         )));
                     }
                     roster.lights.insert(name, fields.to_vec());
+                }
+            }
+            for item in entity_items {
+                if item.keyword_is("entity") {
+                    entities.declare(&item.value, &file, &mut roster)?;
                 }
             }
         }
@@ -764,7 +1013,9 @@ impl Roster {
         layers: &ResolvedLayers,
         file: &ScriptPath,
         words: &[&str],
-    ) -> io::Result<Option<parser::Document>> {
+        native: fn(&[u8], &str) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
+        recover: fn(&[u8]) -> parser::native::RecoveredRead,
+    ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
         let text = file.text();
         let path: &str = &text;
         let bytes = match file.read_uncovered(layers) {
@@ -781,42 +1032,62 @@ impl Roster {
         }) {
             return Ok(None);
         }
-        let read = |bytes: &[u8]| {
-            parser::parse(bytes)
-                .or_else(|_| parser::parse(&balanced_blocks(bytes)))
-                .and_then(|document| {
-                    settled_state_carriers(&document, path)?;
-                    Ok(document)
-                })
+        let parse_tree = |bytes: &[u8]| {
+            parser::parse(bytes).or_else(|_| parser::parse(&balanced_blocks(bytes)))
         };
-        match read(&bytes) {
-            Ok(document) => Ok(Some(document)),
-            Err(error) => {
-                if layers.supplied_by_visual_mod(file)
-                    && let Some(recorded) = layers.without_overlays()
-                    && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
-                    && let Ok(document) = read(&recorded_bytes)
-                {
-                    layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
-                    let declared = lexical_names(&recorded_bytes);
-                    for name in lexical_names(&bytes) {
-                        if !declared.contains(&name) {
-                            self.unreadable_names
-                                .entry(name)
-                                .or_insert_with(|| path.to_owned());
-                        }
-                    }
-                    return Ok(Some(document));
+        let validate = |bytes: &[u8], document: &parser::Document| -> io::Result<_> {
+            settled_state_carriers(document, path)?;
+            native(bytes, path)
+        };
+        let (error, parsed) = match parse_tree(&bytes) {
+            Ok(document) => match validate(&bytes, &document) {
+                Ok((items, misreads)) => {
+                    self.logged.extend(misreads);
+                    return Ok(Some((document, items)));
                 }
-                for name in lexical_names(&bytes) {
+                Err(error) => (error, Some(document)),
+            },
+            Err(error) => (error, None),
+        };
+        if layers.supplied_by_visual_mod(file)
+            && let Some(recorded) = layers.without_overlays()
+            && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
+            && let Ok(document) = parse_tree(&recorded_bytes)
+            && let Ok((items, misreads)) = validate(&recorded_bytes, &document)
+        {
+            layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
+            let (overlay_names, recorded_names) = match &parsed {
+                Some(overlay) => (
+                    recover_names(&bytes, overlay, words, recover),
+                    declared_names_from(&items, &document, words),
+                ),
+                None => {
+                    let mut recorded_names = lexical_names(&recorded_bytes);
+                    recorded_names.extend(declared_names_from(&items, &document, words));
+                    (lexical_names(&bytes), recorded_names)
+                }
+            };
+            for name in overlay_names {
+                if !recorded_names.contains(&name) {
                     self.unreadable_names
                         .entry(name)
                         .or_insert_with(|| path.to_owned());
                 }
-                self.unreadable.push(format!("{path} ({error})"));
-                Ok(None)
             }
+            self.logged.extend(misreads);
+            return Ok(Some((document, items)));
         }
+        let names = match &parsed {
+            Some(document) => recover_names(&bytes, document, words, recover),
+            None => lexical_names(&bytes),
+        };
+        for name in names {
+            self.unreadable_names
+                .entry(name)
+                .or_insert_with(|| path.to_owned());
+        }
+        self.unreadable.push(format!("{path} ({error})"));
+        Ok(None)
     }
 
     pub fn unreadable(&self, name: &str) -> Option<String> {
@@ -880,14 +1151,13 @@ impl Roster {
 }
 
 fn add_objects(
-    document: &parser::Document,
+    items: &[parser::Item],
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
 ) {
-    for item in document
-        .items
-        .iter()
-        .filter(|item| item.keyword_is("objectTypes"))
-    {
+    for item in items {
+        if !item.keyword_is("objectTypes") {
+            continue;
+        }
         for object in item.value.items().unwrap_or(&[]) {
             if object.keyword_is(OBJECTS[0]) {
                 if let Some(mesh) = mesh_definition(&object.value) {
@@ -1085,6 +1355,85 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .map(unquote)
 }
 
+fn declared_names_in(
+    items: &[parser::Item],
+    words: &[&str],
+    include_variables: bool,
+    recovered: Option<&parser::native::RecoveredRead>,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut add = |raw: &[u8], quoted: bool| {
+        if !include_variables && !quoted && raw.starts_with(b"@") {
+            return;
+        }
+        let Ok(text) = std::str::from_utf8(raw) else {
+            return;
+        };
+        let name = unquote(text);
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    };
+    let mut record = |item: &parser::Item, prefix: &[usize]| {
+        let Some(fields) = item.value.items() else {
+            return;
+        };
+        let Some((field_index, field)) = fields
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, field)| field.keyword_is("name"))
+        else {
+            return;
+        };
+        let Some(raw) = field.value.scalar() else {
+            return;
+        };
+        add(raw, field.quoted());
+        if let Some(recovered) = recovered {
+            let mut path = prefix.to_vec();
+            path.push(field_index);
+            for candidate in recovered.candidates_at(&path) {
+                add(candidate, false);
+            }
+        }
+    };
+    for (item_index, item) in items.iter().enumerate() {
+        if item.keyword_is("objectTypes") {
+            for (block_index, block) in item.value.items().unwrap_or(&[]).iter().enumerate() {
+                if words.iter().any(|word| block.keyword_is(word)) {
+                    record(block, &[item_index, block_index]);
+                }
+            }
+        } else if words.iter().any(|word| item.keyword_is(word)) {
+            record(item, &[item_index]);
+        }
+    }
+    names
+}
+
+fn declared_names_from(
+    native_items: &[parser::Item],
+    document: &parser::Document,
+    words: &[&str],
+) -> BTreeSet<String> {
+    let mut names = declared_names_in(native_items, words, true, None);
+    names.extend(declared_names_in(&document.items, words, false, None));
+    names
+}
+
+fn recover_names(
+    bytes: &[u8],
+    document: &parser::Document,
+    words: &[&str],
+    recover: fn(&[u8]) -> parser::native::RecoveredRead,
+) -> BTreeSet<String> {
+    let recovered = recover(bytes);
+    let mut names = declared_names_in(&recovered.read.items, words, true, Some(&recovered));
+    names.extend(declared_names_in(&document.items, words, false, None));
+    names
+}
+
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
     parser::scalars(bytes)
         .iter()
@@ -1154,6 +1503,12 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
 
 fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     let items = value.items()?;
+    let scale = items
+        .iter()
+        .filter(|item| item.keyword_is("scale"))
+        .fold(1.0, |held, item| {
+            item.value.scalar().and_then(crt::scan_f32).unwrap_or(held)
+        });
     let name = unquote(text(items, b"name")?);
     let file = unquote(text(items, b"file")?)
         .trim_start_matches('/')
@@ -1188,9 +1543,7 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     Some(MeshDefinition {
         name,
         file,
-        scale: text(items, b"scale")
-            .and_then(|value| crt::scan_f32(value.as_bytes()))
-            .unwrap_or(1.0),
+        scale,
         settings,
         animations,
         cull_distance_squared,
@@ -1224,6 +1577,17 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
 
 fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
     let items = value.items()?;
+    let scale = items
+        .iter()
+        .filter(|item| item.keyword_is("scale"))
+        .fold(None, |held, item| {
+            Some(
+                item.value
+                    .scalar()
+                    .and_then(crt::scan_f32)
+                    .unwrap_or_else(|| held.unwrap_or(1.0)),
+            )
+        });
     let name = unquote(text(items, b"name")?);
     if name.is_empty() {
         return None;
@@ -1317,7 +1681,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         mesh: text(items, b"pdxmesh").map(unquote),
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
-        scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
+        scale,
         cull_radius: Some(
             items
                 .iter()

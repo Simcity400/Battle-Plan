@@ -8,12 +8,13 @@ use viewer_foundation::engagement_history::Provenance;
 fn the_convoy_addition_takes_the_counter_colour_mode() {
     let tints = allegiance::Tints::VANILLA;
     let countries = Countries {
+        index: None,
         tags: BTreeMap::new(),
         flag_tags: BTreeMap::new(),
         sides: BTreeMap::new(),
         groups: BTreeMap::new(),
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0])]),
+            colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0]))]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()

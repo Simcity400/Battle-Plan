@@ -804,7 +804,7 @@ fn movement_frame(time: f32, hour: i32, speed: f32) -> MovementFrame {
         time,
         hour,
         head: crate::map::anchored::Head { hour, fraction: 0.0 },
-        overlay_hour: hour,
+        overlay_layout: None,
         clock_speed: Some(0),
         speeds: [speed; 2],
         steady: false,
@@ -1127,14 +1127,19 @@ fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
     let unit = Unit::Division(7);
     let mut history = MovementHistory::default();
     next_frame(&mut history, 0, 100, 2.0);
+    let first = DrawnLayout::new(100);
     assert_eq!(
-        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0),
-        None,
+        history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
         "the first publication to place it has nothing to move it from"
     );
-    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    assert_eq!(
+        history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    let second = DrawnLayout::new(148);
     let track = history
-        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
         .expect("two publications' places");
     assert_eq!(track.places().len(), 2);
     assert_eq!((track.places()[0].hour, track.places()[0].at), (100, [10.0, 0.0, 0.0]));
@@ -1142,9 +1147,16 @@ fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
     let at = |hour, fraction| track.at(crate::map::anchored::Head { hour, fraction })[0];
     assert_eq!([at(100, 0.0), at(124, 0.0), at(148, 0.0)], [10.0, 34.0, 58.0]);
     assert!((at(100, 0.5) - 10.5).abs() < 1e-3, "{}", at(100, 0.5));
-    let held = history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
-    assert_eq!(held, None, "hour 100 has only hour 100's own place before it");
-    let longer = history.track(unit, &[at_hour(196, [106.0, 0.0, 0.0])], 196, 0.0).expect("three places");
+    let held = history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    assert_eq!(
+        held,
+        Err(TrackRefusal::NoPriorPlacement),
+        "hour 100 has only hour 100's own place before it"
+    );
+    let third = DrawnLayout::new(196);
+    let longer = history
+        .track(&third, unit, &[at_hour(196, [106.0, 0.0, 0.0])], 0.0)
+        .expect("three places");
     assert_eq!(longer.places().len(), 3);
     assert_eq!(longer.at(crate::map::anchored::Head { hour: 124, fraction: 0.0 })[0], 34.0);
 }
@@ -1155,11 +1167,12 @@ fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
     let unit = Unit::Division(7);
     let (first, second) = ([10.0, 0.0, 0.0], [58.0, 0.0, 0.0]);
     let at = |history: &mut MovementHistory, places: &[crate::map::free_icons::Place], hour| {
-        history.track(unit, places, hour, 0.0)
+        let layout = DrawnLayout::new(hour);
+        history.track(&layout, unit, places, 0.0)
     };
     let mut hourly = MovementHistory::default();
     next_frame(&mut hourly, 0, 100, 2.0);
-    at(&mut hourly, &[at_hour(100, first)], 100);
+    let _ = at(&mut hourly, &[at_hour(100, first)], 100);
     let track = at(&mut hourly, &[at_hour(130, second), at_hour(148, second)], 148).expect("the hours' places");
     let place = |hour, fraction| track.at(Head { hour, fraction })[0];
     assert_eq!(place(100, 0.0), first[0], "the hour it was read in its old province");
@@ -1171,7 +1184,7 @@ fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
 
     let mut coarse = MovementHistory::default();
     next_frame(&mut coarse, 0, 100, 2.0);
-    at(&mut coarse, &[at_hour(100, first)], 100);
+    let _ = at(&mut coarse, &[at_hour(100, first)], 100);
     let whole = at(&mut coarse, &[at_hour(148, second)], 148).expect("the publications' places");
     let evenly = |hour| whole.at(Head { hour, fraction: 0.0 })[0];
     assert_eq!(evenly(124), 34.0, "the interval's middle, not the hour it crossed");
@@ -1184,9 +1197,14 @@ fn a_publication_without_hours_places_its_movers_at_its_own_hour_alone() {
     let unit = Unit::Division(7);
     let mut history = MovementHistory::default();
     next_frame(&mut history, 0, 100, 2.0);
-    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    let first = DrawnLayout::new(100);
+    assert_eq!(
+        history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    let second = DrawnLayout::new(148);
     let track = history
-        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
         .expect("the two publications' own places");
     assert_eq!(track.places().len(), 2, "the hours gave nothing to add");
     assert_eq!(track.at(Head { hour: 100, fraction: 0.0 })[0], 10.0);
@@ -1198,10 +1216,23 @@ fn a_seek_backwards_starts_the_places_afresh_instead_of_pairing_two_histories() 
     let unit = Unit::Division(7);
     let mut history = MovementHistory::default();
     next_frame(&mut history, 0, 100, 2.0);
-    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
-    history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0).expect("two places");
-    assert_eq!(history.track(unit, &[at_hour(40, [900.0, 0.0, 0.0])], 40, 0.0), None, "the hour sought");
-    let track = history.track(unit, &[at_hour(42, [902.0, 0.0, 0.0])], 42, 0.0).expect("the seek's own two places");
+    let first = DrawnLayout::new(100);
+    assert_eq!(
+        history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    let second = DrawnLayout::new(148);
+    history.track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0).expect("two places");
+    let sought = DrawnLayout::new(40);
+    assert_eq!(
+        history.track(&sought, unit, &[at_hour(40, [900.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
+        "the hour sought"
+    );
+    let after = DrawnLayout::new(42);
+    let track = history
+        .track(&after, unit, &[at_hour(42, [902.0, 0.0, 0.0])], 0.0)
+        .expect("the seek's own two places");
     assert_eq!((track.places().len(), track.places()[0].hour, track.places()[1].hour), (2, 40, 42));
 }
 
@@ -1213,10 +1244,15 @@ fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
     let moving = live_position(1, &[2], 0.0, false);
     let mut history = settled_on(&moving, &[unit]);
     next_frame(&mut history, 1, 100, 2.0);
-    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    let first = DrawnLayout::new(100);
+    assert_eq!(
+        history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
     next_frame(&mut history, 2, 148, 2.0);
+    let second = DrawnLayout::new(148);
     let track = history
-        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
         .expect("two publications' places");
     let counter = IconAnchor {
         world: moving.at(),
@@ -1228,7 +1264,11 @@ fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
     for (frame, hour, fraction) in [(3, 100, 0.0), (4, 112, 0.5), (5, 124, 0.0), (6, 160, 0.0)] {
         let head = Head { hour, fraction };
         history.begin_frame(
-            MovementFrame { head, ..movement_frame(frame as f32 / 10.0, 148, 2.0) },
+            MovementFrame {
+                head,
+                overlay_layout: Some(second.clone()),
+                ..movement_frame(frame as f32 / 10.0, 148, 2.0)
+            },
             SEEN,
         );
         let figure = history.at_head(unit, &moving).expect("the hours place it");
@@ -1249,9 +1289,13 @@ fn a_cold_seek_places_every_figure_where_the_walk_to_the_same_hour_does() {
     let unit = Unit::Division(7);
     let moving = live_position(1, &[2], 0.0, false);
     let head = Head { hour: 124, fraction: 0.25 };
-    let place = |history: &mut MovementHistory, frame: i32| {
+    let place = |history: &mut MovementHistory, frame: i32, layout: &DrawnLayout| {
         history.begin_frame(
-            MovementFrame { head, ..movement_frame(frame as f32 / 10.0, 148, 2.0) },
+            MovementFrame {
+                head,
+                overlay_layout: Some(layout.clone()),
+                ..movement_frame(frame as f32 / 10.0, 148, 2.0)
+            },
             SEEN,
         );
         history.at_head(unit, &moving).expect("the hours place it").at
@@ -1259,20 +1303,24 @@ fn a_cold_seek_places_every_figure_where_the_walk_to_the_same_hour_does() {
     let walked = {
         let mut history = settled_on(&moving, &[unit]);
         next_frame(&mut history, 1, 100, 2.0);
-        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+        let first = DrawnLayout::new(100);
+        let _ = history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
         next_frame(&mut history, 2, 148, 2.0);
-        history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0);
+        let second = DrawnLayout::new(148);
+        let _ = history.track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0);
         for frame in 3..8 {
-            place(&mut history, frame);
+            place(&mut history, frame, &second);
         }
-        place(&mut history, 8)
+        place(&mut history, 8, &second)
     };
     let sought = {
         let mut history = MovementHistory::default();
         next_frame(&mut history, 1, 148, 2.0);
-        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
-        history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0);
-        place(&mut history, 2)
+        let first = DrawnLayout::new(100);
+        let _ = history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+        let second = DrawnLayout::new(148);
+        let _ = history.track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0);
+        place(&mut history, 2, &second)
     };
     assert_eq!(walked, sought);
 }
@@ -1283,13 +1331,19 @@ fn a_steady_frame_leaves_every_figure_on_its_hours_placement() {
     let moving = live_position(1, &[2], 0.0, false);
     let mut history = settled_on(&moving, &[unit]);
     next_frame(&mut history, 1, 100, 2.0);
-    history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+    let first = DrawnLayout::new(100);
+    let _ = history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
     next_frame(&mut history, 2, 148, 2.0);
+    let second = DrawnLayout::new(148);
     history
-        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
         .expect("two publications' places");
     history.begin_frame(
-        MovementFrame { steady: true, ..movement_frame(0.3, 148, 2.0) },
+        MovementFrame {
+            steady: true,
+            overlay_layout: Some(second),
+            ..movement_frame(0.3, 148, 2.0)
+        },
         SEEN,
     );
     assert_eq!(history.at_head(unit, &moving), None);
@@ -1302,27 +1356,751 @@ fn a_figure_stands_on_the_track_of_the_layout_its_frame_draws() {
     let moving = live_position(1, &[2], 0.0, false);
     let mut history = settled_on(&moving, &[unit]);
     next_frame(&mut history, 1, 100, 2.0);
-    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    let initial = DrawnLayout::new(100);
+    assert_eq!(
+        history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
     next_frame(&mut history, 2, 148, 2.0);
-    let older = history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0).expect("two places");
+    let older_layout = DrawnLayout::new(148);
+    let older = history
+        .track(&older_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("two places");
     next_frame(&mut history, 3, 196, 2.0);
-    let newer = history.track(unit, &[at_hour(196, [130.0, 0.0, 0.0])], 196, 0.0).expect("three places");
+    let newer_layout = DrawnLayout::new(196);
+    let newer = history
+        .track(&newer_layout, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0)
+        .expect("three places");
+    let unplaced_layout = DrawnLayout::new(60);
     let head = Head { hour: 160, fraction: 0.0 };
-    let at = |history: &mut MovementHistory, frame: i32, drawn: i32| {
+    let at = |history: &mut MovementHistory, frame: i32, layout: &DrawnLayout| {
         history.begin_frame(
             MovementFrame {
                 head,
-                overlay_hour: drawn,
+                overlay_layout: Some(layout.clone()),
                 ..movement_frame(frame as f32 / 10.0, 196, 2.0)
             },
             SEEN,
         );
         history.at_head(unit, &moving).expect("the hours place it").at
     };
-    assert_eq!(at(&mut history, 4, 148), older.at(head));
-    assert_eq!(at(&mut history, 5, 196), newer.at(head));
+    assert_eq!(at(&mut history, 4, &older_layout), older.at(head));
+    assert_eq!(at(&mut history, 5, &newer_layout), newer.at(head));
     assert_ne!(older.at(head), newer.at(head), "the two layouts place it apart");
-    let standing = at(&mut history, 6, 60);
+    let standing = at(&mut history, 6, &unplaced_layout);
     let drawn = history.sample(unit, &moving).expect("its animator draws it");
     assert_eq!(standing, drawn.motion.position());
+}
+
+#[test]
+fn a_held_layout_keeps_its_track_while_later_layouts_prepare() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let unplaced_in_held = Unit::Division(8);
+    let never_placed = Unit::Division(9);
+    let moving = live_position(1, &[2], 0.0, false);
+    let other_moving = live_position(1, &[2], 20.0, false);
+    let never_moving = live_position(1, &[2], 40.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    assert_eq!(
+        history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    next_frame(&mut history, 2, 148, 2.0);
+    let held_layout = DrawnLayout::new(148);
+    let held_track = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("two places");
+    next_frame(&mut history, 3, 196, 2.0);
+    let later_one = DrawnLayout::new(196);
+    let later_one_track = history
+        .track(&later_one, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0)
+        .expect("three places");
+    assert_eq!(
+        history.track(&later_one, unplaced_in_held, &[at_hour(196, [300.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    next_frame(&mut history, 4, 244, 2.0);
+    let later_two = DrawnLayout::new(244);
+    let later_two_track = history
+        .track(&later_two, unit, &[at_hour(244, [210.0, 0.0, 0.0])], 0.0)
+        .expect("four places");
+    let _later_other_track = history
+        .track(&later_two, unplaced_in_held, &[at_hour(244, [350.0, 0.0, 0.0])], 0.0)
+        .expect("two places for unit 8");
+    next_frame(&mut history, 5, 292, 2.0);
+    let later_three = DrawnLayout::new(292);
+    let later_three_track = history
+        .track(&later_three, unit, &[at_hour(292, [310.0, 0.0, 0.0])], 0.0)
+        .expect("five places");
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(held_layout.clone()),
+            ..movement_frame(0.6, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history.at_head(unit, &moving).expect("held layout still places it");
+    assert_eq!(figure.at, held_track.at(head));
+    assert_eq!(figure.heading, None);
+    let unplaced_figure = history
+        .at_head(unplaced_in_held, &other_moving)
+        .expect("unplaced unit uses its sampled placement");
+    let unplaced_sampled = history.sample(unplaced_in_held, &other_moving).expect("sampled");
+    assert_eq!(unplaced_figure.at, unplaced_sampled.motion.position());
+    assert_eq!(unplaced_figure.heading, Some(unplaced_sampled.motion.position_heading().1));
+    let never_figure = history
+        .at_head(never_placed, &never_moving)
+        .expect("never-placed unit uses its sampled placement");
+    let never_sampled = history.sample(never_placed, &never_moving).expect("sampled");
+    assert_eq!(never_figure.at, never_sampled.motion.position());
+    assert_eq!(never_figure.heading, Some(never_sampled.motion.position_heading().1));
+    let later_head = Head { hour: 220, fraction: 0.0 };
+    for (frame, layout, expected) in [
+        (7, &later_one, &later_one_track),
+        (8, &later_two, &later_two_track),
+        (9, &later_three, &later_three_track),
+    ] {
+        history.begin_frame(
+            MovementFrame {
+                head: later_head,
+                overlay_layout: Some(layout.clone()),
+                ..movement_frame(frame as f32 / 10.0, 292 + KEPT_HOURS + 48, 2.0)
+            },
+            SEEN,
+        );
+        let at = history.at_head(unit, &moving).expect("later layout places it");
+        assert_eq!(at.at, expected.at(later_head));
+        assert_eq!(at.heading, None);
+    }
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: None,
+            ..movement_frame(1.0, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 132, fraction: 0.0 },
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(1.1, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    let recovered = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores held layout's saved track after placement eviction");
+    assert_eq!(recovered, held_track);
+    let next_head = Head { hour: 136, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: next_head,
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(1.2, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    let recovered_figure = history
+        .at_head(unit, &moving)
+        .expect("recovered held layout keeps figure on counter track");
+    assert_eq!(recovered_figure.at, recovered.at(next_head));
+    assert_eq!(recovered_figure.at, held_track.at(next_head));
+    assert_eq!(recovered_figure.heading, None);
+}
+
+#[test]
+fn retiring_old_layouts_prunes_their_retained_tracks() {
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 1, 100, 2.0);
+    let first = DrawnLayout::new(100);
+    let _ = history.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let kept = DrawnLayout::new(148);
+    let kept_track = history
+        .track(&kept, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("moving track");
+    assert_eq!(history.layouts.len(), 2);
+    drop(first);
+    for step in 0..8 {
+        let hour = 196 + step * 48;
+        let transient = DrawnLayout::new(hour);
+        let _ = history.track(
+            &transient,
+            unit,
+            &[at_hour(hour, [100.0 + step as f32 * 40.0, 0.0, 0.0])],
+            0.0,
+        );
+        assert_eq!(history.layouts.len(), 2, "retired transient layouts do not accumulate");
+    }
+    next_frame(&mut history, 2, 600, 2.0);
+    assert_eq!(history.layouts.len(), 1);
+    assert_eq!(history.layout_track(&kept, unit), Some(Ok(kept_track)));
+    drop(kept);
+    next_frame(&mut history, 3, 601, 2.0);
+    assert!(history.layouts.is_empty());
+}
+
+#[test]
+fn named_track_refusals_stay_keyed_to_a_held_layout() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = MovementHistory::default();
+    let no_frame_layout = DrawnLayout::new(90);
+    let steady_refusal = history
+        .track(&no_frame_layout, unit, &[at_hour(90, [5.0, 0.0, 0.0])], 0.0)
+        .expect_err("no frame refuses track");
+    assert_eq!(steady_refusal, TrackRefusal::SteadyOrNoFrame);
+    assert_eq!(steady_refusal.reason(), "the frame is steady or none");
+    assert_eq!(steady_refusal.to_string(), "the frame is steady or none");
+
+    next_frame(&mut history, 1, 100, 2.0);
+    let first_layout = DrawnLayout::new(100);
+    let first_refusal = history
+        .track(&first_layout, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0)
+        .expect_err("single place refuses track");
+    assert_eq!(first_refusal, TrackRefusal::NoPriorPlacement);
+    assert_eq!(first_refusal.reason(), "no publication before this one placed it");
+
+    next_frame(&mut history, 2, 148, 2.0);
+    let still_layout = DrawnLayout::new(148);
+    let still_refusal = history
+        .track(&still_layout, unit, &[at_hour(148, [10.0, 0.0, 0.0])], 0.0)
+        .expect_err("unchanged place refuses track");
+    assert_eq!(still_refusal, TrackRefusal::UnchangedPlacement);
+    assert_eq!(still_refusal.reason(), "the recording left it where it was");
+
+    next_frame(&mut history, 3, 196, 2.0);
+    let moving_one = DrawnLayout::new(196);
+    assert!(history.track(&moving_one, unit, &[at_hour(196, [58.0, 0.0, 0.0])], 0.0).is_ok());
+    next_frame(&mut history, 4, 244, 2.0);
+    let moving_two = DrawnLayout::new(244);
+    assert!(history.track(&moving_two, unit, &[at_hour(244, [130.0, 0.0, 0.0])], 0.0).is_ok());
+
+    assert_eq!(
+        history.layout_track(&no_frame_layout, unit),
+        Some(Err(TrackRefusal::SteadyOrNoFrame))
+    );
+    assert_eq!(
+        history.layout_track(&first_layout, unit),
+        Some(Err(TrackRefusal::NoPriorPlacement))
+    );
+    assert_eq!(
+        history.layout_track(&still_layout, unit),
+        Some(Err(TrackRefusal::UnchangedPlacement))
+    );
+
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 124, fraction: 0.0 },
+            overlay_layout: Some(still_layout.clone()),
+            ..movement_frame(0.5, 244, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history
+        .at_head(unit, &moving)
+        .expect("refused track falls back to sampled placement");
+    let sampled = history.sample(unit, &moving).expect("sampled");
+    assert_eq!(figure.at, sampled.motion.position());
+    assert_eq!(figure.heading, Some(sampled.motion.position_heading().1));
+}
+
+#[test]
+fn same_hour_rebuild_publishes_tracks_before_figures_read_on_first_frame() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let first_layout = DrawnLayout::new(148);
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(first_layout.clone()),
+            ..movement_frame(0.2, 148, 2.0)
+        },
+        SEEN,
+    );
+    let first_track = history
+        .track(&first_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("first layout track");
+    let rebuilt_layout = DrawnLayout::new(148);
+    let rebuilt_track = history
+        .track(&rebuilt_layout, unit, &[at_hour(148, [82.0, 0.0, 0.0])], 0.0)
+        .expect("rebuilt layout track");
+    assert_ne!(first_track.at(head), rebuilt_track.at(head));
+    drop(first_layout);
+    history.set_overlay_layout(Some(rebuilt_layout.clone()));
+    let figure = history.at_head(unit, &moving).expect("figure placed");
+    assert_eq!(figure.at, rebuilt_track.at(head));
+    assert_eq!(figure.heading, None);
+    let reprojected_layout = DrawnLayout::new(148);
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(reprojected_layout.clone()),
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    let reprojected_track = history
+        .track(&reprojected_layout, unit, &[at_hour(148, [94.0, 0.0, 0.0])], 0.0)
+        .expect("reprojected layout track");
+    history.set_overlay_layout(Some(reprojected_layout));
+    let figure = history.at_head(unit, &moving).expect("reprojected first frame places figure");
+    assert_eq!(figure.at, reprojected_track.at(head));
+    assert_eq!(figure.heading, None);
+}
+
+#[test]
+fn continuity_reset_keeps_live_layout_tracks_without_leaking_to_fresh_same_hour_layout() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    next_frame(&mut history, 2, 148, 2.0);
+    let held_layout = DrawnLayout::new(148);
+    let untracked_pre_reset = DrawnLayout::new(148);
+    let held_track = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("two places");
+    drop(initial);
+    history.clear();
+    assert_eq!(history.layouts.len(), 1);
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(held_layout.clone()),
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history
+        .at_head(unit, &moving)
+        .expect("still-held layout survives continuity reset");
+    assert_eq!(figure.at, held_track.at(head));
+    let repainted = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("repainted pre-reset layout keeps its pre-reset track");
+    assert_eq!(repainted, held_track);
+    assert_eq!(
+        history.track(&untracked_pre_reset, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ContinuityReset),
+        "untracked pre-reset layout is refused without seeding post-reset places"
+    );
+    let post_gap = DrawnLayout::at_continuity(196, history.continuity());
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
+        "pre-reset repaint must not seed a track across the continuity gap"
+    );
+    let fresh_same_hour = DrawnLayout::at_continuity(148, history.continuity());
+    assert_eq!(history.layout_track(&fresh_same_hour, unit), None);
+    drop(held_layout);
+    drop(untracked_pre_reset);
+    history.set_overlay_layout(Some(post_gap));
+    assert_eq!(history.layouts.len(), 1);
+}
+
+#[test]
+fn missing_clock_speed_refuses_track_so_counter_and_figure_agree() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = MovementHistory::default();
+    let layout = DrawnLayout::new(148);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 124, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: None,
+            ..movement_frame(0.1, 148, 2.0)
+        },
+        SEEN,
+    );
+    let outcome = history.track(
+        &layout,
+        unit,
+        &[at_hour(100, [10.0, 0.0, 0.0]), at_hour(148, [58.0, 0.0, 0.0])],
+        0.0,
+    );
+    assert_eq!(outcome, Err(TrackRefusal::ClockSpeedUnavailable));
+    assert_eq!(
+        TrackRefusal::ClockSpeedUnavailable.reason(),
+        "clock speed is unavailable"
+    );
+    assert_eq!(
+        history.layout_track(&layout, unit),
+        Some(Err(TrackRefusal::ClockSpeedUnavailable))
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+}
+
+#[test]
+fn reused_painted_layout_keeps_figure_on_track_when_clock_speed_drops() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let painted = DrawnLayout::new(148);
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(painted.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 148, 2.0)
+        },
+        SEEN,
+    );
+    let track = history
+        .track(&painted, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("painted track");
+    let clockless_head = Head { hour: 136, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: clockless_head,
+            overlay_layout: Some(painted.clone()),
+            clock_speed: None,
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history
+        .at_head(unit, &moving)
+        .expect("reused painted batch still carries the figure along its track");
+    assert_eq!(figure.at, track.at(clockless_head));
+    assert_eq!(figure.heading, None);
+    assert_eq!(
+        history.track(&painted, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+}
+
+#[test]
+fn destination_layout_created_before_continuity_reset_is_not_rejected() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 1, 148, 2.0);
+    let destination = DrawnLayout::new(196);
+    let epoch = history.clear();
+    destination.set_continuity(epoch);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 190, fraction: 0.0 },
+            overlay_layout: Some(destination.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 196, 2.0)
+        },
+        SEEN,
+    );
+    let track = history
+        .track(
+            &destination,
+            unit,
+            &[at_hour(180, [100.0, 0.0, 0.0]), at_hour(196, [130.0, 0.0, 0.0])],
+            0.0,
+        )
+        .expect("destination layout must not be rejected as pre-reset");
+    assert_eq!(track.places().len(), 2);
+}
+
+#[test]
+fn reprojected_pre_reset_layout_cannot_seed_post_gap_track() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    next_frame(&mut history, 2, 148, 2.0);
+    let old_layout = DrawnLayout::new(148);
+    let _ = history
+        .track(&old_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("pre-reset track");
+    let epoch = history.clear();
+    let reprojected = old_layout.reproject();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(reprojected.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.3, 196, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&reprojected, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ContinuityReset)
+    );
+    let post_gap = DrawnLayout::at_continuity(196, epoch);
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
+        "reprojected stale layout must not seed a track across the gap"
+    );
+}
+
+#[test]
+fn pre_reset_repaint_sample_does_not_continue_old_route_after_reset() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let old_route = live_position(1, &[2, 3], 0.0, false);
+    let post_gap_route = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old_route, &[unit]);
+    next_frame(&mut history, 1, 148, 2.0);
+    let old_layout = DrawnLayout::new(148);
+    let _ = history.track(&old_layout, unit, &[at_hour(148, [1.0, 0.0, 0.0])], 0.0);
+    let epoch = history.clear();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(old_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 196, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(history.sample_for(&old_layout, unit, &old_route), None);
+    let _ = history.track(&old_layout, unit, &[at_hour(148, [1.0, 0.0, 0.0])], 0.0);
+    let post_gap = DrawnLayout::at_continuity(196, epoch);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 196, fraction: 0.0 },
+            overlay_layout: Some(post_gap.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.3, 196, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history.at_head(unit, &post_gap_route).expect("post-gap sampled");
+    assert!(
+        figure.at[0] >= post_gap_route.standing[0],
+        "pre-reset sample leaked old arrival route across reset: {:?}",
+        figure.at
+    );
+    assert!(history.sample_for(&post_gap, unit, &post_gap_route).is_some());
+}
+
+#[test]
+fn clock_recovery_does_not_diverge_from_clockless_painted_layout() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let layout = DrawnLayout::new(148);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 124, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert!(history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0).is_ok());
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: None,
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 136, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.4, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.at_head(unit, &moving),
+        None,
+        "reused clockless painted layout must keep figure settled until repainted"
+    );
+    let recovered_track = history
+        .track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores the moving track instead of downgrading to NoPriorPlacement");
+    let reused_head = Head { hour: 140, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: reused_head,
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.5, 148, 2.0)
+        },
+        SEEN,
+    );
+    let reused_figure = history
+        .at_head(unit, &moving)
+        .expect("reused recovered layout keeps figure on counter track");
+    assert_eq!(reused_figure.at, recovered_track.at(reused_head));
+    assert_eq!(reused_figure.heading, None);
+
+    let post_reset_epoch = history.clear();
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(layout.clone()),
+            clock_speed: None,
+            ..movement_frame(0.6, 148, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+    let recovered_pre_reset_head = Head { hour: 142, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: recovered_pre_reset_head,
+            overlay_layout: Some(layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.7, 148, 2.0)
+        },
+        SEEN,
+    );
+    let restored_pre_reset = history
+        .track(&layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores a retained pre-reset layout's saved track");
+    assert_eq!(restored_pre_reset, recovered_track);
+    let figure_after_pre_reset_recovery = history
+        .at_head(unit, &moving)
+        .expect("figure moves with restored pre-reset track");
+    assert_eq!(
+        figure_after_pre_reset_recovery.at,
+        restored_pre_reset.at(recovered_pre_reset_head)
+    );
+    let post_gap = DrawnLayout::at_continuity(196, post_reset_epoch);
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+}
+
+#[test]
+fn same_hour_layouts_with_different_endpoints_do_not_false_trigger_actor_judge() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let refused_unit = Unit::Division(8);
+    let absent_unit = Unit::Division(9);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    history.force_judge = true;
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    next_frame(&mut history, 2, 148, 2.0);
+    let older_same_hour = DrawnLayout::new(148);
+    let older_track = history
+        .track(&older_same_hour, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("older track");
+    assert_eq!(
+        history.track(&older_same_hour, refused_unit, &[at_hour(148, [12.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement)
+    );
+    let newer_same_hour = DrawnLayout::new(148);
+    let newer_track = history
+        .track(&newer_same_hour, unit, &[at_hour(148, [78.0, 0.0, 0.0])], 0.0)
+        .expect("newer track at same hour");
+    assert!(history.layouts[&older_same_hour.id()].tracks[&unit].reference.is_some());
+    assert!(history.layouts[&newer_same_hour.id()].tracks[&unit].reference.is_some());
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(older_same_hour.clone()),
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    let older_figure = history.at_head(unit, &moving).expect("older layout track");
+    assert_eq!(older_figure.at, older_track.at(head));
+    assert_eq!(
+        history.judge_unit(&older_same_hour, unit, head, Some(older_figure.at)),
+        JudgeOutcome::Matched { apart: 0.0 }
+    );
+    assert_eq!(
+        history.judge_unit(&older_same_hour, refused_unit, head, None),
+        JudgeOutcome::Refused(TrackRefusal::NoPriorPlacement)
+    );
+    assert_eq!(
+        history.judge_unit(&older_same_hour, absent_unit, head, None),
+        JudgeOutcome::Absent
+    );
+    history.set_overlay_layout(Some(newer_same_hour.clone()));
+    let newer_figure = history.at_head(unit, &moving).expect("newer layout track");
+    assert_eq!(newer_figure.at, newer_track.at(head));
+    assert_eq!(
+        history.judge_unit(&newer_same_hour, unit, head, Some(newer_figure.at)),
+        JudgeOutcome::Matched { apart: 0.0 }
+    );
+    assert_ne!(older_figure.at, newer_figure.at);
+    if !judging() {
+        let mut unjudged = MovementHistory::default();
+        next_frame(&mut unjudged, 1, 100, 2.0);
+        let first = DrawnLayout::new(100);
+        let _ = unjudged.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+        let second = DrawnLayout::new(148);
+        assert!(unjudged.track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0).is_ok());
+        assert!(unjudged.layouts[&second.id()].tracks[&unit].reference.is_none());
+    }
+}
+
+#[test]
+fn sparse_high_in_view_province_ids_keep_movement_history_bounded() {
+    let mut history = MovementHistory::default();
+    let unit = Unit::Division(7);
+    let moving = live_position(u32::MAX, &[u32::MAX - 1], 0.0, false);
+    for frame in 0..4 {
+        history.begin_frame(
+            movement_frame(frame as f32 / 10.0, 100, 2.0),
+            [0, 64, 4_000_000_011, u32::MAX - 1, u32::MAX],
+        );
+        assert!(history.in_view.slot_capacity() <= 32);
+        let _ = history.sample(unit, &moving);
+    }
+    assert!(history.in_view.contains(u32::MAX));
+    assert!(!history.in_view.contains(u32::MAX - 2));
 }

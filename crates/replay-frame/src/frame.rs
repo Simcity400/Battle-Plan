@@ -12,7 +12,7 @@ use std::{
 
 pub(crate) mod checkpoint;
 mod columns;
-pub use columns::{Unsayable, cells_rows, cells_rows_of, cells_view, field, stored_frame};
+pub use columns::{Unsayable, cells_rows, cells_rows_of, cells_view, field, stored_frame, table_field};
 mod tables;
 pub use tables::{HourFrame, Rowset, RowsetIter, Tables};
 mod decoder;

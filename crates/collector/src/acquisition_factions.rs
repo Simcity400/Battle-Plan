@@ -1,8 +1,5 @@
-
-use crate::{
-    acquisition_gather::{Report as GatherReport, Request as GatherRequest},
-    sampling::qpc,
-};
+use crate::sampling::qpc;
+use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
 use engine_native::{Memory, cfaction, cfaction_system, country_memory::Cache, walk::Outcome};
 
 #[derive(Default)]
@@ -28,12 +25,7 @@ impl Names {
         *bytes = self.bytes;
     }
 
-    fn walk(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-    ) -> Outcome {
+    fn walk(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
         let names = cfaction::walk(memory, base, game_state, &mut self.rows, &mut self.bytes);
         self.bytes_len = names.bytes_len;
         self.required_bytes = names.required_bytes;
@@ -45,10 +37,10 @@ pub(crate) struct Request {
     pub countries: engine_allocation::SharedBox<Cache>,
     pub factions: GatherRequest<Names>,
     pub members: GatherRequest<Vec<cfaction_system::MemberRow>>,
-    pub goal_store: Option<Box<crate::faction_goals::Store>>,
-    pub goals: crate::faction_goals::Captured,
-    pub companion_store: Option<Box<crate::faction_companions::Store>>,
-    pub companions: crate::faction_companions::Captured,
+    pub goal_store: Option<Box<collector_factions::faction_goals::Store>>,
+    pub goals: collector_factions::faction_goals::Captured,
+    pub companion_store: Option<Box<collector_factions::faction_companions::Store>>,
+    pub companions: collector_factions::faction_companions::Captured,
     pub force_full: bool,
 }
 
@@ -106,10 +98,8 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
         let members = &mut request.members;
         let (base, game_state) = (members.base, members.game_state);
         let started = qpc();
-        let members = members.run(|rows| {
-            cfaction_system::walk_members(&cached, base, game_state, rows)
-            
-        });
+        let members =
+            members.run(|rows| cfaction_system::walk_members(&cached, base, game_state, rows));
         let members_ticks = qpc().saturating_sub(started).max(0) as u64;
         (members, members_ticks)
     };
@@ -122,12 +112,12 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
         // the registries' capture side alone, which is all three growth calls need, whichever of
         // the goal and companion stores the request holds.
         unsafe {
-            crate::faction_goal_changes::install_growth();
-            crate::faction_companion_changes::install_growth();
+            collector_factions::faction_goal_changes::install_growth();
+            collector_factions::faction_companion_changes::install_growth();
             crate::country_input_changes::accumulator_install_growth();
         }
-        let changes = crate::faction_goal_changes::Observer;
-        let companions = crate::faction_companion_changes::Observer;
+        let changes = collector_factions::faction_goal_changes::Observer;
+        let companions = collector_factions::faction_companion_changes::Observer;
         if let Some(store) = request.goal_store.as_mut() {
             store.begin(&changes, request.force_full);
         }
@@ -196,7 +186,6 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acquisition;
     use engine_native::{
         ccountry, cdiplomacy_status, cgame_state, memory::SliceMemory, msvc_string,
     };
@@ -305,10 +294,8 @@ mod tests {
     }
 
     fn snapshot(bytes: &[u8], cells: usize) -> engine_allocation::SharedBox<Cache> {
-        let mut storage = engine_allocation::shared(
-            Cache::try_with_capacity(cells).unwrap(),
-        )
-        .unwrap();
+        let mut storage =
+            engine_allocation::shared(Cache::try_with_capacity(cells).unwrap()).unwrap();
         Cache::prepare_shared(&mut storage, &SliceMemory { base: 0, bytes }, 0, GS).unwrap()
     }
 
@@ -481,15 +468,19 @@ mod tests {
         for workers in [0, 2] {
             let bytes = fixture();
             let countries = snapshot(&bytes, 512);
-            let pool = acquisition::Pool::start(workers, 1, move |request: &mut Request| {
-                run(
-                    request,
-                    &SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    },
-                )
-            })
+            let pool = collector_workers::acquisition::Pool::start(
+                workers,
+                1,
+                move |request: &mut Request| {
+                    run(
+                        request,
+                        &SliceMemory {
+                            base: 0,
+                            bytes: &bytes,
+                        },
+                    )
+                },
+            )
             .unwrap();
             let mut rows = vec![cfaction::Row::default(); 2];
             let mut names = vec![0; 16];

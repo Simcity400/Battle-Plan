@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 mod divisions;
 use divisions::fail_divisions_capture;
@@ -11,24 +10,24 @@ pub(crate) use divisions::{copy_divisions_refresh, divisions_test_kit};
 
 pub use crate::clock::qpc;
 use crate::{
-    acquisition_factions, acquisition_jobs as acquisition, acquisition_states, acquisition_wars,
-    decode, extended,
+    acquisition_factions, acquisition_jobs as acquisition, decode, extended,
     map_capture::{MapCapacities, MapCaptured, ShipCensus},
     roster::Roster,
     table_capture::grow_capacity,
 };
 pub use collector_extended_support::hourly::BUFFERS;
 use collector_extended_support::hourly::TICKING;
+use collector_states::{acquisition_states, acquisition_wars};
 #[cfg(test)]
 use engine_native::cunit;
+#[cfg(test)]
+use engine_native::memory::{CountedMemory, ReadCounts};
 use engine_native::{
     Memory, capture_text::Owned, carmy, ccountry, cfaction, cfaction_system, cgame_state,
     cgame_state::Clock, country_memory::Cache, country_memory::SeedStatus, cprovince, cstate,
     cwar_relation, memory::LiveMemory,
     save_allocation_counters, save_allocation_counters::AllocationCounters, walk::Outcome,
 };
-#[cfg(test)]
-use engine_native::memory::{CountedMemory, ReadCounts};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::{
@@ -43,10 +42,10 @@ use std::{
 };
 
 const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
-const CHARACTER_PARTS: usize = extended::characters::PARTS;
+const CHARACTER_PARTS: usize = collector_characters::extended::characters::PARTS;
 const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
-const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
+const PORTRAIT_PARTS: usize = collector_characters::extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
 #[cfg(feature = "callback_profile")]
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first held burst of independent jobs; 1 completion-driven dependency scheduling through Late/history and FinalInputs dispatch (root census -> Orders/parts -> stitch -> Fronts and, with Naval/wing, ChildFronts; division inputs/parts -> Divisions -> ArmyIcons and PresentationPrepare -> status ranges -> Presentation; census consumers, raw verdicts, map sample, AirMissions and ScoresRails are joined only when their full producer barrier is ready); 2-7 unused; 8 weather/lexical + core joins (presentation publication edges continue during these and later joins); 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + event-feed seal dispatch + ShipModels detail joins + Ordinary family joins + event-feed seal join + slot-8 production and part joins + independent Variants join; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
@@ -297,8 +296,8 @@ pub struct Captured {
     pub(crate) wars_snapshot_sampled: bool,
     pub factions: Vec<cfaction::Row>,
     pub faction_names: Vec<u8>,
-    pub faction_goals: crate::faction_goals::Captured,
-    pub faction_companions: crate::faction_companions::Captured,
+    pub faction_goals: collector_factions::faction_goals::Captured,
+    pub faction_companions: collector_factions::faction_companions::Captured,
     pub faction_names_len: usize,
     pub faction_names_required: usize,
     pub faction_members: Vec<cfaction_system::MemberRow>,
@@ -497,7 +496,11 @@ impl Captured {
         game_state: usize,
     ) -> acquisition_states::Request {
         acquisition_states::Request {
-            census: acquisition::GatherRequest::take(base, game_state, &mut self.states),
+            census: collector_states::acquisition_gather::Request::take(
+                base,
+                game_state,
+                &mut self.states,
+            ),
             names: acquisition_states::Names::take(&mut self.state_names),
             visitor: self.extended.take_state_visitor(),
             inputs: std::mem::take(&mut self.state_inputs),
@@ -538,7 +541,11 @@ impl Captured {
     ) -> acquisition_wars::Request {
         acquisition_wars::Request {
             countries: engine_allocation::SharedBox::clone(countries),
-            table: acquisition::GatherRequest::take(base, game_state, &mut self.wars),
+            table: collector_states::acquisition_gather::Request::take(
+                base,
+                game_state,
+                &mut self.wars,
+            ),
             snapshot: std::mem::take(&mut self.wars_snapshot),
             snapshot_sampled: false,
             store: None,
@@ -631,7 +638,7 @@ pub struct ProfilePhases {
     pub calls: AtomicU64,
     pub dispatch_ns: AtomicU64,
     pub segments: [AtomicU64; SEGMENTS],
-    pub join_wait: [AtomicU64; acquisition::ROLE_COUNT],
+    pub join_wait: [AtomicU64; collector_workers::roles::ROLE_COUNT],
 }
 
 #[cfg(feature = "callback_profile")]
@@ -724,15 +731,16 @@ pub struct Shared {
     weather_carry: UnsafeCell<Option<Box<extended::weather::carry::WeatherCarry>>>,
     raid_air_scores: UnsafeCell<Option<Box<engine_raid_inputs::raid_air_scores::Held>>>,
     raid_air_score_bytes: AtomicU64,
-    character_role_store: UnsafeCell<Option<Box<extended::character_inputs::RoleStore>>>,
+    character_role_store:
+        UnsafeCell<Option<Box<collector_characters::extended::character_inputs::RoleStore>>>,
     character_role_store_bytes: AtomicU64,
     script_flag_store: UnsafeCell<Option<Box<extended::intel::FlagStore>>>,
     script_flag_store_bytes: AtomicU64,
     script_variable_store: UnsafeCell<Option<Box<extended::intel::VariableStore>>>,
     script_variable_store_bytes: AtomicU64,
-    faction_goal_store: UnsafeCell<Option<Box<crate::faction_goals::Store>>>,
+    faction_goal_store: UnsafeCell<Option<Box<collector_factions::faction_goals::Store>>>,
     faction_goal_store_bytes: AtomicU64,
-    faction_companion_store: UnsafeCell<Option<Box<crate::faction_companions::Store>>>,
+    faction_companion_store: UnsafeCell<Option<Box<collector_factions::faction_companions::Store>>>,
     faction_companion_store_bytes: AtomicU64,
     building_store: UnsafeCell<Option<Box<extended::construction::BuildingStore>>>,
     building_store_bytes: AtomicU64,
@@ -740,17 +748,20 @@ pub struct Shared {
     leader_store_bytes: AtomicU64,
     party_store: UnsafeCell<Option<Box<extended::governance::PartyStore>>>,
     party_store_bytes: AtomicU64,
-    wing_store: UnsafeCell<Option<Box<extended::air::WingStore>>>,
+    wing_store: UnsafeCell<Option<Box<collector_air::extended::air::WingStore>>>,
     wing_store_bytes: AtomicU64,
-    air_wing_parts: UnsafeCell<[extended::air::AirWingJob; extended::air::WING_PARTS - 1]>,
-    air_wing_part_starts: UnsafeCell<([u32; extended::air::WING_PARTS - 1], usize)>,
+    air_wing_parts: UnsafeCell<
+        [collector_air::extended::air::AirWingJob; collector_air::extended::air::WING_PARTS - 1],
+    >,
+    air_wing_part_starts: UnsafeCell<([u32; collector_air::extended::air::WING_PARTS - 1], usize)>,
     production_part_starts:
         UnsafeCell<([u32; extended::production_modifiers::MAX_PARTS - 1], usize)>,
-    air_base_store: UnsafeCell<Option<Box<extended::air::RegistrationStore>>>,
+    air_base_store: UnsafeCell<Option<Box<collector_air::extended::air::RegistrationStore>>>,
     air_base_store_bytes: AtomicU64,
-    mission_store: UnsafeCell<Option<Box<extended::air::MissionStore>>>,
+    mission_store: UnsafeCell<Option<Box<collector_air::extended::air::MissionStore>>>,
     mission_store_bytes: AtomicU64,
-    rail_store: UnsafeCell<Option<Box<extended::naval_history::RailStore>>>,
+    rail_store:
+        UnsafeCell<Option<Box<collector_naval_history::extended::naval_history::RailStore>>>,
     rail_store_bytes: AtomicU64,
     state_store: UnsafeCell<Option<Box<acquisition_states::StateStore>>>,
     state_store_bytes: AtomicU64,
@@ -758,15 +769,21 @@ pub struct Shared {
     occupation_store_bytes: AtomicU64,
     war_store: UnsafeCell<Option<Box<acquisition_wars::WarStore>>>,
     war_store_bytes: AtomicU64,
-    army_stat_store: Option<extended::division_presentation::held_store::Slot>,
+    army_stat_store: Option<collector_divisions::extended::division_presentation::held_store::Slot>,
     army_stat_store_bytes: AtomicU64,
     division_parts: UnsafeCell<
-        [Option<Box<crate::division_census::Census>>; crate::division_census::MAX_PARTS - 1],
+        [Option<Box<collector_divisions::division_census::Census>>;
+            collector_divisions::division_census::MAX_PARTS - 1],
     >,
-    division_part_starts: UnsafeCell<([u32; crate::division_census::MAX_PARTS - 1], usize)>,
-    order_split: UnsafeCell<crate::orders_parts::Split>,
-    division_join_capacity: UnsafeCell<crate::division_census::JoinCapacity>,
-    province_unit_store: UnsafeCell<Option<Box<extended::province_unit_order::ProvinceUnitStore>>>,
+    division_part_starts: UnsafeCell<(
+        [u32; collector_divisions::division_census::MAX_PARTS - 1],
+        usize,
+    )>,
+    order_split: UnsafeCell<collector_divisions::orders_parts::Split>,
+    division_join_capacity: UnsafeCell<collector_divisions::division_census::JoinCapacity>,
+    province_unit_store: UnsafeCell<
+        Option<Box<collector_divisions::extended::province_unit_order::ProvinceUnitStore>>,
+    >,
     province_unit_store_bytes: AtomicU64,
     area_store: UnsafeCell<Option<Box<engine_native::controller_areas::Store>>>,
     area_store_bytes: AtomicU64,
@@ -793,7 +810,7 @@ pub struct Shared {
     pub country_cache_swap: Mutex<CountryCacheSwap>,
     pub country_cache_cells: AtomicUsize,
     pub country_intel: crate::extended::daily_intel::Home,
-    pub template_home: crate::extended::division_templates::Home,
+    pub template_home: collector_division_templates::extended::division_templates::Home,
     pub naval_combat_home: crate::extended::naval_combat_sources::Home,
     pub weather_temperature: Mutex<extended::weather::temperature::Tracker>,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
@@ -914,21 +931,23 @@ impl Shared {
         }
         let character_role_store = store(
             cfg!(feature = "character_changes"),
-            extended::character_inputs::RoleStore::new,
+            collector_characters::extended::character_inputs::RoleStore::new,
         )?;
-        let script_flag_store =
-            store(cfg!(feature = "flag_changes"), extended::intel::FlagStore::new)?;
+        let script_flag_store = store(
+            cfg!(feature = "flag_changes"),
+            extended::intel::FlagStore::new,
+        )?;
         let script_variable_store = store(
             cfg!(feature = "variable_changes"),
             extended::intel::VariableStore::new,
         )?;
         let faction_goal_store = store(
             cfg!(feature = "faction_changes"),
-            crate::faction_goals::Store::default,
+            collector_factions::faction_goals::Store::default,
         )?;
         let faction_companion_store = store(
             cfg!(feature = "faction_changes"),
-            crate::faction_companions::Store::default,
+            collector_factions::faction_companions::Store::default,
         )?;
         let building_store = store(
             cfg!(feature = "building_changes"),
@@ -942,23 +961,31 @@ impl Shared {
             cfg!(feature = "party_changes"),
             extended::governance::PartyStore::new,
         )?;
-        let wing_store = store(cfg!(feature = "wing_changes"), extended::air::WingStore::new)?;
+        let wing_store = store(
+            cfg!(feature = "wing_changes"),
+            collector_air::extended::air::WingStore::new,
+        )?;
         let air_base_store = store(
             cfg!(feature = "air_base_carry_changes"),
-            extended::air::RegistrationStore::new,
+            collector_air::extended::air::RegistrationStore::new,
         )?;
-        let mission_store =
-            store(cfg!(feature = "mission_changes"), extended::air::MissionStore::new)?;
+        let mission_store = store(
+            cfg!(feature = "mission_changes"),
+            collector_air::extended::air::MissionStore::new,
+        )?;
         let rail_store = store(
             cfg!(feature = "rail_changes"),
-            extended::naval_history::RailStore::new,
+            collector_naval_history::extended::naval_history::RailStore::new,
         )?;
         let state_store = store(cfg!(feature = "territory_changes"), || {
             acquisition_states::StateStore::new(&crate::territory_changes::Observer)
         })?;
         let occupation_store =
             engine_allocation::boxed(acquisition_states::OccupationStore::new()?)?;
-        let war_store = store(cfg!(feature = "war_changes"), acquisition_wars::WarStore::default)?;
+        let war_store = store(
+            cfg!(feature = "war_changes"),
+            acquisition_wars::WarStore::default,
+        )?;
         let advisor_store = store(
             cfg!(feature = "advisor_pool_changes"),
             extended::hired_advisors::AdvisorStore::new,
@@ -981,14 +1008,14 @@ impl Shared {
         let frame_priority = engine_allocation::shared(crate::frame_priority::Pipeline::new())?;
         let army_stat_store = cfg!(feature = "army_stat_changes")
             .then(|| {
-                extended::division_presentation::held_store::Slot::new(engine_allocation::boxed(
-                    extended::attack_stats::ArmyStatStore::new(),
-                )?)
+                collector_divisions::extended::division_presentation::held_store::Slot::new(
+                    engine_allocation::boxed(extended::attack_stats::ArmyStatStore::new())?,
+                )
             })
             .transpose()?;
-        let province_unit_store = store(crate::province_unit_changes::CARRY, || {
-            extended::province_unit_order::ProvinceUnitStore::new(
-                &crate::province_unit_changes::Observer,
+        let province_unit_store = store(collector_divisions::province_unit_changes::CARRY, || {
+            collector_divisions::extended::province_unit_order::ProvinceUnitStore::new(
+                &collector_divisions::province_unit_changes::Observer,
             )
         })?;
         let area_store = store(
@@ -1012,11 +1039,11 @@ impl Shared {
                 )?);
             }
         }
-        let mut division_parts: [_; crate::division_census::MAX_PARTS - 1] =
+        let mut division_parts: [_; collector_divisions::division_census::MAX_PARTS - 1] =
             std::array::from_fn(|_| None);
         for part in &mut division_parts {
             *part = Some(engine_allocation::boxed(
-                crate::division_census::Census::new_worker(),
+                collector_divisions::division_census::Census::new_worker(),
             )?);
         }
         let frame_capacities =
@@ -1032,9 +1059,10 @@ impl Shared {
                 + engine_allocation::SharedBox::<crate::frame_capacities::Capacities>::BYTES)
                 as u64,
         ))?;
-        let air_wing_parts = std::array::from_fn(|_| extended::air::AirWingJob::part());
-        crate::faction_goal_changes::prime();
-        crate::faction_companion_changes::prime();
+        let air_wing_parts =
+            std::array::from_fn(|_| collector_air::extended::air::AirWingJob::part());
+        collector_factions::faction_goal_changes::prime();
+        collector_factions::faction_companion_changes::prime();
         if crate::allocation::failed() {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
@@ -1094,7 +1122,10 @@ impl Shared {
             wing_store: UnsafeCell::new(wing_store),
             wing_store_bytes: AtomicU64::new(0),
             air_wing_parts: UnsafeCell::new(air_wing_parts),
-            air_wing_part_starts: UnsafeCell::new(([0; extended::air::WING_PARTS - 1], 0)),
+            air_wing_part_starts: UnsafeCell::new((
+                [0; collector_air::extended::air::WING_PARTS - 1],
+                0,
+            )),
             production_part_starts: UnsafeCell::new((
                 [0; extended::production_modifiers::MAX_PARTS - 1],
                 0,
@@ -1114,8 +1145,11 @@ impl Shared {
             army_stat_store,
             army_stat_store_bytes: AtomicU64::new(0),
             division_parts: UnsafeCell::new(division_parts),
-            division_part_starts: UnsafeCell::new(([0; crate::division_census::MAX_PARTS - 1], 0)),
-            order_split: UnsafeCell::new(crate::orders_parts::Split::default()),
+            division_part_starts: UnsafeCell::new((
+                [0; collector_divisions::division_census::MAX_PARTS - 1],
+                0,
+            )),
+            order_split: UnsafeCell::new(collector_divisions::orders_parts::Split::default()),
             division_join_capacity: UnsafeCell::new(Default::default()),
             province_unit_store: UnsafeCell::new(province_unit_store),
             province_unit_store_bytes: AtomicU64::new(0),
@@ -1465,13 +1499,15 @@ impl Shared {
         None
     }
 
-    fn take_army_stat_store(&self) -> Option<extended::division_presentation::held_store::Loan> {
+    fn take_army_stat_store(
+        &self,
+    ) -> Option<collector_divisions::extended::division_presentation::held_store::Loan> {
         self.army_stat_store.as_ref().and_then(|slot| slot.take())
     }
 
     pub(crate) fn return_army_stat_store(
         &self,
-        mut store: extended::division_presentation::held_store::Loan,
+        mut store: collector_divisions::extended::division_presentation::held_store::Loan,
     ) {
         store.prepare_return();
         let bytes = store.allocated_bytes() as u64;
@@ -1702,13 +1738,13 @@ unsafe fn return_slice_store(
 }
 
 fn lost_observer_interval() {
-    crate::equipment_destruction::lost_drain();
-    crate::naval_result_sources::lost_drain();
+    collector_equipment_destruction::equipment_destruction::lost_drain();
+    collector_naval_results::naval_result_sources::lost_drain();
     crate::experience_gains::lost_drain();
     crate::event_feed_observer::lost_drain();
-    crate::operation_outcomes::lost_drain();
+    collector_operation_outcomes::operation_outcomes::lost_drain();
     crate::politics_changes::invalidate();
-    crate::land_events::fail();
+    collector_land_events::land_events::fail();
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
     crate::nuclear_strikes::lost_drain();
@@ -1957,30 +1993,26 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
         load_signal: entry.map(|clock| clock.play_session_started_at),
         failed_hour: entry.map(|clock| clock.hour),
     });
-    crate::equipment_destruction::boundary(
+    collector_equipment_destruction::equipment_destruction::boundary(
         entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
     );
-    crate::naval_result_sources::boundary(
+    collector_naval_results::naval_result_sources::boundary(
         entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
     );
-    crate::experience_gains::boundary(
-        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-    );
+    crate::experience_gains::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     crate::air_losses::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     crate::fuel_awards::boundary();
-    crate::building_bombing::boundary(
-        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-    );
+    crate::building_bombing::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     crate::nuclear_strikes::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
     let entry_ticks = qpc() - clock_start;
     #[cfg(feature = "callback_profile")]
     let profile_before = callback_profile_counters(shared);
     #[cfg(feature = "callback_profile")]
-    crate::callback_profile::reset_join();
+    collector_workers::callback_profile::reset_join();
     #[cfg(feature = "callback_profile")]
     let profile_stamp = crate::callback_profile::Stamp::start();
     let dispatched = qpc();
-    crate::hour_stages::begin(dispatched);
+    collector_workers::hour_stages::begin(dispatched);
     let mut phases = HourPhases {
         entry_ns: shared.ns(dispatched - hook_entry),
         ..HourPhases::default()
@@ -2033,7 +2065,7 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
         sample.join_wait_ns = std::array::from_fn(|i| {
             after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
         });
-        sample.join = crate::callback_profile::take_join();
+        sample.join = collector_workers::callback_profile::take_join();
         crate::callback_profile::record(sample);
     }
 }
@@ -2190,7 +2222,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         mut phases,
         full: requested,
     } = dispatch;
-    let allocator_begin = crate::ALLOCATOR.hold();
+    let allocator_begin = collector_workers::private_heap::PRIVATE_HEAP.hold();
     let cycles_begin = crate::spool_phases::thread_cycles();
     SLOWEST_JOIN.set(None);
 
@@ -2236,24 +2268,28 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         } = decode_slot.job();
         let mut relations_report = extended::intel::RelationsCopyReport::default();
         let mut characters_report =
-            [extended::characters::CharactersCopyReport::default(); CHARACTER_PARTS];
+            [collector_characters::extended::characters::CharactersCopyReport::default();
+                CHARACTER_PARTS];
         let mut projects_report = extended::projects::ProjectsCopyReport::default();
         let mut lexical_report = extended::lexical::LexicalCopyReport::default();
         let mut divisions_report = DivisionsCopyReport::default();
-        let mut air_wing_report = extended::air::AirWingCopyReport::default();
-        let mut air_stats_report = extended::air::AirStatsCopyReport::default();
-        let mut naval_report = extended::naval_history::NavalCopyReport::default();
+        let mut air_wing_report = collector_air::extended::air::AirWingCopyReport::default();
+        let mut air_stats_report = collector_air::extended::air::AirStatsCopyReport::default();
+        let mut naval_report =
+            collector_naval_history::extended::naval_history::NavalCopyReport::default();
         let mut players_report = crate::map_capture::PlayersCopyReport::default();
         let mut session_report = extended::session::SessionCopyReport::default();
         let mut production_rest_report = extended::production::ProductionRestCopyReport::default();
         let mut construction_rest_report =
             extended::construction::ConstructionRestCopyReport::default();
         let mut economy_rest_report = extended::economy::EconomyRestCopyReport::default();
-        let mut air_bases_report = extended::air::AirBasesCopyReport::default();
-        let mut supremacy_report = extended::naval_history::SupremacyCopyReport::default();
-        let mut sunk_report = extended::naval_history::SunkCopyReport::default();
-        let mut radar_report = extended::fog::RadarCopyReport::default();
-        let mut intel_report = extended::fog::IntelCopyReport::default();
+        let mut air_bases_report = collector_air::extended::air::AirBasesCopyReport::default();
+        let mut supremacy_report =
+            collector_naval_history::extended::naval_history::SupremacyCopyReport::default();
+        let mut sunk_report =
+            collector_naval_history::extended::naval_history::SunkCopyReport::default();
+        let mut radar_report = collector_air::extended::fog::RadarCopyReport::default();
+        let mut intel_report = collector_air::extended::fog::IntelCopyReport::default();
         let mut weather_report = extended::weather::WeatherCopyReport::default();
         let mut capitulation_report = extended::intel::CapitulationCopyReport::default();
         let mut decode_hour = 0;
@@ -2286,10 +2322,10 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     crate::spooling::RETRY_CAUSE.swap(0, Ordering::Relaxed);
             }
             if !continuous || recovery {
-                crate::portrait_changes::invalidate();
-                crate::advisor_changes::invalidate();
+                collector_characters::portrait_changes::invalidate();
+                collector_characters::advisor_changes::invalidate();
                 crate::opinion_changes::invalidate();
-                crate::operation_outcomes::invalidate();
+                collector_operation_outcomes::operation_outcomes::invalidate();
                 crate::politics_changes::invalidate();
                 crate::map_events::interval::invalidate();
                 extended::intel::forget_relation_opinions();
@@ -2298,11 +2334,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let acquisition = shared.acquisition.get().expect("initialized before hook");
             let mut batch = acquisition::Batch::new(acquisition);
             let final_inputs_dispatch = batch.final_inputs();
-            let mut boundary_request = frame.extended.take_observer_boundary_request(
-                clock.hour,
-                continuous,
-                recovery,
-            );
+            let mut boundary_request = frame
+                .extended
+                .take_observer_boundary_request(clock.hour, continuous, recovery);
             boundary_request.market_clock = Some(clock.with_campaign_id(campaign_epoch));
             boundary_request.market_refresh = force_full;
             // SAFETY: the capture's write boundary holds through the boundary job: the game is held,
@@ -2484,7 +2518,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             };
             let status_recorded = frame
                 .extended
-                .records_any(&extended::division_presentation::STATUS_TABLES);
+                .records_any(&collector_divisions::extended::division_presentation::STATUS_TABLES);
             let intel_recorded = frame.extended.records_any(&decode::INTEL);
             let mut input_payload = decode::acquire_divisions_job();
             input_payload.slots = (split != 0).then(|| slots(0));
@@ -2513,8 +2547,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 payload: input_payload,
             }));
             let mut part_pending: [Option<PendingAcquisition>;
-                crate::division_census::MAX_PARTS - 1] =
-                [const { None }; crate::division_census::MAX_PARTS - 1];
+                collector_divisions::division_census::MAX_PARTS - 1] =
+                [const { None }; collector_divisions::division_census::MAX_PARTS - 1];
             for (part, pending) in part_pending.iter_mut().enumerate().take(split) {
                 if let Some(census) = unsafe { (*shared.division_parts.get())[part].take() } {
                     *pending = Some(queue!(acquisition::Job::DivisionInputParts(
@@ -2536,13 +2570,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     base: shared.base,
                     orders: std::mem::replace(
                         &mut frame.map.orders,
-                        crate::map_capture::Orders::vacant()
+                        collector_divisions::orders::Orders::vacant()
                     ),
                     naval,
                 }
             ));
             let wing_limits = frame.extended.air_wing_pilot().wing_limits();
-            let air_ctx = extended::air::AirWingCopyContext {
+            let air_ctx = collector_air::extended::air::AirWingCopyContext {
                 base: shared.base,
                 game_state: state,
                 hour: clock.hour,
@@ -2573,8 +2607,9 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 context: air_ctx,
                 payload: air_payload,
             }));
-            let mut air_part_pending: [Option<PendingAcquisition>; extended::air::WING_PARTS - 1] =
-                [const { None }; extended::air::WING_PARTS - 1];
+            let mut air_part_pending: [Option<PendingAcquisition>;
+                collector_air::extended::air::WING_PARTS - 1] =
+                [const { None }; collector_air::extended::air::WING_PARTS - 1];
             for (part, pending) in air_part_pending.iter_mut().enumerate().take(air_split) {
                 let mut payload =
                     std::mem::take(unsafe { &mut (*shared.air_wing_parts.get())[part] });
@@ -2582,40 +2617,44 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 payload.split = true;
                 *pending = Some(queue!(acquisition::Job::AirWing(acquisition::RawRequest {
                     countries: engine_allocation::SharedBox::clone(&country_snapshot),
-                    context: extended::air::AirWingCopyContext {
+                    context: collector_air::extended::air::AirWingCopyContext {
                         limits: [0; 3],
                         ..air_ctx
                     },
                     payload,
                 })));
             }
-            let characters_ctx = extended::characters::CharactersCopyContext {
-                base: shared.base,
-                game_state: state,
-                force_full,
-                active: decode::CHARACTERS
-                    .map(|table| replay_data::cadence::should_walk(table, clock.hour, force_full)),
-            };
+            let characters_ctx =
+                collector_characters::extended::characters::CharactersCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    force_full,
+                    active: decode::CHARACTERS.map(|table| {
+                        replay_data::cadence::should_walk(table, clock.hour, force_full)
+                    }),
+                };
             frame
                 .extended
                 .characters_pilot()
                 .set_character_activity(characters_ctx.active);
             let mut characters_pending: [Option<PendingAcquisition>; CHARACTER_PARTS] =
                 [const { None }; CHARACTER_PARTS];
-            let character_part = |part: usize| -> [bool; extended::characters::N] {
-                std::array::from_fn(|index| {
-                    characters_ctx.active[index] && extended::characters::PART_MASKS[part][index]
-                })
-            };
+            let character_part =
+                |part: usize| -> [bool; collector_characters::extended::characters::N] {
+                    std::array::from_fn(|index| {
+                        characters_ctx.active[index]
+                            && collector_characters::extended::characters::PART_MASKS[part][index]
+                    })
+                };
             let role_hour = (1..CHARACTER_PARTS)
                 .any(|part| character_part(part).iter().any(|&value| value))
-                || extended::character_inputs::TABLES
+                || collector_characters::extended::character_inputs::TABLES
                     .iter()
                     .any(|&table| replay_data::cadence::should_walk(table, clock.hour, force_full));
             let character_part_recorded = |part: usize| {
                 decode::CHARACTERS
                     .iter()
-                    .zip(extended::characters::PART_MASKS[part])
+                    .zip(collector_characters::extended::characters::PART_MASKS[part])
                     .any(|(&table, member)| {
                         member && replay_data::scope::records(shared.capture_mode, table)
                     })
@@ -2625,15 +2664,16 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 characters_pending[0] = Some(queue!(acquisition::Job::Characters(
                     acquisition::CharactersRequest {
                         final_inputs: None,
-                        context: extended::characters::CharactersCopyContext {
-                            active: roster_active,
-                            ..characters_ctx
-                        },
+                        context:
+                            collector_characters::extended::characters::CharactersCopyContext {
+                                active: roster_active,
+                                ..characters_ctx
+                            },
                         payload: decode::acquire_characters_job(0),
                         roles: if role_hour {
-                            extended::characters::Roles::Gather
+                            collector_characters::extended::characters::Roles::Gather
                         } else {
-                            extended::characters::Roles::Independent
+                            collector_characters::extended::characters::Roles::Independent
                         },
                     }
                 )));
@@ -2705,37 +2745,36 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 );
                 queue!(acquisition::Job::Variants(request))
             };
-            let (mut ordinary_parts_pending, mut ordinary_slack_parts) =
-                out_of_line(|| {
-                    let parts = frame.extended.take_ordinary_parts(
-                        &country_snapshot,
-                        shared.base,
-                        state,
-                        clock.hour,
-                        crate::fixed_layout::task_force_eta_guard(frame.fixed_layout.as_ref()),
-                        crate::extended::NavalMissionLoan {
-                            force_full,
-                            fingerprints: unsafe {
-                                (*shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get())
-                                    .take()
-                            },
+            let (mut ordinary_parts_pending, mut ordinary_slack_parts) = out_of_line(|| {
+                let parts = frame.extended.take_ordinary_parts(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    crate::fixed_layout::task_force_eta_guard(frame.fixed_layout.as_ref()),
+                    crate::extended::NavalMissionLoan {
+                        force_full,
+                        fingerprints: unsafe {
+                            (*shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get())
+                                .take()
                         },
-                    );
-                    let mut slack: [Option<acquisition::OrdinaryPartRequest>;
-                        extended::ORDINARY_PARTS] = [const { None }; extended::ORDINARY_PARTS];
-                    let mut index = 0;
-                    let pending = parts.map(|part| {
-                        let slot = index;
-                        index += 1;
-                        if matches!(part.part, extended::OrdinaryPart::TaskForces(_)) {
-                            slack[slot] = Some(part);
-                            None
-                        } else {
-                            Some(queue!(acquisition::Job::OrdinaryPart(part)))
-                        }
-                    });
-                    (pending, slack)
+                    },
+                );
+                let mut slack: [Option<acquisition::OrdinaryPartRequest>;
+                    extended::ORDINARY_PARTS] = [const { None }; extended::ORDINARY_PARTS];
+                let mut index = 0;
+                let pending = parts.map(|part| {
+                    let slot = index;
+                    index += 1;
+                    if matches!(part.part, extended::OrdinaryPart::TaskForces(_)) {
+                        slack[slot] = Some(part);
+                        None
+                    } else {
+                        Some(queue!(acquisition::Job::OrdinaryPart(part)))
+                    }
                 });
+                (pending, slack)
+            });
             let slow_stores = unsafe { lend_slow_stores(shared) };
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
                 &country_snapshot,
@@ -2852,7 +2891,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 queue!(acquisition::Job::ScriptVariables(script_variables_request));
             let intel_residual_pending =
                 queue!(acquisition::Job::IntelResidual(intel_residual_request));
-            let air_bases_ctx = extended::air::AirBasesCopyContext {
+            let air_bases_ctx = collector_air::extended::air::AirBasesCopyContext {
                 base: shared.base,
                 game_state: state,
                 hour: clock.hour,
@@ -2867,20 +2906,25 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     payload,
                 }))
             };
-            let goals_recorded = frame.extended.records_any(&crate::faction_goals::TABLES);
+            let goals_recorded = frame
+                .extended
+                .records_any(&collector_factions::faction_goals::TABLES);
             let companions_recorded = frame
                 .extended
-                .records_any(&crate::faction_companions::TABLES);
+                .records_any(&collector_factions::faction_companions::TABLES);
             if !goals_recorded {
-                frame.faction_goals.failure = Some(extended::NOT_RECORDED);
+                frame.faction_goals.failure =
+                    Some(collector_extended_support::outcomes::NOT_RECORDED);
             }
             if !companions_recorded {
-                frame.faction_companions.refuse(extended::NOT_RECORDED);
+                frame
+                    .faction_companions
+                    .refuse(collector_extended_support::outcomes::NOT_RECORDED);
             }
             let factions_pending =
                 queue!(acquisition::Job::Factions(acquisition_factions::Request {
                     countries: engine_allocation::SharedBox::clone(&country_snapshot),
-                    factions: acquisition::GatherRequest {
+                    factions: collector_states::acquisition_gather::Request {
                         base: shared.base,
                         game_state: state,
                         payload: acquisition_factions::Names::take(
@@ -2888,7 +2932,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             &mut frame.faction_names
                         ),
                     },
-                    members: acquisition::GatherRequest::take(
+                    members: collector_states::acquisition_gather::Request::take(
                         shared.base,
                         state,
                         &mut frame.faction_members
@@ -2914,7 +2958,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     payload: decode::acquire_players_job(),
                 }))
             };
-            let air_stats_ctx = extended::air::AirStatsCopyContext {
+            let air_stats_ctx = collector_air::extended::air::AirStatsCopyContext {
                 base: shared.base,
                 game_state: state,
                 hour: clock.hour,
@@ -2936,12 +2980,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.air_stats_pilot().stats_raw_mode = air_stats_omitted;
                 None
             };
-            let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
-                base: shared.base,
-                game_state: state,
-                hour: clock.hour,
-                force_full,
-            };
+            let supremacy_ctx =
+                collector_naval_history::extended::naval_history::SupremacyCopyContext {
+                    base: shared.base,
+                    game_state: state,
+                    hour: clock.hour,
+                    force_full,
+                };
             let supremacy_pending = if replay_data::cadence::should_walk(
                 TableId::NavalSupremacy,
                 clock.hour,
@@ -2958,7 +3003,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.supremacy_pilot().supremacy_raw_mode = false;
                 None
             };
-            let sunk_ctx = extended::naval_history::SunkCopyContext {
+            let sunk_ctx = collector_naval_history::extended::naval_history::SunkCopyContext {
                 base: shared.base,
                 game_state: state,
                 hour: clock.hour,
@@ -3137,9 +3182,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 .enumerate()
                 .take(supply_trains_parts)
             {
-                let fingerprints = (part == 0).then(|| {
-                    unsafe { take_slice_store(shared, crate::slicing::SUPPLY_TRAINS) }
-                });
+                let fingerprints = (part == 0)
+                    .then(|| unsafe { take_slice_store(shared, crate::slicing::SUPPLY_TRAINS) });
                 *pending = Some(queue!(acquisition::Job::SupplyTrains(
                     frame.extended.take_supply_trains_request(
                         &country_snapshot,
@@ -3155,7 +3199,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let progress = frame.extended.take_combat_progress();
             let progress_recorded = frame
                 .extended
-                .records_any(&extended::combat_progress::TABLES);
+                .records_any(&collector_land_events::extended::combat_progress::TABLES);
             let combat_request =
                 frame
                     .map
@@ -3200,7 +3244,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let mut combat_pending = Some(combat_pending);
             let mut order_joins: Option<(
                 PendingAcquisition,
-                [Option<PendingAcquisition>; crate::orders_parts::MAX_PARTS - 1],
+                [Option<PendingAcquisition>; collector_divisions::orders_parts::MAX_PARTS - 1],
             )> = None;
             let mut stitch_pending = None;
             let mut stitch_failure = StitchFailureBarrier::default();
@@ -3252,10 +3296,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let mut naval_failure = None;
             let mut players_failure = None;
             let mut radar_failure = None;
-            let mut projects_failure = projects_omitted.then_some(extended::NOT_RECORDED);
-            let mut air_stats_failure = air_stats_omitted.then_some(extended::NOT_RECORDED);
+            let mut projects_failure =
+                projects_omitted.then_some(collector_extended_support::outcomes::NOT_RECORDED);
+            let mut air_stats_failure =
+                air_stats_omitted.then_some(collector_extended_support::outcomes::NOT_RECORDED);
             let mut supremacy_failure = None;
-            let mut sunk_failure = sunk_omitted.then_some(extended::NOT_RECORDED);
+            let mut sunk_failure =
+                sunk_omitted.then_some(collector_extended_support::outcomes::NOT_RECORDED);
             let mut world_active = Default::default();
             let mut world_report = acquisition::WorldReport::default();
             let mut world_failure = None;
@@ -3263,7 +3310,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let mut air_stats_raw = None;
             let mut air_bases_raw = Some(true);
             let mut characters_failure = [None; CHARACTER_PARTS];
-            frame.extended.characters_pilot().raw_active = [false; extended::characters::N];
+            frame.extended.characters_pilot().raw_active =
+                [false; collector_characters::extended::characters::N];
             macro_rules! join_characters {
                 ($part:expr) => {{
                     let part = $part;
@@ -3298,7 +3346,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let mut session_pending = session_pending;
             let mut variants_pending = Some(variants_pending);
             let mut capitulation_failure = None;
-            let mut session_failure = session_omitted.then_some(extended::NOT_RECORDED);
+            let mut session_failure =
+                session_omitted.then_some(collector_extended_support::outcomes::NOT_RECORDED);
             let mut relations_failure = None;
             let mut final_inputs_pending = None;
             let mut final_sources_done = false;
@@ -3621,8 +3670,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 state,
                             );
                             let mut order_part_pending: [Option<PendingAcquisition>;
-                                crate::orders_parts::MAX_PARTS - 1] =
-                                [const { None }; crate::orders_parts::MAX_PARTS - 1];
+                                collector_divisions::orders_parts::MAX_PARTS - 1] =
+                                [const { None }; collector_divisions::orders_parts::MAX_PARTS - 1];
                             for index in 1..orders_request.orders.part_count() {
                                 if let Some(part) = orders_request.orders.take_part(index) {
                                     order_part_pending[index - 1] =
@@ -3639,12 +3688,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             let orders_pending = queue!(acquisition::Job::Orders(orders_request));
                             (order_part_pending, orders_pending)
                         });
-                        let naval_ctx = extended::naval_history::NavalCopyContext {
-                            base: shared.base,
-                            game_state: state,
-                            hour: clock.hour,
-                            force_full,
-                        };
+                        let naval_ctx =
+                            collector_naval_history::extended::naval_history::NavalCopyContext {
+                                base: shared.base,
+                                game_state: state,
+                                hour: clock.hour,
+                                force_full,
+                            };
                         naval_install_ticks = naval_roots_ticks;
                         naval_job.defer_wings();
                         naval_pending =
@@ -3689,9 +3739,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         })));
                         states_pending = Some(queue!(acquisition::Job::States({
                             let mut request = frame.take_states_request(shared.base, state);
-                            request.countries = Some(engine_allocation::SharedBox::clone(
-                                &country_snapshot),
-                            );
+                            request.countries =
+                                Some(engine_allocation::SharedBox::clone(&country_snapshot));
                             request.store = unsafe { (*shared.state_store.get()).take() };
                             if frame.extended.records_any(&[TableId::StateResistance]) {
                                 request.occupation_store =
@@ -3765,7 +3814,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             input_pending.take().expect("input producer"),
                             DivisionInputs
                         );
-                        let mut parts = [const { None }; crate::division_census::MAX_PARTS - 1];
+                        let mut parts =
+                            [const { None }; collector_divisions::division_census::MAX_PARTS - 1];
                         for (part, pending) in
                             std::mem::take(&mut part_pending).into_iter().enumerate()
                         {
@@ -3830,64 +3880,54 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                     )
                                 )));
                         }
-                        let (pending, movement, speed_terms, split, omitted) =
-                            out_of_line(|| {
-                                let dispatched = input_handoff.take_dispatched();
-                                let retained = input_handoff.take_request();
-                                drop(input_handoff);
-                                if let Some((pending, movement, speed_terms, split)) = dispatched
-                                {
-                                    assert!(retained.is_none());
-                                    let (ticket, parked) = batch.adopt_presentation_ticket(pending);
-                                    let pending = if parked {
-                                        PendingAcquisition::Rejected(ticket)
-                                    } else {
-                                        PendingAcquisition::Accepted(ticket)
-                                    };
-                                    let speed_terms = queue!(
-                                        acquisition::Job::PresentationSpeedTerms(speed_terms)
-                                    );
-                                    let movement =
-                                        queue!(acquisition::Job::PresentationMovement(movement));
-                                    return (
-                                        Some(pending),
-                                        movement,
-                                        Some(speed_terms),
-                                        split,
-                                        None,
-                                    );
-                                }
-                                let mut presentation_request =
-                                    retained.expect("presentation retained");
-                                if status_recorded && presentation_request.army_stats.is_none() {
-                                    presentation_request.army_stats = shared.take_army_stat_store();
-                                }
-                                if presentation_request.army_stats.is_some() {
-                                    presentation_request.captured.enable_owned_settlement();
-                                }
-                                presentation_request.inputs = inputs.clone();
-                                presentation_request.captured.status_workers =
-                                    acquisition.worker_count();
-                                let mut movement_request = presentation_request.take_movement();
-                                if !status_recorded {
-                                    movement_request.pass.omit_status();
-                                    let movement_pending = queue!(
-                                        acquisition::Job::PresentationMovement(movement_request)
-                                    );
-                                    return (
-                                        None,
-                                        movement_pending,
-                                        None,
-                                        false,
-                                        Some(presentation_request),
-                                    );
-                                }
-                                let speed_terms_request = presentation_request.take_speed_terms();
-                                let divisions =
-                                    presentation_request.inputs.as_deref().map_or(0, |inputs| {
-                                        inputs.outcome().len().min(inputs.seeds().len())
-                                    });
-                                let split = extended::division_presentation::status_parts_for(
+                        let (pending, movement, speed_terms, split, omitted) = out_of_line(|| {
+                            let dispatched = input_handoff.take_dispatched();
+                            let retained = input_handoff.take_request();
+                            drop(input_handoff);
+                            if let Some((pending, movement, speed_terms, split)) = dispatched {
+                                assert!(retained.is_none());
+                                let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                                let pending = if parked {
+                                    PendingAcquisition::Rejected(ticket)
+                                } else {
+                                    PendingAcquisition::Accepted(ticket)
+                                };
+                                let speed_terms =
+                                    queue!(acquisition::Job::PresentationSpeedTerms(speed_terms));
+                                let movement =
+                                    queue!(acquisition::Job::PresentationMovement(movement));
+                                return (Some(pending), movement, Some(speed_terms), split, None);
+                            }
+                            let mut presentation_request = retained.expect("presentation retained");
+                            if status_recorded && presentation_request.army_stats.is_none() {
+                                presentation_request.army_stats = shared.take_army_stat_store();
+                            }
+                            if presentation_request.army_stats.is_some() {
+                                presentation_request.captured.enable_owned_settlement();
+                            }
+                            presentation_request.inputs = inputs.clone();
+                            presentation_request.captured.status_workers =
+                                acquisition.worker_count();
+                            let mut movement_request = presentation_request.take_movement();
+                            if !status_recorded {
+                                movement_request.pass.omit_status();
+                                let movement_pending = queue!(
+                                    acquisition::Job::PresentationMovement(movement_request)
+                                );
+                                return (
+                                    None,
+                                    movement_pending,
+                                    None,
+                                    false,
+                                    Some(presentation_request),
+                                );
+                            }
+                            let speed_terms_request = presentation_request.take_speed_terms();
+                            let divisions =
+                                presentation_request.inputs.as_deref().map_or(0, |inputs| {
+                                    inputs.outcome().len().min(inputs.seeds().len())
+                                });
+                            let split = collector_divisions::extended::division_presentation::status_parts_for(
                                     divisions,
                                     acquisition.worker_count(),
                                 ) > 1;
@@ -4091,21 +4131,22 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                     {
                                         *raw |= active;
                                     }
-                                    characters_failure[part] = Some(extended::NOT_RECORDED);
+                                    characters_failure[part] =
+                                        Some(collector_extended_support::outcomes::NOT_RECORDED);
                                     continue;
                                 }
                                 *pending = Some(queue!(acquisition::Job::Characters(
                                     acquisition::CharactersRequest {
                                         final_inputs: Some(Arc::clone(&final_inputs_dispatch)),
-                                        context: extended::characters::CharactersCopyContext {
+                                        context: collector_characters::extended::characters::CharactersCopyContext {
                                             active,
                                             ..characters_ctx
                                         },
                                         payload: decode::acquire_characters_job(part),
                                         roles: role_census.as_ref().map_or(
-                                            extended::characters::Roles::Independent,
+                                            collector_characters::extended::characters::Roles::Independent,
                                             |census| {
-                                                extended::characters::Roles::Borrow(census.clone())
+                                                collector_characters::extended::characters::Roles::Borrow(census.clone())
                                             },
                                         ),
                                     }
@@ -4147,13 +4188,15 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 air_wing_report.copy_ticks[0] += elapsed(begin);
                             }
                             if air_failure.is_none()
-                                && let Some(split) =
-                                    extended::air::part_starts(&air_request.payload, active)
+                                && let Some(split) = collector_air::extended::air::part_starts(
+                                    &air_request.payload,
+                                    active,
+                                )
                             {
                                 unsafe { *shared.air_wing_part_starts.get() = split };
                             }
                             let mut store = air_request.payload.wing_store.take();
-                            let bytes = extended::air::retained_store_bytes(
+                            let bytes = collector_air::extended::air::retained_store_bytes(
                                 store.as_deref_mut(),
                                 parts,
                                 air_failure.is_some(),
@@ -4256,7 +4299,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         } else {
                             frame.extended.production_rest_pilot().rest_raw_mode =
                                 world_scheduled.0;
-                            world_failure = Some(extended::NOT_RECORDED);
+                            world_failure =
+                                Some(collector_extended_support::outcomes::NOT_RECORDED);
                             world_active = world_scheduled;
                         }
                         production_rest_report = world_report.production;
@@ -5262,7 +5306,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             );
             segment!(12);
             let intel_failure = match intel_pending {
-                None => Some(extended::NOT_RECORDED),
+                None => Some(collector_extended_support::outcomes::NOT_RECORDED),
                 Some(intel_pending) => out_of_line(|| {
                     let (request, report, failure) = completed!(intel_pending, Intel);
                     let failure = failure
@@ -5336,7 +5380,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 if let Some(reason) = failure {
                     let active = std::array::from_fn(|index| {
                         characters_ctx.active[index]
-                            && extended::characters::PART_MASKS[part][index]
+                            && collector_characters::extended::characters::PART_MASKS[part][index]
                     });
                     frame
                         .extended
@@ -5453,7 +5497,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     continue;
                 }
                 for (slot, table) in decode::CHARACTERS.iter().enumerate() {
-                    if !extended::characters::PART_MASKS[part][slot] {
+                    if !collector_characters::extended::characters::PART_MASKS[part][slot] {
                         continue;
                     }
                     let index = table.index();
@@ -5633,10 +5677,11 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         phases.residual_ns = shared.ns(dispatched + game_elapsed - ts_parallel);
         phases.slowest_join = SLOWEST_JOIN.take();
         phases.variant = extended::production::design_changes::drain_profile();
-        phases.variant_drain_ns = shared.ns(
-            crate::acquisition_jobs::VARIANT_DRAIN_TICKS.swap(0, Ordering::Relaxed) as i64,
-        );
-        let allocator = crate::ALLOCATOR.hold().since(allocator_begin);
+        phases.variant_drain_ns = shared
+            .ns(crate::acquisition_jobs::VARIANT_DRAIN_TICKS.swap(0, Ordering::Relaxed) as i64);
+        let allocator = collector_workers::private_heap::PRIVATE_HEAP
+            .hold()
+            .since(allocator_begin);
         phases.heap_calls = allocator.heap.calls;
         phases.heap_ns = shared.ns(allocator.heap.ticks as i64);
         phases.page_calls = allocator.pages.calls;
@@ -5660,7 +5705,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         }
         frame.force_full = frame.clock.is_some() && force_full;
         phases.force_full = frame.force_full;
-        crate::hour_stages::keep(
+        collector_workers::hour_stages::keep(
             frame.clock.as_ref().map(|clock| clock.hour),
             phases.entry_ns.saturating_add(shared.ns(game_elapsed)),
             frame.force_full,
@@ -5899,7 +5944,7 @@ unsafe fn finish_acquisition_into(
             }
             #[cfg(feature = "callback_profile")]
             {
-                crate::callback_profile::record_join(role, wait, result.profile);
+                collector_workers::callback_profile::record_join(role, wait, result.profile);
                 shared.profile.join_wait[role].fetch_add(wait, Ordering::Relaxed);
             }
         }
@@ -5978,7 +6023,8 @@ fn final_inputs_ready<'a>(
 #[derive(Default)]
 struct PresentationPending {
     prepare: Option<PendingAcquisition>,
-    parts: [Option<PendingAcquisition>; extended::division_presentation::MAX_STATUS_PARTS],
+    parts: [Option<PendingAcquisition>;
+        collector_divisions::extended::division_presentation::MAX_STATUS_PARTS],
     prepared: Option<acquisition::Ticket>,
     failure: Option<acquisition::Failure>,
     pending: Option<PendingAcquisition>,
@@ -6146,7 +6192,7 @@ impl PresentationPending {
                                 inputs: request.inputs.clone(),
                                 preparation: matches!(
                                     &part,
-                                    extended::division_presentation::StatusWork::Preparation { .. }
+                                    collector_divisions::extended::division_presentation::StatusWork::Preparation { .. }
                                 ),
                                 part: Some(part),
                                 stitch: None,
@@ -6263,10 +6309,15 @@ impl PresentationPending {
         batch: &mut acquisition::Batch<'_>,
     ) -> (
         acquisition::PresentationRequest,
-        Result<extended::division_presentation::CaptureReport, acquisition::Failure>,
+        Result<
+            collector_divisions::extended::division_presentation::CaptureReport,
+            acquisition::Failure,
+        >,
     ) {
         if let Some(mut request) = self.omitted.take() {
-            let report = request.captured.omit_status(extended::NOT_RECORDED);
+            let report = request
+                .captured
+                .omit_status(collector_extended_support::outcomes::NOT_RECORDED);
             return (request, Ok(report));
         }
         unsafe { self.wait_for(shared, batch, None) };
@@ -6361,7 +6412,7 @@ unsafe fn collect_orders(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
     orders: PendingAcquisition,
-    parts: [Option<PendingAcquisition>; crate::orders_parts::MAX_PARTS - 1],
+    parts: [Option<PendingAcquisition>; collector_divisions::orders_parts::MAX_PARTS - 1],
 ) -> acquisition::OrdersRequest {
     let (mut orders_request, report) = unsafe {
         collect_acquisition(
@@ -6426,7 +6477,7 @@ fn settle_stitch(
     stitch_admissible: bool,
 ) {
     if report.contained_panic && stitch_admissible {
-        batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
+        batch.stop_for_contained_panic(collector_workers::roles::Role::OrdersStitch);
     }
     if (failure.is_none() && !report.contained_panic) || orders.orders.failed() {
         return;
@@ -6445,7 +6496,7 @@ fn settle_stitch(
 ///
 /// # Safety
 /// Only the capture reads and writes `shared`'s order split.
-unsafe fn begin_order_parts(shared: &Shared, orders: &mut crate::map_capture::Orders) {
+unsafe fn begin_order_parts(shared: &Shared, orders: &mut collector_divisions::orders::Orders) {
     let split = unsafe { *shared.order_split.get() };
     orders.begin_parts(split, shared.frequency);
 }
@@ -6455,7 +6506,7 @@ unsafe fn begin_order_parts(shared: &Shared, orders: &mut crate::map_capture::Or
 ///
 /// # Safety
 /// As [`begin_order_parts`].
-unsafe fn end_order_parts(shared: &Shared, orders: &crate::map_capture::Orders) {
+unsafe fn end_order_parts(shared: &Shared, orders: &collector_divisions::orders::Orders) {
     unsafe { *shared.order_split.get() = orders.next_split() };
 }
 
@@ -6719,9 +6770,6 @@ pub(crate) fn refuse_economy_rest(
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
-
-#[cfg(test)]
-pub(crate) mod wars_test_kit;
 
 fn modifier_table_moved(shared: &Shared, memory: &impl engine_native::Memory) -> bool {
     let observed = engine_native::modifier_definition::table(memory, shared.base)

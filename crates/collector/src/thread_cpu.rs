@@ -38,7 +38,7 @@ pub(crate) struct StopOnThreadExit;
 #[cfg(feature = "worker_sampler")]
 impl Drop for StopOnThreadExit {
     fn drop(&mut self) {
-        crate::worker_sampler::stop_before_thread_exit();
+        collector_workers::worker_sampler::stop_before_thread_exit();
     }
 }
 
@@ -143,7 +143,7 @@ const BASE_NAMED: usize = 8;
 const NAMED: usize = BASE_NAMED;
 #[cfg(feature = "worker_sampler")]
 const NAMED: usize = BASE_NAMED + 1;
-const THREADS: usize = NAMED + MAX_HELPERS + crate::acquisition::MAX_WORKERS;
+const THREADS: usize = NAMED + MAX_HELPERS + collector_workers::acquisition::MAX_WORKERS;
 
 struct Identity {
     id: AtomicU32,
@@ -352,7 +352,7 @@ pub(crate) fn status(acquisition: &[u32]) -> impl serde::Serialize + use<> {
     let named = named_threads!();
     let workers = acquisition
         .iter()
-        .take(crate::acquisition::MAX_WORKERS)
+        .take(collector_workers::acquisition::MAX_WORKERS)
         .enumerate()
         .map(|(index, id)| ("acquisition", Some(index), *id));
     let helpers = HELPERS

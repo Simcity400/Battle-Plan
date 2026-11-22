@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, io};
 
 use super::{
     Decimal, GameDate, Item, block, boolean, bytes, decimal, field, integer, invalid,
-    required_block, required_bytes, scalar, typed_handle,
+    null_permitted_handle, required_block, required_bytes, scalar, typed_handle,
 };
 
 pub type BuildingKey = (u32, Vec<u8>);
@@ -53,6 +53,14 @@ pub struct RailwayConstruction {
     pub current_segment: i32,
     pub remaining_cost: Decimal,
     pub route: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailwayGunRepair {
+    pub id: Option<u64>,
+    pub country: Vec<u8>,
+    pub queue_ordinal: u32,
+    pub railway_gun: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +206,7 @@ pub struct Pack {
     pub country_buildings: BTreeMap<OffsiteKey, Building>,
     pub building_construction: BTreeMap<u64, BuildingConstruction>,
     pub railway_construction: BTreeMap<u64, RailwayConstruction>,
+    pub railway_gun_repairs: Vec<RailwayGunRepair>,
     pub occupation_settings: BTreeMap<Vec<u8>, OccupationSettings>,
     pub state_occupation_laws: BTreeMap<LawKey, StateOccupationLaw>,
     pub state_garrisons: BTreeMap<GarrisonKey, StateGarrison>,
@@ -663,7 +672,18 @@ pub(super) fn parse_with_countries(
                             return Err(invalid("duplicate full railway construction handle"));
                         }
                     }
-                    Some(b"railway_gun") => {}
+                    Some(b"railway_gun") => {
+                        pack.railway_gun_repairs.push(RailwayGunRepair {
+                            id: field(fields, b"id")?
+                                .map(null_permitted_handle)
+                                .transpose()?,
+                            country: country.to_vec(),
+                            queue_ordinal: ordinal,
+                            railway_gun: field(fields, b"railway_gun")?
+                                .map(null_permitted_handle)
+                                .transpose()?,
+                        });
+                    }
                     _ => {
                         return Err(invalid(
                             "unsupported saved construction line kind; queue order cannot be compared",

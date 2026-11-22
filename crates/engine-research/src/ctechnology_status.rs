@@ -164,10 +164,32 @@ pub fn walk_technologies(
                 selected_len += 1;
             }
             if selected_len != 0 {
-                if ctechnology::copy_batch(memory, &selected[..selected_len], &mut instance_bytes)
-                    != selected_len * ctechnology::FIELDS.len()
-                {
-                    return Err("technology fields unreadable");
+                let copied = ctechnology::copy_batch(
+                    memory,
+                    &selected[..selected_len],
+                    &mut instance_bytes,
+                );
+                let done = (copied / ctechnology::FIELDS.len()).min(selected_len);
+                for index in done..selected_len {
+                    let pointer = selected[index];
+                    let offset = index * ctechnology::INSTANCE_BYTES;
+                    if let Some(previous) =
+                        selected[..index].iter().position(|&seen| seen == pointer)
+                    {
+                        let src = previous * ctechnology::INSTANCE_BYTES;
+                        instance_bytes
+                            .copy_within(src..src + ctechnology::INSTANCE_BYTES, offset);
+                    } else {
+                        let out: &mut [u8; ctechnology::INSTANCE_BYTES] =
+                            (&mut instance_bytes[offset..offset + ctechnology::INSTANCE_BYTES])
+                                .try_into()
+                                .unwrap();
+                        if ctechnology::copy_one(memory, pointer, out)
+                            != ctechnology::FIELDS.len()
+                        {
+                            return Err("technology fields unreadable");
+                        }
+                    }
                 }
                 let required = start + len + selected_len;
                 if required > output.len() {
@@ -252,14 +274,34 @@ pub fn walk_technologies(
                     selected_len += 1;
                 }
             }
-            if selected_len != 0
-                && ctechnology::copy_identities(
+            if selected_len != 0 {
+                let copied = ctechnology::copy_identities(
                     memory,
                     &selected[..selected_len],
                     &mut instance_bytes,
-                ) != selected_len * ctechnology::IDENTITY_FIELDS.len()
-            {
-                return Err("technology fields unreadable");
+                );
+                let done = (copied / ctechnology::IDENTITY_FIELDS.len()).min(selected_len);
+                for acquired in done..selected_len {
+                    let pointer = selected[acquired];
+                    let start = acquired * ctechnology::IDENTITY_BYTES;
+                    if let Some(previous) =
+                        selected[..acquired].iter().position(|&seen| seen == pointer)
+                    {
+                        let src = previous * ctechnology::IDENTITY_BYTES;
+                        instance_bytes
+                            .copy_within(src..src + ctechnology::IDENTITY_BYTES, start);
+                    } else {
+                        let out: &mut [u8; ctechnology::IDENTITY_BYTES] =
+                            (&mut instance_bytes[start..start + ctechnology::IDENTITY_BYTES])
+                                .try_into()
+                                .unwrap();
+                        if ctechnology::copy_identity_one(memory, pointer, out)
+                            != ctechnology::IDENTITY_FIELDS.len()
+                        {
+                            return Err("technology fields unreadable");
+                        }
+                    }
+                }
             }
             let expected = engine_sites::at(base, ctechnology::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;

@@ -165,7 +165,7 @@ pub fn line_chart(
         rect,
         uv: [0.; 4],
         color: [1.; 4],
-        rotation: 0.,
+        rotation: None,
         layer: 0,
         shade: 0.,
         exact: Some(sprites::Exact {
@@ -436,7 +436,7 @@ fn emit_inner(
             rect: [0.; 4],
             uv: [0.; 4],
             color: part.color,
-            rotation: 0.,
+            rotation: None,
             layer: 0,
             shade: 0.,
             exact: Some(sprites::Exact {
@@ -862,6 +862,7 @@ fn bake_draws(
         let part = Part {
             path: path.into(),
             child: None,
+            background_index: None,
             kind,
             clip: None,
             color: [1.; 4],

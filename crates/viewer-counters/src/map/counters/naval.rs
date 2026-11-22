@@ -489,11 +489,17 @@ impl<'a> NavalContext<'a> {
         })
     }
 
-    fn fleet_color(&self, fleet: u64) -> Option<[f32; 4]> {
-        let row = self.native.fleet(fleet)?;
-        Some(counter_inputs::color(
-            row.red, row.green, row.blue, row.alpha,
-        ))
+    fn fleet_color(&self, fleet: u64) -> Result<[f32; 4], String> {
+        let row = self.native.fleet(fleet).ok_or_else(|| {
+            format!(
+                "group_marker is undecided: fleet {fleet}'s colour (FleetCounterInputs) is not recorded"
+            )
+        })?;
+        counter_inputs::color(row.red, row.green, row.blue, row.alpha).ok_or_else(|| {
+            format!(
+                "group_marker is refused: fleet {fleet}'s colour (FleetCounterInputs) has non-finite components"
+            )
+        })
     }
 
     fn member<'b>(&'b self, unit: &NavalUnit<'_>) -> counter_inputs::NavalMember<'b> {
@@ -562,9 +568,7 @@ impl<'a> NavalContext<'a> {
                  task forces' missions) is not recorded"
             )),
             Some(false) => Ok(None),
-            Some(true) => self.fleet_color(fleet).map(Some).ok_or_else(|| {
-                format!("group_marker is undecided: fleet {fleet}'s colour (FleetCounterInputs) is not recorded")
-            }),
+            Some(true) => self.fleet_color(fleet).map(Some),
         };
         let side = if port {
             self.type_tints
@@ -825,11 +829,11 @@ fn port_boundary(
     grouping: PortGrouping,
     first: naval_regional::SortKey,
     next: naval_regional::SortKey,
-    first_side: Allegiance,
-    next_side: Allegiance,
+    first_owner: (u32, Option<Allegiance>),
+    next_owner: (u32, Option<Allegiance>),
 ) -> bool {
     if grouping.allegiance {
-        naval_regional::allegiance_break(first_side, next_side, first.selected, next.selected)
+        naval_regional::allegiance_break(first_owner, next_owner, first.selected, next.selected)
     } else {
         naval_regional::compare(first, next, grouping.coarse) < 0
     }
@@ -838,13 +842,13 @@ fn port_boundary(
 fn port_runs(
     grouping: PortGrouping,
     keys: &[naval_regional::SortKey],
-    side: impl Fn(usize) -> Allegiance,
+    owner: impl Fn(usize) -> (u32, Option<Allegiance>),
 ) -> Vec<std::ops::Range<usize>> {
     let mut runs = Vec::new();
     let mut start = 0;
     for next in 1..=keys.len() {
         if next == keys.len()
-            || port_boundary(grouping, keys[start], keys[next], side(start), side(next))
+            || port_boundary(grouping, keys[start], keys[next], owner(start), owner(next))
         {
             runs.push(start..next);
             start = next;
@@ -1230,13 +1234,12 @@ fn port_items(
                     continue;
                 }
             };
-            let flotillas: Vec<_> =
-                port_runs(grouping, &keys, |at| tables.countries.side(units[at].slot))
-                    .into_iter()
-                    .map(|run| {
-                        context.flotilla(&units[run].iter().collect::<Vec<_>>(), true, false)
-                    })
-                    .collect();
+            let flotillas: Vec<_> = port_runs(grouping, &keys, |at| {
+                (units[at].slot, tables.countries.known_side(units[at].slot))
+            })
+            .into_iter()
+            .map(|run| context.flotilla(&units[run].iter().collect::<Vec<_>>(), true, false))
+            .collect();
             if let Some(memo) = retained.as_deref_mut() {
                 memo.0.insert(
                     province,

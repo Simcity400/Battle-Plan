@@ -12,4 +12,4 @@ Positive decode consumers finish before the independent reserved-country suffix,
 
 Child-front capture can inspect the owning order group's staged discriminator and child vector header without advancing regular raw cursors. The own-field batch emits a unique anchor even when it recorded a failed field. Parent checks never emit that anchor, so its position locates this root's own flag. The exact full child header must occur once. Smaller and bulk reads cannot recover a refused or ambiguous header.
 
-[Theatre and OOB copy](../../crates/collector/src/extended/naval_history/theatres.rs) · [Gather parity](../../crates/collector/src/extended/naval_history/theatres/oob_entry_tests.rs) · [Child-front source](../../crates/collector/src/extended/naval_history/theatres/order_group_source.rs)
+[Theatre and OOB copy](../../crates/collector-naval-history/src/extended/naval_history/theatres.rs) · [Gather parity](../../crates/collector-naval-history/src/extended/naval_history/theatres/oob_entry_tests.rs) · [Child-front source](../../crates/collector-naval-history/src/extended/naval_history/theatres/order_group_source.rs)

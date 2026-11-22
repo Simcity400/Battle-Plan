@@ -525,14 +525,17 @@ impl BaseCounters {
         self.scoped.state(site.0);
         let values = self.values.as_deref()?;
         let bases: Vec<u64> = values.site_bases.keys_from((site.0, i32::MIN)).take_while(|&(state, _)| state == site.0).filter(|&(_, kind)| site_kind(kind) == site.1).flat_map(|key| values.site_bases[&key].iter().copied()).collect();
-        if bases.is_empty() {
+        let mut bases = bases.into_iter();
+        let Some(first) = bases.next() else {
             return None;
-        }
-        let mut count = AirBaseCount::default();
-        for &base in &bases {
+        };
+        let mut count = self.base(first, site.0, mirrors, columns, census, link);
+        let mut worked = 1u64;
+        for base in bases {
             merge_count(&mut count, self.base(base, site.0, mirrors, columns, census, link));
+            worked += 1;
         }
-        self.work += bases.len() as u64;
+        self.work += worked;
         Some(count)
     }
 

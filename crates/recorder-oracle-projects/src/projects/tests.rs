@@ -1030,7 +1030,22 @@ fn raid_equipment_totals_match_the_saved_sums_by_archetype() {
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 0)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["RaidEquipment.archetype_amounts"], 1);
+    assert!(
+        !report
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        report.compared_tables
+    );
+    assert!(
+        report
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("1 totals consistent with saved variant sums")),
+        "{:?}",
+        report.limitations
+    );
     let (mut frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], false);
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 1)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1058,22 +1073,35 @@ fn raid_equipment_totals_that_disagree_away_from_the_bound_are_differences() {
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let differences = |totals: &[(u32, i64)]| run_totals(&frame, &pack, &items, totals).differences;
-    let wrong = differences(&[(0x3309, 700_001)]);
-    assert!(
-        wrong.len() == 1 && wrong[0].contains("archetype[13065]"),
-        "{wrong:?}"
-    );
-    assert!(differences(&[(0x3309, 700_000), (0x330a, 1)])[0].contains("no saved variant"));
     assert!(differences(&[])[0].contains("absent"));
     assert!(differences(&[(0x3309, 700_000), (0x3309, 700_000)])[0].contains("repeated"));
-    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
-    let unwound = run_totals(
-        &frame,
-        &pack,
-        &[(RIFLE, 0), (TRUCK, BOUND / 4 * 3)],
-        &[(0x3309, BOUND / 4)],
+    assert!(differences(&[(0x3309, BOUND + 1)])[0].contains("archetype[13065]"));
+    let off_by_one = run_totals(&frame, &pack, &items, &[(0x3309, 700_001)]);
+    assert!(
+        off_by_one.differences.is_empty(),
+        "{:?}",
+        off_by_one.differences
     );
-    assert_eq!(unwound.differences.len(), 1, "{:?}", unwound.differences);
+    assert!(
+        off_by_one
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("archetype[13065]")),
+        "{:?}",
+        off_by_one.limitations
+    );
+    let extra = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 1)]);
+    assert!(extra.differences.is_empty(), "{:?}", extra.differences);
+    assert!(
+        extra
+            .limitations
+            .values()
+            .flatten()
+            .any(|subject| subject.contains("no saved variant")),
+        "{:?}",
+        extra.limitations
+    );
 }
 
 #[test]
@@ -1129,6 +1157,188 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
         &[(RIFLE, 60_000_000_000_000), (TRUCK, 60_000_000_000_000)],
         &[(0x3309, 1)],
     ));
+}
+
+#[test]
+fn unwound_raid_pool_saturation_is_reported_as_a_limitation_not_a_difference() {
+    let clamp = |value: i128| value.clamp(-i128::from(BOUND), i128::from(BOUND)) as i64;
+    let apply = |entries: &mut BTreeMap<u64, i64>, total: &mut i64, variant: u64, delta: i64| {
+        let entry = entries.entry(variant).or_default();
+        *entry = clamp(i128::from(*entry) + i128::from(delta));
+        *total = clamp(i128::from(*total) + i128::from(delta));
+    };
+
+    let three_quarters = BOUND / 4 * 3;
+    let mut entries = BTreeMap::new();
+    let mut total = 0;
+    apply(&mut entries, &mut total, RIFLE, three_quarters);
+    apply(&mut entries, &mut total, TRUCK, three_quarters);
+    assert_eq!(total, BOUND);
+    apply(&mut entries, &mut total, RIFLE, -three_quarters);
+    assert_eq!(entries[&RIFLE], 0);
+    assert_eq!(entries[&TRUCK], three_quarters);
+    assert_eq!(total, BOUND / 4);
+
+    let (frame, pack) = totals_fixture(&[(TRUCK, "691752901.5")], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, entries[&RIFLE]), (TRUCK, entries[&TRUCK])],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        !report
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        report.compared_tables
+    );
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    let false_match = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, entries[&RIFLE]), (TRUCK, entries[&TRUCK])],
+        &[(0x3309, three_quarters)],
+    );
+    assert!(
+        false_match.differences.is_empty(),
+        "{:?}",
+        false_match.differences
+    );
+    assert!(
+        !false_match
+            .compared_tables
+            .contains_key("RaidEquipment.archetype_amounts"),
+        "{:?}",
+        false_match.compared_tables
+    );
+
+    apply(&mut entries, &mut total, TRUCK, -three_quarters);
+    assert_eq!(entries[&TRUCK], 0);
+    assert_eq!(total, -(BOUND / 2));
+    let (frame, pack) = totals_fixture(&[], true);
+    let report = run_totals(
+        &frame,
+        &pack,
+        &[(RIFLE, 0), (TRUCK, 0)],
+        &[(0x3309, total)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("unwound saturation")),
+        "{:?}",
+        report.limitations
+    );
+
+    let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
+    let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
+    for impossible in [BOUND + 1, -BOUND - 1] {
+        let report = run_totals(&frame, &pack, &items, &[(0x3309, impossible)]);
+        assert_eq!(report.differences.len(), 1, "{impossible}: {:?}", report.differences);
+    }
+}
+
+#[test]
+fn raid_equipment_structural_checks_run_even_when_variant_definitions_are_missing() {
+    use replay_data::rows::VariantDefinitionRow;
+    let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
+    let (mut frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], false);
+    *frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    for pair in [
+        [(0x3309, BOUND + 1), (0x3309, 100)],
+        [(0x3309, 100), (0x3309, BOUND + 1)],
+    ] {
+        let unavailable = run_totals(&frame, &pack, &items, &pair);
+        assert_eq!(
+            unavailable.differences.len(),
+            2,
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("within clamp bound")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("repeated")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("VariantDefinitions is not complete")),
+            "{pair:?}: {:?}",
+            unavailable.limitations
+        );
+    }
+
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: RIFLE,
+            archetype_token: 0x3309,
+            ..Default::default()
+        }]));
+    let partial = run_totals(
+        &frame,
+        &pack,
+        &items,
+        &[(0x330a, 100), (0x330a, BOUND + 1)],
+    );
+    assert_eq!(partial.differences.len(), 3, "{:?}", partial.differences);
+    assert!(
+        partial
+            .differences
+            .iter()
+            .any(|d| d.contains("within clamp bound")),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial.differences.iter().any(|d| d.contains("repeated")),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial.differences.iter().any(|d| {
+            d.contains("archetype[13065]")
+                && d.contains("absent")
+                && d.contains("present")
+                && !d.contains("500000")
+        }),
+        "{:?}",
+        partial.differences
+    );
+    assert!(
+        partial
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("no VariantDefinitions row")),
+        "{:?}",
+        partial.limitations
+    );
 }
 
 #[test]

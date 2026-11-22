@@ -2083,6 +2083,36 @@ fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() 
 }
 
 #[test]
+fn scenario_source_keeps_entity_scale_separate_from_mesh_scale() {
+    use crate::map::models::tests::{triangle_mesh, visual_stack};
+
+    let (root, layers) = visual_stack(
+        "aircraft_scenario_scale",
+        &[
+            (
+                "base/gfx/models/meshes.gfx",
+                br#"objectTypes = { pdxmesh = { name = scenario_mesh file = "gfx/models/plane.mesh" scale = 2.5 } }"#,
+            ),
+            (
+                "base/gfx/entities/scenario.asset",
+                br#"entity = { name = scenario_base pdxmesh = scenario_mesh scale = 0.4 }
+                    entity = { name = scenario_clone clone = scenario_base }"#,
+            ),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+        ],
+    );
+    let roster = layers.presentation().descriptor_roster().unwrap();
+    let definition = &roster.descriptors.meshes["scenario_mesh"];
+    for name in ["scenario_base", "scenario_clone"] {
+        let source =
+            scenario_source(layers.presentation(), &roster.descriptors, name, definition).unwrap();
+        assert!((source.mesh_scale - 2.5).abs() < 1e-6, "{name}: {}", source.mesh_scale);
+        assert!((source.entity_scale - 0.4).abs() < 1e-6, "{name}: {}", source.entity_scale);
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_needed() {
     use crate::map::mesh_pose::Source;
     let source = Source {

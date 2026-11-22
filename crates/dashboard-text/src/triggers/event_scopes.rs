@@ -54,6 +54,73 @@ pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize
     }
 }
 
+pub fn step_event_scope(
+    graph: &mut EventScopes,
+    caller: usize,
+    parsed: &Parsed,
+    this: Scope,
+) -> Result<usize, String> {
+    if caller >= graph.scopes.len() {
+        return Err("scope graph cursor is outside the caller graph".into());
+    }
+    if let Parsed::Chain { head, then } = parsed {
+        let mid = match head {
+            Keyword::This => Some(Ok(caller)),
+            Keyword::Root => Some(linked(graph, caller, graph.scopes[caller].root)),
+            Keyword::From => Some(linked(graph, caller, graph.scopes[caller].from)),
+            Keyword::Prev => Some(linked(graph, caller, graph.scopes[caller].prev)),
+            _ => None,
+        };
+        if let Some(Ok(mid)) = mid {
+            let first = step_event_scope(
+                graph,
+                caller,
+                &Parsed::Keyword(*head),
+                object(graph.scopes[mid].this),
+            )?;
+            let index = step_event_scope(graph, first, then, this)?;
+            graph.scopes[index].prev = Link::Scope(caller);
+            return Ok(index);
+        }
+    }
+    let source = match parsed {
+        Parsed::Keyword(Keyword::This) => caller,
+        Parsed::Keyword(Keyword::Root) => {
+            linked(graph, caller, graph.scopes[caller].root).map_err(|why| why.to_string())?
+        }
+        Parsed::Keyword(Keyword::From) => {
+            linked(graph, caller, graph.scopes[caller].from).map_err(|why| why.to_string())?
+        }
+        Parsed::Keyword(Keyword::Prev) => {
+            linked(graph, caller, graph.scopes[caller].prev).map_err(|why| why.to_string())?
+        }
+        _ => caller,
+    };
+    let mut copied = graph.scopes[source];
+    copied.from = match copied.from {
+        Link::Itself => Link::Scope(source),
+        other => other,
+    };
+    copied.root = match graph.scopes[caller].root {
+        Link::Itself => Link::Scope(caller),
+        root => root,
+    };
+    copied.prev = Link::Scope(caller);
+    copied.this = event_object(this).map_err(|why| why.to_string())?;
+    if matches!(parsed, Parsed::Keyword(Keyword::Root | Keyword::Prev)) {
+        copied.from = match linked(graph, caller, graph.scopes[caller].root) {
+            Ok(root) => match graph.scopes[root].from {
+                Link::Itself => Link::Scope(root),
+                from => from,
+            },
+            Err(_) => Link::Unknown,
+        };
+    }
+    let index = graph.scopes.len();
+    graph.scopes.push(copied);
+    Ok(index)
+}
+
 fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, Failure> {
     for _ in 0..101 {
         let current = graph.scopes.get(at).ok_or("event scope is not given")?;

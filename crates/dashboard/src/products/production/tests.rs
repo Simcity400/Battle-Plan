@@ -284,3 +284,229 @@ fn a_line_key_names_its_handle_and_a_positive_appearance() {
     assert_eq!(weekly_units_raw(200_000, 700_000), Some(200_000));
     assert_eq!(weekly_units_raw(1, 0), None);
 }
+
+#[test]
+fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_naming() {
+    use crate::products::{
+        at_hour::{AtHour, Keys, Owner, ReadsAt},
+        economy::market::{MarketLendLease, MarketLendLeaseParams, MarketSection},
+        stockpile::artwork::{StockpileArtwork, StockpileArtworkParams},
+    };
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryMarketRow, LexicalTokenRow, PoliticsRow,
+        ReservedCountryNamingRow, StateRow, tables,
+    };
+
+    assert!(names::TABLES.contains(&TableId::ReservedCountryNaming));
+    assert!(names::WHOLE.contains(&TableId::ReservedCountryNaming));
+    assert!(
+        StockpileArtwork::tables(&StockpileArtworkParams {
+            branch_id: "1".into(),
+            country: "GER".into(),
+            variants: Vec::new(),
+        })
+        .contains(&TableId::ReservedCountryNaming)
+    );
+
+    let mut frame = frame(FIRST);
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 9001,
+            original_tag_reference: Recorded::Value(Some(41)),
+            original_tag: Recorded::Value(Some(b"AAA".to_vec())),
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                original_tag_reference: Recorded::Value(Some(41)),
+                original_tag: Recorded::Value(Some(b"AAA".to_vec())),
+                dynamic_tag_boundary: Recorded::Value(Some(50)),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
+        PoliticsRow {
+            country: 9001,
+            capital: 12,
+            original_capital: 12,
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 12,
+            continent: Recorded::Value(Some(701)),
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 601,
+                literal: b"tanks_1".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 701,
+                literal: b"europe".to_vec(),
+            },
+        ]));
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 100,
+            equipment_token: 601,
+            creator_link: 11,
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::CountryMarket.index()] =
+        TableView::Complete(TableRows::CountryMarket(vec![CountryMarketRow {
+            country: 9001,
+            prices: vec![replay_data::rows::MarketPriceLevel {
+                variant: 100,
+                level: 1,
+            }]
+            .into(),
+            ..Default::default()
+        }]));
+    for table in [TableId::PoliticalParties, TableId::Factions, TableId::FactionMembers] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "artwork-reads".into(),
+            revision: "1".into(),
+        },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let recording = source.replay_ref().recording();
+
+    let live_params = live::ProductionLinesAtParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        order: None,
+    };
+    let live_ctx = ProductionLinesAt::context(&source, &load()).unwrap();
+    let state_cols = ProductionLinesAt::projection(&live_params, TableId::States, &[], &live_ctx)
+        .expect("States projection");
+    assert!(
+        !state_cols.is_empty(),
+        "live production must project States.continent"
+    );
+    let app_cols =
+        ProductionLinesAt::projection(&live_params, TableId::CountryAppearance, &[], &live_ctx)
+            .expect("CountryAppearance projection");
+    let expected_app = dashboard_base::products::at_hour::field_columns(
+        TableId::CountryAppearance,
+        &["original_tag", "original_tag_reference"],
+    );
+    assert!(
+        expected_app.iter().all(|col| app_cols.contains(col)),
+        "live production must project CountryAppearance original_tag and original_tag_reference"
+    );
+
+    let mut held = DecodedFrame {
+        branch: 1,
+        hour: FIRST,
+        tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
+        metrics: Default::default(),
+    };
+    let query = crate::answer::query(&source, 1).unwrap();
+    let reads_at = ReadsAt {
+        holders: &query.holders,
+        run: 0,
+        hour: FIRST,
+        context: &live_ctx,
+        since: None,
+    };
+    let owner = Some(Owner { id: 9001, slot: 7 });
+    for step in 0..8 {
+        let step_reads = ProductionLinesAt::reads_in(&live_params, owner, step, &held, &reads_at);
+        if step_reads.is_empty() {
+            break;
+        }
+        let projections: Vec<Option<Vec<usize>>> = step_reads
+            .iter()
+            .map(|read| ProductionLinesAt::projection(&live_params, read.table, &[], &live_ctx))
+            .collect();
+        let keyed: Vec<replay::at::Read<'_>> = step_reads
+            .iter()
+            .zip(&projections)
+            .map(|(read, cols)| replay::at::Read {
+                table: read.table,
+                columns: cols.as_deref(),
+                keys: match &read.keys {
+                    Keys::All => replay::at::Keys::All,
+                    Keys::These(keys) => replay::at::Keys::These(keys),
+                    Keys::Range(low, high) => replay::at::Keys::Range(*low, *high),
+                    Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                },
+            })
+            .collect();
+        let read = replay::at::frame(recording, 0, FIRST, &keyed).unwrap();
+        for asked in &step_reads {
+            held.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
+        }
+    }
+    let lexical = held.complete::<tables::LexicalTokens>().unwrap();
+    assert!(
+        lexical.iter().any(|row| row.token == 701 && row.literal == b"europe"),
+        "live production must fetch distinct capital continent lexical token: {lexical:?}"
+    );
+    let states = held.complete::<tables::States>().unwrap();
+    assert_eq!(states[0].continent, Recorded::Value(Some(701)));
+    let appearance = held.complete::<tables::CountryAppearance>().unwrap();
+    assert_eq!(appearance[0].original_tag_reference, Recorded::Value(Some(41)));
+    assert_eq!(appearance[0].original_tag, Recorded::Value(Some(b"AAA".to_vec())));
+    assert!(held.complete::<tables::ReservedCountryNaming>().is_ok());
+
+    let market_params = MarketLendLeaseParams {
+        branch_id: "1".into(),
+        countries: Vec::new(),
+        only: Some(MarketSection::Offers),
+    };
+    let mut market_held = DecodedFrame {
+        branch: 1,
+        hour: FIRST,
+        tables: std::array::from_fn(|_| replay_frame::frame::not_selected()),
+        metrics: Default::default(),
+    };
+    for step in 0..8 {
+        let step_reads = MarketLendLease::reads(&market_params, None, step, &market_held);
+        if step_reads.is_empty() {
+            break;
+        }
+        let keyed: Vec<replay::at::Read<'_>> = step_reads
+            .iter()
+            .map(|read| replay::at::Read {
+                table: read.table,
+                columns: None,
+                keys: match &read.keys {
+                    Keys::All => replay::at::Keys::All,
+                    Keys::These(keys) => replay::at::Keys::These(keys),
+                    Keys::Range(low, high) => replay::at::Keys::Range(*low, *high),
+                    Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                },
+            })
+            .collect();
+        let read = replay::at::frame(recording, 0, FIRST, &keyed).unwrap();
+        for asked in &step_reads {
+            market_held.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
+        }
+    }
+    let market_lexical = market_held.complete::<tables::LexicalTokens>().unwrap();
+    assert!(
+        market_lexical
+            .iter()
+            .any(|row| row.token == 701 && row.literal == b"europe"),
+        "market query must fetch distinct capital continent lexical token: {market_lexical:?}"
+    );
+    assert!(market_held.complete::<tables::ReservedCountryNaming>().is_ok());
+}

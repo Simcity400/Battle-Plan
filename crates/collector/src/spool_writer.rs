@@ -1,4 +1,3 @@
-
 use crate::allocation::{self, Context};
 use replay::spool::{FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool};
 use replay_frame::frame::EncodedFrame;
@@ -589,7 +588,7 @@ impl Writer {
             .name("replay-spool-writer".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     serve(&worker, create)
                 }));

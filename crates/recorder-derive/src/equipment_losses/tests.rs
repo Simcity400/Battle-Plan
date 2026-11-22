@@ -332,7 +332,7 @@ fn unavailable_legacy_partial_text_withholds_the_run_at_current_format() {
     run.step(first);
     assert_eq!(run.total(GER, GER, LAND, Some(7)), None);
     assert_eq!(run.run_cell(6), Some(Cell::Missing));
-    assert_eq!(run.run_cell(7), number(0), "at format 143+, Status::Unavailable always withholds");
+    assert_eq!(run.run_cell(7), number(0), "at format 145+, Status::Unavailable always withholds");
     assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
     assert_eq!(run.drain(), "equipment destruction first/branch interval is partial");
 

@@ -476,7 +476,7 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
             let mut units: Vec<_> = forces.iter().map(|force| port_unit(force, 0)).collect();
             let keys =
                 naval_regional::sort_own(&mut units, selected, context, grouping.coarse).unwrap();
-            port_runs(grouping, &keys, |_| Allegiance::Ours)
+            port_runs(grouping, &keys, |_| (0, Some(Allegiance::Ours)))
                 .into_iter()
                 .map(|run| units[run].iter().map(|u| u.force.id).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
@@ -965,4 +965,182 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
             assert_eq!(arrived.fixed.report, fresh.fixed.report);
         },
     );
+}
+
+#[test]
+fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavailable() {
+    content_reader_core::test_game::enter();
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(
+            br#"guiTypes={
+        containerWindowType={name=unit_counter_navy size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+    }"#,
+        ),
+    )]);
+    crate::map::counters::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| {
+            content.defines.coarse_distance = [100., 160.];
+            content.defines.groups.strategic_distance = 200.;
+        },
+        |mut inputs| {
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.visibility.political_mode = true;
+            inputs.camera.height = 50.;
+            let forces = vec![
+                TaskForceRow { id: 1, roster_owner: 10, ..Default::default() },
+                TaskForceRow { id: 2, roster_owner: 10, ..Default::default() },
+                TaskForceRow { id: 3, roster_owner: 20, ..Default::default() },
+            ];
+            let countries = Arc::new(Countries {
+                sides: [(0, Allegiance::Ours)].into(),
+                ..Default::default()
+            });
+            let vision = Arc::new(Vision::default());
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 1,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            let ports = PortTables {
+                rosters: [(7, vec![(1, 0), (2, 1), (3, 2)])].into(),
+                ..Default::default()
+            };
+            with_port_context(&forces, |context| {
+                context.ships = Arc::new(forces.iter().map(|force| (force.id, (1, 100_000))).collect());
+                let tables = CounterTables {
+                    type_tints: context.type_tints,
+                    countries: &countries,
+                    icons: &Arc::new(TemplateIcons::default()),
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: context.native,
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &Default::default(),
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let mut out = CounterFrame::default();
+                let items = port_items(&inputs, &frame, &|raw| Some(raw), &tables, context, &ports, None, &mut out)
+                    .unwrap()
+                    .remove(&7)
+                    .unwrap()
+                    .unwrap();
+                let grouped: Vec<Vec<u64>> = items
+                    .into_iter()
+                    .map(|item| item.selectable.map_or_else(Vec::new, |(_, members)| members.to_vec()))
+                    .collect();
+                assert_eq!(grouped, vec![vec![1, 2], vec![3]]);
+
+                inputs.visibility.political_mode = false;
+                let mut out = CounterFrame::default();
+                let non_allegiance_items = port_items(&inputs, &frame, &|raw| Some(raw), &tables, context, &ports, None, &mut out)
+                    .unwrap()
+                    .remove(&7)
+                    .unwrap()
+                    .unwrap();
+                let non_allegiance_grouped: Vec<Vec<u64>> = non_allegiance_items
+                    .into_iter()
+                    .map(|item| item.selectable.map_or_else(Vec::new, |(_, members)| members.to_vec()))
+                    .collect();
+                assert_eq!(non_allegiance_grouped, vec![vec![1, 2, 3]]);
+            });
+        },
+    );
+}
+
+#[test]
+fn non_finite_fleet_color_refuses_group_marker_by_name() {
+    use replay_data::rows::FleetCounterInputRow;
+    let check = |fleet_rows: Vec<FleetCounterInputRow>, port: bool| {
+        let force = TaskForceRow {
+            id: 1,
+            fleet: 42,
+            mission: 1,
+            ..Default::default()
+        };
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "not needed".into(),
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::FleetCounterInputs.index()] =
+            TableView::Complete(TableRows::FleetCounterInputs(fleet_rows));
+        let native = NativeInputs::read(&frame).unwrap();
+        let vision = Vision::default();
+        let country_ids = BTreeMap::new();
+        let forces = [force];
+        let context = NavalContext {
+            type_tints: &type_tint::Index::default(),
+            vision: &vision,
+            native: &native,
+            ship_inputs: None,
+            aggression: &[1],
+            ship_task_forces: Arc::new(BTreeMap::new()),
+            ships_complete: true,
+            ships: Arc::new(BTreeMap::new()),
+            country_ids: &country_ids,
+            ideology: &|_| Ok(None),
+            missions: Arc::new(BTreeMap::from([(1, 1)])),
+            mission_skips: Default::default(),
+            forces: &forces,
+            forces_complete: true,
+        };
+        let unit = port_unit(&forces[0], 0);
+        context.flotilla(&[&unit], port, false).marker
+    };
+    let valid = [0.2f32, 0.4, 0.6, 1.0];
+    let valid_row = FleetCounterInputRow {
+        fleet: 42,
+        task_forces: vec![1],
+        red: valid[0].to_bits(),
+        green: valid[1].to_bits(),
+        blue: valid[2].to_bits(),
+        alpha: valid[3].to_bits(),
+        ..Default::default()
+    };
+    assert_eq!(check(vec![valid_row.clone()], false), Ok(Some(valid)));
+    assert_eq!(check(vec![valid_row], true), Ok(Some(valid)));
+    let absent = check(Vec::new(), true).unwrap_err();
+    assert!(absent.contains("is not recorded"), "{absent}");
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for channel in 0..4 {
+            let mut raw = valid.map(f32::to_bits);
+            raw[channel] = bad.to_bits();
+            let row = FleetCounterInputRow {
+                fleet: 42,
+                task_forces: vec![1],
+                red: raw[0],
+                green: raw[1],
+                blue: raw[2],
+                alpha: raw[3],
+                ..Default::default()
+            };
+            for port in [false, true] {
+                let err = check(vec![row.clone()], port)
+                    .expect_err("non-finite fleet colour must be refused");
+                assert!(err.contains("non-finite"), "{err}");
+                assert!(err.contains("42"), "{err}");
+            }
+        }
+    }
 }

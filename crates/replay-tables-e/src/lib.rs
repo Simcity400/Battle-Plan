@@ -55,6 +55,7 @@ replay_rows::row_ops! {
     LeaderBattles => LeaderBattleRow,
     LeaderTraitGains => LeaderTraitGainRow,
     PowerSpendTotals => PowerSpendTotalRow,
+    PowerSpendDays => PowerSpendDayRow,
     PowerItems => PowerItemRow,
     PowerDayParts => PowerDayPartRow,
     PowerHolds => PowerHoldRow,

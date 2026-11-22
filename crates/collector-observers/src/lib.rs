@@ -68,6 +68,7 @@ static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reser
 
 pub mod wargoal_changes;
 pub mod division_panel_changes;
+pub mod variant_stat_witness;
 
 fn verified(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)?.sentinel::<16>().map(drop)

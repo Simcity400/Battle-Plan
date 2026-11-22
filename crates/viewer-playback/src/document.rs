@@ -441,6 +441,52 @@ impl OverlayHits {
     }
 }
 
+enum OverlayCounters {
+    Prepared(counters::PreparedCounters),
+    #[cfg(test)]
+    Empty,
+}
+
+impl std::ops::Deref for OverlayCounters {
+    type Target = counters::PreparedCounters;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Prepared(icons) => icons,
+            #[cfg(test)]
+            Self::Empty => unreachable!("test overlay has no counter layout"),
+        }
+    }
+}
+
+impl std::ops::DerefMut for OverlayCounters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Prepared(icons) => icons,
+            #[cfg(test)]
+            Self::Empty => unreachable!("test overlay has no counter layout"),
+        }
+    }
+}
+
+impl OverlayCounters {
+    fn keep_drawn(&mut self, previous: &mut Self) {
+        match (self, previous) {
+            (Self::Prepared(now), Self::Prepared(old)) => now.keep_drawn(old),
+            #[cfg(test)]
+            _ => {}
+        }
+    }
+
+    fn keep_drawn_by_value(&mut self, previous: &mut Self) {
+        match (self, previous) {
+            (Self::Prepared(now), Self::Prepared(old)) => now.keep_drawn_by_value(old),
+            #[cfg(test)]
+            _ => {}
+        }
+    }
+}
+
 pub struct PreparedOverlay {
     pub radar: Arc<viewer_world::map::radar_symbols::Field>,
     pub air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
@@ -451,7 +497,7 @@ pub struct PreparedOverlay {
     labels: labels::PreparedLabels,
     raids: Batch,
     native_raids: raids::PreparedRaids,
-    icons: counters::PreparedCounters,
+    icons: OverlayCounters,
     label_report: LabelReport,
     raid_report: raids::RaidReport,
     native_intel: intel_icons::PreparedIntel,
@@ -461,10 +507,7 @@ pub struct PreparedOverlay {
     engaged_covered: bool,
     layers: [usize; 6],
     counter_view: CounterView,
-    resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
-    occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
-    resource_icons_by: MadeBy,
-    occupation_icons_by: MadeBy,
+    pub(crate) laid_icons: LaidIcons,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
     adjacency_priority: i8,
     mode_icons: Batch,
@@ -677,6 +720,14 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
+    pub fn motion_layout(&self) -> Option<&viewer_foundation::map::counter_move::DrawnLayout> {
+        self.icons.motion_layout()
+    }
+
+    pub fn set_motion_continuity(&mut self, continuity: u64) {
+        self.icons.set_motion_continuity(continuity);
+    }
+
     pub fn set_pressed(
         &mut self,
         pressed: Option<viewer_foundation::unit_handle::Unit>,
@@ -704,6 +755,134 @@ impl PreparedOverlay {
             self.icons.keep_drawn_by_value(&mut old.icons);
         }
     }
+}
+
+pub trait IconHost {
+    fn lay_resource_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+    ) -> viewer_world::map::resource_icons::PreparedResourceIcons;
+
+    fn lay_occupation_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons;
+}
+
+pub struct LaidIcons {
+    pub(crate) resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
+    pub(crate) occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
+    pub(crate) resource_icons_by: MadeBy,
+    pub(crate) occupation_icons_by: MadeBy,
+}
+
+impl Default for LaidIcons {
+    fn default() -> Self {
+        Self {
+            resource_icons: Default::default(),
+            occupation_icons: Default::default(),
+            resource_icons_by: MadeBy::Left,
+            occupation_icons_by: MadeBy::Left,
+        }
+    }
+}
+
+impl LaidIcons {
+    pub fn resource_icons_by(&self) -> MadeBy {
+        self.resource_icons_by
+    }
+
+    pub fn occupation_icons_by(&self) -> MadeBy {
+        self.occupation_icons_by
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the camera, view and layer product")]
+    pub fn replace_resource_icons(
+        &mut self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+        version: u64,
+    ) {
+        self.resource_icons = hour.lay_resource_icons(camera, viewport, ui_scale, visibility, icons);
+        self.resource_icons_by = MadeBy::Layer(version);
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the camera, viewing country, mode and layer product")]
+    pub fn replace_occupation_icons(
+        &mut self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+        version: u64,
+    ) {
+        self.occupation_icons = hour.lay_occupation_icons(camera, viewport, ui_scale, mode, country, marks);
+        self.occupation_icons_by = MadeBy::Layer(version);
+    }
+}
+
+impl IconHost for Hour<'_> {
+    fn lay_resource_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        visibility: viewer_foundation::map::mode_visibility::Visibility,
+        icons: &viewer_world::map::resource_icons::HourIcons,
+    ) -> viewer_world::map::resource_icons::PreparedResourceIcons {
+        self.resource_icons_with(camera, viewport, ui_scale, visibility, |inputs| {
+            viewer_world::map::resource_icons::lay_out(inputs, icons)
+        })
+    }
+
+    fn lay_occupation_icons(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        country: u32,
+        marks: &viewer_world::map::occupation_icons::Marks,
+    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons {
+        self.occupation_icons_with(camera, viewport, ui_scale, mode, country, |inputs| {
+            viewer_world::map::occupation_icons::lay_out(inputs, marks)
+        })
+    }
+}
+
+impl PreparedOverlay {
+    fn finish_project(
+        &mut self,
+        mut placed: Self,
+        hour: &impl IconHost,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        ours: u32,
+        lay_ins: Option<&crate::playhead_host::side::LayIns>,
+    ) {
+        placed.icons.keep_drawn(&mut self.icons);
+        if let Some(lay_ins) = lay_ins {
+            lay_ins.lay(&mut placed, hour, camera, viewport, ui_scale, ours);
+        }
+        *self = placed;
+    }
 
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one placing")]
     pub fn project(
@@ -715,6 +894,7 @@ impl PreparedOverlay {
         tables: &OverlayTables,
         view: &CounterView,
         rows: &OverlayRows,
+        lay_ins: Option<&crate::playhead_host::side::LayIns>,
     ) -> io::Result<()> {
         if tables.identity() != self.tables {
             return Err(io::Error::other(format!(
@@ -726,9 +906,8 @@ impl PreparedOverlay {
         let mut still = self.take_still();
         let mut spans = viewer_foundation::profiling::BuilderSpans::new(false);
         match hour.prepare_overlay_with(camera, viewport, ui_scale, tables, view, rows, &mut spans, Some(&mut still)) {
-            Ok(mut placed) => {
-                placed.icons.keep_drawn(&mut self.icons);
-                *self = placed;
+            Ok(placed) => {
+                self.finish_project(placed, hour, camera, viewport, ui_scale, tables.ours(), lay_ins);
                 Ok(())
             }
             Err(error) => {
@@ -895,10 +1074,10 @@ impl PreparedOverlay {
             self.native_intel.draw(&hour.icons.intel, context, hour.icons.raids.priority, intel_view, &mut scratch, &mut Vec::new(), &mut intel_report);
         }
         if pools.resources {
-            let _ = self.resource_icons.draw(context, resources, &mut scratch);
+            let _ = self.laid_icons.resource_icons.draw(context, resources, &mut scratch);
         }
         if pools.occupation {
-            let _ = self.occupation_icons.draw(context, occupation, &mut scratch, &mut Vec::new());
+            let _ = self.laid_icons.occupation_icons.draw(context, occupation, &mut scratch, &mut Vec::new());
         }
         if pools.adjacency_rules {
             self.adjacency_icons.draw_with_hits(context, self.adjacency_priority, adjacency_rules, &mut scratch, &mut BTreeMap::new(), &mut Vec::new());
@@ -981,8 +1160,8 @@ impl PreparedOverlay {
         let raid_hovered = self.counter_view.raid_hovered;
         let native_intel = &self.native_intel;
         let labels = &self.labels;
-        let resource_icons = &self.resource_icons;
-        let occupation_icons = &self.occupation_icons;
+        let resource_icons = &self.laid_icons.resource_icons;
+        let occupation_icons = &self.laid_icons.occupation_icons;
         let adjacency_icons = &self.adjacency_icons;
         let adjacency_priority = self.adjacency_priority;
         let (mut occupation_drawn, mut adjacency_drawn) = (Vec::new(), Vec::new());
@@ -1232,22 +1411,24 @@ impl PreparedOverlay {
     }
 
     pub fn resource_icons_by(&self) -> MadeBy {
-        self.resource_icons_by
+        self.laid_icons.resource_icons_by()
     }
 
     pub fn occupation_icons_by(&self) -> MadeBy {
-        self.occupation_icons_by
+        self.laid_icons.occupation_icons_by()
     }
 
-    pub fn replace_resource_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
-        self.resource_icons = hour.resource_icons_with(camera, viewport, ui_scale, self.counter_view.visibility, |inputs| viewer_world::map::resource_icons::lay_out(inputs, icons));
-        self.resource_icons_by = MadeBy::Layer(version);
+    pub fn replace_resource_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
+        self.laid_icons.replace_resource_icons(hour, camera, viewport, ui_scale, self.counter_view.visibility, icons, version);
     }
 
     #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
-    pub fn replace_occupation_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
-        self.occupation_icons = hour.occupation_icons_with(camera, viewport, ui_scale, self.counter_view.occupation, country, |inputs| viewer_world::map::occupation_icons::lay_out(inputs, marks));
-        self.occupation_icons_by = MadeBy::Layer(version);
+    pub fn replace_occupation_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
+        self.laid_icons.replace_occupation_icons(hour, camera, viewport, ui_scale, self.counter_view.occupation, country, marks, version);
+    }
+
+    pub(crate) fn counter_view(&self) -> &CounterView {
+        &self.counter_view
     }
 
 }
@@ -1381,7 +1562,7 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
         && a.iter().zip(b).all(|(a, b)| {
             a.texture == b.texture
                 && a.layer == b.layer
-                && a.rotation.to_bits() == b.rotation.to_bits()
+                && a.rotation.map(f32::to_bits) == b.rotation.map(f32::to_bits)
                 && bits(&a.rect) == bits(&b.rect)
                 && bits(&a.uv) == bits(&b.uv)
                 && bits(&a.color) == bits(&b.color)
@@ -1638,6 +1819,7 @@ impl Document {
                 allow_unverified,
                 initial,
                 replay,
+                tables,
                 resolved,
                 visual_mods,
                 texture_quality,
@@ -1653,6 +1835,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         resolved: Arc<content_reader_core::content::ResolvedContent>,
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
@@ -1769,6 +1952,7 @@ impl Document {
             visual_mods,
             texture_quality,
             replay,
+            tables,
             content,
             &product_loader,
             warnings,
@@ -1787,6 +1971,7 @@ impl Document {
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         content: content_reader_core::content::ResolvedContent,
         product_loader: &map_products::loader::Loader,
         mut warnings: Vec<String>,
@@ -1796,6 +1981,7 @@ impl Document {
         uncovered_reads: content_reader_core::content::UncoveredReads,
     ) -> io::Result<Self> {
         let serial = viewer_foundation::load_record::stage("content.serial");
+        let game_version = replay.identity.game_version.clone();
         let content = Arc::new(content);
         std::thread::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
@@ -1856,7 +2042,9 @@ impl Document {
             let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
             let game_audio = dashboard_core::map_settings::game_audio(&settings);
             let game_dev_master = dashboard_core::map_settings::game_dev_master(&settings);
-            let cursors = crate::cursors::Cursors::load(|path| content.layers.read_uncovered(path));
+            let cursors = crate::cursors::Cursors::load_from_tables(tables, |path| {
+                content.layers.read_uncovered(path)
+            });
             let map_defines = crate::map_assets::graphics_define(
                 &content.layers,
                 "camera and map",
@@ -1913,7 +2101,7 @@ impl Document {
                         let scale =
                             display.effective_gui_scale(content_reader_settings::settings::Desktop {
                                 physical: CONSTRUCTED,
-                                dpi: 96,
+                                dpi: Ok(96),
                             });
                         (frame, display.interface_to_frame(frame, scale))
                     }
@@ -2247,8 +2435,9 @@ impl Document {
                 })
             };
             let h_rivers = {
+                let (defines, art_defines) = (&defines, &art_defines);
                 let h_assets = h_assets.clone();
-                dag.add(&[h_assets.id()], move || {
+                dag.add(&[h_assets.id()], move || -> io::Result<_> {
                     let _stage = viewer_foundation::load_record::stage("wave2.rivers");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
@@ -2256,17 +2445,17 @@ impl Document {
                         height: assets.heightmap.height,
                         values: assets.heightmap_texels(),
                     };
-
-                    let started = Instant::now();
-                    let (river_mesh, river_trace) = rivers::build(
+                    load_rivers(
+                        layers,
+                        &art_defines,
+                        &defines,
                         &RiverImage {
                             width: assets.rivers.width,
                             height: assets.rivers.height,
                             indices: &assets.rivers.indices,
                         },
                         &heights,
-                    )?;
-                    Ok((river_mesh, river_trace, started.elapsed()))
+                    )
                 })
             };
             let h_trees = {
@@ -2530,9 +2719,10 @@ impl Document {
             let labels = h_label_content.take()?;
             let (straits, border_meshes, border_trace) = h_borders.take()?;
             let border_meshes = Arc::new(border_meshes);
-            let (river_mesh, river_trace, river_build) = h_rivers.take()?;
+            let (river_mesh, river_trace, river_build, river_warning) = h_rivers.take()?;
             let (tree_field, tree_assets, tree_geometry, tree_build, notes) = h_trees.take()?;
             let mut wave2_warnings = notes;
+            wave2_warnings.extend(river_warning);
             let (sprawl, sprawl_build, notes) = h_sprawl.take()?;
             wave2_warnings.extend(notes);
             let (rail_geometry, rail_build) = h_railgeom.take()?;
@@ -2839,12 +3029,14 @@ impl Document {
             let adjacency_icons = match content_reader_core::adjacency_rules::read(&content.layers) {
                 Ok(rules) => {
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
+                        .with_build(game_version)
                 }
                 Err(error) => {
                     warnings.push(format!(
                     "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
                 ));
                     viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                        .with_build(game_version)
                 }
             };
             let trade_routes = crate::map_assets::graphics_define(
@@ -2941,7 +3133,7 @@ impl Document {
             let content = Content {
                 loading,
                 first_frame_reported: std::sync::atomic::AtomicBool::new(false),
-                tables: engine_executable::executable_tables::current(),
+                tables,
                 products,
                 radar_centers,
                 resource_icons,
@@ -4852,10 +5044,12 @@ impl<'a> Hour<'a> {
                 naval_selection: std::mem::take(&mut still.naval_selection),
                 air_ranges: Arc::clone(&still.air_ranges),
                 radar: Arc::clone(&still.radar),
-                resource_icons: resource_icons.0,
-                resource_icons_by: resource_icons.1,
-                occupation_icons: occupation_icons.0,
-                occupation_icons_by: occupation_icons.1,
+                laid_icons: LaidIcons {
+                    resource_icons: resource_icons.0,
+                    resource_icons_by: resource_icons.1,
+                    occupation_icons: occupation_icons.0,
+                    occupation_icons_by: occupation_icons.1,
+                },
                 adjacency_icons,
                 adjacency_priority,
                 mode_icons: Batch::default(),
@@ -4867,7 +5061,7 @@ impl<'a> Hour<'a> {
                 labels: std::mem::take(&mut still.labels),
                 native_raids,
                 raids: Batch::default(),
-                icons,
+                icons: OverlayCounters::Prepared(icons),
                 label_report,
                 raid_report,
                 native_intel,
@@ -5100,6 +5294,37 @@ pub struct KeptConvoys {
     ours: u32,
     routes: Arc<viewer_world::map::trade_routes::TradeRoutes>,
     convoys: Arc<Vec<viewer_world::map::trade_routes::ConvoyLine>>,
+}
+
+fn load_rivers(
+    layers: &content_reader_core::ResolvedLayers,
+    art_defines: &content_reader_core::defines::Defines,
+    defines: &content_reader_core::defines::Defines,
+    image: &RiverImage<'_>,
+    heights: &HeightField<'_>,
+) -> io::Result<(RiverMesh, rivers::Trace, Duration, Option<String>)> {
+    let started = Instant::now();
+    match crate::map_assets::graphics_define(
+        layers,
+        "rivers",
+        art_defines,
+        defines,
+        rivers::RiverDefines::load,
+    ) {
+        Ok(river_defines) => {
+            let (river_mesh, river_trace) = rivers::build(image, heights, river_defines)?;
+            Ok((river_mesh, river_trace, started.elapsed(), None))
+        }
+        Err(error) => {
+            let river_trace = rivers::trace(image)?;
+            Ok((
+                RiverMesh::default(),
+                river_trace,
+                started.elapsed(),
+                Some(format!("Rivers are withheld and draw nothing: {error}")),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5429,7 +5654,7 @@ mod tests {
             rect: [0.0; 4],
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: None,
@@ -5485,7 +5710,7 @@ mod tests {
             rect: [group as f32, 0.0, 1.0, 1.0],
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: group as u64,
             shade: 0.0,
             exact: None,
@@ -5681,5 +5906,292 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn missing_river_fade_defines_withhold_ribbons_without_failing_load() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_doc_missing_river_fade_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let layers =
+            content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+                .unwrap();
+        let defines = content_reader_core::defines::Defines::new().unwrap();
+        defines
+            .load(
+                "common/defines/00_graphics.lua",
+                b"NDefines = { NGraphics = { RIVER_FADE_TO = 3.0 } }",
+            )
+            .unwrap();
+        let rows = [
+            "..........",
+            "...4......",
+            "...j......",
+            ".S3366777.",
+            "..........",
+        ];
+        let mut indices = Vec::with_capacity(50);
+        for row in rows {
+            for ch in row.chars() {
+                indices.push(match ch {
+                    '.' => 255,
+                    'S' => 0,
+                    'j' => 1,
+                    digit => digit.to_digit(10).unwrap() as u8,
+                });
+            }
+        }
+        let values = [120u8; 50];
+        let (mesh, trace, _, warning) = load_rivers(
+            &layers,
+            &defines,
+            &defines,
+            &RiverImage {
+                width: 10,
+                height: 5,
+                indices: &indices,
+            },
+            &HeightField {
+                width: 10,
+                height: 5,
+                values: &values,
+            },
+        )
+        .unwrap();
+        assert!(mesh.is_empty());
+        assert_eq!(mesh.ribbons, 0);
+        assert_eq!(trace.sources, 1);
+        assert_eq!(trace.junctions, 1);
+        assert_eq!(trace.junctions_used, 1);
+        assert_eq!(trace.rivers.len(), 2);
+        let warning = warning.expect("missing river fade define must report a warning");
+        assert!(
+            warning.contains("Rivers are withheld") && warning.contains("RIVER_FADE_FROM"),
+            "{warning}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finish_project_reapplies_resource_and_occupation_icons_when_panning_past_the_pad() {
+        use viewer_foundation::map::{
+            camera::{MapDefines, MapSize, Placement},
+            mode_visibility::{Priorities, PriorityIcon, PriorityTable, Visibility},
+        };
+        use viewer_world::map::{
+            map_mode::ColorList,
+            occupation_icons::{self, HourMarks, IconDefines, Mark, Mode, Occupation},
+            resource_icons::{self, Laid, ResourceIconContent, ResourceIconDefines, Row},
+        };
+
+        struct SyntheticHost {
+            resource_content: ResourceIconContent,
+            occupation_content: occupation_icons::Content,
+            localisation: content_reader_localisation::localisation::Localisation,
+            state_provinces: BTreeMap<u32, Vec<u32>>,
+        }
+
+        impl IconHost for SyntheticHost {
+            fn lay_resource_icons(
+                &self,
+                camera: Camera,
+                viewport: [u32; 2],
+                ui_scale: f32,
+                visibility: Visibility,
+                icons: &resource_icons::HourIcons,
+            ) -> resource_icons::PreparedResourceIcons {
+                let centroid = |province: u32| (province == 1).then_some([1000.0, 10.0, 500.0]);
+                resource_icons::lay_out(
+                    &resource_icons::ResourceIconInputs {
+                        content: &self.resource_content,
+                        localisation: &self.localisation,
+                        state_provinces: &self.state_provinces,
+                        centroid: &centroid,
+                        camera,
+                        viewport,
+                        ui_scale,
+                        visibility,
+                    },
+                    icons,
+                )
+            }
+
+            fn lay_occupation_icons(
+                &self,
+                camera: Camera,
+                viewport: [u32; 2],
+                ui_scale: f32,
+                mode: Option<Mode>,
+                country: u32,
+                marks: &occupation_icons::Marks,
+            ) -> occupation_icons::PreparedOccupationIcons {
+                let centroid = |province: u32| (province == 1).then_some([1000.0, 10.0, 500.0]);
+                occupation_icons::lay_out(
+                    &occupation_icons::Inputs {
+                        content: &self.occupation_content,
+                        mode,
+                        country,
+                        state_provinces: &self.state_provinces,
+                        centroid: &centroid,
+                        camera,
+                        viewport,
+                        ui_scale,
+                    },
+                    marks,
+                )
+            }
+        }
+
+        let mut priorities = Priorities::uniform([0; PriorityIcon::ALL.len()]);
+        priorities.set(PriorityTable::Resources, PriorityIcon::Resource, 10);
+        let host = SyntheticHost {
+            resource_content: ResourceIconContent {
+                origins: viewer_foundation::resource_origins::Content {
+                    resources: Vec::new(),
+                    buildings: Default::default(),
+                    bonuses: [0, 0],
+                    oil: String::new(),
+                    warnings: Vec::new(),
+                },
+                defines: ResourceIconDefines {
+                    icons_cutoff: 900.0,
+                    text_cutoff: 800.0,
+                    priorities,
+                },
+            },
+            occupation_content: occupation_icons::Content {
+                definitions: Default::default(),
+                defines: IconDefines {
+                    cutoff: 900.0,
+                    badge_cutoff: 700.0,
+                    reenable: 2_000_000,
+                    priority: 30,
+                    resistance_colors: ColorList(vec![0., 1., 0., 0., 0., 100., 0., 1., 0., 0.75]),
+                    compliance_colors: ColorList(vec![0., 0., 0., 1., 0., 100., 1., 1., 1., 1.]),
+                },
+            },
+            localisation: Default::default(),
+            state_provinces: BTreeMap::from([(1, vec![1])]),
+        };
+        let hour_icons: resource_icons::HourIcons = Ok(BTreeMap::from([(
+            1,
+            Ok(Some(Laid {
+                rows: Ok(vec![Row {
+                    text: "Steel: 12".into(),
+                    flag: None,
+                }]),
+                flag: Ok(None),
+            })),
+        )]));
+        let marks: occupation_icons::Marks = Ok(HourMarks {
+            marks: BTreeMap::from([(
+                1,
+                Mark {
+                    controller: 1,
+                    slot: Some(1),
+                    resistance: Some(Ok(Some(Occupation {
+                        level: 25_000_000,
+                        speed: 100_000,
+                        compliance: 0,
+                        badges: [Ok(Vec::new()), Ok(Vec::new())],
+                    }))),
+                },
+            )]),
+            viewers: BTreeMap::from([(1, 1)]),
+            resistance: None,
+        });
+        let lay_ins = crate::playhead_host::side::LayIns::with_icons(
+            Some((hour_icons, 7)),
+            Some((marks, 9)),
+        );
+        let counter_view = CounterView {
+            visibility: Visibility {
+                resource_icons: true,
+                ..Visibility::default()
+            },
+            occupation: Some(Mode::Resistance),
+            ..CounterView::default()
+        };
+        let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
+        let outside_pad =
+            Placement::map([1020.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
+        let bare = |view: CounterView| PreparedOverlay {
+            radar: Arc::default(),
+            air_ranges: Arc::default(),
+            air_assignment: Default::default(),
+            occupation_stripes: Default::default(),
+            naval_selection: Default::default(),
+            air_orders: Arc::default(),
+            labels: Default::default(),
+            raids: Batch::default(),
+            native_raids: Default::default(),
+            icons: OverlayCounters::Empty,
+            label_report: Default::default(),
+            raid_report: Default::default(),
+            native_intel: Default::default(),
+            intel: Batch::default(),
+            intel_report: Default::default(),
+            lazy_version: 0,
+            engaged_covered: false,
+            layers: [0; 6],
+            counter_view: view,
+            laid_icons: LaidIcons::default(),
+            adjacency_icons: Default::default(),
+            adjacency_priority: 0,
+            mode_icons: Batch::default(),
+            mode_icon_refused: BTreeMap::new(),
+            tables: 0,
+        };
+        let mut overlay = bare(counter_view.clone());
+        assert!(lay_ins.lay(&mut overlay, &host, placed, [1600, 900], 1.0, 1));
+        assert_eq!(overlay.laid_icons.resource_icons_by(), MadeBy::Layer(7));
+        let before_resources = overlay.laid_icons.resource_icons.placed_positions();
+        assert_eq!(before_resources.len(), 1);
+        assert_eq!(overlay.laid_icons.occupation_icons_by(), MadeBy::Layer(9));
+        let before_occupation = overlay.laid_icons.occupation_icons.placed_positions();
+        assert_eq!(before_occupation.len(), 1);
+
+        let reprojected = bare(counter_view);
+        assert_eq!(reprojected.laid_icons.resource_icons_by(), MadeBy::Left);
+        assert_eq!(reprojected.laid_icons.occupation_icons_by(), MadeBy::Left);
+        overlay.finish_project(
+            reprojected,
+            &host,
+            outside_pad,
+            [1600, 900],
+            1.0,
+            1,
+            Some(&lay_ins),
+        );
+        assert_eq!(overlay.laid_icons.resource_icons_by(), MadeBy::Layer(7));
+        let after_resources = overlay.laid_icons.resource_icons.placed_positions();
+        assert_eq!(
+            after_resources.len(),
+            1,
+            "retained resource icons must survive relayout when panning past the placement pad"
+        );
+        assert!(
+            after_resources[0][0] < before_resources[0][0],
+            "reprojected resource icon must shift to the new camera: before {:?}, after {:?}",
+            before_resources[0],
+            after_resources[0]
+        );
+        assert_eq!(overlay.laid_icons.occupation_icons_by(), MadeBy::Layer(9));
+        let after_occupation = overlay.laid_icons.occupation_icons.placed_positions();
+        assert_eq!(
+            after_occupation.len(),
+            1,
+            "retained occupation icons must survive relayout when panning past the placement pad"
+        );
+        assert!(
+            after_occupation[0][0] < before_occupation[0][0],
+            "reprojected occupation icon must shift to the new camera: before {:?}, after {:?}",
+            before_occupation[0],
+            after_occupation[0]
+        );
     }
 }

@@ -220,12 +220,13 @@ impl NavyArt for Art {
 
 fn countries() -> Countries {
     Countries {
+        index: None,
         tags: BTreeMap::from([(0, "AAA".to_owned()), (5, "BBB".to_owned())]),
         flag_tags: BTreeMap::new(),
         sides: BTreeMap::from([(0, Allegiance::Ours), (5, Allegiance::Enemy)]),
         groups: BTreeMap::new(),
         ui_colors: UiColors {
-            colors: BTreeMap::from([(0, [0.1, 0.2, 0.3, 1.0])]),
+            colors: BTreeMap::from([(0, Some([0.1, 0.2, 0.3, 1.0]))]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance::default(),
             gap: "CountryAppearance has no row for it".into(),
             unavailable: None,

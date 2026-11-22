@@ -2,10 +2,11 @@
 #[cfg(test)]
 use engine_native::read_census;
 use engine_native::{
-    Memory, allocation, cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader,
-    cdiplomacy_status, cdynamic_modifier, cgame_state, cidea, cideology_group, clock, cpdx_array,
-    cpolitical_party, cpolitical_status, crelation, cstatic_modifier, cwar_relation, memory,
-    modifier_accumulator, modifier_definition, modifier_entry, msvc_string, read, read_slice, walk,
+    Memory, allocation, cadvisor, cattache_relation, ccharacter, ccountry, ccountry_characters,
+    ccountry_leader, cdiplomacy_status, cdynamic_modifier, cgame_state, cidea, cideology_group,
+    clock, cpdx_array, cpolitical_party, cpolitical_status, crelation, cstatic_modifier,
+    cwar_relation, memory, modifier_accumulator, modifier_definition, modifier_entry, msvc_string,
+    read, read_slice, walk,
 };
 
 pub mod cdynamic_modifier_container;

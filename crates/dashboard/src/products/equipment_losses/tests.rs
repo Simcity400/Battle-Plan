@@ -605,7 +605,7 @@ fn current_format_unrecorded_drain_state_with_nonempty_text_reports_gap_not_gues
     let spans = held.destruction_unknown(15);
     assert!(spans.contains(&UnknownSpan { first_hour: 10, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some("Reworded startup interval".to_owned()) }), "{spans:?}");
     assert!(spans.contains(&UnknownSpan { first_hour: 12, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some(Row::DRAIN_OWNER_UNKNOWN.to_owned()) }), "{spans:?}");
-    assert!(!spans.iter().any(|span| span.reason == UnknownReason::DestructionUnresolved), "absent format-143 drain_state must not guess unresolved from text: {spans:?}");
+    assert!(!spans.iter().any(|span| span.reason == UnknownReason::DestructionUnresolved), "absent format-145 drain_state must not guess unresolved from text: {spans:?}");
     assert!(spans.contains(&UnknownSpan { first_hour: 14, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some("Reworded refusal".to_owned()) }), "{spans:?}");
     assert!(spans.contains(&UnknownSpan { first_hour: 14, last_hour: 15, reason: UnknownReason::DestructionWithheld, detail: Some(Row::DRAIN_WITHHELD.to_owned()) }), "{spans:?}");
     assert_eq!(spans.len(), 4, "{spans:?}");

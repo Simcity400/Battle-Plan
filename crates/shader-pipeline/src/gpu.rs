@@ -231,6 +231,7 @@ pub struct Pass {
     pub targets: Vec<Option<wgpu::ColorTargetState>>,
     pub instanced: u32,
     pub stream: Option<usize>,
+    pub vertex_color_tint: Option<u32>,
 }
 
 impl Pass {
@@ -289,6 +290,7 @@ impl Pass {
             })],
             instanced: 0,
             stream: None,
+            vertex_color_tint: None,
         }
     }
 }
@@ -962,6 +964,7 @@ struct Source {
     gui: bool,
     instanced: u32,
     stream: Option<usize>,
+    vertex_color_tint: Option<u32>,
     prepared: OnceLock<Result<Modules, String>>,
     null_cube: Arc<Mutex<Option<wgpu::TextureView>>>,
 }
@@ -1013,6 +1016,7 @@ impl Source {
                     && source.unfilterable == unfilterable
                     && source.instanced == pass.instanced
                     && source.stream == pass.stream
+                    && source.vertex_color_tint == pass.vertex_color_tint
                     && (source.topology == pass.primitive.topology
                         || (source.strip_safe
                             && matches!(
@@ -1047,6 +1051,7 @@ impl Source {
             gui,
             instanced: pass.instanced,
             stream: pass.stream,
+            vertex_color_tint: pass.vertex_color_tint,
             prepared: OnceLock::new(),
             null_cube,
         });
@@ -1077,6 +1082,9 @@ impl Source {
                         &self.compiled.pixel.textures,
                         self.unfilterable,
                     )?;
+                    if let Some(color_location) = self.vertex_color_tint {
+                        batch_shader::vertex_color_tint(&mut translated, color_location)?;
+                    }
                     let batch = if self.gui {
                         batch::Program::translate(device, &translated, pass, label)?.map(Arc::new)
                     } else {
@@ -1086,9 +1094,10 @@ impl Source {
                         && batch.is_none())
                     .then(|| batch::instanced(device, &translated, pass, label))
                     .flatten();
+                    let module_label = shader_module_label(label);
                     let module = |source: &str| {
                         device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some(label),
+                            label: Some(&module_label),
                             source: wgpu::ShaderSource::Wgsl(source.into()),
                         })
                     };
@@ -1115,6 +1124,23 @@ impl Source {
             .as_ref()
             .map_err(Clone::clone)
     }
+}
+
+pub(crate) fn shader_module_label(label: &str) -> String {
+    let mut safe: String = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ' ') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() || safe.starts_with('-') {
+        safe.insert(0, '_');
+    }
+    safe
 }
 
 struct Making<'a> {

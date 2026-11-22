@@ -1,7 +1,7 @@
 
 use crate::{
     cells::TableReader,
-    frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp, TableUpdate, TableView, Unsayable, cells_rows, cells_view, field, not_selected},
+    frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp, TableUpdate, TableView, Unsayable, cells_rows, cells_view, not_selected, table_field},
     rows::{DeltaRow, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
 };
@@ -44,9 +44,13 @@ pub fn names() -> replay_columnar::store::journal::Names {
 }
 
 pub fn schema() -> io::Result<Vec<Vec<Column>>> {
+    schema_at(crate::format::FormatVersion::CURRENT.version())
+}
+
+pub fn schema_at(format: u16) -> io::Result<Vec<Vec<Column>>> {
     let mut schema = engine_allocation::vec(TableId::ALL.len())?;
     for table in TableId::ALL {
-        schema.push(crate::native_columns::columns(table.schema())?);
+        schema.push(crate::native_columns::columns(table.schema_at(format))?);
     }
     Ok(schema)
 }
@@ -84,6 +88,8 @@ pub fn frame_heap_bytes(frame: &DecodedFrame) -> usize {
 pub struct Pool {
     pool: rayon::ThreadPool,
     threads: Joined,
+    #[cfg(test)]
+    entered: std::sync::atomic::AtomicUsize,
 }
 
 impl Drop for Pool {
@@ -126,11 +132,28 @@ impl Pool {
             })
             .build()
             .map_err(io::Error::other)?;
-        Ok(Self { pool, threads })
+        Ok(Self {
+            pool,
+            threads,
+            #[cfg(test)]
+            entered: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     pub fn install<R: Send>(&self, work: impl FnOnce() -> R + Send) -> R {
-        self.pool.install(work)
+        self.pool.install(|| {
+            #[cfg(test)]
+            {
+                assert!(self.pool.current_thread_index().is_some());
+                self.entered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            work()
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entered(&self) -> usize {
+        self.entered.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn on<R: Send>(pool: Option<&Self>, work: impl FnOnce() -> R + Send) -> R {
@@ -498,7 +521,9 @@ fn patch(id: TableId, reader: &TableReader, held: SharedView, edits: &Edits, del
     let cells = reader.view();
     if !edits.written.is_empty() {
         let patches = engine_allocation::collect_vec(edits.written.iter().map(|&(key, _, fields)| (key, fields)))?;
-        rows.patch_from_wire(&patches, &mut |at, column| field(&cells, edits.written[at].1, column, format))?;
+        rows.patch_from_wire(&patches, &mut |at, column| {
+            table_field(id, &cells, edits.written[at].1, column, format)
+        })?;
     }
     let inserted = cells_rows(id, &cells, &edits.inserted, format)?;
     let rows = rows.apply_changes(RowChanges::new(inserted, deleted))?;

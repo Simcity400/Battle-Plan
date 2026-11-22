@@ -124,6 +124,7 @@ impl Arrow {
             })],
             instanced: 0,
             stream: None,
+            vertex_color_tint: None,
         };
         Ok(Self {
             effect: effect.clone(),
