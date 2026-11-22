@@ -355,8 +355,8 @@ fn journal_mode(args: &[String]) -> io::Result<()> {
     let first_block = start.as_ref().map_or(0, |start| start.block + 1);
     let tables = TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
-    let derived = recorder_derive::writers().tables();
-    let mut source = Multiplied::open(std::path::Path::new(directory), capture, factors, start, &derived)?;
+    let mut source = Multiplied::open(std::path::Path::new(directory), capture, factors, start)?;
+    let derived: Vec<_> = TableId::ALL.into_iter().filter(|table| table.is_derived()).map(TableId::index).collect();
     let kinds = schema()?;
     let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
     let digested: Vec<usize> = (0..kinds.len()).filter(|table| !derived.contains(table)).collect();

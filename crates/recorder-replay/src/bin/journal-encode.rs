@@ -12,10 +12,7 @@ use std::{
     time::Instant,
 };
 
-#[cfg(feature = "memory-labels")]
-#[global_allocator]
-static ALLOCATOR: engine_allocation::labels::Counting<std::alloc::System> =
-    engine_allocation::labels::Counting(std::alloc::System);
+engine_allocation::counting_system_allocator!();
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,7 +21,7 @@ fn main() -> io::Result<()> {
         && flag == "--preroll"
     {
         let started = Instant::now();
-        replay::multiplied::preroll(Path::new(directory), capture.parse().map_err(|_| usage())?, block.parse().map_err(|_| usage())?, Path::new(file), &recorder_derive::writers().tables())?;
+        replay::multiplied::preroll(Path::new(directory), capture.parse().map_err(|_| usage())?, block.parse().map_err(|_| usage())?, Path::new(file))?;
         eprintln!("{}", json!({ "preroll": file, "seconds": started.elapsed().as_secs_f64(), "bytes": std::fs::metadata(file)?.len() }));
         return Ok(());
     }
@@ -91,21 +88,20 @@ fn main() -> io::Result<()> {
     }
     let multiplied = times.as_ref().is_some_and(|times| times.factor.iter().any(|&factor| factor > 1));
     let encoded_as = encode_report::encoder_source(multiplied, start.as_ref().map(|start| start.block));
-    let writers = recorder_derive::writers();
-    let derived = writers.tables();
-    let mut writer = encode_report::open_encoded(out, &state, capture, settings, &encoded_as, writers)?;
+    let mut writer = encode_report::open_encoded(out, &state, capture, settings, &encoded_as, recorder_derive::writers())?;
     writer.time(timed);
-    if (times.is_some() || start.is_some()) && !cfg!(feature = "multiplied") {
-        return Err(io::Error::other("--times and --start need a build with the feature recorder-replay/multiplied"));
+    let multiplication_enabled = replay::FEATURES.contains(&"multiplied");
+    if (times.is_some() || start.is_some()) && !multiplication_enabled {
+        return Err(io::Error::other("--times and --start need a build with the feature replay/multiplied"));
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
     let started_after = start.as_ref().map(|start| u64::from(start.block) + 1);
-    let mut source = Multiplied::open(Path::new(directory), capture, factors, start, &derived)?;
+    let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
     let first_hours = source.hours_before(writer.segments());
     source.start(writer.segments())?;
     eprintln!("{}", json!({ "in_phase": source.in_phase(), "journal_schema_digest_is_a_prefix": source.exact_schema, "taken_up_at_segment": writer.segments(),
-        "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));
+        "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": multiplication_enabled, "keep_journal": replay::FEATURES.contains(&"keep-journal") } }));
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
     host.blocks = started_after.unwrap_or_else(|| source.blocks_before(writer.segments()));
@@ -153,7 +149,7 @@ fn main() -> io::Result<()> {
     eprintln!("{}", encode_report::unwritten_line(&writer));
     let mut line = encode_report::written(&writer, out, host.revisions, host.hours, started, timed)?;
     line.insert("multiplier_s".into(), json!(source.spent.as_secs_f64()));
-    line.insert("build".into(), json!({ "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied") }));
+    line.insert("build".into(), json!({ "memory_labels": engine_allocation::labels::ENABLED, "multiplied": multiplication_enabled }));
     println!("{}", serde_json::Value::Object(line));
     Ok(())
 }

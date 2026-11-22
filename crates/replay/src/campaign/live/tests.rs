@@ -395,7 +395,7 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
     let encode = |host: &mut Everything, until: Option<u64>| {
         let mut writer = folder.open(0);
         let tables = TableId::ALL.len();
-        let mut source = Multiplied::open(&folder.journal(), 0, Factors { factor: vec![1; tables], in_phase: vec![false; tables] }, None, &recorder_derive::writers().tables()).unwrap();
+        let mut source = Multiplied::open(&folder.journal(), 0, Factors { factor: vec![1; tables], in_phase: vec![false; tables] }, None).unwrap();
         source.start(writer.segments()).unwrap();
         host.blocks = source.blocks_before(writer.segments());
         let first_hours = source.hours_before(writer.segments());

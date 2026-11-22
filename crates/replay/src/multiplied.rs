@@ -577,9 +577,9 @@ impl Synthetic {
     }
 }
 
-pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path, derived_tables: &[usize]) -> io::Result<()> {
+pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Result<()> {
     let kinds = schema()?;
-    let derived = derived_mask(kinds.len(), derived_tables);
+    let derived = derived_mask();
     let mut scan = scan_journal(directory, capture, &kinds, &derived, &REMOVED, true, true)?;
     let at = start_segment(&scan.scanned, block)?;
     let appends: Vec<Vec<u8>> = scan.scanned[..at].iter_mut().flat_map(|held| std::mem::take(&mut held.appends)).collect();
@@ -836,12 +836,8 @@ fn journal_candidates(
     Ok((candidates, false))
 }
 
-fn derived_mask(tables: usize, derived_tables: &[usize]) -> Vec<bool> {
-    let mut derived = vec![false; tables];
-    for &table in derived_tables {
-        derived[table] = true;
-    }
-    derived
+fn derived_mask() -> Vec<bool> {
+    TableId::ALL.into_iter().map(TableId::is_derived).collect()
 }
 
 struct Scanned {
@@ -1105,15 +1101,15 @@ fn clear_bit(bits: &mut [u64], slot: u32) {
 }
 
 impl Multiplied {
-    pub fn open(directory: &Path, capture: u32, factors: Factors, start: Option<Start>, derived_tables: &[usize]) -> io::Result<Self> {
-        Self::open_with(directory, capture, factors, start, &REMOVED, derived_tables)
+    pub fn open(directory: &Path, capture: u32, factors: Factors, start: Option<Start>) -> io::Result<Self> {
+        Self::open_with(directory, capture, factors, start, &REMOVED)
     }
 
-    fn open_with(directory: &Path, capture: u32, mut factors: Factors, start: Option<Start>, removed: &[Removed], derived_tables: &[usize]) -> io::Result<Self> {
+    fn open_with(directory: &Path, capture: u32, mut factors: Factors, start: Option<Start>, removed: &[Removed]) -> io::Result<Self> {
         let _label = label();
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
-        let derived = derived_mask(kinds.len(), derived_tables);
+        let derived = derived_mask();
         let one_run = start.is_some() || factors.factor.iter().any(|&factor| factor > 1);
         let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, &derived, removed, false, one_run)?;
         for (table, partial) in partial.into_iter().enumerate() {
@@ -1746,7 +1742,7 @@ mod tests {
     fn read(folder: &Path) -> io::Result<(bool, Vec<(Vec<(usize, String)>, Vec<Status>)>)> {
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
-        let mut source = Multiplied::open_with(folder, 0, Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] }, None, &MIDDLE, &recorder_derive::writers().tables())?;
+        let mut source = Multiplied::open_with(folder, 0, Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] }, None, &MIDDLE)?;
         let exact = source.exact_schema;
         let mut hours = Vec::new();
         while let Some(record) = source.record()? {
@@ -1796,7 +1792,7 @@ mod tests {
         let folder = Folder::new("blocks");
         journal(&folder.0, None, false);
         let kinds = schema().unwrap();
-        let source = Multiplied::open_with(&folder.0, 0, Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] }, None, &MIDDLE, &recorder_derive::writers().tables()).unwrap();
+        let source = Multiplied::open_with(&folder.0, 0, Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] }, None, &MIDDLE).unwrap();
         assert_eq!([0, 1, 2, 3].map(|segment| source.blocks_before(segment)), [0, 0, 1, 1], "the opening segment holds no block; the run's segment holds block 0");
     }
 
@@ -1909,7 +1905,7 @@ mod tests {
         ];
         write_hour(&mut writer, &kinds, 0, &sections, vec![(region_weights, Some(0))], vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables()).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
         assert!(source.exact_schema);
         let mut saw_hour = false;
         while let Some(record) = source.record().unwrap() {
@@ -1948,7 +1944,7 @@ mod tests {
         ];
         write_hour(&mut writer, &kinds, 1, &second, vec![(tag_holders, Some(1))], Vec::new());
         writer.finish(None).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables()).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
         let mut seen = Vec::new();
         while let Some(record) = source.record().unwrap() {
             if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
@@ -1992,7 +1988,7 @@ mod tests {
         writer.finish(None).unwrap();
         let mut factors = unit_factors();
         factors.factor[region_weights] = 2;
-        let mut source = Multiplied::open(&folder.0, 0, factors, None, &recorder_derive::writers().tables()).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, factors, None).unwrap();
         assert!(!source.in_phase().contains(&"StrategicRegionWeights".to_owned()));
         let mut multiplied = Vec::new();
         while let Some(record) = source.record().unwrap() {
@@ -2042,8 +2038,8 @@ mod tests {
         write_hour(&mut writer, &kinds, 720, &sections, Vec::new(), Vec::new());
         writer.finish(None).unwrap();
         let start_file = folder.0.join("start.bin");
-        preroll(&folder.0, 0, 0, &start_file, &recorder_derive::writers().tables()).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file }), &recorder_derive::writers().tables()).unwrap();
+        preroll(&folder.0, 0, 0, &start_file).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file })).unwrap();
         let mut synthetic_rows = None;
         while let Some(record) = source.record().unwrap() {
             if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
@@ -2159,7 +2155,7 @@ mod tests {
         ];
         write_hour(&mut writer, &kinds, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables()).err().expect("ambiguous unknown-digest post-removal journal is refused, never silently drops LandUnitOrder");
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None).err().expect("ambiguous unknown-digest post-removal journal is refused, never silently drops LandUnitOrder");
         assert!(refused.to_string().contains("more than one table layout"), "{refused}");
 
         let folder = Folder::new("unknown-post-removal-tail-ambiguous");
@@ -2175,7 +2171,7 @@ mod tests {
         ];
         write_hour(&mut writer, &kinds, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables())
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
             .err()
             .expect("ambiguous unknown-digest journal at kinds.len() tables is refused rather than guessing by column counts");
         assert!(refused.to_string().contains("more than one table layout"), "{refused}");
@@ -2194,7 +2190,7 @@ mod tests {
         ];
         write_hour(&mut writer, &drifted, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables())
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
             .err()
             .expect("drifted derived column count must not drop current layout and silently discard LandUnitOrder");
         assert!(refused.to_string().contains("more than one table layout"), "{refused}");
@@ -2213,7 +2209,7 @@ mod tests {
         ];
         write_hour(&mut writer, &drifted_land, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables())
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
             .err()
             .expect("drifted LandUnitOrder columns must not fall back to retired layout and emit StrategicRegionWeights as LandUnitOrder");
         assert!(refused.to_string().contains("more than one table layout"), "{refused}");
@@ -2238,7 +2234,7 @@ mod tests {
         let manifest = Manifest { branch: 1, hour: 0, flags: 0, total_ns: 0, pool_bytes: 0, dropped_frames: 0, appends: vec![&b"campaign"[..]], statuses, read: read_bits, samples: Vec::new(), sections: entries };
         writer.hour(None, &manifest.write(&appended_columns).unwrap(), &[sections[0].1.as_slice()]).unwrap();
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables())
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
             .err()
             .expect("an unrecognized 519-table appended schema must never be remapped across LogForgets");
         assert!(refused.to_string().contains("unrecognized"), "{refused}");
@@ -2255,7 +2251,7 @@ mod tests {
         ];
         write_hour(&mut writer, earlier, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables()).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
         assert!(!source.exact_schema);
         let mut tables = Vec::new();
         while let Some(record) = source.record().unwrap() {
@@ -2285,7 +2281,7 @@ mod tests {
         ];
         write_hour(&mut writer, &drifted_earlier, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables())
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
             .err()
             .expect("agreed unrecognized-digest layout still enforces exact column counts on non-derived tables");
         assert!(refused.to_string().contains("column past its table"), "{refused}");
@@ -2337,11 +2333,11 @@ mod tests {
         writer.hour(None, &manifest.write(&columns).unwrap(), &[]).unwrap();
         writer.finish(None).unwrap();
 
-        let mut uninterrupted = Multiplied::open(&folder.0, 0, unit_factors(), None, &recorder_derive::writers().tables()).unwrap();
+        let mut uninterrupted = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
         let full = feed_store(&mut uninterrupted, &kinds).unwrap();
         let start_file = folder.0.join("start.bin");
-        preroll(&folder.0, 0, 0, &start_file, &recorder_derive::writers().tables()).unwrap();
-        let mut prerolled = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file }), &recorder_derive::writers().tables()).unwrap();
+        preroll(&folder.0, 0, 0, &start_file).unwrap();
+        let mut prerolled = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file })).unwrap();
         let started = feed_store(&mut prerolled, &kinds).unwrap();
         for table in [campaign, region_weights] {
             let want = full.table_state(table).unwrap();
@@ -2391,15 +2387,15 @@ mod tests {
         writer.hour(None, &manifest.write(&columns).unwrap(), &[truncated_bytes.as_slice()]).unwrap();
         writer.finish(None).unwrap();
         let start_file = folder.0.join("start.bin");
-        preroll(&folder.0, 0, 0, &start_file, &recorder_derive::writers().tables()).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file.clone() }), &recorder_derive::writers().tables()).unwrap();
+        preroll(&folder.0, 0, 0, &start_file).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file.clone() })).unwrap();
         let store = feed_store(&mut source, &kinds).unwrap();
         let state = store.table_state(building_inputs).unwrap();
         assert_eq!(state.status(), Status::Truncated { missing: 2 });
         assert_eq!(state.view(), Some(&[0][..]));
         let mut factors = unit_factors();
         factors.factor[building_inputs] = 2;
-        let mut scaled = Multiplied::open(&folder.0, 0, factors, Some(Start { block: 0, file: start_file }), &recorder_derive::writers().tables()).unwrap();
+        let mut scaled = Multiplied::open(&folder.0, 0, factors, Some(Start { block: 0, file: start_file })).unwrap();
         let scaled_store = feed_store(&mut scaled, &kinds).unwrap();
         let scaled_state = scaled_store.table_state(building_inputs).unwrap();
         assert_eq!(scaled_state.status(), Status::Truncated { missing: 2 });
@@ -2425,8 +2421,8 @@ mod tests {
         writer.hour(None, &manifest.write(&columns).unwrap(), &[empty_bytes.as_slice()]).unwrap();
         writer.finish(None).unwrap();
         let start_file = folder.0.join("start.bin");
-        preroll(&folder.0, 0, 0, &start_file, &recorder_derive::writers().tables()).unwrap();
-        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file }), &recorder_derive::writers().tables()).unwrap();
+        preroll(&folder.0, 0, 0, &start_file).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file })).unwrap();
         let store = feed_store(&mut source, &kinds).unwrap();
         let state = store.table_state(building_inputs).unwrap();
         assert_eq!(state.status(), Status::Truncated { missing: 3 });
@@ -2479,7 +2475,7 @@ mod tests {
         writer.hour(None, &manifest.write(&columns).unwrap(), &[partial_bytes.as_slice()]).unwrap();
         writer.finish(None).unwrap();
         let start_file = folder.0.join("start.bin");
-        let refused = preroll(&folder.0, 0, 0, &start_file, &recorder_derive::writers().tables()).unwrap_err();
+        let refused = preroll(&folder.0, 0, 0, &start_file).unwrap_err();
         assert!(refused.to_string().contains("StateBuildingInputs"), "{refused}");
     }
 }
