@@ -1094,9 +1094,10 @@ impl Source {
                         && batch.is_none())
                     .then(|| batch::instanced(device, &translated, pass, label))
                     .flatten();
+                    let module_label = shader_module_label(label);
                     let module = |source: &str| {
                         device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some(label),
+                            label: Some(&module_label),
                             source: wgpu::ShaderSource::Wgsl(source.into()),
                         })
                     };
@@ -1123,6 +1124,23 @@ impl Source {
             .as_ref()
             .map_err(Clone::clone)
     }
+}
+
+pub(crate) fn shader_module_label(label: &str) -> String {
+    let mut safe: String = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ' ') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() || safe.starts_with('-') {
+        safe.insert(0, '_');
+    }
+    safe
 }
 
 struct Making<'a> {

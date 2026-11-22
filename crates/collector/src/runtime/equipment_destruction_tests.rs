@@ -302,10 +302,10 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     struct BusyObserver;
     impl Drop for BusyObserver {
         fn drop(&mut self) {
-            crate::portrait_changes::ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            collector_characters::portrait_changes::ACTIVE.fetch_sub(1, Ordering::SeqCst);
         }
     }
-    crate::portrait_changes::ACTIVE.fetch_add(1, Ordering::SeqCst);
+    collector_characters::portrait_changes::ACTIVE.fetch_add(1, Ordering::SeqCst);
     let _observer = BusyObserver;
     let mut restored = [false; RestoreFamily::ALL.len()];
     let mut previous_errors = [false; RestoreFamily::ALL.len()];

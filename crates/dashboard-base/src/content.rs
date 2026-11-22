@@ -100,6 +100,15 @@ pub fn warm(source: &Source, content: &ContentOptions) {
     let _ = crate::catalogue::catalogue(source, content);
 }
 
+pub fn warm_checked(source: &Source, content: &ContentOptions) -> io::Result<()> {
+    let _warm = content_reader_core::content::Generation::inherit();
+    let resolved = source.content(&content.options)?;
+    let _generation = resolved.layers.enter_generation();
+    localisation(source, content)?;
+    crate::catalogue::catalogue(source, content)?;
+    Ok(())
+}
+
 pub fn name_localisation(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -177,5 +186,23 @@ mod tests {
         let first = super::strategic_regions(layers).unwrap();
         let again = super::strategic_regions(layers).unwrap();
         assert!(Arc::ptr_eq(&first, &again));
+    }
+
+    #[test]
+    fn warm_checked_surfaces_content_load_failures() {
+        let root = std::env::temp_dir().join(format!("warm-checked-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, context) = crate::test_fixtures::source_with_content(
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+            &root,
+        );
+        let mut bad = context.content.unwrap();
+        bad.allow_unverified = false;
+        let err = source
+            .in_scope(|| super::warm_checked(&source, &bad))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unverified content"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

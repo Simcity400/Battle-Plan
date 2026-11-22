@@ -61,6 +61,12 @@ impl Load {
     }
 }
 
+fn is_scope_prefix(text: &str) -> bool {
+    ["mio", "sp", "scope"]
+        .iter()
+        .any(|prefix| text.eq_ignore_ascii_case(prefix))
+}
+
 struct ScopeNames<'a> {
     names: &'a KeyNames,
     unknown: RefCell<Option<String>>,
@@ -82,16 +88,39 @@ impl Names for ScopeNames<'_> {
     }
 
     fn is_keyword(&self, text: &str) -> bool {
-        if ["mio", "sp", "scope"]
-            .iter()
-            .any(|prefix| text.eq_ignore_ascii_case(prefix))
-        {
+        if is_scope_prefix(text) {
             return true;
         }
         self.unknown.replace(Some(format!(
             "whether its prefix {text} is a lexer token is not known to the content read"
         )));
         false
+    }
+}
+
+fn token_only_scope(text: &[u8], quoted: bool) -> ScopeStep {
+    struct TokenOnly;
+
+    impl Names for TokenOnly {
+        fn is_country(&self, _tag: &str) -> bool {
+            false
+        }
+
+        fn is_character(&self, _token: &str) -> bool {
+            false
+        }
+
+        fn is_keyword(&self, text: &str) -> bool {
+            is_scope_prefix(text)
+        }
+    }
+
+    let Ok(text) = std::str::from_utf8(text) else {
+        return ScopeStep::Unknown(UNNAMED.into());
+    };
+    match scope::parse(text, quoted, &TokenOnly) {
+        Scope::Unknown(_) => ScopeStep::Unknown(UNNAMED.into()),
+        scope => ScopeStep::Scope(scope),
     }
 }
 
@@ -288,7 +317,7 @@ pub fn load_key(names: Option<&KeyNames>, field: &Field<'_>) -> Load {
         },
         |text, quoted| match names {
             Some(names) => names.scope(text, quoted),
-            None => ScopeStep::Unknown(UNNAMED.into()),
+            None => token_only_scope(text, quoted),
         },
         |keyword| match names {
             Some(names) => names.counts.count_kind(keyword),
@@ -454,9 +483,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&overlay);
     }
 
-    // quarantine: #154 a synthetic base does not retain the traced key-name product
     #[test]
-    #[ignore = "#154"]
     fn traced_readers_of_a_stack_share_one_read_and_trace_what_it_read() {
         use std::sync::{Arc, Mutex};
         crate::test_game::enter();
@@ -496,9 +523,7 @@ mod tests {
         assert_eq!(reads(&b_log, "b"), expected);
     }
 
-    // quarantine: #154 a synthetic base does not retain the traced key-name product
     #[test]
-    #[ignore = "#154"]
     fn a_traced_read_that_met_a_failure_is_not_shared() {
         use std::sync::{Arc, Mutex};
         crate::test_game::enter();
@@ -581,6 +606,12 @@ mod tests {
         );
         assert!(matches!(
             load(None, b"GER", Kind::Bare, Kind::Open),
+            Load::Unknown(_)
+        ));
+        assert_eq!(load(None, b"ROOT", Kind::Bare, Kind::Open), Load::Scope);
+        assert_eq!(load(None, b"mio:test", Kind::Bare, Kind::Open), Load::Scope);
+        assert!(matches!(
+            load(None, b"ROOT", Kind::Bare, Kind::Bare),
             Load::Unknown(_)
         ));
         assert_eq!(

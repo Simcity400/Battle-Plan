@@ -64,7 +64,20 @@ pub mod trade_flows;
 pub use framework::{Definitions, Facts, Writers};
 
 pub fn writers() -> Writers {
-    Writers::new(vec![
+    Writers::new(all_writers())
+}
+
+pub fn writers_within(tables: usize) -> Writers {
+    Writers::new(
+        all_writers()
+            .into_iter()
+            .filter(|writer| writer.tables().iter().all(|output| output.table().index() < tables) && writer.reads().iter().all(|read| read.table.index() < tables))
+            .collect(),
+    )
+}
+
+fn all_writers() -> Vec<Box<dyn framework::Writer>> {
+    vec![
         Box::new(identity::TagHolders::default()),
         Box::new(army::Army::default()),
         Box::new(air_force::AirForce::default()),
@@ -122,5 +135,5 @@ pub fn writers() -> Writers {
         Box::new(air_ledger_totals::BombingTotals::default()),
         Box::new(power_ledger::PowerLedger::default()),
         Box::new(feed::Feed::default()),
-    ])
+    ]
 }

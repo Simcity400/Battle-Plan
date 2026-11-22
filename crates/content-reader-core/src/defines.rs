@@ -85,21 +85,105 @@ impl std::fmt::Debug for Defines {
     }
 }
 
+#[derive(Clone)]
+struct CachedDefines {
+    defines: Defines,
+    scripts: Vec<(ScriptPath, [u8; 32])>,
+}
+
+#[derive(Default)]
+struct UnscopedDefines(std::sync::Mutex<Option<CachedDefines>>);
+
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
-    let read = |layers: &ResolvedLayers| {
+    if layers.is_generation_scoped() {
+        let build = |layers: &ResolvedLayers| {
+            let mut defines = Defines::new()?;
+            for path in script_paths(layers)? {
+                defines.load(&path.text(), &path.read(layers)?)?;
+            }
+            defines.sealed = true;
+            Ok(defines)
+        };
+        let defines = if layers.reads_visual_defines() {
+            layers.retained_product("defines Lua 5.1", 1, &[], build)?
+        } else {
+            layers.retained_recorded_product("defines Lua 5.1", 1, &[], build)?
+        };
+        return Ok(defines.as_ref().clone());
+    }
+    let target = if layers.reads_visual_defines() {
+        layers.clone()
+    } else {
+        layers.recorded_or_self()?
+    };
+    let paths = script_paths(&target)?;
+    let cache = target.derived::<UnscopedDefines>();
+    let cached = cache
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let same_paths = cached.as_ref().is_some_and(|cached| {
+        cached.scripts.len() == paths.len()
+            && cached
+                .scripts
+                .iter()
+                .zip(&paths)
+                .all(|((cached_path, _), path)| cached_path == path)
+    });
+    let (defines, digests) = if let Some(cached) = cached.filter(|_| same_paths) {
+        let mut verified = Vec::with_capacity(paths.len());
+        let mut changed_at = None;
+        for (index, path) in paths.iter().enumerate() {
+            let bytes = path.read(&target)?;
+            let digest = bytes.digest();
+            if digest != cached.scripts[index].1 {
+                changed_at = Some((index, bytes, digest));
+                break;
+            }
+            verified.push((path.clone(), bytes, digest));
+        }
+        let Some((index, changed_bytes, changed_digest)) = changed_at else {
+            return Ok(cached.defines);
+        };
         let mut defines = Defines::new()?;
-        for path in script_paths(layers)? {
-            defines.load(&path.text(), &path.read(layers)?)?;
+        let mut digests = Vec::with_capacity(paths.len());
+        for (path, bytes, digest) in verified {
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path, digest));
+        }
+        let changed_path = &paths[index];
+        defines.load(&changed_path.text(), &changed_bytes)?;
+        digests.push((changed_path.clone(), changed_digest));
+        for path in &paths[index + 1..] {
+            let bytes = path.read(&target)?;
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path.clone(), bytes.digest()));
         }
         defines.sealed = true;
-        Ok(defines)
-    };
-    let defines = if layers.reads_visual_defines() {
-        layers.retained_product("defines Lua 5.1", 1, &[], read)
+        (defines, digests)
     } else {
-        layers.retained_recorded_product("defines Lua 5.1", 1, &[], read)
+        let mut defines = Defines::new()?;
+        let mut digests = Vec::with_capacity(paths.len());
+        for path in paths {
+            let bytes = path.read(&target)?;
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path, bytes.digest()));
+        }
+        defines.sealed = true;
+        (defines, digests)
     };
-    defines.map(|defines| defines.as_ref().clone())
+    let mut guard = cache.0.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(cached) = guard.as_ref()
+        && cached.scripts == digests
+    {
+        return Ok(cached.defines.clone());
+    }
+    *guard = Some(CachedDefines {
+        defines: defines.clone(),
+        scripts: digests,
+    });
+    Ok(defines)
 }
 
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath>> {
@@ -758,9 +842,49 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // quarantine: #144 content verification refuses files the test never changed
     #[test]
-    #[ignore = "quarantined under #144"]
+    fn concurrent_unscoped_defines_reads_share_the_winning_lua_state() {
+        use std::sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "concurrent-unscoped-defines-{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        std::fs::write(
+            root.join("common/defines/test.lua"),
+            b"NDefines = {} NDefines.Synthetic = { Id = tostring(NDefines) }",
+        )
+        .unwrap();
+        let layers = crate::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let arrivals = Arc::new(AtomicUsize::new(0));
+        let wait_barrier = Arc::clone(&barrier);
+        let wait_arrivals = Arc::clone(&arrivals);
+        let traced = layers.with_read_trace(Arc::new(move |_| {
+            if wait_arrivals.fetch_add(1, Ordering::AcqRel) < 2 {
+                wait_barrier.wait();
+            }
+        }));
+        let (first, second) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| super::read(&traced).unwrap());
+            let b = scope.spawn(|| super::read(&traced).unwrap());
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        let first_id = first.text("Synthetic", "Id").unwrap();
+        assert!(first_id.starts_with("table:"), "{first_id}");
+        assert_eq!(first_id, second.text("Synthetic", "Id").unwrap());
+        let third = super::read(&traced).unwrap();
+        assert_eq!(first_id, third.text("Synthetic", "Id").unwrap());
+        assert_eq!(arrivals.load(Ordering::Acquire), 3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn d16_shared_defines_repeat_main_verified_reads_before_reusing_the_state() {
         use std::fs;
         let root =

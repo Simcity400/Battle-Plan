@@ -1,9 +1,9 @@
 use super::*;
-use crate::division_census::{Census, MAX_PARTS};
+use collector_divisions::division_census::{Census, MAX_PARTS};
 use std::sync::MutexGuard;
 
 pub(crate) struct PresentationInputs {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     state: Mutex<State>,
     #[cfg(test)]
@@ -37,7 +37,7 @@ impl std::fmt::Debug for PresentationInputs {
 }
 impl PresentationInputs {
     pub(in crate::acquisition_jobs) fn new(
-        executor: &Arc<acquisition::Pool<Job, Report>>,
+        executor: &Arc<collector_workers::acquisition::Pool<Job, Report>>,
         calibration: &Arc<SharedCalibration>,
     ) -> Self {
         Self {
@@ -115,7 +115,7 @@ impl PresentationInputs {
     }
 }
 
-struct ReadyOnDrop<'a>(&'a Weak<acquisition::Pool<Job, Report>>);
+struct ReadyOnDrop<'a>(&'a Weak<collector_workers::acquisition::Pool<Job, Report>>);
 impl Drop for ReadyOnDrop<'_> {
     fn drop(&mut self) {
         if let Some(executor) = self.0.upgrade() {
@@ -135,7 +135,7 @@ impl Drop for FailureOnDrop<'_> {
         state.closed = true;
     }
 }
-impl acquisition::Publication for PresentationInputs {
+impl collector_workers::acquisition::Publication for PresentationInputs {
     fn failed(&self) {
         let _ready = ReadyOnDrop(&self.executor);
         let _failure = FailureOnDrop(&self.state);

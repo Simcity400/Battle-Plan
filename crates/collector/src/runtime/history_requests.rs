@@ -88,7 +88,13 @@ impl SpoolHistory {
         &self,
         begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
-        self.poll_fenced_with(None::<(&crate::frame_fence::Frames, [&std::sync::atomic::AtomicU64; 0])>, begin);
+        self.poll_fenced_with(
+            None::<(
+                &crate::frame_fence::Frames,
+                [&std::sync::atomic::AtomicU64; 0],
+            )>,
+            begin,
+        );
     }
 
     fn poll_fenced_with<'a>(
@@ -212,7 +218,7 @@ impl HistoryWorker {
         let thread = std::thread::Builder::new()
             .name("hoi4-history".into())
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 let _phase = crate::allocation::enter(crate::allocation::Phase::History);
                 crate::runtime::OwnPriority::new().follow(false);
                 worker_id.store(
@@ -1103,7 +1109,7 @@ mod tests {
         .unwrap();
         let started = Instant::now();
         while !handoff.take_refresh_failure() {
-            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
+            assert!(started.elapsed() < collector_test_support::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(ACCEPTED.load(Ordering::SeqCst), 0);
@@ -1114,7 +1120,7 @@ mod tests {
         fs::rename(requests.join("token-9.tmp"), &request).unwrap();
         let started = Instant::now();
         while request.exists() {
-            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
+            assert!(started.elapsed() < collector_test_support::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(ACCEPTED.load(Ordering::SeqCst), 1);

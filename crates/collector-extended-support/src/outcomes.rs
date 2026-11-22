@@ -1,3 +1,4 @@
+use replay_data::scope::CaptureMode;
 
 use crate::clock::qpc;
 use engine_native::walk::Outcome;
@@ -39,4 +40,12 @@ pub fn truncated_source(len: usize, omitted: usize) -> Outcome {
             reason: "source omitted row count invalid or exceeds u32",
         },
     }
+}
+
+pub const NOT_RECORDED: &str = "not recorded in this capture mode";
+
+pub fn records_any(mode: CaptureMode, tables: &[TableId]) -> bool {
+    tables
+        .iter()
+        .any(|&table| replay_data::scope::records(mode, table))
 }
