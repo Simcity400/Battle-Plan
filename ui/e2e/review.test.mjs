@@ -163,6 +163,8 @@ async function rasterProof() {
     for (const [index, directory] of dirs.entries()) {
       const context = await browser.newContext(contextOptions);
       try {
+        await context.clock.install({ time: 0 });
+        await context.clock.pauseAt(1_000);
         const page = await context.newPage();
         await page.setContent(`<img src="${source}" width="${index ? 85 : 16}">`); await page.locator('img').evaluate(img => img.decode());
         await page.setContent(`<style>body{margin:0}.dash-widget{width:350px;height:1400px;background:#234567}img{width:18.5px;height:18.5px}</style>
@@ -179,8 +181,6 @@ async function rasterProof() {
           Object.defineProperty(window, '__hoi4ParityBrowserErrors', { configurable: true, get: () => { samples++; return []; } });
           window.__settleSamples = () => samples;
         });
-        await page.clock.install();
-        await page.clock.pauseAt(Date.now() + 1_000);
         const capturing = captureWidget({ page, app: driver, kind: 'synthetic', directory });
         await started;
         const samples = () => page.evaluate(() => window.__settleSamples());
@@ -197,6 +197,7 @@ async function rasterProof() {
           const fallback = document.querySelector('[data-parity-loading]');
           fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
         });
+        await page.clock.runFor(256);
         await page.clock.resume();
         const item = await capturing;
         assert.equal(item.status, 'captured'); assert.equal(item.model.lists[0].rows.length, 5000);
