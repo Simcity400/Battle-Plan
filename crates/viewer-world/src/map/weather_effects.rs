@@ -91,21 +91,17 @@ impl Parameter {
     fn sample(&self, random: f32, age: f32) -> f32 {
         self.animate(self.base + (random * 2.0 - 1.0) * self.spread, age)
     }
-    fn sample_birth(&self, random: f32, system_age: f32) -> f32 {
-        match &self.curve {
-            Some(curve) if matches!(curve.time, TimeMode::Spawn | TimeMode::System) => {
-                curve.apply(self.base, system_age) + (random * 2.0 - 1.0) * self.spread
-            }
-            Some(curve) => curve.apply(self.base + (random * 2.0 - 1.0) * self.spread, 0.0),
-            None => self.base + (random * 2.0 - 1.0) * self.spread,
-        }
-    }
     fn sample_spawn(&self, random: f32, system_age: f32) -> f32 {
         let base = match &self.curve {
             Some(curve) if curve.time == TimeMode::Spawn => curve.apply(self.base, system_age),
             _ => self.base,
         };
         base + (random * 2.0 - 1.0) * self.spread
+    }
+    fn has_live_curve(&self) -> bool {
+        self.curve
+            .as_ref()
+            .is_some_and(|curve| curve.time != TimeMode::Spawn)
     }
     #[cfg(test)]
     fn animate(&self, value: f32, age: f32) -> f32 {
@@ -1365,6 +1361,7 @@ struct LiveParticle {
     velocity: [f32; 3],
     size: f32,
     rotation: [f32; 3],
+    rotation_base: [f32; 3],
     spin: [f32; 3],
     color: [f32; 4],
     tile: [u8; 4],
@@ -1380,6 +1377,7 @@ struct Simulation {
     particles: Vec<LiveParticle>,
     accumulator: f32,
     age: f32,
+    update_age: f32,
     time: f32,
     previous_translation: Option<[f32; 3]>,
     order: sort::Order,
@@ -1442,6 +1440,7 @@ impl Simulation {
             particles: Vec::with_capacity(e.max),
             accumulator: 0.0,
             age: 0.0,
+            update_age: 0.0,
             time: time.max(0.0),
             previous_translation: None,
             order: sort::Order::new(&e.render),
@@ -1457,6 +1456,7 @@ impl Simulation {
         self.origin = e.position.each_ref().map(|p| p.at(stream, 0.0));
         self.duration = e.duration.at(stream, 0.0);
         self.age = -e.start.at(stream, 0.0);
+        self.update_age = self.age;
     }
 
     fn waiting(&self) -> bool {
@@ -1523,8 +1523,8 @@ impl Simulation {
         self.accumulator -= births as f32;
         let basis = if births > 0 {
             emitter_basis(
-                e.emitter_yaw.sample_birth(random(&mut self.seed), self.age),
-                e.emitter_pitch.sample_birth(random(&mut self.seed), self.age),
+                e.emitter_yaw.sample_spawn(random(&mut self.seed), self.age),
+                e.emitter_pitch.sample_spawn(random(&mut self.seed), self.age),
             )
         } else {
             emitter_basis(0.0, 0.0)
@@ -1532,10 +1532,10 @@ impl Simulation {
         for ordinal in 0..births {
             let life = e
                 .life
-                .sample_birth(random(&mut self.seed), self.age)
+                .sample_spawn(random(&mut self.seed), self.age)
                 .max(0.01);
             let mass = e.mass.sample_spawn(random(&mut self.seed), self.age);
-            let mut sample = |p: &Parameter| p.sample_birth(random(&mut self.seed), self.age);
+            let mut sample = |p: &Parameter| p.sample_spawn(random(&mut self.seed), self.age);
             let r = sample(&e.radius);
             let sp = -sample(&e.sphere_pitch).to_radians();
             let sy = -sample(&e.sphere_yaw).to_radians();
@@ -1571,21 +1571,25 @@ impl Simulation {
                 ],
             );
             let velocity = space.map_or(velocity, |space| space.vector(velocity));
+            let size = e.size.sample_spawn(random(&mut self.seed), self.age);
+            let rotation = e
+                .rotation
+                .each_ref()
+                .map(|p| p.sample_spawn(random(&mut self.seed), self.age));
+            let spin = e
+                .spin
+                .each_ref()
+                .map(|p| p.sample_spawn(random(&mut self.seed), self.age));
             self.particles.push(LiveParticle {
                 age: 0.0,
                 life,
                 mass,
                 position,
                 velocity,
-                size: e.size.sample_spawn(random(&mut self.seed), self.age),
-                rotation: e
-                    .rotation
-                    .each_ref()
-                    .map(|p| p.sample_birth(random(&mut self.seed), self.age)),
-                spin: e
-                    .spin
-                    .each_ref()
-                    .map(|p| p.sample_birth(random(&mut self.seed), self.age)),
+                size,
+                rotation,
+                rotation_base: rotation,
+                spin,
                 color: e.color.each_ref().map(|p| {
                     p.sample_spawn(random(&mut self.seed), self.age)
                         .clamp(0.0, 255.0)
@@ -1642,12 +1646,22 @@ impl Simulation {
                 }
             }
             for j in 0..3 {
-                p.rotation[j] += p.spin[j] * dt;
+                if e.rotation[j].has_live_curve() {
+                    p.rotation[j] = e.rotation[j].animate_particle(
+                        p.rotation_base[j],
+                        p.age,
+                        p.life,
+                        self.age,
+                    );
+                }
+                let spin = e.spin[j].animate_particle(p.spin[j], p.age, p.life, self.age);
+                p.rotation[j] += spin * dt;
             }
         }
         if let Some(space) = space {
             self.previous_translation = Some(space.world.translation);
         }
+        self.update_age = self.age;
         self.age += dt;
     }
     #[cfg(test)]

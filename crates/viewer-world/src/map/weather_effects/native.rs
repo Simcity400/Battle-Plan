@@ -123,7 +123,7 @@ impl DrawPacket {
             };
             let mut color = std::array::from_fn(|i| {
                 e.color[i]
-                    .animate_particle(p.color[i], p.age, p.life, sim.age)
+                    .animate_particle(p.color[i], p.age, p.life, sim.update_age)
                     .clamp(0., 255.)
                     .trunc() as u8
             });
@@ -133,7 +133,9 @@ impl DrawPacket {
                     position[0],
                     position[1],
                     position[2],
-                    e.size.animate_particle(p.size, p.age, p.life, sim.age).max(0.),
+                    e.size
+                        .animate_particle(p.size, p.age, p.life, sim.update_age)
+                        .max(0.),
                 ],
                 rotation: p.rotation,
                 tile: p.tile,
@@ -365,7 +367,12 @@ impl EntitySimulations {
                             position[2],
                             emitter
                                 .size
-                                .animate_particle(particle.size, particle.age, particle.life, sim.age)
+                                .animate_particle(
+                                    particle.size,
+                                    particle.age,
+                                    particle.life,
+                                    sim.update_age,
+                                )
                                 .max(0.),
                         ],
                         rotation: particle.rotation,
@@ -376,7 +383,7 @@ impl EntitySimulations {
                                     particle.color[i],
                                     particle.age,
                                     particle.life,
-                                    sim.age,
+                                    sim.update_age,
                                 )
                                 .clamp(0., 255.)
                                 .trunc() as u8
@@ -1465,6 +1472,7 @@ mod tests {
                     velocity: [0.; 3],
                     size: 1.,
                     rotation: [0.; 3],
+                    rotation_base: [0.; 3],
                     spin: [0.; 3],
                     color: [255.; 4],
                     tile: [0; 4],

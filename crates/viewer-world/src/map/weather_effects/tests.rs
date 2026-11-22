@@ -444,6 +444,207 @@ fn spawn_curves_freeze_birth_values_at_subsystem_age() {
 }
 
 #[test]
+fn non_spawn_life_curve_does_not_extend_lifetime_and_rotation_and_system_clock_match_native() {
+    let const_five_life = Curve::parse(
+        &parser::parse(
+            b"name = five start = 0 duration = 1 op = abs time = life \
+              minValue = 0 maxValue = 5 curve = { 0 1  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut life_emitter = activation_test_emitter();
+    life_emitter.emission = Parameter {
+        base: 2.0,
+        spread: 0.0,
+        curve: None,
+    };
+    life_emitter.life = Parameter {
+        base: 2.0,
+        spread: 0.0,
+        curve: Some(const_five_life),
+    };
+    life_emitter.forces.clear();
+    let mut life_sim = Simulation::cold(&life_emitter, 7, [0.0; 3], 0.0);
+    life_sim.tick(&life_emitter, 0.5);
+    assert_eq!(life_sim.particles.len(), 1);
+    life_emitter.emission.base = 0.0;
+    for _ in 0..3 {
+        life_sim.tick(&life_emitter, 1.0);
+    }
+    assert!(
+        life_sim.particles.is_empty(),
+        "non-spawn life curve must not extend 2s base lifetime past 3s"
+    );
+
+    let rot_ramp = Curve::parse(
+        &parser::parse(
+            b"name = rot_ramp start = 0 duration = 1 op = abs time = life_abs \
+              minValue = 0 maxValue = 90 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let spin_ramp = Curve::parse(
+        &parser::parse(
+            b"name = spin_ramp start = 0 duration = 1 op = mul time = life_abs \
+              minValue = 0 maxValue = 2 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut rot_emitter = activation_test_emitter();
+    rot_emitter.emission = Parameter {
+        base: 2.0,
+        spread: 0.0,
+        curve: None,
+    };
+    rot_emitter.life = Parameter {
+        base: 10.0,
+        spread: 0.0,
+        curve: None,
+    };
+    rot_emitter.rotation[2] = Parameter {
+        base: 0.0,
+        spread: 0.0,
+        curve: Some(rot_ramp),
+    };
+    rot_emitter.spin[0] = Parameter {
+        base: 10.0,
+        spread: 0.0,
+        curve: Some(spin_ramp),
+    };
+    rot_emitter.forces.clear();
+    let mut rot_sim = Simulation::cold(&rot_emitter, 7, [0.0; 3], 0.0);
+    rot_sim.tick(&rot_emitter, 0.5);
+    assert_eq!(rot_sim.particles.len(), 1);
+    let first_rot = native::DrawPacket::weather(&rot_emitter, &rot_sim, [0.0; 3], 1.0).instances[0]
+        .rotation;
+    assert!(first_rot[2].abs() < 1e-4, "birth rotation should start at 0, got {first_rot:?}");
+    rot_emitter.emission.base = 0.0;
+    rot_sim.tick(&rot_emitter, 0.5);
+    let second_rot = native::DrawPacket::weather(&rot_emitter, &rot_sim, [0.0; 3], 1.0).instances
+        [0]
+    .rotation;
+    let expected_angle = 90.0 * (32.0 / 63.0);
+    assert!(
+        (second_rot[2] - expected_angle).abs() < 1e-3,
+        "life_abs rotation curve should advance to ~{expected_angle}, got {}",
+        second_rot[2]
+    );
+    let expected_spin_angle = 10.0 * (2.0 * 32.0 / 63.0) * 0.5;
+    assert!(
+        (second_rot[0] - expected_spin_angle).abs() < 1e-3,
+        "life_abs spin curve should advance to ~{expected_spin_angle}, got {}",
+        second_rot[0]
+    );
+
+    let sys_size = Curve::parse(
+        &parser::parse(
+            b"name = sys_size start = 0 duration = 1 op = abs time = system \
+              minValue = 1 maxValue = 5 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let sys_red = Curve::parse(
+        &parser::parse(
+            b"name = sys_red start = 0 duration = 1 op = abs time = system \
+              minValue = 50 maxValue = 250 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut sys_emitter = activation_test_emitter();
+    sys_emitter.emission = Parameter {
+        base: 2.0,
+        spread: 0.0,
+        curve: None,
+    };
+    sys_emitter.life = Parameter {
+        base: 10.0,
+        spread: 0.0,
+        curve: None,
+    };
+    sys_emitter.size = Parameter {
+        base: 1.0,
+        spread: 0.0,
+        curve: Some(sys_size),
+    };
+    sys_emitter.color[0] = Parameter {
+        base: 100.0,
+        spread: 0.0,
+        curve: Some(sys_red),
+    };
+    sys_emitter.forces.clear();
+    let mut sys_sim = Simulation::cold(&sys_emitter, 7, [0.0; 3], 0.0);
+    sys_sim.tick(&sys_emitter, 0.5);
+    assert_eq!(sys_sim.particles.len(), 1);
+    let first_sys = native::DrawPacket::weather(&sys_emitter, &sys_sim, [0.0; 3], 1.0);
+    let first_size = first_sys.instances[0].position_size[3];
+    let first_red = first_sys.instances[0].color[0];
+    assert!(
+        (first_size - 1.0).abs() < 1e-4,
+        "first tick at pre-increment age 0.0 must draw size 1.0, got {first_size}"
+    );
+    assert_eq!(
+        first_red, 50,
+        "first tick at pre-increment age 0.0 must draw red 50, got {first_red}"
+    );
+    sys_emitter.emission.base = 0.0;
+    sys_sim.tick(&sys_emitter, 0.5);
+    let second_sys = native::DrawPacket::weather(&sys_emitter, &sys_sim, [0.0; 3], 1.0);
+    let expected_mid_size = 1.0 + 4.0 * (32.0 / 63.0);
+    let expected_mid_red = (50.0_f32 + 200.0 * (32.0 / 63.0)).trunc() as u8;
+    assert!(
+        (second_sys.instances[0].position_size[3] - expected_mid_size).abs() < 1e-3,
+        "second tick at pre-increment age 0.5 must draw size ~{expected_mid_size}, got {}",
+        second_sys.instances[0].position_size[3]
+    );
+    assert_eq!(
+        second_sys.instances[0].color[0], expected_mid_red,
+        "second tick at pre-increment age 0.5 must draw red {expected_mid_red}"
+    );
+
+    let mut entity_emitter = sys_emitter.clone();
+    entity_emitter.emission.base = 60.0;
+    let mut event = crate::map::models::order_tests::events(
+        crate::map::models::order_tests::ORDERS[0],
+        false,
+    )
+    .remove(0);
+    let name = event.definition.particle.clone().expect("a particle event");
+    let entities = BTreeMap::from([(name, (1.0, vec![entity_emitter]))]);
+    let mut simulations = EntitySimulations::default();
+    event.age = 0.0;
+    simulations
+        .prepare(&entities, std::slice::from_ref(&event))
+        .unwrap();
+    event.age = 1.0 / 60.0;
+    simulations
+        .prepare(&entities, std::slice::from_ref(&event))
+        .unwrap();
+    let mut packets = Vec::new();
+    simulations.packets(&entities, std::slice::from_ref(&event), &mut packets);
+    assert_eq!(packets.len(), 1);
+    assert_eq!(packets[0].instances.len(), 1);
+    assert!(
+        (packets[0].instances[0].position_size[3] - 1.0).abs() < 1e-4,
+        "entity packet after first tick must draw size 1.0 at pre-increment age 0.0, got {}",
+        packets[0].instances[0].position_size[3]
+    );
+    assert_eq!(
+        packets[0].instances[0].color[0], 50,
+        "entity packet after first tick must draw red 50 at pre-increment age 0.0"
+    );
+}
+
+#[test]
 fn native_emitter_basis_preserves_rain_direction_and_rotates_spawn_plane() {
     let local = [
         30.0_f32.to_radians().cos(),
@@ -685,6 +886,7 @@ fn moving_particle(position: [f32; 3]) -> LiveParticle {
         velocity: [0.0; 3],
         size: 1.0,
         rotation: [0.0; 3],
+        rotation_base: [0.0; 3],
         spin: [0.0; 3],
         color: [255.0; 4],
         tile: [0; 4],
@@ -1022,6 +1224,7 @@ pub(super) fn assert_same_state(left: &Simulation, right: &Simulation) {
     assert_eq!(left.prepared, right.prepared);
     assert_eq!(left.particles.len(), right.particles.len());
     assert_eq!(left.age, right.age);
+    assert_eq!(left.update_age, right.update_age);
     assert_eq!(left.accumulator, right.accumulator);
     assert_eq!(left.time, right.time);
     assert_eq!(left.seed, right.seed);
@@ -1034,6 +1237,7 @@ pub(super) fn assert_same_state(left: &Simulation, right: &Simulation) {
         assert_eq!(left.velocity, right.velocity);
         assert_eq!(left.size, right.size);
         assert_eq!(left.rotation, right.rotation);
+        assert_eq!(left.rotation_base, right.rotation_base);
         assert_eq!(left.spin, right.spin);
         assert_eq!(left.color, right.color);
         assert_eq!(left.tile, right.tile);
