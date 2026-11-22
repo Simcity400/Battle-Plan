@@ -393,6 +393,18 @@ impl PeImage {
         })
     }
 
+    pub fn is_writable_virtual(&self, rva: u32, len: usize) -> bool {
+        let Some(end) = u32::try_from(len).ok().and_then(|len| rva.checked_add(len)) else {
+            return false;
+        };
+        self.sections.iter().any(|section| {
+            !section.executable
+                && section.writable
+                && rva >= section.rva
+                && end <= section.virtual_end
+        })
+    }
+
     pub fn find_hashed_strings(&self, anchors: &[Hashed]) -> Vec<Vec<u32>> {
         let mut found = vec![Vec::new(); anchors.len()];
         for (rva, data) in self.data_sections() {

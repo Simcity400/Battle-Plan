@@ -265,7 +265,7 @@ fn quad(native: draw::Quad) -> Quad {
         rect: [2., 2., 12., 12.],
         uv: [0., 0., 1., 1.],
         color: [1.; 4],
-        rotation: 0.,
+        rotation: None,
         layer: 0,
         shade: 0.,
         anchor: None,

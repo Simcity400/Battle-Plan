@@ -252,6 +252,31 @@ impl SideThread {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_window(&mut self, mut done: impl FnMut(&mut Self) -> bool) -> Result<(), String> {
+        loop {
+            if done(self) {
+                return Ok(());
+            }
+            let mut turn = lock(&self.shared.held);
+            while turn.framed && turn.side.failure().is_none() && !turn.stop {
+                turn = self.shared.signal.wait(turn).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            if let Some(failure) = turn.side.failure() {
+                let failure = failure.to_owned();
+                self.products.failure = Some(failure.clone());
+                return Err(failure);
+            }
+            if turn.stop {
+                return Err("the map's side thread stopped".to_owned());
+            }
+            self.products.missed = None;
+            let mut window = Window { turn, signal: &self.shared.signal, products: &mut self.products };
+            window.take(Default::default());
+            drop(window);
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn driven<T>(&mut self, drive: impl FnOnce(&mut MapSide) -> T) -> T {
         let turn = lock(&self.shared.held);
         self.products.missed = None;
@@ -491,8 +516,8 @@ fn advance(shared: &Shared) {
                 let made = if moving.is_some() || viewpoint || turn.side.hurrying() { Made::Playing } else { Made::Still };
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
-                    shared.signal.notify_all();
                 }
+                shared.signal.notify_all();
             }
         }
     }
@@ -554,6 +579,18 @@ impl LayIns {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_icons(
+        resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
+        occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+    ) -> Self {
+        Self {
+            resources,
+            occupation,
+            ..Self::default()
+        }
+    }
+
     pub fn set(&self, tables: &mut crate::document::OverlayTables) {
         if let Some((labels, ours)) = &self.labels {
             tables.set_labels(labels, *ours);
@@ -563,19 +600,34 @@ impl LayIns {
         }
     }
 
-    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &crate::document::Hour<'_>, camera: viewer_foundation::map::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &impl crate::document::IconHost, camera: viewer_foundation::map::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+        let view = prepared.counter_view().clone();
+        self.lay_icons(&mut prepared.laid_icons, &view, hour, camera, pixels, ui_scale, ours)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the icon state, view, host, camera, viewport, scale and viewer country")]
+    pub fn lay_icons(
+        &self,
+        laid_icons: &mut crate::document::LaidIcons,
+        view: &crate::map_views::CounterView,
+        hour: &impl crate::document::IconHost,
+        camera: viewer_foundation::map::camera::Camera,
+        pixels: [u32; 2],
+        ui_scale: f32,
+        ours: u32,
+    ) -> bool {
         use crate::document::MadeBy;
         let mut laid = false;
         if let Some((icons, version)) = &self.resources
-            && prepared.resource_icons_by() != MadeBy::Layer(*version)
+            && laid_icons.resource_icons_by() != MadeBy::Layer(*version)
         {
-            prepared.replace_resource_icons(hour, camera, pixels, ui_scale, icons, *version);
+            laid_icons.replace_resource_icons(hour, camera, pixels, ui_scale, view.visibility, icons, *version);
             laid = true;
         }
         if let Some((marks, version)) = &self.occupation
-            && prepared.occupation_icons_by() != MadeBy::Layer(*version)
+            && laid_icons.occupation_icons_by() != MadeBy::Layer(*version)
         {
-            prepared.replace_occupation_icons(hour, camera, pixels, ui_scale, ours, marks, *version);
+            laid_icons.replace_occupation_icons(hour, camera, pixels, ui_scale, view.occupation, ours, marks, *version);
             laid = true;
         }
         laid
