@@ -8,7 +8,7 @@ use crate::{
     frame::{DecodedFrame, FrameDecoder, FrameInput, TableInput, TableView},
     identity::IdentityCodec,
     native_frame::FrameWriter,
-    rows::TABLE_COUNT,
+    rows::{TABLE_COUNT, TableId},
     spool::{ControlRecord, Record, Recovery, encode_record},
 };
 use replay_columnar::{
@@ -24,6 +24,37 @@ use std::{
 impl Replay {
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
         Self::open(encode_records(campaign_id, segments)?)
+    }
+
+    pub fn from_synthetic(
+        campaign_id: Vec<u8>,
+        session: crate::identity::SessionStart,
+        branch: crate::branches::BranchStart,
+        last: Hour,
+        mut write: impl FnMut(&mut crate::columnar_frames::synthetic::Synthetic, Hour) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        use crate::columnar_frames::synthetic::Synthetic;
+
+        let (id, first) = (branch.id, branch.first_hour);
+        let mode = session.capture_mode;
+        let format = FormatVersion::CURRENT.version();
+        let in_scope: Vec<_> = TableId::ALL.into_iter().filter(|&table| {
+            table.last_change().present(format) && crate::scope::records(mode, table)
+        }).collect();
+        let records = Records { sessions: vec![session], branches: vec![branch], ..Records::default() };
+        let identity = identity_of(campaign_id, &records)?;
+        let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
+        let mut file = HourWriter::new(file, LEVEL)?;
+        let mut synthetic = Synthetic::new(id, first)?;
+        file.start_run(id, envelope::epoch::START, first)?;
+        for hour in first..=last {
+            write(&mut synthetic, hour)?;
+            synthetic.unavailable_unwritten(&in_scope, b"outside the fixture")?;
+            synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
+        }
+        let mut file = file.finish()?;
+        add_records(&mut file, &records, FormatVersion::CURRENT)?;
+        Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
     }
 
     pub fn from_records_derived(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
@@ -139,6 +170,15 @@ pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<
 }
 
 pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encode_framed_at(format, campaign_id, segments, |_, _| Ok(()))
+}
+
+pub fn encode_framed_at(
+    format: u16,
+    campaign_id: Vec<u8>,
+    segments: &[Vec<Record>],
+    mut each: impl FnMut(&mut crate::columnar_frames::synthetic::Synthetic, &DecodedFrame) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
     use crate::{
         columnar_frames::synthetic::{Input, Sample, Synthetic},
         rows::{TableId, tables},
@@ -165,6 +205,7 @@ pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Reco
             synthetic.table(TableId::Clock, Input::Snapshot { rows: clock, partial: None, read: true, sample: Sample::FromReadBit })?;
             let campaign = decoded.complete::<tables::Campaign>()?;
             synthetic.table(TableId::Campaign, Input::Snapshot { rows: campaign, partial: None, read: true, sample: Sample::FromReadBit })?;
+            each(synthetic, &decoded)?;
             synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
             *next = decoded.hour + 1;
         }

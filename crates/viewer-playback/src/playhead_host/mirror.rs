@@ -33,7 +33,7 @@ pub mod probe {
     }
 }
 
-pub type Keys = foldhash::fast::FixedState;
+pub type Keys = foldhash::fast::RandomState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cell<T> {
