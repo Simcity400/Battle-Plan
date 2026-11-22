@@ -2197,3 +2197,72 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
         }
     }
 }
+
+#[test]
+fn zero_supply_days_uses_exact_operands_at_zero_days_and_proves_historical_full_supply() {
+    let map = content(two_leg_map());
+    let mut base = hour(Some(SPEED));
+    put(
+        &mut base,
+        TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+            movement_defines: Recorded::Value(RecordedDefines {
+                out_of_supply_speed: Some(-80_000),
+                retreat_speed: Some(25_000),
+                withdrawal_speed: Some(-50_000),
+                out_of_fuel_speed: Some(40_000),
+                fuel_capacity_scale: Some(9_600_000),
+                supply_days: Some(0),
+                supply_grace: Some(72),
+                air_speed: Some(-50_000),
+                air_defense_denominator: Some(1_000_000),
+                air_defense_reduction: Some(100_000),
+                out_of_supply_attrition: Some(20_000),
+            }),
+            ..Default::default()
+        }]),
+    );
+    let run = |row: DivisionStatusRow| {
+        let mut frame = base.clone();
+        put(&mut frame, TableRows::DivisionStatus(vec![row]));
+        Etas::read(&frame, Some(&map))
+            .unwrap()
+            .estimate(DIVISION)
+            .map_err(str::to_owned)
+    };
+    let exact = run(DivisionStatusRow {
+        supply_ratio: None,
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(Some(35_500)),
+        supply_grace_exact: Recorded::Value(Some(0)),
+        ..status_row(DIVISION)
+    });
+    assert!(exact.is_ok(), "{exact:?}");
+    let historical_ambiguous = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert_eq!(
+        historical_ambiguous.as_ref().map_err(String::as_str),
+        Err(replay_derive::eta_derive::frame_terms::SUPPLY_DAYS_ZERO)
+    );
+    let historical_full = run(DivisionStatusRow {
+        supply_ratio: Some(100_000),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert!(historical_full.is_ok(), "{historical_full:?}");
+    let historical_no_grace_max = run(DivisionStatusRow {
+        supply_ratio: Some(35_000),
+        supply_grace_maximum: Recorded::Value(0),
+        out_of_supply_days: Recorded::Value(Some(0)),
+        supply_ratio_exact: Recorded::Value(None),
+        supply_grace_exact: Recorded::Value(None),
+        ..status_row(DIVISION)
+    });
+    assert!(historical_no_grace_max.is_ok(), "{historical_no_grace_max:?}");
+}
