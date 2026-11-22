@@ -891,9 +891,9 @@ def rust_unchanged(source, pipeline):
 def warm(name, target, github_output=None):
     """Fills a target folder for a sharded job's cache: runs the job's `warm` command, which builds
     every unit its runners may reuse, and, when it succeeds, prunes the units it did not use and
-    names HEAD as the commit the folder was built from. A failed build leaves the folder naming
-    the commit it named before, so whatever changed since then is rebuilt from it. A folder that
-    no Rust input changed since is not built or saved again."""
+    names HEAD as the commit the folder was built from. A failed build saves nothing: its folder
+    mixes units rebuilt at HEAD with the commit it named before. A folder that no Rust input
+    changed since is not built or saved again."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
     job = next((job for job in pipeline.jobs if job.name == name), None)
     if job is None or not job.warm:
@@ -913,7 +913,8 @@ def warm(name, target, github_output=None):
             print(f"pruned {sum(prune(folder, live) for folder in profiles)} units the build did not use", flush=True)
             (Path(target) / BUILT_FROM).write_text(git("rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
         else:
-            print(f"the build failed: the folder still names {source[:10] if source else 'no commit'}", flush=True)
+            save = False
+            print("the build failed: nothing is saved", flush=True)
     else:
         print(f"no Rust input changed since {source[:10]}: nothing to build or save", flush=True)
     if github_output:
