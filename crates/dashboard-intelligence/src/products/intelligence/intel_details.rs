@@ -1,5 +1,5 @@
 
-use crate::{Source, products::{LoadContext, Product}};
+use dashboard_base::{Source, products::{LoadContext, Product}};
 use content_reader_core::defines::Defines;
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -714,13 +714,13 @@ impl Product for IntelDetails {
     }
 
     fn load(source: &Source, p: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, p.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid intel branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, p.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid intel branch"))?)?;
         let stretch = *query.timeline.at(p.hour).ok_or_else(|| dashboard_core::refused("Intel hour was not recorded"))?;
         let recording = query.replay.recording();
         let reads: Vec<replay::at::Read<'_>> = TABLES.iter().map(|&table| replay::at::Read::all(table)).collect();
         let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, p.hour, &reads))?;
-        crate::metadata::check_cancel(cancelled)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let catalogue = context
             .content()
             .map_err(|e| e.to_string())

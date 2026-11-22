@@ -315,7 +315,7 @@ pub(crate) mod readout {
     pub(crate) fn count(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        scene: &viewer_world::map::scene::Scene,
+        scene: &viewer_world::scene::Scene,
     ) {
         if !on() {
             return;

@@ -24,4 +24,4 @@ For recurring draws, retain bindings against persistent buffers and update the c
 
 The retained sea-bed target can be reused only when the compiled program's read constant bytes, sampled texture contents, block cover and destination match the last submitted pass. A texture with no described writer leaves the key unformed and causes a draw on every frame with a named reason. Commit the key after submission so a lost frame cannot certify the target. A skipped draw still counts as using its bindings, preventing an idle period from evicting the resources needed by the first changed frame.
 
-[Terrain cover](../../crates/viewer-world/src/map/terrain.rs) · [Coastal caps](../../crates/viewer-world/src/map/terrain_coast.rs) · [Terrain pipeline](../../crates/viewer-world/src/map/terrain_shader.rs)
+[Terrain cover](../../crates/viewer-terrain/src/terrain.rs) · [Coastal caps](../../crates/viewer-terrain/src/terrain_coast.rs) · [Terrain pipeline](../../crates/viewer-terrain/src/terrain_shader.rs)

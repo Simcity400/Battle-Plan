@@ -176,7 +176,7 @@ fn drawn_labels(drawn: Option<&Stamped>, ours: u32, branch: replay_data::BranchI
 
 fn victory_point_entries(
     labels: &Labels,
-    defines: &viewer_world::map::labels::LabelDefines,
+    defines: &viewer_map_icons::labels::LabelDefines,
     refused: &mut BTreeMap<String, usize>,
 ) -> Vec<Entry> {
     labels
@@ -199,7 +199,7 @@ fn victory_point_entries(
                 .and_then(|slot| labels.allegiances.get(&slot).copied())
                 .unwrap_or(viewer_foundation::map::allegiance::Allegiance::Other.index());
             let shape =
-                viewer_world::map::labels::shape_group(false, candidate.victory_points, defines);
+                viewer_map_icons::labels::shape_group(false, candidate.victory_points, defines);
             let frame_number = shape * 5 + side + 1;
             Some(Entry {
                 display: format!("{} {name}", viewer_combat::find_view::victory_point_icon(frame_number)),
@@ -489,7 +489,7 @@ mod tests {
             allegiances: BTreeMap::from([(1, 2)]),
         };
         use viewer_foundation::map::mode_visibility::{PriorityIcon, Priorities};
-        let defines = viewer_world::map::labels::LabelDefines {
+        let defines = viewer_map_icons::labels::LabelDefines {
             after: vec![0.0, 9.0, 20.0],
             dot_cutoff: [0.0; 2],
             text_cutoff: [0.0; 2],

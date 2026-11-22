@@ -1,5 +1,5 @@
 
-use crate::Source;
+use dashboard_base::Source;
 use dashboard_base::{
     catalogue::{self, Catalogue, View},
     products::politics_content,

@@ -1,8 +1,8 @@
 
 use job_priority::SpawnCarried as _;
-use dashboard::protocol::{FlyAircraftState, FlyAircraftStatus};
+use dashboard_core::protocol::{FlyAircraftState, FlyAircraftStatus};
 use std::sync::{Arc, mpsc};
-use viewer_world::map::aircraft::{AircraftAssets, PlayerAircraft};
+use viewer_aircraft::aircraft::{AircraftAssets, PlayerAircraft};
 
 #[derive(Default)]
 pub struct FlyAircraft {

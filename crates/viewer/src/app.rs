@@ -1,7 +1,7 @@
 #[cfg(test)]
 pub(crate) use viewer_playback::presentation::MAP_LINES_LOADING;
 use crate::map_views::CounterView;
-use dashboard::protocol::CameraMode;
+use dashboard_core::protocol::CameraMode;
 use std::path::Path;
 use std::sync::OnceLock;
 use viewer_combat as combat;
@@ -37,7 +37,7 @@ use viewer_foundation::profiling::sweep as profiling_sweep;
 use viewer_foundation::retirement::Dropper;
 use viewer_foundation::tooltip_text::Tooltip;
 use viewer_foundation::unit_handle::Unit;
-use viewer_world::map::scene::Scene;
+use viewer_world::scene::Scene;
 use {
     crate::{
         Config, Options,
@@ -56,18 +56,14 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
-use dashboard::map_display::option_defaults;
+use dashboard_core::map_display::option_defaults;
 use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
-use viewer_world::map::scene::SceneInput;
-use {
-    viewer_counters::map::counters::CounterReport,
-    viewer_foundation::map::name_draw::Placements,
-    viewer_foundation::map::sprites::Batch,
-    viewer_world::map::labels::LabelReport,
-    viewer_world::map::name_pass::{LayerFade, StrategicNames},
-    viewer_world::map::scene::Overlay,
-    viewer_world::map::scene::Request,
-};
+use viewer_world::scene::SceneInput;
+use viewer_counters::map::counters::CounterReport;
+use viewer_foundation::map::{name_draw::Placements, sprites::Batch};
+use viewer_map_icons::labels::LabelReport;
+use viewer_map_text::name_pass::{LayerFade, StrategicNames};
+use viewer_world::scene::{Overlay, Request};
 
 mod air_orders;
 pub(crate) mod combat_rows;
@@ -120,7 +116,7 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
             "faction hover reaches {rebuild} on the frame path"
         );
     }
-    let source = include_str!("../../viewer-world/src/map/scene.rs");
+    let source = include_str!("../../viewer-world/src/scene.rs");
     let body = source
         .split("\n    pub fn set_faction_highlight(")
         .nth(1)
@@ -564,7 +560,7 @@ struct LoadedReplay {
     document: Document,
     scene: Scene,
     revision: Option<String>,
-    source: Option<Arc<dashboard::Source>>,
+    source: Option<Arc<dashboard_base::Source>>,
     config: Config,
 }
 
@@ -644,7 +640,7 @@ fn top_map_hit(
     point: [f32; 2],
     report: &viewer_counters::map::counters::CounterReport,
     raids: &[viewer_raids::map::raids::tooltips::Hit],
-    occupation: &[viewer_world::map::occupation_icons::Hit],
+    occupation: &[viewer_map_icons::occupation_icons::Hit],
     looks: Option<&free_icons::Looks>,
     intel: Option<&viewer_raids::map::intel_icons::IntelHit>,
 ) -> Option<MapHit> {
@@ -672,13 +668,13 @@ pub struct Viewer {
     dashboard_map: bool,
     host_graphics: bool,
     shared_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
-    source: Option<Arc<dashboard::Source>>,
+    source: Option<Arc<dashboard_base::Source>>,
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
     drawn_at: Option<f64>,
-    applying_options: Option<dashboard::protocol::MapOptions>,
-    drawn_options: Option<dashboard::protocol::MapOptions>,
+    applying_options: Option<dashboard_core::protocol::MapOptions>,
+    drawn_options: Option<dashboard_core::protocol::MapOptions>,
     hover: Option<String>,
     tooltip: Option<String>,
     tooltip_delay_ms: Option<f32>,
@@ -731,7 +727,7 @@ pub struct Viewer {
     orbit: crate::controls::orbit::Orbit,
     walk: walk::Walk,
     flight: Option<crate::controls::flight::Flight>,
-    flying: Option<(usize, viewer_world::map::models::ModelInstance)>,
+    flying: Option<(usize, viewer_models::ModelInstance)>,
     fly_clock: Option<f32>,
     fly_footprints: crate::controls::flight::Footprints,
     pointer_grabbed: bool,
@@ -745,10 +741,10 @@ pub struct Viewer {
     started: Instant,
     opened: Option<Instant>,
     postfx: bool,
-    pub(crate) graphics: dashboard::protocol::MapGraphics,
-    pub(crate) counter_filter: dashboard::protocol::CounterFilter,
+    pub(crate) graphics: dashboard_core::protocol::MapGraphics,
+    pub(crate) counter_filter: dashboard_core::protocol::CounterFilter,
     pub(crate) player_counters: bool,
-    pub(crate) volumes: dashboard::protocol::MapAudio,
+    pub(crate) volumes: dashboard_core::protocol::MapAudio,
     overlay_layers: crate::document::OverlayLayers,
     counter_owners: crate::map_views::CounterOwners,
     resolved_settings: crate::map_views::ResolvedSettings,
@@ -862,7 +858,7 @@ pub struct Viewer {
     air_selection: viewer_counters::map::air_selection::Selection,
     fleet_selection: viewer_counters::map::naval_selection::Selection,
     perspective: Choice,
-    map_mode: viewer_world::map::map_mode::MapMode,
+    map_mode: viewer_map_modes::map_mode::MapMode,
     diplomatic_selected: Option<u32>,
     ground_selection: Option<ground_click::Outline>,
     picker: picker::PickerState,
@@ -881,7 +877,7 @@ pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
-    graphics: dashboard::protocol::MapGraphics,
+    graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     let _startup = crate::perf_log::StartupSpan::new("scene");
@@ -898,7 +894,7 @@ fn load_scene_scoped(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     document: &Document,
-    graphics: dashboard::protocol::MapGraphics,
+    graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     use viewer_foundation::load_record::stage;
@@ -1272,7 +1268,7 @@ impl Viewer {
             fly_footprints: Default::default(),
             pointer_grabbed: false,
             postfx: options.postfx,
-            graphics: dashboard::protocol::MapGraphics {
+            graphics: dashboard_core::protocol::MapGraphics {
                 day_night: options.day_night.unwrap_or(option_defaults::DAY_NIGHT),
                 show_allied_plans: options.allied_plans.unwrap_or(option_defaults::ALLIED_PLANS),
                 ..Default::default()
@@ -1561,7 +1557,7 @@ impl Viewer {
         &mut self,
         service: &dashboard::Service,
         scope: String,
-    ) -> std::sync::Arc<dashboard::protocol::ResolvedMapSettings> {
+    ) -> std::sync::Arc<dashboard_core::protocol::ResolvedMapSettings> {
         let settings =
             self.resolved_settings
                 .get(service.map_settings_generation(), scope, |scope| {
@@ -1588,7 +1584,7 @@ impl Viewer {
 
     pub(crate) fn set_embedded_graphics(
         &mut self,
-        settings: &dashboard::protocol::ResolvedMapSettings,
+        settings: &dashboard_core::protocol::ResolvedMapSettings,
     ) {
         let graphics = settings.graphics;
         self.graphics = graphics;
@@ -1730,7 +1726,7 @@ impl Viewer {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        target: &dashboard::protocol::DashboardMapView,
+        target: &dashboard_core::protocol::DashboardMapView,
     ) {
         self.host_perspective(&target.options);
         self.applying_options = Some(target.options.clone());
@@ -2346,7 +2342,7 @@ impl Viewer {
         true
     }
 
-    fn shown_mode(&self) -> &viewer_world::map::map_mode::MapMode {
+    fn shown_mode(&self) -> &viewer_map_modes::map_mode::MapMode {
         self.live_map().and_then(|side| side.mode_on_screen()).unwrap_or(&self.map_mode)
     }
 
@@ -2505,8 +2501,8 @@ impl Viewer {
 
     pub(crate) fn map_state(
         &self,
-        target: &dashboard::protocol::DashboardMapView,
-    ) -> dashboard::protocol::DashboardMapState {
+        target: &dashboard_core::protocol::DashboardMapView,
+    ) -> dashboard_core::protocol::DashboardMapState {
         let error = self.error.clone().or_else(|| self.map_error.clone());
         let clock = target.branch_id.parse().ok().map(|branch| {
             let requested = Playhead {
@@ -2535,7 +2531,7 @@ impl Viewer {
             (Some(_), Some(drawn)) => (Some(drawn), Some(0.0)),
             _ => (None, None),
         };
-        dashboard::protocol::DashboardMapState {
+        dashboard_core::protocol::DashboardMapState {
             id: target.id.clone(),
             clock_id: target.clock_id.clone(),
             source_id: Some(target.source_id.clone()),
@@ -2561,14 +2557,14 @@ impl Viewer {
         }
     }
 
-    fn applied_settings(&self) -> Option<dashboard::protocol::AppliedMapSettings> {
+    fn applied_settings(&self) -> Option<dashboard_core::protocol::AppliedMapSettings> {
         let document = self.document.as_ref()?;
         let mut graphics = self.graphics;
         graphics.texture_quality = document.texture_quality;
         if let Some(scene) = &self.scene {
             graphics.samples = scene.samples();
         }
-        Some(dashboard::protocol::AppliedMapSettings {
+        Some(dashboard_core::protocol::AppliedMapSettings {
             graphics,
             audio: self.volumes,
             counters: self.counter_filter.clone(),
@@ -2819,7 +2815,7 @@ impl Viewer {
             let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
                     let _stage = viewer_foundation::load_record::stage("load.replay_revision");
-                    let revision = dashboard::protocol::replay_revision(&path)
+                    let revision = dashboard_core::protocol::replay_revision(&path)
                         .map_err(|error| error.to_string())?;
                     if expected_revision
                         .as_ref()
@@ -3389,7 +3385,7 @@ impl Viewer {
         point: Option<[f32; 2]>,
     ) -> Result<(), String> {
         let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
-        let adjacency = self.map_mode == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::StrategicNavy);
+        let adjacency = self.map_mode == viewer_map_modes::map_mode::MapMode::Stock(viewer_map_modes::map_mode::Stock::StrategicNavy);
         let color = if adjacency { &document.border_assets.adjacency_highlight_color } else { &document.border_assets.faction_highlight_color };
         let color = color.as_ref().ok().copied();
         let outline = self.ground_selection.clone().filter(|_| document.border_assets.selection_colors.is_ok());
@@ -3469,9 +3465,9 @@ impl Viewer {
                         .collect() };
                     let meshes = &content.border_meshes;
                     let outline = outline.as_ref().map(|(provinces, color)| (provinces, *color));
-                    let plan = |regions: &viewer_world::map::political::Regions, zone: &viewer_world::map::demilitarized::Zone| faction_highlight::Prepared {
-                        plan: viewer_world::map::scene::FactionHighlight::with_selection(meshes, regions, zone, &provinces, outline),
-                        restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, regions, zone, &Default::default())),
+                    let plan = |regions: &map_display_data::landscape::Regions, zone: &viewer_borders::demilitarized::Zone| faction_highlight::Prepared {
+                        plan: viewer_world::scene::FactionHighlight::with_selection(meshes, regions, zone, &provinces, outline),
+                        restore: Some(viewer_world::scene::FactionHighlight::new(meshes, regions, zone, &Default::default())),
                     };
                     match source {
                         faction_highlight::Over::Layer(picture) => {
@@ -3542,7 +3538,7 @@ impl Viewer {
         if let Some(MapHit::Occupation(index)) = target {
             let hit = self.overlay_hits.occupation.get(index)?;
             let rect = self.shown_rect(layer, hit.bounds()?);
-            use viewer_world::map::occupation_icons::Hover;
+            use viewer_map_icons::occupation_icons::Hover;
             let hover = hit.hover.clone();
             let text = match &hover {
                 Hover::Modifier { state, token } => {
@@ -4262,7 +4258,7 @@ impl Viewer {
             && (controls.pressed.contains(&CAMERA_MODE_KEY)
                 || controls
                     .pad
-                    .pressed(dashboard::protocol::GamepadButton::Select))
+                    .pressed(dashboard_core::protocol::GamepadButton::Select))
         {
             self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
@@ -4572,7 +4568,7 @@ impl Viewer {
                 .and_then(|position| ground(frame_point(position)));
             let south = controls
                 .pad
-                .pressed(dashboard::protocol::GamepadButton::South);
+                .pressed(dashboard_core::protocol::GamepadButton::South);
             let centre = south
                 .then(|| ground([pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5]))
                 .flatten();
@@ -4856,8 +4852,8 @@ impl Viewer {
             self.settled_poses = stopped;
         }
         let tick = 0.0;
-        let convoys_shown = |defines: &viewer_world::map::trade_routes::ConvoyDefines| {
-            viewer_world::map::trade_routes::convoys_shown(
+        let convoys_shown = |defines: &viewer_unit_models::trade_routes::ConvoyDefines| {
+            viewer_unit_models::trade_routes::convoys_shown(
                 camera.height,
                 defines,
                 self.graphics.units,
@@ -5077,9 +5073,9 @@ impl Viewer {
         let names_mode = self.shown_mode();
         let strategic_names = matches!(
             names_mode,
-            viewer_world::map::map_mode::MapMode::Stock(
-                viewer_world::map::map_mode::Stock::StrategicAir
-                    | viewer_world::map::map_mode::Stock::StrategicNavy
+            viewer_map_modes::map_mode::MapMode::Stock(
+                viewer_map_modes::map_mode::Stock::StrategicAir
+                    | viewer_map_modes::map_mode::Stock::StrategicNavy
             )
         );
         let show_all_names = document.content.game_strategic_names || !strategic_names;
@@ -5112,7 +5108,7 @@ impl Viewer {
             if self.drop_overlay_drawn()
                 && let Some(scene) = self.scene.as_mut()
             {
-                let (device, queue, none) = (&state.device, &state.queue, viewer_world::map::radar_symbols::Field::default());
+                let (device, queue, none) = (&state.device, &state.queue, viewer_aircraft::radar_symbols::Field::default());
                 for input in [SceneInput::SetAirRanges(&none), SceneInput::SetAirTransfers(&none), SceneInput::SetAirAssignment(&Default::default()), SceneInput::SetStrategicStyles(&Default::default())] {
                     scene.apply(device, queue, input).map_err(|error| error.to_string())?;
                 }
@@ -5563,8 +5559,8 @@ impl Viewer {
             self.head_rows.click_at(self.click_hour());
             self.head_rows.clickable(self.clickable(document));
             if *self.shown_mode()
-                == viewer_world::map::map_mode::MapMode::Stock(
-                    viewer_world::map::map_mode::Stock::StrategicNavy,
+                == viewer_map_modes::map_mode::MapMode::Stock(
+                    viewer_map_modes::map_mode::Stock::StrategicNavy,
                 )
             {
                 let head = head_rows::head(live_of(&self.playhead_map));
@@ -5798,7 +5794,7 @@ impl Viewer {
                         }
                         let ground_blocked = modifiers.shift
                             && !(self.unit_selection.units().is_empty() && self.fleet_selection.fleets().is_empty() && self.air_selection.wings().is_empty());
-                        if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
+                        if matches!(self.shown_mode(), viewer_map_modes::map_mode::MapMode::Stock(viewer_map_modes::map_mode::Stock::Diplomacy))
                             && !ground_blocked
                             && self.map_hit(point).is_none()
                             && let Some(province) = pick(
@@ -6650,7 +6646,7 @@ impl Viewer {
 }
 
 struct AudioInputs<'a> {
-    volumes: dashboard::protocol::MapAudio,
+    volumes: dashboard_core::protocol::MapAudio,
     muted: bool,
     reset: bool,
     music: Option<Arc<viewer_audio::Chances>>,
@@ -6661,7 +6657,7 @@ struct AudioInputs<'a> {
 
 fn audio_mix(
     document: &Document,
-    volumes: dashboard::protocol::MapAudio,
+    volumes: dashboard_core::protocol::MapAudio,
     muted: bool,
 ) -> viewer_audio::Mix {
     let percent = |value: f32| value / 100.0;
@@ -6955,15 +6951,15 @@ impl Viewer {
             for event in events {
                 match event {
                     picker::ViewEvent::Options(options) => embedded
-                        .report_view_options(dashboard::protocol::CAMPAIGN_MAP_VIEW, options),
+                        .report_view_options(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, options),
                     picker::ViewEvent::Toggle(toggle) => {
-                        embedded.report_view_toggle(dashboard::protocol::CAMPAIGN_MAP_VIEW, toggle)
+                        embedded.report_view_toggle(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, toggle)
                     }
                     picker::ViewEvent::Modes(modes) => {
-                        embedded.report_view_modes(dashboard::protocol::CAMPAIGN_MAP_VIEW, modes)
+                        embedded.report_view_modes(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, modes)
                     }
                     picker::ViewEvent::Observe(country) => {
-                        embedded.report_view_observe(dashboard::protocol::CAMPAIGN_MAP_VIEW, country)
+                        embedded.report_view_observe(dashboard_core::protocol::CAMPAIGN_MAP_VIEW, country)
                     }
                 }
             }
@@ -7069,7 +7065,7 @@ impl Viewer {
                 if self.profile_frame == sweep_frames.start
                     && let Some(next) = mode
                         .strip_prefix("mode:")
-                        .and_then(viewer_world::map::map_mode::MapMode::parse)
+                        .and_then(viewer_map_modes::map_mode::MapMode::parse)
                 {
                     self.choose_map_mode(next);
                 }
@@ -7504,7 +7500,7 @@ pub(crate) mod tests {
             native_gui::HitGeometry,
             sprites::layer,
         };
-        use viewer_world::map::occupation_icons::{Hit, Hover};
+        use viewer_map_icons::occupation_icons::{Hit, Hover};
         let parent = layer(5, 0, 0);
         let hits = [
             Hit {
@@ -8265,13 +8261,13 @@ pub(crate) mod tests {
         let mut owner = viewer_audio::System::shared().owner();
         owner.claim();
         viewer.audio = Some(owner);
-        let bounds = dashboard::protocol::ViewBounds {
+        let bounds = dashboard_core::protocol::ViewBounds {
             x: 0,
             y: 0,
             width: 64,
             height: 64,
         };
-        let target = dashboard::protocol::DashboardMapView {
+        let target = dashboard_core::protocol::DashboardMapView {
             options: Default::default(),
             id: "widget".into(),
             source_id: "source".into(),
@@ -8597,8 +8593,8 @@ pub(crate) mod tests {
             .unwrap(),
         );
         let source = Arc::new(
-            dashboard::Source::from_replay(
-                dashboard::SourceKey {
+            dashboard_base::Source::from_replay(
+                dashboard_base::SourceKey {
                     source_id: "source-test".into(),
                     revision: "revision-test".into(),
                 },
@@ -8738,7 +8734,7 @@ pub(crate) mod tests {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        viewer.host_map_action(dashboard::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
+        viewer.host_map_action(dashboard_core::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
         assert_eq!(viewer.take_export_results(), [(8, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(viewer.error.is_none() && viewer.capture.is_none());
     }

@@ -342,7 +342,10 @@ fn a_full_cache_passes_a_batch_through_the_depot_to_another_thread() {
         assert!(freeing.keep(class, block, &heap.0.depot, true));
     }
     let list = freeing.lists[class];
-    assert_eq!((list.head, list.count, list.spare), (blocks[2], 1, blocks[1]));
+    assert_eq!(
+        (list.head, list.count, list.spare),
+        (blocks[2], 1, blocks[1])
+    );
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), SMALL_LIMIT);
     assert_eq!(allocating.take(class, &heap.0.depot), blocks[0]);
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), 0);
@@ -367,7 +370,12 @@ fn a_small_class_batch_keeps_every_block_in_order() {
     let taken: Vec<*mut u8> = (0..batch)
         .map(|_| allocating.take(class, &heap.0.depot))
         .collect();
-    assert!(taken.iter().copied().eq(blocks[..batch].iter().rev().copied()));
+    assert!(
+        taken
+            .iter()
+            .copied()
+            .eq(blocks[..batch].iter().rev().copied())
+    );
     assert!(allocating.take(class, &heap.0.depot).is_null());
     for block in blocks {
         assert_ne!(unsafe { HeapFree(heap.0.heap(), 0, block.cast()) }, 0);
@@ -491,11 +499,17 @@ fn a_large_block_grows_and_shrinks_in_place_and_its_reservation_is_reused_zeroed
     let pointer = unsafe { heap.0.alloc(layout(40_000)) };
     assert!(!pointer.is_null());
     unsafe { pointer.write_bytes(0x3c, 40_000) };
-    assert_eq!(unsafe { heap.0.realloc(pointer, layout(40_000), 60_000) }, pointer);
+    assert_eq!(
+        unsafe { heap.0.realloc(pointer, layout(40_000), 60_000) },
+        pointer
+    );
     let bytes = |size| unsafe { std::slice::from_raw_parts(pointer, size) };
     assert!(bytes(40_000).iter().all(|&byte| byte == 0x3c));
     unsafe { pointer.add(40_000).write_bytes(0x3c, 20_000) };
-    assert_eq!(unsafe { heap.0.realloc(pointer, layout(60_000), 33_000) }, pointer);
+    assert_eq!(
+        unsafe { heap.0.realloc(pointer, layout(60_000), 33_000) },
+        pointer
+    );
     let base = pointer as usize / GRANULARITY * GRANULARITY;
     let tail = (base + page_end(pointer as usize - base + 33_000)) as *const u8;
     assert_eq!(region(tail).State, MEM_RESERVE);
@@ -609,8 +623,7 @@ fn an_exiting_thread_returns_its_batches_to_the_depot_and_the_rest_to_the_heap()
             .spawn(|| {
                 let heap = &heap.0;
                 let blocks: Vec<*mut u8> = (0..3).map(|_| unsafe { heap.alloc(whole) }).collect();
-                let smalls: Vec<*mut u8> =
-                    (0..3).map(|_| unsafe { heap.alloc(partial) }).collect();
+                let smalls: Vec<*mut u8> = (0..3).map(|_| unsafe { heap.alloc(partial) }).collect();
                 assert!(blocks.iter().chain(&smalls).all(|block| !block.is_null()));
                 for &block in &blocks {
                     unsafe { heap.dealloc(block, whole) };
@@ -619,26 +632,31 @@ fn an_exiting_thread_returns_its_batches_to_the_depot_and_the_rest_to_the_heap()
                     unsafe { heap.dealloc(block, partial) };
                 }
                 let before = heap.hold().heap.calls;
-                heap.thread_exit();
+                // SAFETY: This DLL thread-detach notification follows the thread's collector work.
+                unsafe { heap.thread_exit() };
                 assert_eq!(heap.hold().heap.calls - before, 3);
                 let late = unsafe { heap.alloc(partial) };
                 assert!(!late.is_null());
                 unsafe { heap.dealloc(late, partial) };
                 assert_eq!(heap.hold().heap.calls - before, 5);
-                blocks.into_iter().map(|block| block as usize).collect::<Vec<_>>()
+                blocks
+                    .into_iter()
+                    .map(|block| block as usize)
+                    .collect::<Vec<_>>()
             })
             .join()
             .unwrap()
     });
-    let mut taken: Vec<usize> = (0..3)
-        .map(|_| heap.0.depot.take(class) as usize)
-        .collect();
+    let mut taken: Vec<usize> = (0..3).map(|_| heap.0.depot.take(class) as usize).collect();
     assert!(heap.0.depot.take(class).is_null());
     taken.sort_unstable();
     freed.sort_unstable();
     assert_eq!(taken, freed);
     for block in taken {
-        assert_ne!(unsafe { HeapFree(heap.0.heap(), 0, block as *mut c_void) }, 0);
+        assert_ne!(
+            unsafe { HeapFree(heap.0.heap(), 0, block as *mut c_void) },
+            0
+        );
     }
 }
 
@@ -688,7 +706,10 @@ fn detach_forgets_cached_blocks_and_releases_every_reservation() {
     let kept = unsafe { heap.0.alloc(large) };
     assert!(!kept.is_null());
     unsafe { heap.0.dealloc(kept, large) };
-    assert_eq!(heap.0.pages.made.load(Ordering::Relaxed), PrivateHeap::record(kept));
+    assert_eq!(
+        heap.0.pages.made.load(Ordering::Relaxed),
+        PrivateHeap::record(kept)
+    );
     let handle = heap.0.heap();
     assert!(unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
     assert!(!process_heaps().contains(&handle));

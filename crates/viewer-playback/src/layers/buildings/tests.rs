@@ -16,7 +16,7 @@ use playhead::{Settings, Timeline};
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;
 use viewer_foundation::map::perspective::{Choice, VISION_TABLES, Vision};
-use viewer_world::map::map_buildings::{CityTerrain, Defines, MapBuildingAssets};
+use viewer_buildings::map_buildings::{CityTerrain, Defines, MapBuildingAssets};
 
 const GAP: std::ops::Range<i32> = 40..48;
 const FOGGED: i32 = 52;

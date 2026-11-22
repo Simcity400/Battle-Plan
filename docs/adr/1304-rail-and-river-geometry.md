@@ -16,4 +16,4 @@ River ribbons apply one forward in-place five-point mean with two endpoints reta
 
 River and rail use recorded effect definitions, with an applicable visual replacement preferred when it can be drawn. Shader constants retain the source programme's initialized ranges, including inherited pixel slot state. The high and low river techniques select corresponding diffuse and normal maps. Masks share one texture, with bank blend and opacity in their authored channels. Rivers upload the static geometry once per document and change only the selected range and pipeline on draws.
 
-[Railway geometry](../../crates/viewer-world/src/map/railways.rs) · [Rail shader](../../crates/viewer-world/src/map/rail_shader.rs) · [River geometry](../../crates/viewer-world/src/map/rivers.rs) · [River shader](../../crates/viewer-world/src/map/river_shader.rs)
+[Railway geometry](../../crates/viewer-rail/src/railways.rs) · [Rail shader](../../crates/viewer-rail/src/rail_shader.rs) · [River geometry](../../crates/viewer-terrain/src/rivers.rs) · [River shader](../../crates/viewer-terrain/src/river_shader.rs)

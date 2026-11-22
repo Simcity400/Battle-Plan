@@ -6,8 +6,10 @@ pub mod slots;
 #[cfg(test)]
 mod tests;
 
-use super::{Country, CountryParams, LoadContext, Product, artwork};
-use crate::{Artwork, Source, metadata::check_cancel};
+use dashboard_base::products::{Country, CountryParams, LoadContext, Product, artwork};
+use dashboard_core::dto::Artwork;
+use dashboard_base::Source;
+use dashboard_text::metadata::check_cancel;
 use dashboard_base::{ResearchFolder, ResearchTechnologyFolder};
 use dashboard_query::{Query, cost, identity::Holder};
 use replay::lanes::{self, Cell, History, Keys, Step};
@@ -364,7 +366,7 @@ pub(crate) fn entries(history: &History, last_read: Option<i32>, ends: Option<i3
 }
 
 fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Option<i32>> {
-    let links = crate::answer::links(source, span.run)?;
+    let links = dashboard_base::queries::links(source, span.run)?;
     let mut keys: Vec<u128> = links.slots.keys().filter(|&&raw| links.slot_at(raw, span.last) == Some(span.slot)).map(|&raw| slice_key(INPUTS, raw)).collect();
     if keys.is_empty() {
         return Ok(None);
@@ -463,7 +465,7 @@ impl Product for Research {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = crate::answer::query(source, params.branch())?;
+        let query = dashboard_base::queries::query(source, params.branch())?;
         let (history, warnings) = history(source, &query, &params.country, cancelled)?;
         present(source, context, history, warnings, cancelled)
     }

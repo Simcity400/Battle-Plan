@@ -10,4 +10,4 @@ A persistent worker receives one pose batch at a time using recycled sample stor
 
 The independent fixtures compare these paths without relying on GPU allocation addresses or approximate float equality. Resource, retained state and sharing comparisons use a stable bijection across frames. Signed zero, NaN payloads, equal poses backed by different retained clips, and visually ordered alpha draws expose weaker comparisons.
 
-[Model builds](../../crates/viewer-world/src/map/models/native/builds.rs) · [Descriptor and source order](../../crates/viewer-world/src/map/models/native/plan_tail.rs) · [Route placement](../../crates/viewer-world/src/map/models/native/walk.rs) · [Pose worker](../../crates/viewer-world/src/map/poses.rs)
+[Model builds](../../crates/viewer-models/src/native/builds.rs) · [Descriptor and source order](../../crates/viewer-models/src/native/plan_tail.rs) · [Route placement](../../crates/viewer-models/src/native/walk.rs) · [Pose worker](../../crates/viewer-models/src/poses.rs)

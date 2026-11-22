@@ -20,6 +20,7 @@ alloc-no-stdlib = { version = "2.0.4", default-features = false, features = [] }
 alloc-stdlib = { version = "0.2.4", default-features = false, features = [] }
 anyhow = { version = "1.0.104", default-features = false, features = ["default", "std"] }
 base64 = { version = "0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
+bitflags = { version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 block-buffer = { version = "0.10.4", default-features = false, features = [] }
 brotli = { version = "8.0.4", default-features = false, features = ["alloc-stdlib", "std"] }
 brotli-decompressor = { version = "5.0.3", default-features = false, features = ["alloc-stdlib", "std"] }
@@ -29,6 +30,7 @@ cfb = { version = "0.7.3", default-features = false, features = [] }
 cfg-if = { version = "1.0.4", default-features = false, features = [] }
 cpufeatures = { version = "0.2.17", default-features = false, features = [] }
 crc32fast = { version = "1.5.1", default-features = false, features = ["default", "std"] }
+crossbeam-utils = { version = "0.8.23", default-features = false, features = ["default", "std"] }
 crypto-common = { version = "0.1.7", default-features = false, features = ["std"] }
 ctor = { version = "0.8.0", default-features = false, features = ["proc_macro", "std"] }
 deranged = { version = "0.5.8", default-features = false, features = ["default"] }

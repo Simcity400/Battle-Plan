@@ -10,4 +10,4 @@ For a status-file replacement on Windows, prefer POSIX rename semantics so a rea
 
 The replacement regression uses canonical extended-length paths and checks both delete-sharing modes, including bounded retry when a reader denies deletion. Construct the temporary directory guard before opening readers so assertion failures clean up the test files. Status-snapshot tests change the source between measurement and serialization to confirm they use one owned observation.
 
-[Spool runtime and status replacement](../../crates/collector/src/runtime.rs)
+[Spool runtime and status replacement](../../crates/collector-runtime/src/runtime.rs)
