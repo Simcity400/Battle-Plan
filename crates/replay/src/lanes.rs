@@ -884,6 +884,24 @@ impl Bin {
         }
         self.hours += fold.hours;
     }
+
+    fn merge_later(&mut self, later: &Self) {
+        if self.hours == 0 {
+            *self = *later;
+            return;
+        }
+        if later.hours == 0 {
+            return;
+        }
+        if later.min < self.min {
+            (self.min, self.min_bucket) = (later.min, later.min_bucket);
+        }
+        if later.max > self.max {
+            (self.max, self.max_bucket) = (later.max, later.max_bucket);
+        }
+        (self.last, self.last_bucket) = (later.last, later.last_bucket);
+        self.hours += later.hours;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1118,9 +1136,9 @@ pub fn chart_at(
         walked.sort_unstable_by_key(|(key, _)| *key);
         for (key, folded) in walked {
             let row = chart.row(key, &mut rows);
-            for bin in 0..bins {
-                chart.life[row * bins + bin] += folded.life[bin];
-                if let Some(fold) = folded.fold(bin) {
+            for (bin, walked_bin) in folded.bins {
+                chart.life[row * bins + bin] += walked_bin.life;
+                if let Some(fold) = walked_bin.fold() {
                     chart.add(row, bin, &fold);
                 }
             }
@@ -1227,19 +1245,48 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(blocks)
 }
 
+#[derive(Clone, Copy, Default)]
+struct WalkBin {
+    value: Option<Fold>,
+    life: u32,
+    changes: u64,
+    falls: u64,
+    last_hour: i64,
+}
+
+impl WalkBin {
+    fn fold(&self) -> Option<Fold> {
+        let mut fold = self.value?;
+        fold.changes += self.changes;
+        fold.falls += self.falls;
+        Some(fold)
+    }
+}
+
+#[derive(Default)]
 struct Row {
-    values: Vec<Option<Fold>>,
-    life: Vec<u32>,
-    counts: Vec<(u64, u64)>,
+    bins: Vec<(usize, WalkBin)>,
     lived: Option<(i64, i64)>,
 }
 
 impl Row {
-    fn fold(&self, bin: usize) -> Option<Fold> {
-        let mut fold = self.values[bin]?;
-        fold.changes += self.counts[bin].0;
-        fold.falls += self.counts[bin].1;
-        Some(fold)
+    fn bin(&mut self, bin: usize) -> &mut WalkBin {
+        if let Some(&(last, _)) = self.bins.last() {
+            if last == bin {
+                return &mut self.bins.last_mut().expect("last").1;
+            }
+            if bin > last {
+                self.bins.push((bin, WalkBin::default()));
+                return &mut self.bins.last_mut().expect("pushed").1;
+            }
+        }
+        match self.bins.binary_search_by_key(&bin, |&(at, _)| at) {
+            Ok(at) => &mut self.bins[at].1,
+            Err(at) => {
+                self.bins.insert(at, (bin, WalkBin::default()));
+                &mut self.bins[at].1
+            }
+        }
     }
 }
 
@@ -1279,13 +1326,7 @@ impl<'a> Walk<'a> {
     }
 
     fn row(&mut self, key: u128) -> &mut Row {
-        let bins = self.bins;
-        self.rows.entry(key).or_insert_with(|| Row {
-            values: vec![None; bins],
-            life: vec![0; bins],
-            counts: vec![(0, 0); bins],
-            lived: None,
-        })
+        self.rows.entry(key).or_default()
     }
 
     fn parts(&self, from: i64, to: i64) -> Vec<(usize, i64, i64)> {
@@ -1308,7 +1349,7 @@ impl<'a> Walk<'a> {
         let parts = self.parts(from, to);
         let row = self.row(key);
         for (bin, start, end) in parts {
-            row.life[bin] += (end - start) as u32;
+            row.bin(bin).life += (end - start) as u32;
         }
         let lived = row.lived.get_or_insert((from, to - 1));
         lived.0 = lived.0.min(from);
@@ -1317,13 +1358,23 @@ impl<'a> Walk<'a> {
 
     fn add_value(&mut self, key: u128, value: i64, from: i64, to: i64) {
         let parts = self.parts(from, to);
+        if parts.is_empty() {
+            return;
+        }
         let row = self.row(key);
         for (bin, start, end) in parts {
             let mut part = Fold::constant(value, (end - start) as u32, summary::bucket_of(start, 0));
             part.last_bucket = summary::bucket_of(end - 1, 0);
-            match &mut row.values[bin] {
-                Some(held) => held.merge(&part),
-                slot @ None => *slot = Some(part),
+            let slot = row.bin(bin);
+            match &mut slot.value {
+                Some(held) => {
+                    held.merge(&part);
+                    slot.last_hour = slot.last_hour.max(end - 1);
+                }
+                empty @ None => {
+                    *empty = Some(part);
+                    slot.last_hour = end - 1;
+                }
             }
         }
     }
@@ -1358,9 +1409,9 @@ impl<'a> Walk<'a> {
             && before != now
             && let Some(&(bin, _, _)) = self.parts(hour, hour + 1).first()
         {
-            let counts = &mut self.row(key).counts[bin];
-            counts.0 += 1;
-            counts.1 += u64::from(now < before);
+            let slot = self.row(key).bin(bin);
+            slot.changes += 1;
+            slot.falls += u64::from(now < before);
         }
     }
 
@@ -1558,7 +1609,7 @@ impl Grid {
                 totals[bin].add(&fold);
             }
         };
-        for (place, (piece, frame)) in pieces.iter().enumerate() {
+        for (piece, frame) in pieces {
             let Some(at) = piece.key_at(key) else { continue };
             let directory = &piece.directory;
             let buckets = directory.buckets;
@@ -1576,7 +1627,7 @@ impl Grid {
                     summary::Span::None(count) => bucket += run(count, bucket)?,
                     summary::Span::One(fold) => {
                         if let Some(bin) = self.bin(directory, bucket) {
-                            merge(bin, fold, directory.level, mark(place, bucket));
+                            merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket)));
                         }
                         bucket += 1;
                     }
@@ -1593,7 +1644,7 @@ impl Grid {
                             if let Some(bin) = bin {
                                 let mut fold = Fold::constant(value, hours, directory.first_bucket + i64::from(start));
                                 fold.last_bucket = directory.first_bucket + i64::from(bucket - 1);
-                                merge(bin, fold, directory.level, mark(place, bucket - 1));
+                                merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket - 1)));
                             }
                         }
                     }
@@ -1643,8 +1694,15 @@ impl By {
     }
 }
 
-fn mark(piece: usize, bucket: u32) -> u64 {
-    ((piece as u64) << 32 | u64::from(bucket)) + 1
+fn hour_mark(hour: i64) -> u64 {
+    (hour - i64::from(i32::MIN) + 1) as u64
+}
+
+fn bucket_last_hour(directory: &summary::Directory, bucket: u32) -> i64 {
+    let size = summary::bucket_hours(directory.level);
+    let bucket_end = (directory.first_bucket + i64::from(bucket) + 1) * size;
+    let piece_end = directory.first_hour + i64::from(directory.hours);
+    bucket_end.min(piece_end) - 1
 }
 
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
@@ -1828,18 +1886,23 @@ impl Grid {
             .try_fold(empty, |(mut values, mut life, mut marks, mut best), &key| -> io::Result<_> {
                 values.fill(Bin::default());
                 marks.fill(0);
-                self.fold_key(pieces, key, &mut values, &mut life, None, walked.is_empty().then_some(&mut marks))?;
+                self.fold_key(pieces, key, &mut values, &mut life, None, Some(&mut marks))?;
                 if let Some(row) = walked.get(&key) {
-                    for (bin, value) in values.iter_mut().enumerate() {
-                        if let Some(fold) = row.fold(bin) {
-                            value.add(&fold);
-                        }
-                    }
-                }
-                if !walked.is_empty() {
-                    for (bin, value) in values.iter().enumerate() {
-                        if value.hours > 0 {
-                            marks[bin] = (i64::from(value.last_bucket) - i64::from(i32::MIN) + 1) as u64;
+                    for &(bin, walked_bin) in &row.bins {
+                        if let Some(fold) = walked_bin.fold() {
+                            let mark = hour_mark(walked_bin.last_hour);
+                            if values[bin].hours == 0 {
+                                values[bin].add(&fold);
+                                marks[bin] = mark;
+                            } else if mark < marks[bin] {
+                                let mut combined = Bin::default();
+                                combined.add(&fold);
+                                combined.merge_later(&values[bin]);
+                                values[bin] = combined;
+                            } else {
+                                values[bin].add(&fold);
+                                marks[bin] = mark;
+                            }
                         }
                     }
                 }
