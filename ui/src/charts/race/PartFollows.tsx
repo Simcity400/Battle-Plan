@@ -11,6 +11,7 @@ import type { SeriesStateReply } from '../../generated/dashboard';
 import { keyedAnswer, keyedStates, measureAnswer, measureParts, measureStates } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
 import { productRequest } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
 
 export class PartsHead {
   private entries = new Map<string, FollowEntry | null>();
@@ -84,7 +85,7 @@ export function usePartStates(client: DashboardClient, source: DashboardSource |
     if (!key || !parts || hour === null) return;
     const controller = new AbortController();
     const ask = (family: unknown) => loadProduct(client, productRequest({ sourceId: source!.id, revision: source!.revision, product: 'series-state',
-      params: { branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) } }), controller.signal, validateStates, source);
+      params: { branchId, family: family as ParamsFor<'series-state'>['family'], reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) } }), controller.signal, validateStates, source);
     const made = parts.kind === 'keyed'
       ? ask(parts.family).then(reply => keyedStates(reply, hour))
       : Promise.all(parts.items.map(item => ask(item.measure).then(reply => [item.id, measureStates(reply, hour)] as const)))

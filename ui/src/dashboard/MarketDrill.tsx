@@ -11,7 +11,6 @@ import MarketOccurrences from './MarketOccurrences';
 import { DELIVERY_KINDS } from './marketLedger.ts';
 import TradeMarketView from '../widgets/trade-flows/TradeMarketView';
 import '../widgets/trade-flows/tradeFlows.css';
-import type { MarketLendLeaseReply } from '../generated/dashboard';
 
 export default function MarketDrill({ runtime, widget, time, tags, selected, active, onAnswered }: {
   runtime: WidgetRuntime; widget: WidgetSpec; time: RegionAction; tags: readonly string[]; selected: string | null; active: boolean;
@@ -19,7 +18,7 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const gate = useGate(runtime, widget, time);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, gate, MARKET, { countries: [...tags].sort().map(countryFromKey) },
+  const head = useHeadProduct(runtime, gate, MARKET, { countries: [...tags].sort().map(countryFromKey) },
     { active, validate: validateMarketReply });
   useEffect(() => {
     onAnswered?.(head.at ?? undefined);

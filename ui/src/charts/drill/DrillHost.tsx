@@ -7,17 +7,19 @@ import { TimeRegion } from '../../dashboard/widgetTime';
 import GateState from '../../dashboard/GateState';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { DrillControl } from './useDrill';
+import { useDrillShown } from '../../dashboard/widgetPerf.ts';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
 export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, pinRefused = null, anchor, returnFocus, root, main, children }: {
-  mode: 'inline' | 'popout'; drill: Pick<DrillControl, 'open' | 'following' | 'region' | 'gate' | 'outside' | 'follow' | 'pause' | 'close'>; runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; subject?: boolean;
+  mode: 'inline' | 'popout'; drill: Pick<DrillControl, 'saved' | 'open' | 'following' | 'region' | 'gate' | 'hour' | 'outside' | 'follow' | 'pause' | 'close'>; runtime: Pick<WidgetRuntime, 'clock' | 'tracks'>; subject?: boolean;
   title: string; day: ReactNode; canFollow: boolean; onClose?: () => void; onPin?: () => void; pinRefused?: string | null;
   anchor: RefObject<HTMLElement | null>;
   returnFocus?: string;
   root?: (element: HTMLDivElement | null) => void;
   main: ReactNode; children: ReactNode;
 }) {
+  const saved = drill.saved;
   const open = drill.open && subject;
   const onClose = () => { drill.close(); closed?.(); };
   const panel = usePopover('start');
@@ -26,7 +28,7 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
   const back = useRef<HTMLButtonElement>(null);
   const close = useRef({ onClose, returnFocus, open });
   close.current = { onClose, returnFocus, open };
-  const popout = mode === 'popout';
+  const popout = mode === 'popout' && !drill.saved;
   const [mounted, setMounted] = useState(open);
   useEffect(() => {
     if (!open) { setMounted(false); return; }
@@ -79,16 +81,19 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
   }, [popout, open, anchor]);
 
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
+  useDrillShown(runtime.clock, open && !popout, () => shut ? null : drill.hour);
   const body = <TimeRegion runtime={runtime} region={drill.region}>{shut ? <GateState gate={drill.gate} loading="Loading…" /> : children}</TimeRegion>;
   const header = <div className="drill-header">
-    {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
-    <strong>{title}</strong>
+    {popout || saved ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
+    {saved ? null : <strong>{title}</strong>}
     <span className="drill-day">{shut ? '' : day}</span>
     {canFollow && <FollowControl following={drill.following} onFollow={drill.follow} onPause={drill.pause} />}
     {onPin && !shut && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
     {!onPin && pinRefused && !shut && <button type="button" className="icon-button small" aria-disabled="true" aria-label={`Can’t pin: ${pinRefused}`} data-tooltip={pinRefused}><Icon name="pin" /></button>}
-    {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
+    {popout && !saved && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
   </div>;
+
+  if (saved) return <div className="drill-saved" role="region" aria-label={title}>{header}<div className="drill-body" ref={root}>{body}</div></div>;
 
   if (popout) return <>
     {main}

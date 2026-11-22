@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
-import type { AskedRequest, ProductRequest } from './request';
+import type { AskedRequest, ProductRequest, productRequest } from './request';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
 import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
   SETTINGS_DETAIL, SPEC, stageOf, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
@@ -24,10 +24,11 @@ const roles: readonly boolean[] = [
   false satisfies Takes<ProductRequest, { sourceId: string; revision: string; product: string; params: Record<string, never> }>,
   false satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: number }[] } }>,
   true satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: GatedHour }[] } }>,
+  false satisfies Takes<Parameters<typeof productRequest<string>>[0], { sourceId: string; revision: string; product: string; params: { windowHour: number } }>,
 ];
 
 test('request params are typed from the contract’s roles: an exact read, nested ones included, takes only a gated hour, and a name decides nothing', () => {
-  assert.deepEqual(roles, [false, true, false, false, true, false, true, false, false, true]);
+  assert.deepEqual(roles, [false, true, false, false, true, false, true, false, false, true, false]);
 });
 const early = track('early', 0, 9, 0);
 const tracks = [late, early];
@@ -244,6 +245,8 @@ test('a product’s buckets are boundaries, and each bucket is read at one recor
   assert.equal(bucketRead(branch, 719, 720), 100, 'every hour of a bucket asks the same representative');
   assert.equal(bucketRead(branch, 1000, 720), 731, 'a bucket opening in a gap is read at its first recorded hour');
   assert.equal(bucketRead(branch, null, 720), null);
+  assert.equal(bucketRead(branch, 1000, 720, [{ firstHour: 900, lastHour: 1300 }]), 900, 'a held country’s bucket is read at its first recorded hour inside the country’s runs');
+  assert.equal(bucketRead(branch, 1000, 720, [{ firstHour: 100, lastHour: 719 }]), null, 'a bucket outside the country’s runs has no representative');
 });
 
 test('coverage spans name the run of hours that share one coverage answer', () => {

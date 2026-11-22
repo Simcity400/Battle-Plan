@@ -25,7 +25,7 @@ import { agencyName, agencyRows, agencyStructure, agencyTooltip, operativesCell,
 import type { AgencyRankField } from './types';
 import './agencyComparison.css';
 import IntelSection from './IntelSection';
-import type { Agency, AgencyComparisonReply } from '../../generated/dashboard';
+import type { Agency } from '../../generated/dashboard';
 
 const NO_ROWS: readonly Agency[] = [];
 const rowKey = (agency: Agency) => String(agency.country.id);
@@ -49,7 +49,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const includeUncreated = options.includeUncreated === true;
   const params = useMemo(() => track ? { includeUncreated } : null, [track, includeUncreated]);
-  const head = useHeadProduct<AgencyComparisonReply>(runtime, useGate(runtime, widget), 'agency-comparison', params, { active, validate: validateAgencies, structure: agencyStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'agency-comparison', params, { active, validate: validateAgencies, structure: agencyStructure });
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
   const ready = top !== null || match.ready;

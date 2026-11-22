@@ -376,15 +376,17 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     name_used(query, &used, content, &mut named, cancelled)?;
     warnings.extend(std::mem::take(&mut named.warnings));
     let icons = named.icons();
+    let line_hours = held_hours(query, &params.country, params.within.as_deref(), from, to);
+    let named_at = if params.within.is_some() { line_hours.last().map_or(to, |span| span.last_hour) } else { to };
     Ok(ProductionLinesReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, to),
+        tag: query.holders.name(&params.country, named_at),
         decimals: DECIMALS,
         lines,
         variants: named.variants.into_values().collect(),
         organisations: named.organisations.into_values().collect(),
         icons,
-        line_hours: held_hours(query, &params.country, from, to),
+        line_hours,
         detail_hours: DETAIL_HOURS,
         warnings,
     })

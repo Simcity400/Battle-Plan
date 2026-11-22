@@ -19,7 +19,7 @@ export default function RegionProvinces({ runtime, widget, region, time, active,
   onHour?: (hour: number | null) => void;
 }) {
   const params = useMemo(() => ({ region }), [region]);
-  const read = useHeadProduct<ProvincesReply>(runtime, useGate(runtime, widget, time), 'regional-weather-provinces', params, { active, validate: validateProvinces, structure });
+  const read = useHeadProduct(runtime, useGate(runtime, widget, time), 'regional-weather-provinces', params, { active, validate: validateProvinces, structure });
   useEffect(() => { if (read.data) onWarnings(read.data.warnings); }, [read.data]);
   useEffect(() => { onHour?.(read.data?.readHour ?? read.hour); }, [read.data, read.hour]);
   useEffect(() => () => onHour?.(null), []);

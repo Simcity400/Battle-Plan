@@ -30,7 +30,7 @@ import { activeTracks, choiceName, doctrineIcons, doctrineSprite, folderName, ma
 import type { TrackNumbers } from './doctrineMasteryData';
 import { OPTIONS } from './definition';
 import './doctrineMastery.css';
-import type { DoctrineMasteryReply, DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
+import type { DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
@@ -40,7 +40,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const valueId = useId();
   const root = useRef<HTMLDivElement | null>(null);
   const gate = useGate(runtime, widget);
-  const head = useHeadProduct<DoctrineMasteryReply>(runtime, gate, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
+  const head = useHeadProduct(runtime, gate, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const drawn = withHeld(head), holding = drawn !== head;

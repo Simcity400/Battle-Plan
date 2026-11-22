@@ -53,11 +53,14 @@ import type { TimeChartProps } from '../TimeChart';
 import type { ForceSizeReply, MissingSpan } from '../../generated/dashboard';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
+
 export interface PartsRaceViewConfig {
-  product: string; title: string; subject: string; icon: IconName;
+  product: DeclaredProduct; title: string; subject: string; icon: IconName;
   details?: ComponentType<PartsRaceDetailProps>;
   options: readonly OptionField[];
   request: (branchId: string, countries: { tags: readonly string[]; top?: number }, options: Readonly<Record<string, OptionValue>>) => ForceParams;
@@ -88,7 +91,7 @@ function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<stri
   track: ReturnType<WidgetProps['runtime']['tracks']['find']>, params: ForceParams | null, active: boolean) {
   const totals = config.totals?.(options) ?? null;
   const ranked = params?.top != null;
-  const tiles = useTiles(runtime.client, track && params && totals && !ranked ? { source: track.source, branchId: params.branchId,
+  const tiles = useTiles(runtime.client, track && params && totals && !ranked ? { source: track.source, span: gate.span, branchId: params.branchId,
     family: { kind: totals.kind, measure: totals.measure }, tags: params.countries.map(countryKey), lastHour: track.branch.lastHour } : null, active);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const [ranking, setRanking] = useState<{ key: string; lines: Map<string, ChartSummary>; unrecorded: string | null }>();
@@ -162,8 +165,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [widget.countries, fallback, groups.data, lastHour]);
   const params = track && (resolved.top || resolved.tags.length) ? config.request(track.branch.id, resolved, options) : null;
   const validate = useCallback((value: unknown) => validateForceReply(value, config.referenced), [config.referenced]);
-  const manifest = useProduct<ForceSizeReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: config.product, params: { ...params, window: null } }) : null, active, validate, track?.source);
+  const manifest = useProduct<ForceSizeReply>(runtime.client, track && params ? forwardRequest(track.source,
+    config.product, { ...params, window: null } as ParamsFor<DeclaredProduct>) : null, active, validate, track?.source);
   const identity = track && params && manifest.data ? JSON.stringify([track.source.id, track.source.revision, config.product, params]) : null;
   const viewport = useRef<{ key: string; range: Span } | null>(null);
   const viewportKey = JSON.stringify([identity, view, extent, options.playback, options.windowDays, options.afterPlayhead]);
@@ -182,8 +185,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: config.product, params: { ...params!, window: index } })), () => windowsAt(runtime.clock.getHour()), subscribeClock, active && identity !== null,
+  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => (forwardRequest(track!.source,
+    config.product, { ...params!, window: index } as ParamsFor<DeclaredProduct>)), () => windowsAt(runtime.clock.getHour()), subscribeClock, active && identity !== null,
   validate, track?.source);
   missingKey.current = hour => windowsAt(hour).filter(index => !history.holds(index)).join(',');
   const onViewChange = useCallback((x: readonly [number, number]) => {
@@ -315,11 +318,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     playhead={breakdownFollows ? clockHour : playhead} tag={breakdownTag} originHour={originHour}
     holder={pinned ? restored?.key ?? undefined : selection?.key ?? undefined} hour={drillAt} following={breakdownFollows} pinned={pinned}
     countrySlot={pinned ? countrySlot : null} saved={!pinned || restored !== null}
-    onPick={hour => { if (active) dispatchDrill({ type: 'pick', hour }); }} onFollow={() => { if (active) drillControl.follow(); }}
+    onPick={hour => { if (active) dispatchDrill({ type: 'pick', hour }); }}
     picker={!pinned && model ? { tags: model.tags, onChange: (tag, hour) => openAt(tag, hour) } : null} details={config.details}
     measure={measure} ownership={ownership} partsLabel={partsLabel} referenceLabel={referenceLabel} note={config.note?.(options)} formatValue={formatValue} />;
-  if (pinned) return <div className="parts-race-drill" ref={anchor}>{drillControl.outside ? <WidgetState kind="outside" read={coverageOf(drillControl.outside)} />
-    : restored === null ? <WidgetState kind="unavailable" message="Saved country unavailable." /> : state && !model ? state : breakdown}</div>;
+  if (pinned) return <div className="parts-race" ref={anchor}><DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor} title={partsLabel}
+    day={breakdownFollows && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} canFollow={track !== undefined} main={null}>
+    {restored === null ? <WidgetState kind="unavailable" message="Saved country unavailable." /> : state && !model ? state : breakdown}</DrillHost></div>;
   const choice = choices && track ? <div className="parts-race-details">
     <p className="drill-empty">Choose a country for {dayLabel(drillAt)}.</p>
     <CountryPicker countries={track.source.metadata.countries} allowedTags={choices.tags} selectedTag={null} playerCountryId={null}

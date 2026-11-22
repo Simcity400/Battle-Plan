@@ -15,9 +15,11 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
 import { useTiles } from '../../dashboard/tiles/useTiles';
-import type { CoveredBranch, GatedHour, GatedParams } from '../../dashboard/regionTime';
+import type { CoveredBranch, GatedHour } from '../../dashboard/regionTime';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
-import { productRequest } from '../../dashboard/request.ts';
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
+import { withinParams } from '../../dashboard/keyedSeriesData.ts';
 
 export type MeasureFamily = string;
 
@@ -33,14 +35,14 @@ export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, sour
   const [failure, setFailure] = useState<{ owner: typeof owner; error: Failure }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
   const navigation = useRef<AbortController | null>(null);
-  const tiles = useTiles(client, enabled ? { source: source!, branchId: branchId!, family: { kind: family, measure }, tags, within, lastHour, marks: withMarks } : null, active, live);
+  const tiles = useTiles(client, enabled ? { source: source!, branchId: branchId!, family: { kind: family, measure }, tags, within, span: gate.span, lastHour, marks: withMarks } : null, active, live);
   const tileView = tiles.onView;
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => {
     if (view.to < view.from) return;
     tileView(view);
   }, [tileView]);
-  const request = (product: string, params: GatedParams) => (productRequest({ sourceId: source!.id, revision: source!.revision, product,
-    params: { branchId, family: { kind: family, measure }, ...params } }));
+  const request = <K extends DeclaredProduct>(product: K, params: ParamsFor<K>) => forwardRequest(source!, product,
+    { branchId, family: { kind: family, measure }, ...params } as unknown as ParamsFor<K>);
   const content = useContentRevision(client);
   const readLines = tiles.read;
   const lineOf = useCallback((tag: string): ChartSummary | undefined => readLines()?.get(tag)?.summary, [readLines]);
@@ -64,7 +66,7 @@ export function useMeasureSeries(client: DashboardClient, gate: SeriesGate, sour
     const controller = new AbortController(); navigation.current = controller;
     const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
     if (!range) return;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), key, from: gate.within(from), ...range }),
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), ...withinParams(tags, within, gate.span), key, from: gate.within(from), ...range }),
       controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');

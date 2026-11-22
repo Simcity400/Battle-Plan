@@ -29,20 +29,18 @@ export interface TensionBreakdownProps {
   layers: readonly TensionContribution[];
   events: readonly ThreatEvent[];
   tooltip: (hour: number) => TooltipContent | null;
-  report: () => void;
   onHover?: (hour: number | null) => void;
   onPick?: (hour: number) => void;
 }
 
 export default function TensionBreakdown({ runtime, gate, track, active, options, extent, playhead, following, hour, read, reply, live, error, onRetry, looks, colour,
-  otherColour, layers, events, tooltip, report, onHover, onPick }: TensionBreakdownProps) {
+  otherColour, layers, events, tooltip, onHover, onPick }: TensionBreakdownProps) {
   const [cause, setCause] = useState<string | null>(null);
   const keys = useMemo(() => eventKeys(events), [events]);
   const name = (item: TensionContribution) => contributorName(item.tag, item.remembered, tag => looks.name(tag));
   const scale = reply?.contributionScale ?? 100_000;
   const parts = useMemo<LiveDrillParts | undefined>(() => reply ? {
     read: () => {
-      report();
       const values = live.read();
       const world = worldCells(values, reply.unnamed);
       const rows: DrillPart[] = reply.contributions.map(item => {
@@ -54,7 +52,7 @@ export default function TensionBreakdown({ runtime, gate, track, active, options
       return { parts: rows, total: world.sum === null ? null : world.sum / scale, totalText: world.sum === null ? 'Not recorded' : percentOf(world.sum, scale, 3) };
     },
     subscribe: live.subscribe,
-  } : undefined, [reply, live, scale, looks, colour, report]);
+  } : undefined, [reply, live, scale, looks, colour]);
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
       if (!reply) return '';

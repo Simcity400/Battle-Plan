@@ -27,7 +27,7 @@ import { experienceFactorText, experienceText } from '../generals/experience';
 import { OPTIONS } from './definition';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';
-import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboard';
+import type { LeaderCareerReply } from '../../generated/dashboard';
 import { axisAt, regionWindow, SPEC, type RegionAction } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -44,7 +44,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
     product: 'unit-leader-career', params: { branchId: track.branch.id, reference } }) : null, active, validateCareer, track?.source);
   const params = useMemo(() => ({ reference }), [reference]);
   const region = useRegion(widget, time);
-  const head = useHeadProduct<LeaderHourReply>(runtime, useGate(runtime, widget, time), 'unit-leader-hour', params, { active, validate: validateLeaderHour });
+  const head = useHeadProduct(runtime, useGate(runtime, widget, time), 'unit-leader-hour', params, { active, validate: validateLeaderHour });
   const regionAt = useRegionHour(runtime, region, active);
   const data = career.data;
   const now = head.data;

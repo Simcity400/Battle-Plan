@@ -30,7 +30,8 @@ import { OPTIONS } from './definition';
 import { raidDescription, raidLogRows, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData';
 import '../../charts/log/log.css';
 import '../../dashboard/intelligence.css';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import { useCampaignGate } from '../../dashboard/regionGate';
 
 const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
@@ -74,10 +75,12 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
       victim: row.item.episode.victim === null ? { name: 'Controller not known' } : at(row.item.episode.victim) };
   }, [labelAt]);
   const lastHour = track?.branch.lastHour;
+  const gate = useCampaignGate(runtime, widget, active);
   const namesAsked = useMemo(() => data && lastHour !== undefined ? targetNameRequest(data.episodes, lastHour) : null, [data, lastHour]);
   const placeNames = useProduct<PlaceNamesReply>(runtime.client, track && namesAsked && (namesAsked.places.length || namesAsked.states.length) ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
-    params: { branchId: track.branch.id, land: true, places: namesAsked.places, states: namesAsked.states } }) : null, active, validatePlaceNamesReply, track?.source);
+    params: { branchId: track.branch.id, land: true, places: namesAsked.places.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }),
+      states: namesAsked.states.flatMap(state => { const hour = gate.recorded(state.hour); return hour === null ? [] : [{ ...state, hour }]; }) } }) : null, active, validatePlaceNamesReply, track?.source);
   const names = useMemo(() => placeNames.data ? targetNames(placeNames.data) : null, [placeNames.data]);
   const chips = useMemo(() => (data ? raidLogTypes(data) : []).map(type => {
     const value = setToken(type.token);

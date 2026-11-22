@@ -81,7 +81,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     shown(reply.hour);
   }, [groupOf, live, shown]);
   const gate = useGate(runtime, widget);
-  const head = useHeadProduct<WarContributionsReply>(runtime, gate, 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
+  const head = useHeadProduct(runtime, gate, 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
     active, validate: validateWarContributions, paint, structure: reply => contributionStructure(groupOf(reply), reply.available),
   });
   const endedAt = gate.recorded(readHour);

@@ -18,7 +18,7 @@ import { useGate } from './regionGate';
 import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
 import type { AirLooks } from './airSuperiority';
 import { airChoiceKey, airChoiceToken } from './airOptions';
-import type { AirChoicesReply, AirSide, AirSuperiorityReply, FactionGroup } from '../generated/dashboard';
+import type { AirChoicesReply, AirSide, FactionGroup } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 
 const NO_WARNINGS: string[] = [];
@@ -93,7 +93,7 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
     [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
-  const product = useHeadProduct<AirSuperiorityReply>(runtime, useGate(runtime, widget), 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
+  const product = useHeadProduct(runtime, useGate(runtime, widget), 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows });
   const looks = useAirLooks(props, product.data, product.at, mode, product.read === 'followed');
   useEffect(() => {
     const warnings = [...(product.data?.warnings ?? []), ...looks.warnings];

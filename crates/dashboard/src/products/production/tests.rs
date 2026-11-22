@@ -125,6 +125,8 @@ fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_publish
     let held = ProductionLinesParams { within: Some(vec![crate::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }]), ..params };
     let within = lines_reply(&source, &query, &held, &no_content(), &AtomicBool::new(false)).unwrap();
     assert_eq!(within.lines[0].steps, [step(1_000, 1_099, true, "100", 2)], "a held identity's lines are read only within its own runs");
+    assert_eq!(within.lines[0].key, reply.lines[0].key, "a line keeps its key whatever scope asks for it");
+    assert_eq!(within.line_hours, [crate::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }], "the scoped reply's hours are the held identity's");
 }
 
 #[test]

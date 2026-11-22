@@ -44,7 +44,7 @@ export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track
   const openersKey = list.openers.join(',');
   const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
   const spec = useMemo<LogSpec | null>(() => track && logSpan && kinds && list.openers.length ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
-    product: list.product, facets: cardFacets(kinds, list.openers, list.continuing), ...(list.scope ? { scope: list.scope } : {}), ...logSpan } : null,
+    product: list.product, facets: cardFacets(kinds, list.openers, list.continuing), ...(list.scope ? { scope: list.scope?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) } : {}), ...logSpan } : null,
   [track, kinds, openersKey, list.product, list.scope, logSpan?.firstHour, logSpan?.lastHour]);
   const feed = useLogPages<C | null, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active, list.row, FEED_PAGE_SIZE, pageNotes);
   const breaksKey = track ? JSON.stringify(recordingBreaks(track.branch)) : '[]';

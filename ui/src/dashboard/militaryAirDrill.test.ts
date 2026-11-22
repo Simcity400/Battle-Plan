@@ -95,7 +95,7 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
   reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
   reply.parts = reply.parts.map(part => ({...part, opponentKnown: null, buildingToken: 'synthetic-private-token', buildingId: 1, state: 0}));
   const vite = await server({...common,
-    '/dashboard/products.ts': 'export const useProduct = () => ({error: new Error("Synthetic raw place-name failure")}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
+    '/dashboard/products.ts': 'export const useProduct = (client, request) => request ? {error: new Error("Synthetic raw place-name failure")} : {}; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
   });
   try {
@@ -112,6 +112,10 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
       assert.equal(item.unknownValue, true, 'incomplete intervals remain unknown');
     }
     assert.equal(chart.authoritativeTotal!.unknownValue, true);
+    renderToStaticMarkup(createElement(Breakdown, {data: {...reply, parts: reply.parts.map(part => ({...part, state: 7}))}, runtime: {client: {}, clock: {}} as never,
+      track: state.track as unknown as BoundTrack, tag: 'B', identity: '1:9', namedAt: null, from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
+    assert.ok(host.__bombingBreakdown!.items.length > 0);
+    for (const item of host.__bombingBreakdown!.items) assert.equal(item.path[1].label, 'State name not recorded', 'a state name the gate withholds is not recorded, never pending');
   } finally {await vite.close(); delete host.__airDrill; delete host.__bombingBreakdown;}
 });
 

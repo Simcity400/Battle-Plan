@@ -91,7 +91,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   }, [widget, track, runtime, drillControl]);
   const open = drill.breakdown !== null && region !== null;
   const drillTime = drillControl.region.action;
-  const wings = useHeadProduct<AirMissionWingsReply>(runtime, useGate(runtime, widget, drillTime), 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
+  const wings = useHeadProduct(runtime, useGate(runtime, widget, drillTime), 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
     { active: active && open, validate: validateAirWings, structure: wingsStructure });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;

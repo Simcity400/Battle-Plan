@@ -25,7 +25,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
 import { airMode, airParams, useAirLooks } from '../../dashboard/useAirSuperiority';
-import type { AirRankingReply, AirSide, AirSuperiorityReply, AirTimelineReply } from '../../generated/dashboard';
+import type { AirRankingReply, AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
 import { OPTIONS } from './definition';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
@@ -79,7 +79,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const hasData = data !== undefined;
   const heading = following && hasData && !needsViewpoint && regions.length > 0;
   const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
-  const head = useHeadProduct<AirSuperiorityReply>(runtime, gate, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
+  const head = useHeadProduct(runtime, gate, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);

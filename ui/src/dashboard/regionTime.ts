@@ -184,11 +184,14 @@ export function bucketEdges(track: Branch, size: number): readonly number[] {
   return edges;
 }
 
-export function bucketRead(track: Branch | undefined, hour: number | null, size: number): TrackHour | null {
+export function bucketRead(track: Branch | undefined, hour: number | null, size: number, within?: readonly HourWindow[] | null): TrackHour | null {
   if (!track || hour === null) return null;
-  const start = Math.floor(hour / size) * size;
-  const last = Math.min(track.branch.lastHour, start + size - 1);
-  for (let at = Math.max(track.branch.firstHour, start); at <= last; at = coverageSpan(track, at)[1] + 1) {
+  const start = Math.max(track.branch.firstHour, Math.floor(hour / size) * size);
+  const last = Math.min(track.branch.lastHour, Math.floor(hour / size) * size + size - 1);
+  const pieces = (within ?? [{ firstHour: start, lastHour: last }])
+    .map(span => ({ firstHour: Math.max(start, span.firstHour), lastHour: Math.min(last, span.lastHour) }))
+    .filter(span => span.firstHour <= span.lastHour).sort((a, b) => a.firstHour - b.firstHour);
+  for (const piece of pieces) for (let at = piece.firstHour; at <= piece.lastHour; at = coverageSpan(track, at)[1] + 1) {
     const recorded = recordedHour(track, at);
     if (recorded !== null) return recorded;
   }

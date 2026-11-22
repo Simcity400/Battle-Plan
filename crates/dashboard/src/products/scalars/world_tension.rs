@@ -242,7 +242,7 @@ pub fn next_change(query: &Query<'_>, params: &serde_json::Value) -> io::Result<
         let declared = dashboard_declare::series(kind).ok_or_else(|| io::Error::other(format!("{kind} is not declared")))?;
         let measure = declared.measure(measure).ok_or_else(|| io::Error::other(format!("{kind} has no measure {measure}")))?;
         let line = series::Line::new(query, declared, measure)?;
-        found.push(line.change_lines(&[series::Ask::whole("World")], &[measure], origin, step.key, bounds)?);
+        found.push(line.change_lines(&[series::Ask::whole("World")], &[measure], origin, step.key, bounds, &series::Within::new())?);
     }
     let hour = found.into_iter().flatten().reduce(|a, b| if forward { a.min(b) } else { a.max(b) });
     Ok(serde_json::to_value(series::SeriesKeyReply { hour: hour.map(f64::from) })?)

@@ -57,7 +57,7 @@ test('dated fact hooks own independent reads and mask switched clients immediate
         reads.push({ signal, answer: () => resolve({ ...request, data: {} }) });
       }) } as unknown as DashboardClient;
       const wanted = [{ hour: 100, tag: 'A' }];
-      const spec = { product: 'synthetic', perRequest: 64, params: () => ({}), extract: () => new Map([['A', 'Recorded name']]) };
+      const spec = { product: 'country-facts' as const, perRequest: 64, params: () => ({}), extract: () => new Map([['A', 'Recorded name']]) };
       host.__datedFactHooks = a;
       a.begin(); assert.equal(hook(client, track, wanted, true, spec).size, 0); a.commit();
       host.__datedFactHooks = b;

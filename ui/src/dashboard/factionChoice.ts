@@ -1,7 +1,7 @@
 import { countryFromKey } from './countryKey.ts';
 import { countryIdentityIndex } from './countryIdentity.ts';
 import { useCallback, useMemo } from 'react';
-import type { CountryGroupReply, FactionDetailReply, FactionGroup } from '../generated/dashboard';
+import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
 import type { BoundTrack } from './model';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
@@ -81,7 +81,7 @@ export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, fa
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = useMemo(() => faction ? { faction, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, [faction, viewpointTag]);
-  return useHeadProduct<FactionDetailReply>(runtime, useGate(runtime, widget), 'faction-details', params,
+  return useHeadProduct(runtime, useGate(runtime, widget), 'faction-details', params,
     { active, validate: validateFactionDetails, structure: detailsStructure });
 }
 

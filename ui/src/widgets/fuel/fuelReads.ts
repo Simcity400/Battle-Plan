@@ -29,7 +29,7 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: strin
   active: boolean, structure: (reply: CountryFuelReply) => string): FuelAt {
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
   const paint = useCallback((reply: CountryFuelReply) => live.set(reply), [live]);
-  const head = useHeadProduct<CountryFuelReply>(runtime, useGate(runtime, widget, follows ? FOLLOW : pickAt(hour ?? Number.NaN)), COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
+  const head = useHeadProduct(runtime, useGate(runtime, widget, follows ? FOLLOW : pickAt(hour ?? Number.NaN)), COUNTRY_FUEL, tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateCountryFuel, structure, paint });
   useEffect(() => { live.set(head.data); }, [live, head.data]);
   return { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: follows, shownAt: head.shownAt,

@@ -10,7 +10,6 @@ import { useCountriesRequest, useCountriesSelectionAt } from '../../dashboard/us
 import { leaderRequestSelection, leaderRows, leadersStructure, topLeader, validateLeaders, withheldLeaderState, withheldLeaders } from '../generals/generalsData';
 import { OPTIONS } from './definition';
 import CareerView from './CareerView';
-import type { UnitLeadersReply } from '../../generated/dashboard';
 
 export default function GeneralCareerWidget(props: WidgetProps) {
   const { widget, runtime } = props;
@@ -32,7 +31,7 @@ function TopGeneralCareer(props: WidgetProps) {
   const params = useMemo(() => selection.requestTags === undefined ? null : { selection: leaderRequestSelection(selection.requestTags), leaders: 'land' },
     [selection.requestTags]);
   const atRead = useCountriesSelectionAt(widget, runtime, active);
-  const head = useHeadProduct<UnitLeadersReply>(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
+  const head = useHeadProduct(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const read = atRead.hour;
   const rows = useMemo(() => head.data && read !== null && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
   const top = useMemo(() => topLeader(rows), [rows]);

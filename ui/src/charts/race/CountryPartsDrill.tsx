@@ -1,5 +1,4 @@
 import type { Gate } from '../../dashboard/regionGate';
-import FollowControl from '../drill/FollowControl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -25,10 +24,11 @@ import { bindCountryParts, countryPartsRemainder, countryPartsSelection, exactPa
 import type { CountryPartsData } from './countryPartsDrillData';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
 import type { NativePartsRaceDrillAction, PartsRaceDrillState } from './partsRaceDrill';
-import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 import { useDrill } from '../drill/useDrill';
 import LiveText, { liveTexts } from '../LiveText';
-import { productRequest } from '../../dashboard/request.ts';
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
 
 const HOLDERS = { holders: true };
 
@@ -36,7 +36,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
   resetKey, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
   track: BoundTrack | undefined; options: Readonly<Record<string, OptionValue>>; extent: [number, number]; playhead: number | null; moment: number;
-  product: string; params: (tag: string) => GatedParams; validate: (value: unknown) => T; decode: (reply: T) => CountryPartsData;
+  product: DeclaredProduct; params: (tag: string) => GatedParams; validate: (value: unknown) => T; decode: (reply: T) => CountryPartsData;
   numbers: (reply: T) => T;
   defaultTag: string | null; pickTag: (hour: number) => string | null; title: string; measure: string;
   virtual?: boolean; positiveGeometry?: boolean; warnings: readonly string[]; resetKey: string;
@@ -74,7 +74,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const hour = Math.floor(drillOpen ? regionAt ?? moment : moment);
   const chartPlayhead = following ? hour : playhead;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => Math.floor(runtime.clock.getHour()) + offset, at => new Map([['day', dayLabel(at)]])), [runtime.clock, offset]);
-  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) }) : null;
+  const request = track && tag ? forwardRequest(track.source, product, params(tag) as ParamsFor<DeclaredProduct>) : null;
   const reply = useProduct(runtime.client, request, active, validate, track?.source);
   const numeric = useMemo(() => new NumericReply<T>(), [runtime.client]);
   const pickScope = JSON.stringify([contextKey, product, 'mix', tag, originHour]);
@@ -157,7 +157,6 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     presentation={{ held: true, strongMixName: true, mixKeyHours: 'starts', windowedLegend: virtual, mixLegend: details === undefined }}
     mixEmpty={{ message: 'Choose a country in the widget settings.', unavailable: name => `Breakdown unavailable for ${name}.` }}
     beforeChart={<div className="parts-race-details">
-      {pinned && <p className="drill-empty">{dayLabel(hour)} {tag && liveHour != null && <FollowControl following={following} onFollow={follow} onPause={pause} />}</p>}
       {details && tag && binding ? details({ gate: drillControl.gate, tag, hour, tagAt: binding.tagAt, key: [
         ...parts.slice(0, -1).map((part, index) => ({ id: part.id, label: part.label, color: colours.get(part.id), value: at?.values[index] ?? null })),
         ...(remainder ? [{ id: UNATTRIBUTED_PART.id, label: UNATTRIBUTED_PART.label, color: colours.get(UNATTRIBUTED_PART.id), value: Number(remainder) }] : [])] })
@@ -182,13 +181,12 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const pinTime = pinTimed.time;
   const pinHeld = drillControl.gate.checkHold(nativeSelection ? { tag: nativeSelection.tag, origin: nativeSelection.hour } : null);
   const pinCountry = pinHeld.held;
-  if (pinned) return <div className="parts-race-drill">{header}{drillControl.outside ? <WidgetState kind="outside" read={coverageOf(drillControl.outside)} /> : selection ?? breakdown}</div>;
-  return <div className="parts-race" ref={anchor}>
+  return <div className="parts-race" ref={anchor}>{header}
     <DrillHost drill={{ ...drillControl, follow, pause }} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={title} day={following ? <LiveText live={dayLive} at="day" /> : dayLabel(hour)} canFollow={tag != null && liveHour != null}
       returnFocus=".country-race-chart canvas"
       pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={track && pinCountry && !drillOutside && pinTime ? () => { if (current()) runtime.addWidgetBelow(widget.id,
         pinNativeCountryParts(widget, track, pinCountry, pinTime, title)); } : undefined}
-      main={main(open, !drillOpen || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>
+      main={pinned ? null : main(open, !drillOpen || options.drill === 'popout')}>{selection ?? breakdown}</DrillHost>
   </div>;
 }

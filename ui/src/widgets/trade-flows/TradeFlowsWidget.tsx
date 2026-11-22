@@ -46,7 +46,6 @@ import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt
 import type { Gate } from '../../dashboard/regionGate';
 import { perfLog } from '../../shell/perf.ts';
 import { mix, toHex } from '../../shell/appearance/color';
-import type { MarketLendLeaseReply } from './types';
 import { buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, knownHours, emptyMessage, knownSpanAt, unrecordedMessage,
   measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt, resourceName, selectFlows } from './tradeData.ts';
 import type { Flow, Measure, SideNode, SideLink, TradeData } from './tradeData';
@@ -378,9 +377,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const drillMarket = marketSelectionAt(drillMembers, marketView && drillOpen, all);
   const marketTags = mainMarket.tags, marketReason = mainMarket.reason;
   const marketReady = !!track && marketView && mainMarket.ready;
-  const market = useHeadProduct<MarketLendLeaseReply>(runtime, mainMembers.gate, 'market-lendlease', marketReady ? { countries: marketTags.map(countryFromKey) } : null,
+  const market = useHeadProduct(runtime, mainMembers.gate, 'market-lendlease', marketReady ? { countries: marketTags.map(countryFromKey) } : null,
     { active: active && marketView, validate: validateMarketReply });
-  const pickedMarketHead = useHeadProduct<MarketLendLeaseReply>(runtime, drillMembers.gate, 'market-lendlease',
+  const pickedMarketHead = useHeadProduct(runtime, drillMembers.gate, 'market-lendlease',
     !!track && marketView && drillOpen && drillMarket.ready ? { countries: drillMarket.tags.map(countryFromKey) } : null,
     { active: active && marketView && drillOpen, validate: validateMarketReply });
 

@@ -14,11 +14,11 @@ import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { coverageOf, useReadsRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
-import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type GatedParams, type Region, type TrackHour } from './regionTime.ts';
+import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
-import { productRequest } from './request.ts';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
 
 export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (axis: AxisHour) => TrackHour | null } {
   return { follows: regionFollows(region), hourAt: axis => regionHour(region, track, tracks, axis) };
@@ -115,7 +115,7 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
   return held && held.client === client && held.subject === subject && eligible(held.hour) ? held : null;
 }
 
-export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: string, wanted: GatedParams | null,
+export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: WidgetRuntime, gate: Gate, product: K, wanted: ParamsFor<K> | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
   const { active, validate, structure, paint } = options;
   const { region, track } = gate;
@@ -155,8 +155,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: s
   const fallback = source === 'fallback';
   const requestHour = useFallbackHour(runtime.clock, fallback);
   const hour = pushed || idle || !track || !params ? null : hourAt(fallback ? axisAt(requestHour) : axisHour(runtime.clock));
-  const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
-    product, params: { ...params, branchId: track!.branch.id, hour } }), !follows ? [] : MOVING, active, validate, track?.source);
+  const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
+    !follows ? [] : MOVING, active, validate, track?.source);
   const askedAt = asked.data === undefined ? null : momentHour(asked.moment) ?? hour;
   const held = useRef<Retained<T> | null>(null);
   const targetHour: TargetHour = follows ? { through: runtime.clock.getHour() + (track?.axisOffset ?? 0) } : { exact: hour };
@@ -186,7 +186,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, gate: Gate, product: s
   const exactRead = perfLog && track && params ? (asked: number) => {
     const at = gate.recorded(asked);
     if (at === null) return Promise.reject(new Error('This hour was not recorded.'));
-    const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product, params: { ...params, branchId: track.branch.id, hour: at } });
+    const request = forwardRequest(track.source, product, { ...params, branchId: track.branch.id, hour: at } as unknown as ParamsFor<K>);
     return perfLog!.exactOnce(JSON.stringify(request), async () => (await runtime.client.product(request, new AbortController().signal)).data);
   } : undefined;
   const committedHour = entry?.hour ?? null;

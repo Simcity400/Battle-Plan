@@ -35,7 +35,6 @@ import { DETAILS, OPTIONS, SORTS, VIEWS } from './definition';
 import { cic, cicLabel, collectedText, contractRows, firstWithMore, levelText, offerRows, units, unitsLabel } from './marketData';
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import './internationalMarket.css';
-import type { MarketLendLeaseReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -58,7 +57,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: view === 'inventory' ? 'offers' : 'contracts' } : null, [track, tags, view]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
   const shown = useShownHour();

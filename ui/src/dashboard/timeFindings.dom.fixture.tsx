@@ -52,7 +52,7 @@ const reportShown = (hour: number | null) => { state.shown.push(hour); };
 const capture = (name: string) => (props: Record<string, unknown>) => { state.props[name] = props; return createElement('p', { 'data-stub': name }, String(props.label ?? props.title ?? name)); };
 Object.assign(globalThis, { __finding: {
   capture,
-  useShownHour: () => reportShown,
+  shownSink: () => (_widget: string, hour: number | null) => reportShown(hour),
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
@@ -122,7 +122,7 @@ let root: Root | null = null;
 const host = () => document.getElementById('finding');
 const read = () => {
   const element = host();
-  const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-popout:has(.drill-body)');
+  const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-saved, .drill-popout:has(.drill-body)');
   return { text: element?.textContent ?? '', drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
     asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
     follows: [...follows.values()], followLog: followLog.splice(0), shown: state.shown.splice(0),

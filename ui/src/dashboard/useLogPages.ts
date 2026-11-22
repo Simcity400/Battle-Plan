@@ -13,16 +13,18 @@ import { loadProduct, useProduct } from './products.ts';
 import { asFailure } from './queryError.ts';
 import type { BoundHour } from './regionTime';
 import { productRequest } from './request.ts';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
+import type { BoundWindow } from './regionTime';
 
 export interface LogSpec {
   source: DashboardSource;
   branchId: string;
   log: string;
   facets?: readonly FacetFilter[];
-  scope?: readonly MembershipRun[];
+  scope?: readonly (MembershipRun & BoundWindow)[];
   firstHour: BoundHour;
   lastHour: BoundHour;
-  product?: string;
+  product?: DeclaredProduct;
 }
 
 export type LogCut = { follow: true; offset: number } | { follow: false; hour: number | null };
@@ -99,7 +101,7 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
     const at = index * pageSize, asked = lane;
     const cutHour = latest.current.at, first = pageFirstHour(base, latest.current.before ?? cumulativeCounts(base), at);
     const asksFrom = cutHour !== null && at >= latest.current.shown ? Math.max(first, cutHour + 1) : first;
-    void loadProduct<unknown>(client, productRequest({ sourceId: held.source.id, revision: held.source.revision, ...logPageRequest(held, base.before + at, pageSize), asksFrom }),
+    void loadProduct<unknown>(client, (({ product, params }) => forwardRequest(held.source, product, params, asksFrom))(logPageRequest(held, base.before + at, pageSize)),
       controller.signal, undefined, undefined, false, undefined, undefined, true).then(value => {
       const page = validateLogPage(value, at, pageSize, base.before);
       const rows = page.rows.map(latest.current.row);

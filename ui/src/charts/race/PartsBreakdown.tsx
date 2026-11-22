@@ -40,12 +40,12 @@ class PartLines {
   subscribe = (wake: () => void) => { this.wakes.add(wake); return () => { this.wakes.delete(wake); }; };
 }
 
-function PartTile({ client, track, family, owner, id, active, live, lines, head, unrecorded }: { client: DashboardClient; track: BoundTrack; family: Record<string, unknown>;
-  owner: SeriesOwner; id: string; active: boolean; live: boolean; lines: PartLines; head: (() => number | null) | null;
+function PartTile({ client, track, family, owner, span, id, active, live, lines, head, unrecorded }: { client: DashboardClient; track: BoundTrack; family: Record<string, unknown>;
+  owner: SeriesOwner; span: SeriesGate['span']; id: string; active: boolean; live: boolean; lines: PartLines; head: (() => number | null) | null;
   unrecorded: (id: string, reason: string | null | undefined) => void }) {
   const tag = owner.key;
   const within = useMemo(() => owner.spans ? new Map([[tag, owner.spans]]) : undefined, [tag, owner.spans]);
-  const tiles = useTiles(client, { source: track.source, branchId: track.branch.id, family, tags: [tag], within, lastHour: track.branch.lastHour }, active, live);
+  const tiles = useTiles(client, { source: track.source, branchId: track.branch.id, family, tags: [tag], within, span, lastHour: track.branch.lastHour }, active, live);
   const { read, subscribe, onView } = tiles;
   useEffect(() => {
     lines.set(id, { read: () => read()?.get(tag)?.summary, subscribe, onView: view => { if (view.to >= view.from) onView(view); } });
@@ -170,7 +170,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
   const failure = error ?? held.error ?? keyed.error;
   return <div className="parts-race-breakdown" ref={root}>
     {parts.kind === 'measures' && drawnItems(parts.items).map(item => <PartTile key={item.id} client={runtime.client} track={track} family={item.measure as unknown as Record<string, unknown>}
-      owner={owner ?? { key: tag, spans: null }} id={item.id} active={active} live={following} lines={lines} head={partHead(item.id)} unrecorded={partUnrecorded} />)}
+      owner={owner ?? { key: tag, spans: null }} span={gate.span} id={item.id} active={active} live={following} lines={lines} head={partHead(item.id)} unrecorded={partUnrecorded} />)}
     {failure ? <WidgetState kind="error" what="the breakdown" failure={asFailure(failure)} onRetry={onRetry ?? keyed.retry} /> : null}
     <div className="country-race-chart">
       <TimeChart label={`${name} by ${parts.label.toLowerCase()}`} extent={extent} playhead={playhead} playback={playback} afterPlayhead={options.afterPlayhead === true}

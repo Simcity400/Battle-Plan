@@ -122,7 +122,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const gate = useGate(runtime, widget);
   const product = useLossHistory(runtime.client, drill.breakdown === null ? gate : drillControl.gate, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
-  const head = useHeadProduct<LossHeadReply>(runtime, gate, 'equipment-loss-head',
+  const head = useHeadProduct(runtime, gate, 'equipment-loss-head',
     followView && selection ? { country: selection.country, identity: selection.identity } : null,
     { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
   const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);

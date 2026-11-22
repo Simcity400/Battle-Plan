@@ -89,7 +89,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
       setStyle(held.short, 'width', width.unmet);
     }
   }, [digits]);
-  const head = useHeadProduct<FuelBranchesReply>(runtime, useGate(runtime, widget), FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const rows = useMemo(() => data ? branchesAt(data) : [], [data]);

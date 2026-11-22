@@ -28,7 +28,6 @@ import { cellState, countriesAt, coverageStructure, matrixCells, measureField, p
 import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 import PairHistory from './PairHistory';
 import './intelCoverage.css';
-import type { IntelCoverageReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
@@ -44,7 +43,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const saved = options.show === 'pair';
   const readHour = useRef<number | null>(null);
   const gate = useGate(runtime, widget);
-  const head = useHeadProduct<IntelCoverageReply>(runtime, gate, 'intel-network-coverage', track && !saved ? PARAMS : null,
+  const head = useHeadProduct(runtime, gate, 'intel-network-coverage', track && !saved ? PARAMS : null,
     { active, validate: validateIntelCoverage, structure: coverageStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;

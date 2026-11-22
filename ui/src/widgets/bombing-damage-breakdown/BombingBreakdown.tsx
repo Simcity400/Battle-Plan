@@ -45,7 +45,7 @@ export default function BombingBreakdown({ data, index: given, runtime, namedAt,
     params: { branchId: track.branch.id, places: [], states: stateIds.map(stateId => ({ stateId, hour: namedAt })) } }) : null;
   const stateNames = useProduct<PlaceNamesReply>(runtime.client, stateRequest, active, validatePlaceNamesReply, track.source);
   const names = useMemo(() => new Map<number, PlaceStateName>(stateNames.data?.states.map(item => [item.stateId, item]) ?? []), [stateNames.data]);
-  const namesPending = !stateNames.data && !stateNames.error;
+  const namesPending = stateRequest !== null && !stateNames.data && !stateNames.error;
   const valuesAt = (at: number): SunburstValues => {
     const shown = ledgerCountryAt(index, tag, from, at, identity);
     if (!shown) return { items: [], unavailableReason: UNRECORDED };

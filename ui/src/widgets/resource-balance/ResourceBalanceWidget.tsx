@@ -123,7 +123,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const drillFollows = regionFollows(drillControl.region);
   const drillAt = drillControl.hour;
   const drillTag = drillControl.gate.country?.tag ?? null;
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillControl.gate, RESOURCE_BALANCE, shown && drillTag ? { country: countryFromKey(drillTag) } : null,
+  const breakdown = useHeadProduct(runtime, drillControl.gate, RESOURCE_BALANCE, shown && drillTag ? { country: countryFromKey(drillTag) } : null,
     { active: active && shown, validate: validateResourceBalance });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
@@ -213,7 +213,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null, active, validateResourceSizes, track.source);
   const colours = useMemo(() => partColours(tokens), [tokens]);
   const cells = useRef(new Map<number, RowCells>());
-  const head = useHeadProduct<ResourceBalanceReply>(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
+  const head = useHeadProduct(runtime, useGate(runtime, widget), RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
   const data = head.data;
   const report = useShownHour();
@@ -337,7 +337,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const gate = useGate(runtime, widget, SPEC, active);
-  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, gate, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
+  const atHead = useHeadProduct(runtime, gate, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
     structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
   const request = (hour: GatedHour) => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } }));
   const sized = gate.span(extent[0], extent[1]);

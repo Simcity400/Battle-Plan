@@ -41,7 +41,7 @@ const arsenalAt = (hour: number): NuclearArsenalReply => ({ ...reply,
   countries: [{ tag: 'GER', countryId: 1, total: hour, counts: [{ ordinal: 0, value: hour, ready: hour }] }], warnings: [`read at ${hour}`] });
 const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null, grand: { id: 'mobile', name: 'Mobile warfare', icon: null }, completed: [],
   tracks: [{ ordinal: 0, name: 'Infantry', sub: { id: 'sub_a', name: 'Sub A', icon: null }, unlocked: 1, rewards: [{ id: 'r1', name: 'First', threshold: '5000000' }] }] }], warnings: [] };
-const ASKED = 'asked-arsenal';
+const ASKED = 'agency-comparison';
 const refused = { short: false };
 const replies: Record<string, (hour: number, query: Record<string, unknown>) => unknown> = { 'nuclear-arsenal': arsenalAt,
   'air-aces': (hour, query) => refused.short && query.branchId === '2' ? { readHour: hour } : { readHour: hour, missing: null, aces: [], warnings: [] },

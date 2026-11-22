@@ -32,14 +32,15 @@ import { FACTION_MEMBERS } from './factionMembersOptions.ts';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { factionNameLabel } from '../../dashboard/factionNames';
 import { validateFactionLines, validateFactionRosters } from '../../dashboard/territoryReplies.ts';
-import type { FactionRostersReply, SeriesStateReply } from '../../generated/dashboard';
+import type { SeriesStateReply } from '../../generated/dashboard';
 import { liveRace, rowsOf } from './measureRaceData.ts';
 import type { GroupTotal } from './factionTotalsData';
 import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import type { BoundWindow } from '../../dashboard/regionTime';
 
 export interface FactionTotalsViewProps extends WidgetProps {
   options: Readonly<Record<string, OptionValue>>;
@@ -57,6 +58,9 @@ export interface FactionTotalsViewProps extends WidgetProps {
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
 const DECIMALS = 0;
+
+const boundPairs = (pairs: readonly (readonly [number, number])[], span: (first: number, last: number) => BoundWindow | null) =>
+  pairs.flatMap(([first, last]) => { const held = span(first, last); return held ? [[held.firstHour, held.lastHour] as const] : []; });
 
 function validateStates(value: unknown): SeriesStateReply {
   const reply = value as SeriesStateReply;
@@ -78,7 +82,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const membership = widget.countries.kind === 'factions' || widget.countries.kind === 'group' ? widget.countries.membership : 'hour';
   const fixed = membership !== 'hour' || !!group;
   const gate = useGate(runtime, widget, SPEC, active);
-  const rosters = useHeadProduct<FactionRostersReply>(runtime, gate, 'faction-rosters', track ? PARAMS : null,
+  const rosters = useHeadProduct(runtime, gate, 'faction-rosters', track ? PARAMS : null,
     { active: active && view === 'race' && !fixed, validate: validateFactionRosters, structure: rosterRows });
   const groups = useCountryGroups(runtime, track, active && view === 'race' && fixed && !group);
   const held = useMemo(() => fixed && !group && groups.data ? fixedRosters(groups.data, membership as 'end' | 'ever', extent[0], extent[1]) : undefined,
@@ -132,7 +136,8 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     (at, signal, publish, restart) => {
       const range = gate.span(at.from, at.to);
       return range ? loadProduct(runtime.client, productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'faction-lines',
-        params: { branchId: track!.branch.id, kind, measure, from: range.firstHour, to: range.lastHour, width: at.width, ...(groupParams ?? { membership }) } }),
+        params: { branchId: track!.branch.id, kind, measure, from: range.firstHour, to: range.lastHour, width: at.width, ...(groupParams ? { members: groupParams.members.map(member => ({ tag: member.tag, spans: member.spans && boundPairs(member.spans, gate.span) })),
+          unread: boundPairs(groupParams.unread, gate.span) } : { membership }) } }),
       signal, validateFactionLines, track!.source, restart, publish) : Promise.reject(new Error(OUTSIDE_MESSAGE));
     }, runtime.client);
   const looks = useFactionColours(runtime.client, track?.source);

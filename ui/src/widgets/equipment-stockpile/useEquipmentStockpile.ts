@@ -14,7 +14,7 @@ import { contentKey, contentSet, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryGroupReply, StockpileAtReply, StockpileHolder } from '../../generated/dashboard';
+import type { CountryGroupReply, StockpileHolder } from '../../generated/dashboard';
 import { atReply, validateStockpileAt } from './stockpileAt.ts';
 import { holderAt, stockpileHolders, stockpileView } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
@@ -46,7 +46,7 @@ export function useStockpileCatalogue(runtime: WidgetRuntime, widget: WidgetSpec
 }
 
 export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, time: RegionAction = SPEC) {
-  return useHeadProduct<StockpileAtReply>(runtime, useGate(runtime, widget, time), 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
+  return useHeadProduct(runtime, useGate(runtime, widget, time), 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply) });
 }
 

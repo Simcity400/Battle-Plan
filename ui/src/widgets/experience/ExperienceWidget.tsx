@@ -65,14 +65,14 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const lane = (branch: ExperienceBranch) => track && resolved.tags.length && branches.includes(branch) ? { source: track.source, branchId: track.branch.id,
+  const gate = useGate(runtime, widget, SPEC, active);
+  const lane = (branch: ExperienceBranch) => track && resolved.tags.length && branches.includes(branch) ? { source: track.source, span: gate.span, branchId: track.branch.id,
     family: experienceFamily(measure, branch), tags: resolved.tags, ...(resolved.membership ? { within: resolved.membership } : {}), lastHour } : null;
   const tiles = { army: useTiles(runtime.client, lane('army'), active, following), navy: useTiles(runtime.client, lane('navy'), active, following),
     air: useTiles(runtime.client, lane('air'), active, following) };
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const gate = useGate(runtime, widget, SPEC, active);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
     ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const followed = {

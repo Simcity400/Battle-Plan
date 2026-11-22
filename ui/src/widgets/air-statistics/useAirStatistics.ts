@@ -22,7 +22,7 @@ export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, act
   const channel = options.channel ? contentKey(String(options.channel)) : DEFAULT_CHANNEL;
   const index = channelIndex(channel);
   const params = track && tag && index !== null ? { country: countryFromKey(tag), channel: index } : null;
-  const product = useHeadProduct<AirStatisticsReply>(runtime, useGate(runtime, widget), 'air-statistics', params, { active, validate: validateAirStatistics, structure });
+  const product = useHeadProduct(runtime, useGate(runtime, widget), 'air-statistics', params, { active, validate: validateAirStatistics, structure });
   return { track, tag, channel, options, ...product };
 }
 

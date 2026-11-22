@@ -157,7 +157,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const history = useProduct(runtime.client, tags.length && span ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
     params: { branchId: track.branch.id, region: Number(region.region), countries: tags, ...span } }) : null,
   active, validateHistory, track.source);
-  const reports = useHeadProduct<MinefieldReportsReply>(runtime, gate, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
+  const reports = useHeadProduct(runtime, gate, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports });
   const namedAt = reports.at;
   const reportTags = useMemo(() => namedAt === null || !reports.data ? [] : [...new Set(reports.data.reports.flatMap(report => [report.victim, report.mineOwner])
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);

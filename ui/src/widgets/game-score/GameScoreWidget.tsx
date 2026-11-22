@@ -63,7 +63,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const resolved = useMemo(() => scoreCountries(widget.countries, [...selectedCountryKeys(widget.countries, track)], groups.data, lastHour),
     [widget.countries, track, groups.data, lastHour]);
-  const head = useHeadProduct<GameScoreReply>(runtime, useGate(runtime, widget), 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
   const reply = head.data;
   const live = head.live;
   const shown = useShownHour();

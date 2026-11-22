@@ -62,7 +62,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     paintRoster(root.current, painted.current);
   }, []);
   const gate = useGate(runtime, widget);
-  const head = useHeadProduct<OperativesRosterReply>(runtime, gate, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
+  const head = useHeadProduct(runtime, gate, 'operatives-roster', params, { active, validate: validateRoster, structure: rosterStructure, paint });
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;

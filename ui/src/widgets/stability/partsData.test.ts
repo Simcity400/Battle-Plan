@@ -4,6 +4,7 @@ import { divergingStack } from '../../charts/series.ts';
 import type { MeasureParts, StabilityPart, StabilityPartName } from './types';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import { engineSum, knownAt, partLayers, partName, partsAt, partsStack, partsWithin, REMAINDER_LABEL, SMALLER_LABEL, stackRange, visibleSegment, measureOf, partsFromLines, partsAtStates, validateStabilityPartNames, namesAt } from './partsData.ts';
+import { heldParts } from '../../dashboard/keyedSeriesData.ts';
 
 const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw, startsSegment: false });
 const part = (id: string, runs: StabilityPart['runs'], extra: Partial<StabilityPart> = {}): StabilityPart => ({ id, term: null, line: null, runs, ...extra });
@@ -102,9 +103,10 @@ test('a measure’s parts over a view are their lines’ bins, known where the d
 });
 
 test('each part is named at the last hour it was held in the view, so one only an earlier run held still has its name', () => {
-  const listed = [{ part: '1', id: null, firstHour: 0, lastHour: 50 }, { part: '2', id: null, firstHour: 0, lastHour: 900 },
-    { part: '3', id: null, firstHour: 600, lastHour: 2_000 }, { part: '1', id: null, firstHour: 700, lastHour: 800 }];
-  assert.deepEqual(namesAt(listed, 1_000), [[800, ['1']], [900, ['2']], [1_000, ['3']]]);
+  const listed = heldParts([{ part: '1', id: null, firstHour: 0, lastHour: 50 }, { part: '2', id: null, firstHour: 0, lastHour: 900 },
+    { part: '3', id: null, firstHour: 600, lastHour: 2_000 }, { part: '1', id: null, firstHour: 700, lastHour: 800 }, { part: '4', id: null, firstHour: 990, lastHour: 1_200 },
+    { part: '4', id: null, firstHour: 100, lastHour: 200 }]);
+  assert.deepEqual(namesAt(listed, 1_000), [[800, ['1']], [900, ['2']], [1_000, ['3', '4']]]);
 });
 
 test('parts at an hour are the states read there, known only where the displayed value was recorded', () => {

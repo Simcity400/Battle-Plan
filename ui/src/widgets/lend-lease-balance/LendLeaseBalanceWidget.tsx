@@ -33,7 +33,7 @@ import { LEND_LEASE_BALANCE, LEND_LEASE_PARTNERS, amountLabel, amountText, balan
   rankedRows, totalsOverTime, validateLendLeaseBalance, validateLendLeasePartners, valueAt } from './lendLeaseBalanceData';
 import type { BalanceMeasure, BalanceRow } from './lendLeaseBalanceData';
 import './lendLeaseBalance.css';
-import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../generated/dashboard';
+import type { LendLeasePartnersReply } from '../../generated/dashboard';
 import { drillAction } from '../../charts/drill/drillState.ts';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -71,7 +71,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   const [picked, setPicked] = useState<{ branch: string; tag: string; name: string } | null>(null);
   const needsGroups = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const head = useHeadProduct<LendLeaseBalanceReply>(runtime, useGate(runtime, widget), LEND_LEASE_BALANCE, track ? {} : null, { active, validate: validateLendLeaseBalance });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), LEND_LEASE_BALANCE, track ? {} : null, { active, validate: validateLendLeaseBalance });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const hour = head.hour ?? Math.floor(runtime.clock.getHour());

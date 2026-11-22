@@ -275,8 +275,8 @@ impl<'de> de::Deserializer<'de> for Walker<'_> {
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
-        self.leaf(Leaf::Opaque);
-        visitor.visit_map(Entries { walker: self, fields: &[], at: 0 })
+        self.interior()?;
+        visitor.visit_map(Sampled { walker: Some(self), keyed: false })
     }
 
     fn deserialize_struct<V: Visitor<'de>>(self, _name: &'static str, fields: &'static [&'static str], visitor: V) -> Result<V::Value, Stop> {
@@ -325,6 +325,29 @@ impl<'de> MapAccess<'de> for Entries<'_> {
         let field = self.fields.get(self.at).ok_or_else(|| Stop(format!("{} has no value to walk", self.walker.path)))?;
         self.at += 1;
         self.walker.at(field).walk(seed)
+    }
+}
+
+struct Sampled<'s> {
+    walker: Option<Walker<'s>>,
+    keyed: bool,
+}
+
+impl<'de> MapAccess<'de> for Sampled<'_> {
+    type Error = Stop;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Stop> {
+        if self.keyed || self.walker.is_none() {
+            return Ok(None);
+        }
+        self.keyed = true;
+        let scratch = RefCell::new(State::default());
+        seed.deserialize(Walker { path: String::new(), depth: 0, state: &scratch }).map(Some)
+    }
+
+    fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Stop> {
+        let walker = self.walker.take().ok_or_else(|| Stop("a sampled map has one entry".to_owned()))?;
+        walker.at("*").walk(seed)
     }
 }
 
@@ -542,6 +565,26 @@ mod tests {
             "key cannot hold an hour",
             "parts[].started cannot hold an hour",
         ]);
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code, reason = "only the field names are read")]
+    struct Keyed {
+        branch_id: String,
+        spans: BTreeMap<String, Span>,
+        by_slot: BTreeMap<u32, Vec<i32>>,
+    }
+
+    #[test]
+    fn a_map_is_walked_through_one_entry() {
+        let walk = walk::<Keyed>();
+        assert_eq!(walk.failed, None);
+        assert_eq!(walk.problems(&[("branchId", HourRole::Undated), ("spans", HourRole::Undated), ("bySlot", HourRole::Undated)]), [
+            "bySlot.*[] can carry a number and declares no role",
+            "spans.*.firstHour can carry a number and declares no role",
+            "spans.*.lastHour can carry a number and declares no role",
+        ], "a map's values are walked, so a dated field inside one declares its role");
     }
 
     #[test]

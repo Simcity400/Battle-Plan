@@ -37,7 +37,7 @@ import { agreementRows, agreementValues, amountOf } from './agreementsData';
 import type { AgreementRow, Direction } from './agreementsData';
 import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
 import './lendLeaseAgreements.css';
-import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../../generated/dashboard';
+import type { LendLeaseHistoryReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
@@ -61,7 +61,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: 'agreements' } : null, [track, tags]);
-  const head = useHeadProduct<MarketLendLeaseReply>(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), MARKET, params, { active, validate: validateMarketReply });
   const showEnded = options.ended !== 'hidden';
   const history = useProduct<LendLeaseHistoryReply>(runtime.client, track && showEnded ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: LEASE_HISTORY, params: { branchId: track.branch.id } }) : null, active, validateLeaseHistory, track?.source);

@@ -38,7 +38,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   const params = useMemo(() => track ? {} : null, [track]);
   const live = useMemo(() => new LiveCell<ChordFrame>({ data: null }), []);
   const paint = useRef<(reply: OperativePlacementReply) => void>(() => {});
-  const head = useHeadProduct<OperativePlacementReply>(runtime, useGate(runtime, widget), 'operative-placements', params,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'operative-placements', params,
     { active, validate: validatePlacements, structure: placementStructure, paint: reply => paint.current(reply) });
   const hour = shownHour(runtime, widget, head);
   const groups = useCountryGroups(runtime, track, active);

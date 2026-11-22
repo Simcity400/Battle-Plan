@@ -42,7 +42,7 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   root: RefObject<HTMLElement | null>) {
   const { tag, track } = researchTarget(widget, runtime);
   const params = useMemo(() => tag ? { country: countryFromKey(tag) } : null, [tag]);
-  const now = useHeadProduct<ResearchSlotsReply>(runtime, useGate(runtime, widget), 'research-slots', params,
+  const now = useHeadProduct(runtime, useGate(runtime, widget), 'research-slots', params,
     { active, validate: validateResearchSlots, structure });
   const attach = useCallback((element: HTMLElement | null) => {
     root.current = element;

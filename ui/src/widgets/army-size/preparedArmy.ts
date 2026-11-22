@@ -66,7 +66,7 @@ export function usePreparedArmy(client: DashboardClient, gate: Pick<Gate, 'span'
   const told = useRef(tiled); told.current = tiled;
   const ranked = params?.top != null;
   const dense = tiled?.key === key && tiled.dense;
-  const tiles = useTiles(client, track && params && !ranked ? { source: track.source, branchId: params.branchId,
+  const tiles = useTiles(client, track && params && !ranked ? { source: track.source, span: gate.span, branchId: params.branchId,
     family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: null }, tags: params.countries.map(countryKey), lastHour: track.branch.lastHour } : null, active, live);
   const tileSource = tiles.live;
   const lineData = useMemo(() => !ranked && live ? liveSummaries(tileSource) : undefined, [ranked, live, tileSource]);

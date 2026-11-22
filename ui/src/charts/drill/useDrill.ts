@@ -7,6 +7,7 @@ import { drillAction, drillFollows, opensFollowing, reduceDrill, savedDrill, typ
 
 export interface DrillControl<S extends DrillState = DrillState, A = DrillAction> {
   state: S;
+  saved: boolean;
   open: boolean;
   following: boolean;
   parent: Region;
@@ -50,7 +51,7 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
     const playhead = () => track ? recordedHour(track, Math.floor(clock.getHour()) + track.axisOffset) : null;
     const followsAt = (hour: number) => { const head = playhead(); return head !== null && recordedHour(track, hour) !== null && opensFollowing(parent, hour, clock.getSnapshot().playing, head); };
     return {
-      state, open, following: drillFollows(parent, state), parent, region, gate, hour: open ? gate.hour : null, outside: open ? gate.outside : null,
+      state, saved: saved !== null, open, following: drillFollows(parent, state), parent, region, gate, hour: open ? gate.hour : null, outside: open ? gate.outside : null,
       time: gate.time, hold: gate.hold, pinRefused: open ? gate.checkTime().refused ?? null : null, dispatch, followsAt,
       show: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: followsAt(hour), country: held ?? null }),
       showAt: (breakdown, hour, held) => dispatch({ type: 'open', breakdown, hour, follow: false, country: held ?? null }),
@@ -60,5 +61,5 @@ export function useDrill<S extends DrillState = DrillState, A = DrillAction>(run
       pause: () => { const head = Math.floor(clock.getHour()) + (track?.axisOffset ?? 0); if (track) dispatch({ type: 'pick', hour: head }); },
       close: () => dispatch({ type: 'close' }),
     };
-  }, [state, open, parent, region, gate, dispatch, track, clock]);
+  }, [state, saved, open, parent, region, gate, dispatch, track, clock]);
 }

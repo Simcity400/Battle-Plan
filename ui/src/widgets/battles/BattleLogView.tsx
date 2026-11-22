@@ -61,7 +61,7 @@ export interface BattleViewContext {
 }
 export interface BattleDetailAsk { id: string; hour: number }
 export interface BattleDetails<Row, Window> {
-  product: string;
+  product: 'naval-battle-details';
   validate: (data: unknown) => { rows: readonly BattleDetailAsk[]; warnings: string[] };
   ask: (row: Row, following: boolean) => BattleDetailAsk;
   held: (windows: ReadonlyMap<number, Window>) => BattleDetailAsk[];
@@ -70,7 +70,7 @@ export interface BattleDetails<Row, Window> {
 }
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
   definition: WidgetMeta;
-  product: string;
+  product: 'land-battles' | 'naval-battles';
   landPlaceNames?: boolean;
   validateManifest: (data: unknown) => ManifestReply;
   validateWindow: (data: unknown) => Window;
@@ -184,7 +184,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const rankingSpan = hour !== null ? gate.span(Math.min(first, hour), hour) : null;
   const rankingRequest = track && rankingSpan && inBranch ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
-      countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } }) : null;
+      countries: { countries: countries.tags?.map(countryFromKey) ?? null,
+        membership: countries.membership?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) ?? null,
+        unobserved: countries.unobserved.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } } }) : null;
   const ranking = useProduct<Ranking>(runtime.client, rankingRequest,
     active && inBranch && view === 'biggest' && match.ready && !match.reason && manifest.data?.available === true, adapter.validateRanking);
   const shown = useMemo(() => !inBranch || hour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, hour)
@@ -221,11 +223,13 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const windowPlaces = useMemo(() => ahead && adapter.windowPlaces ? placesLeadingWith(leading, adapter.windowPlaces(history.data)) : null,
     [ahead, adapter, history.data, leading]);
   const drawnPlaces = useMemo(() => ahead ? NO_PLACES : battlePlaceRequests(drawn), [ahead, drawn]);
+  const recordedPlaces = useMemo(() => (windowPlaces ?? drawnPlaces).filter(place => gate.recorded(place.hour) !== null), [windowPlaces, drawnPlaces, gate.recorded]);
   const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, productRequest({ sourceId: track!.source.id,
-    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id, places, states: [], land: adapter.landPlaceNames === true } }),
+    revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id,
+      places: places.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }), states: [], land: adapter.landPlaceNames === true } }),
   signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
-  [runtime.client, track, adapter.landPlaceNames]);
-  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces);
+  [runtime.client, track, adapter.landPlaceNames, gate.recorded]);
+  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, recordedPlaces, active, placeAtKey, readPlaces);
   const knownNames = placeReads.reads.values;
   const placeNamesHeld = useMemo(() => ({ places: [...knownNames.values()], states: [], warnings: [] }), [knownNames, placeReads.version]);
   const named = useMemo(() => namedBattles(shown, placeNamesHeld), [shown, placeNamesHeld]);
@@ -236,11 +240,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const placePending = useCallback((row: BattleRow & { provinceId: number }) => placeReads.reads.pending({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
   [placeReads.reads, placeReads.version]);
   const details = adapter.details;
-  const detailWanted = useMemo(() => !details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
-    : drawn.map(row => details.ask(row, false)), [details, ahead, history.data, drawn, leading]);
+  const detailWanted = useMemo(() => (!details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
+    : drawn.map(row => details.ask(row, false))).filter(ask => gate.recorded(ask.hour) !== null), [details, ahead, history.data, drawn, leading, gate.recorded]);
   const readDetails = useCallback((battles: readonly BattleDetailAsk[], signal: AbortSignal) => loadProduct(runtime.client, productRequest({ sourceId: track!.source.id,
-    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id, battles } }), signal, details!.validate, track?.source)
-    .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details]);
+    revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id,
+      battles: battles.flatMap(battle => { const hour = gate.recorded(battle.hour); return hour === null ? [] : [{ ...battle, hour }]; }) } }), signal, details!.validate, track?.source)
+    .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details, gate.recorded]);
   const detailReads = useKeyedReads<BattleDetailAsk, BattleDetailAsk>(details && track && identity !== null ? JSON.stringify([identity, content, details.product]) : null,
     detailWanted, active, detailKey, readDetails);
   const described = useMemo(() => {

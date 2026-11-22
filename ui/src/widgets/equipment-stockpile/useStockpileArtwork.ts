@@ -23,6 +23,6 @@ export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
 
 export function useStockpileArtwork(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, variants: readonly string[], active: boolean,
   time: RegionAction = SPEC) {
-  return useHeadProduct<StockpileArtworkReply>(runtime, useGate(runtime, widget, time), 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
+  return useHeadProduct(runtime, useGate(runtime, widget, time), 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
     { active, validate: validateStockpileArtwork });
 }

@@ -79,7 +79,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
   const spec = useMemo<LogSpec | null>(() => track && logSpan && facets && (!filtered || scope) ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
-    product: 'event-feed', facets, ...(scope ? { scope } : {}), ...logSpan } : null,
+    product: 'event-feed', facets, ...(scope ? { scope: scope?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) } : {}), ...logSpan } : null,
   [track, facets, logSpan?.firstHour, logSpan?.lastHour, filtered, scope]);
   const feed = useLogPages<FeedEvent, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active && match.ready, feedRow, FEED_PAGE_SIZE, pageNotes);
   const country = filtered ? match.matches : null;

@@ -87,7 +87,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const structure = useCallback((reply: EspionageOperationsReply) => underWayStructure(reply, order), [order]);
   const params = useMemo(() => track ? {} : null, [track]);
   const gate = useGate(runtime, widget);
-  const head = useHeadProduct<EspionageOperationsReply>(runtime, gate, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
+  const head = useHeadProduct(runtime, gate, 'espionage-operations', params, { active, validate: validateOperations, structure, paint });
   if (head.data && head.read !== 'followed') latest.current = head.data;
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? pinned ?? lastHour;

@@ -10,6 +10,7 @@ import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
 import type { PinnedSpec } from './regionTime';
+import type { DeclaredProduct } from './request';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -74,7 +75,7 @@ export interface WidgetMeta {
   defaultCountries?: CountrySelection;
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];
-  availability?: { product: string; params: Readonly<Record<string, unknown>> };
+  availability?: { product: DeclaredProduct; params: Readonly<Record<string, unknown>> };
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
   variants?: readonly WidgetPreset[];
 }

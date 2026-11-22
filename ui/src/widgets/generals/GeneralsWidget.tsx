@@ -29,7 +29,7 @@ import { attributeNames, leaderKey as rowKey, leaderRequestSelection, leaderRows
   recordedSince, validateLeaders, withheldLeaderState, withheldLeaders } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import './generals.css';
-import type { LeaderKinds, UnitLeadersReply } from '../../generated/dashboard';
+import type { LeaderKinds } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const EMPTY: readonly LeaderRow[] = [];
@@ -61,7 +61,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const members = useCountriesSelectionAt(widget, runtime, active);
   const params = useMemo(() => asked.requestTags === undefined ? null : { selection: leaderRequestSelection(asked.requestTags), leaders: kind },
     [asked.requestTags, kind]);
-  const head = useHeadProduct<UnitLeadersReply>(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
+  const head = useHeadProduct(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const hour = members.outside ? null : head.at ?? members.hour;
   const selection = { group: asked.group, countries: members.countries, selectionReason: asked.selectionReason ?? members.selectionReason };
   const shown = useShownHour();

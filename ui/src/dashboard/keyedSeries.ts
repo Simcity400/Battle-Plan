@@ -12,7 +12,7 @@ import { useHeldFailure } from './heldFailures.ts';
 import { loadProduct, loadTransientProduct, useProducts } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
-import type { BoundWindow, CoveredBranch, GatedHour, GatedParams } from './regionTime.ts';
+import type { BoundWindow, CoveredBranch, GatedHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
 
 export type SeriesGate = Pick<Gate, 'follow' | 'span' | 'within'>;
@@ -35,9 +35,11 @@ import { followAtHead, tileHead } from './tiles/head.ts';
 import type { TileReply } from './tiles/tile';
 import { TileView, tileCache, unrecordedReason } from './tiles/view.ts';
 import type { TiledLine, TileViewport } from './tiles/view';
-import { followedRow, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
-import type { KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
+import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
+import type { HeldParts, KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
 import { productRequest } from './request.ts';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
+import type { ParamsFor } from './regionTime';
 
 export interface KeyedSeriesSpec {
   source: DashboardSource;
@@ -63,8 +65,8 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const latest = useRef(spec); latest.current = spec;
-  const request = (product: string, params: GatedParams): ProductRequest => (productRequest({ sourceId: spec!.source.id, revision: spec!.source.revision,
-    product, params: { branchId: spec!.branch.id, family: spec!.family, ...params } }));
+  const request = <K extends DeclaredProduct>(product: K, params: ParamsFor<K>): ProductRequest => forwardRequest(spec!.source, product,
+    { branchId: spec!.branch.id, family: spec!.family, ...params } as unknown as ParamsFor<K>);
 
   const tileKey = spec ? JSON.stringify([ownerKey, spec.lastHour, spec.marks === true]) : null;
   const [tiles, setTiles] = useState<{ key: string; lines: ReadonlyMap<string, TiledLine> | null; error: unknown }>();
@@ -79,7 +81,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     const byId = new Map(lane.keys.map(key => [keyId(key), key]));
     const ask = async (binHours: number, index: number, asked: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
       const keys = asked.map(id => byId.get(id)!);
-      const tileRequest = request('series-tiles', { binHours, index, ...keyedTileParams(keys, within), ...(lane.marks ? { withMarks: true } : {}) });
+      const tileRequest = request('series-tiles', { binHours, index, ...keyedTileParams(keys, within, gate.span), ...(lane.marks ? { withMarks: true } : {}) });
       const reply = validateProductReply(await client.product<TileReply>(tileRequest, new AbortController().signal), tileRequest).data;
       return keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], keys);
     };
@@ -149,7 +151,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     const controller = new AbortController(); navigation.current = controller;
     const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
     if (!range) return;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { lines: held.keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })),
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { ...keyedTileParams(held.keys, held.within && Object.fromEntries(held.within), gate.span),
       key, from: gate.within(from), ...range }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The keyboard reply is malformed.');
@@ -182,12 +184,12 @@ export function useSeriesParts(client: DashboardClient, gate: Pick<Gate, 'span'>
   [source, branchId, family, key, windows]);
   const validate = useCallback((value: unknown) => validateSeriesParts(value, key ?? ''), [key]);
   const read = useProducts<SeriesParts>(client, requests, active && requests.length > 0, validate, source);
-  const data = useMemo<SeriesParts | undefined>(() => key === null || !owner || !span ? undefined : !requests.length ? { tag: key, parts: [], missing: [], partBits: 1 }
+  const data = useMemo<HeldParts | undefined>(() => key === null || !owner || !span ? undefined : !requests.length ? { tag: key, parts: [], missing: [], partBits: 1 }
     : read.data && { tag: key, partBits: read.data[0]?.partBits ?? 1,
-      parts: read.data.flatMap((reply, at) => reply.parts.flatMap(part => {
+      parts: heldParts(read.data.flatMap((reply, at) => reply.parts.flatMap(part => {
         const first = Math.max(part.firstHour, windows[at].firstHour), last = Math.min(part.lastHour, windows[at].lastHour);
         return first <= last ? [{ ...part, firstHour: first, lastHour: last }] : [];
-      })),
+      }))),
       missing: read.data.flatMap(reply => reply.missing) },
   [key, owner, span, requests.length, read.data, windows]);
   return { ...read, data };

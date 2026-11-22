@@ -181,22 +181,28 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     let bounds = (FIRST, FIRST + FIRST_HOURS - 1);
     for (id, resource, origin) in [(9001, 4, FIRST + 1_000), (9001, 4, FIRST + 5_950), (9001, 1, FIRST + 3_001), (9002, 2, ITA_FROM + 100), (9002, 1, ITA_FROM - 400)] {
         let ask = Ask { country: tag_of(id).into(), part: u128::from(resource) };
-        let found = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap();
+        let found = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds, &Within::new()).unwrap();
         let held = |hour: i32| held(&query, tag_of(id), hour);
         let first_held = (bounds.0..=bounds.1).find(|&hour| held(hour)).unwrap();
         let wanted = (origin + 1..=bounds.1).find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
-        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.country);
+        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds, &Within::new()).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.country);
         assert_eq!(found, wanted.or(Some(origin)), "{} part {resource} after {origin}: the origin itself when nothing changes after it, as main", ask.country);
-        let back = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowLeft, bounds).unwrap();
+        let back = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowLeft, bounds, &Within::new()).unwrap();
         let wanted = (bounds.0..origin).rev().find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
         assert_eq!(back, wanted.or(Some(origin)), "{} part {resource} before {origin}: the origin itself when nothing changes before it, as main", ask.country);
     }
     let ask = Ask { country: tag_of(9001).into(), part: 4 };
-    let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds).unwrap();
+    let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds, &Within::new()).unwrap();
     assert_eq!(step(Some(bounds.0), NavigationKey::ArrowLeft), Some(bounds.0));
     assert_eq!(step(Some(bounds.1), NavigationKey::ArrowRight), Some(bounds.1));
     assert_eq!(step(Some(bounds.1 + 50), NavigationKey::ArrowRight), Some(bounds.1));
-    assert_eq!(step(None, NavigationKey::ArrowLeft), line.change_lines(std::slice::from_ref(&ask), &[measure], None, NavigationKey::ArrowLeft, bounds).unwrap());
+    assert_eq!(step(None, NavigationKey::ArrowLeft), line.change_lines(std::slice::from_ref(&ask), &[measure], None, NavigationKey::ArrowLeft, bounds, &Within::new()).unwrap());
+    let within = Within::from([(ask.country.clone(), vec![(FIRST + 2_000, FIRST + 3_000)])]);
+    let inside = |origin: i32, key| line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), key, bounds, &within).unwrap();
+    let changes = || (FIRST + 2_001..=FIRST + 3_000).filter(|&hour| produced(&query, 9001, 4, hour) != produced(&query, 9001, 4, hour - 1));
+    assert_eq!(inside(FIRST + 1_000, NavigationKey::ArrowRight), Some(FIRST + 2_000), "a step from before the held run lands where it starts");
+    assert_eq!(inside(FIRST + 2_000, NavigationKey::ArrowRight), changes().next(), "a change outside the held run is never a step");
+    assert_eq!(inside(FIRST + 5_000, NavigationKey::ArrowLeft), changes().last().or(Some(FIRST + 2_000)), "a step back from after the held run stays inside it");
 }
 
 #[test]

@@ -130,7 +130,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const placesAt = follow ? list.at : null;
   const places = useMemo(() => divisionPlaces(named, placesAt), [named, placesAt]);
   const readPlaces = useCallback((asked: readonly { provinceId: number; hour: number }[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client,
-    productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch, places: asked, states: [] } }),
+    productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch,
+      places: asked.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }), states: [] } }),
     signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
   [runtime.client, track, branch]);
   const placeReads = useKeyedReads<{ provinceId: number; hour: number }, PlaceName>(placesOwner, places, active, place => placeKey(place.provinceId, place.hour), readPlaces);

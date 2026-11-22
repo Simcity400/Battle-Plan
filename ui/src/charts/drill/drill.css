@@ -6,6 +6,7 @@
 .drill-host[data-open] .drill-view { transform: translateX(0); opacity: 1; }
 :root[data-motion='reduced'] .drill-face { transition: none; }
 
+.drill-saved { display: flex; flex: 1; flex-direction: column; min-height: 0; height: 100%; }
 .drill-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line-soft); font-size: var(--type-md); }
 .drill-header > strong { font-weight: 600; }
 .drill-day { color: var(--muted); font-variant-numeric: tabular-nums; }

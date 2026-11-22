@@ -26,7 +26,7 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
   const tag = owner?.key ?? null;
   const span = useMemo(() => gate.span(extent[0], extent[1]), [extent[0], extent[1], gate.span]);
   const listed = useSeriesParts(client, gate, source, branchId, PARTS_FAMILY, owner, span, active);
-  const all = useMemo(() => [...new Set((listed.data?.parts ?? []).map(part => part.part))], [listed.data]);
+  const all = useMemo(() => (listed.data?.parts ?? []).map(part => part.part), [listed.data]);
   const namesRequests = useMemo(() => source && branchId && tag && span ? namesAt(listed.data?.parts ?? [], span.lastHour).flatMap(([at, parts]) => {
     const hour = gate.recorded(at);
     return hour === null ? [] : [productRequest({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, country: countryFromKey(tag), parts, hour } })];

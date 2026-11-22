@@ -55,7 +55,7 @@ import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
 import { fuelConsumptionLevelToken, fuelConsumptionToken, readFuelConsumption, readFuelConsumptionLevel } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
-import { readFuelCountry } from './fuelCountry';
+import { readDatedCountry } from '../../dashboard/datedCountry.ts';
 import { COUNTRY_FUEL, FUEL_DAYS, QUANTITY_SCALE, formatFuel, fuelDecimals, fuelTooltips, stripBars, stripNote, validateCountryFuel } from './fuelData';
 import { fuelExtentToken, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
@@ -219,7 +219,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const drillFollows = drillControl.following;
   const [pickTags, setPickTags] = useState<readonly string[]>();
   const campaign = track?.source.metadata.campaignKey ?? '';
-  const savedCountry = useMemo(() => track && saved ? readFuelCountry(options.fuelCountry, campaign, track.branch.id, widget.countries) : null,
+  const savedCountry = useMemo(() => track && saved ? readDatedCountry(options.fuelCountry, campaign, track.branch.id, widget.countries) : null,
     [track, saved, options.fuelCountry, widget.countries, campaign]);
   const drillCountry = drillControl.gate.country;
   const pickKey = saved ? tags[0] ?? null : drill.country?.tag ?? null;

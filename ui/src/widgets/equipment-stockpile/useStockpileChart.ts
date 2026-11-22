@@ -43,7 +43,8 @@ export function useStockpileChart(client: DashboardClient, gate: Pick<Gate, 'spa
       const range = gate.span(at.from, at.to);
       if (!range) throw new Error(OUTSIDE_MESSAGE);
       return keyed(await loadProduct(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-chart',
-        params: { branchId: track.branch.id, holders, included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: range.firstHour, to: range.lastHour, width: at.width } }),
+        params: { branchId: track.branch.id, holders: holders.map(holder => ({ country: holder.country,
+          ...(holder.within ? { within: holder.within.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } : {}) })), included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: range.firstHour, to: range.lastHour, width: at.width } }),
       signal, value => validateStockpileChart(value, lines.length), track.source, restart, summaries => publish(keyed(summaries))));
     }, client);
   const [hover, setHover] = useState<number | null>(null);

@@ -118,10 +118,16 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
   const gate = useGate(runtime, widget, SPEC, active);
+  const lanesByTag = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane])), [lanesData]);
   const selectedAt = useCallback((tag: string, hour: number) => {
     const at = selection.at(hour);
-    return at.reason === null && (at.tags === null || at.tags.has(tag));
-  }, [selection]);
+    if (at.reason !== null) return false;
+    if (at.tags === null) return true;
+    if (bySubject) return at.tags.has(tag);
+    const lane = lanesByTag.get(tag);
+    const run = lane ? runAt(lane, hour) : null;
+    return !!run && at.tags.has(run.overlord);
+  }, [selection, bySubject, lanesByTag]);
   const series = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, 'autonomy', 'progress', tags,
     following && !followsClock ? gate.recorded(head) : null, gate.recorded(hoverHour), active, false, within, lastHour, followsClock, selectedAt);
   const axisOffset = track?.axisOffset ?? 0;

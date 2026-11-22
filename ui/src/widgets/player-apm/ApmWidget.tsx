@@ -96,7 +96,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head && branchSpan ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
     params: { ...query.head, registry: false, ...branchSpan, buckets: 1 } }) : null, active, validateApm, track?.source);
   const ids = useMemo(() => branchSeries.data?.series.map(series => series.id) ?? [], [branchSeries.data]);
-  const tileSeries = (value: string) => tiled && track && query.head && ids.length ? { source: track.source, branchId: track.branch.id, lastHour: track.branch.lastHour, tags: ids,
+  const tileSeries = (value: string) => tiled && track && query.head && ids.length ? { source: track.source, span: gate.span, branchId: track.branch.id, lastHour: track.branch.lastHour, tags: ids,
     family: { kind: 'player-apm', group: query.head.group, tags: query.head.tags, membership: query.head.membership, players: query.head.players, value } } : null;
   const rates = useTiles(runtime.client, tileSeries('apm'), active, true);
   const pausedRates = useTiles(runtime.client, paused ? tileSeries('pausedOrders') : null, active, true);

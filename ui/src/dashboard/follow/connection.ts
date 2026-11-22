@@ -29,7 +29,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
   const structures = new StructureQueue();
-  const ask = (product: string, params: Record<string, unknown>) => client.product(productRequest({
+  const ask = (product: 'follow' | 'unfollow' | 'follow-clock' | 'follow-close', params: Record<string, unknown>) => client.product(productRequest({
     sourceId: source.id, revision: source.revision, product, params: params as GatedParams,
   }), new AbortController().signal);
   const pausedAt = (s: PlaybackSnapshot) => s.playing ? null : Math.floor(s.position) + offset;

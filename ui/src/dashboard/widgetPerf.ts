@@ -39,14 +39,23 @@ export function useWhyCommit(component: string, values: Readonly<Record<string, 
   noteCause(`widget:${widget}`, `${component}: ${changed.join(', ') || 'nothing named'}`);
 }
 
-export function shownReporter(widget: string | null): (hour: number | null) => void {
-  if (widget === null || !perfLog) return () => {};
-  let last: number | null | undefined;
+const drilled = new Map<string, number>();
+const lastShown = new Map<string, number | null>();
+
+export function shownSink(): ((widget: string, hour: number | null) => void) | null {
+  return perfLog ? (widget, hour) => perfLog?.shown(widget, hour) : null;
+}
+
+export function shownReporter(widget: string | null, drill = false): (hour: number | null) => void {
+  const sink = shownSink();
+  if (!sink) return () => {};
+  const key = widget ?? '';
   return hour => {
+    if (!drill && drilled.has(key)) return;
     const whole = hour === null ? null : Math.floor(hour);
-    if (whole === last) return;
-    last = whole;
-    perfLog?.shown(widget, whole);
+    if (lastShown.has(key) && lastShown.get(key) === whole) return;
+    lastShown.set(key, whole);
+    sink(key, whole);
   };
 }
 
@@ -55,15 +64,37 @@ export function useShownHour(): (hour: number | null) => void {
   return useMemo(() => shownReporter(widget), [widget]);
 }
 
+export function useDrillShown(clock: Pick<PlaybackController, 'subscribeFrame'>, on: boolean, at: () => number | null): void {
+  const widget = measuredWidget();
+  const shown = useMemo(() => shownReporter(widget, true), [widget]);
+  const latest = useRef(at);
+  latest.current = at;
+  const owns = on && shownSink() !== null, key = widget ?? '';
+  useLayoutEffect(() => {
+    if (!owns) return undefined;
+    drilled.set(key, (drilled.get(key) ?? 0) + 1);
+    return () => {
+      const left = (drilled.get(key) ?? 1) - 1;
+      if (left > 0) drilled.set(key, left); else drilled.delete(key);
+    };
+  }, [key, owns]);
+  useEffect(() => { if (owns) shown(latest.current()); });
+  useEffect(() => {
+    if (!owns) return undefined;
+    return clock.subscribeFrame(() => shown(latest.current()));
+  }, [clock, shown, owns]);
+}
+
 export function useShownEachFrame(clock: Pick<PlaybackController, 'subscribeFrame'>, at: (() => number | null) | null,
   live?: Pick<Live<unknown>, 'subscribe'>): void {
   const shown = useShownHour();
   const latest = useRef(at);
   latest.current = at;
-  useEffect(() => { if (perfLog && latest.current) shown(latest.current()); });
-  const subscribeLive = live?.subscribe, enabled = !!at;
+  const measured = shownSink() !== null;
+  useEffect(() => { if (measured && latest.current) shown(latest.current()); });
+  const subscribeLive = live?.subscribe, enabled = measured && !!at;
   useEffect(() => {
-    if (!perfLog || !enabled) return undefined;
+    if (!enabled) return undefined;
     const report = () => shown(latest.current?.() ?? null);
     const stops = [clock.subscribeFrame(report), ...subscribeLive ? [subscribeLive(report)] : []];
     return () => { for (const stop of stops) stop(); };

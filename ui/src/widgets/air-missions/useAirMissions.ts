@@ -18,7 +18,7 @@ export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, activ
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = track && tag ? { country: countryFromKey(tag) } : null;
-  const product = useHeadProduct<AirMissionsReply>(runtime, useGate(runtime, widget), 'air-missions', params, { active, validate: validateAirMissions, structure });
+  const product = useHeadProduct(runtime, useGate(runtime, widget), 'air-missions', params, { active, validate: validateAirMissions, structure });
   return { track, tag, options, ...product };
 }
 

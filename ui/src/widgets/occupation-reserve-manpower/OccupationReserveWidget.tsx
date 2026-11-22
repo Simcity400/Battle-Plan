@@ -29,7 +29,7 @@ import { BREAKDOWN, OPTIONS } from './definition';
 import { holderBands, holderOf, holderToken, historySources, holderTooltip, persons, raceEntries, raceHolders, reserveOf, reserveStructure, segmentAt,
   segmentParts, sourceKey, sourceTagAt, UNRESOLVED, validateOccupationReserve, validateReserveHistory } from './occupationReserveData';
 import './occupationReserve.css';
-import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
+import type { ReserveHistoryReply } from '../../generated/dashboard';
 import {  SPEC } from '../../dashboard/regionTime';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime';
 import { productRequest } from '../../dashboard/request.ts';
@@ -48,7 +48,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const pinned = options.show === 'breakdown';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<OccupationReserveReply>(runtime, useGate(runtime, widget), 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
     { active, validate: validateOccupationReserve, structure: reserveStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;

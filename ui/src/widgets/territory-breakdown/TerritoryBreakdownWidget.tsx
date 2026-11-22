@@ -42,7 +42,7 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const params = useMemo(() => ({ measure, rule }), [measure, rule]);
   const gate = useGate(runtime, widget);
   const campaign = useCampaignGate(runtime, widget, active);
-  const breakdown = useHeadProduct<TerritoryBreakdownReply>(runtime, gate, 'territory-breakdown', track ? params : null,
+  const breakdown = useHeadProduct(runtime, gate, 'territory-breakdown', track ? params : null,
     { active, validate: validateBreakdownReply });
   const hour = breakdown.at ?? breakdown.hour ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
   const shownAt = useRef(breakdown.shownAt);

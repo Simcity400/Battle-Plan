@@ -1,4 +1,4 @@
-import type { GatedParams } from './regionTime';
+import type { ParamsFor } from './regionTime';
 import { asFailure, type Failure } from './queryError.ts';
 import { TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardSource } from './client';
@@ -10,7 +10,7 @@ import { inFrame } from './frameUpdates.ts';
 import { askTimeline } from './countryTimeline.ts';
 import type { HeldLookup } from './countryTimeline';
 import { busyWait } from '../shell/busy.ts';
-import { productRequest } from './request.ts';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
 
 export interface NameAt { hour: number; tag: string }
 
@@ -345,14 +345,14 @@ export class FactRequests<V> {
 }
 
 export type LabelParams = Readonly<Record<string, unknown>>;
-const labelParams = (params: LabelParams) => params as GatedParams;
+const labelParams = (params: LabelParams) => params as ParamsFor<DeclaredProduct>;
 
 export interface FactSource { sourceId: string; revision: string; branchId: string; content?: number }
 
 export type FactsFound<V> = ReadonlyMap<string, V> | Promise<ReadonlyMap<string, V>>;
 
 export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V>> {
-  product: string;
+  product: DeclaredProduct;
   identity?: string;
   perRequest: number;
   requestOrder?: FactRequestOrder;
@@ -363,7 +363,7 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
 }
 
 export interface BatchFactSpec<V> {
-  product: string;
+  product: DeclaredProduct;
   identity?: string;
   batch: true;
   params: (branchId: string, plan: FactPlan) => LabelParams;
@@ -418,8 +418,8 @@ async function readBatch<V>(client: DashboardClient, source: FactSource, spec: B
   }
   let data: unknown;
   try {
-    data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product,
-      params: labelParams(spec.params(source.branchId, plan)) }), signal, recording);
+    data = await loadTransientProduct<unknown>(client, forwardRequest({ id: source.sourceId, revision: source.revision }, spec.product,
+      labelParams(spec.params(source.branchId, plan))), signal, recording);
   } catch (error) {
     if (signal.aborted) return;
     const message = asFailure(error).message;
@@ -491,7 +491,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
       let failure: Failure | undefined;
       try {
         const params = spec.params(source.branchId, hour, tags);
-        const data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }), signal, recording);
+        const data = await loadTransientProduct<unknown>(client, forwardRequest({ id: source.sourceId, revision: source.revision }, spec.product, labelParams(params)), signal, recording);
         found = await spec.extract(data, params, source);
       } catch (error) {
         retryable = transientError(error);
@@ -506,7 +506,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
   const facts = sharedFacts<V>(client, source.sourceId, scope, spec, () => async (hour, tags, asked) => {
     try {
       const params = spec.params(source.branchId, hour, tags);
-      const data = await loadTransientProduct<unknown>(client, productRequest({ sourceId: source.sourceId, revision: source.revision, product: spec.product, params: labelParams(params) }), asked, recording);
+      const data = await loadTransientProduct<unknown>(client, forwardRequest({ id: source.sourceId, revision: source.revision }, spec.product, labelParams(params)), asked, recording);
       return await spec.extract(data, params, source);
     } catch (error) {
       return { failed: { retryable: transientError(error), error: asFailure(error) } };

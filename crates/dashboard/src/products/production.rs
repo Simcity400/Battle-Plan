@@ -272,10 +272,21 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
             }
         }
     }
+    let mut runs_of: BTreeMap<u64, Vec<u32>> = pieces.keys().map(|handle| (*handle, Vec::new())).collect();
+    for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
+        let index = lines(stretch.run)?;
+        for life in &index.lines {
+            if let Some(runs) = runs_of.get_mut(&life.handle)
+                && !runs.contains(&stretch.run)
+            {
+                runs.push(stretch.run);
+            }
+        }
+    }
     let mut out = Vec::new();
     for (handle, mut held) in pieces {
         held.sort_unstable_by_key(|piece| piece.first);
-        let mut appearance = 0;
+        let runs = runs_of.get(&handle).map(Vec::as_slice).unwrap_or_default();
         let mut current: Option<Appearance> = None;
         for mut piece in held {
             let previous = current.as_ref().and_then(|current| current.pieces.last());
@@ -285,7 +296,7 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
                 Some(current) if joins => current.pieces.push(piece),
                 _ => {
                     out.extend(current.take());
-                    appearance += 1;
+                    let appearance = runs.iter().position(|run| *run == piece.run).map_or(0, |at| at + 1);
                     current = Some(Appearance { key: format!("{handle}#{appearance}"), handle, pieces: vec![piece] });
                 }
             }
@@ -296,15 +307,21 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
     Ok(out)
 }
 
-pub fn held_hours(query: &Query<'_>, tag: &Country, from: i32, to: i32) -> Vec<HourSpan> {
+pub fn held_hours(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>, from: i32, to: i32) -> Vec<HourSpan> {
     let mut spans: Vec<HourSpan> = Vec::new();
     for run in query.holders.within(tag, from, to) {
         if !matches!(run.holder, Holder::Found { .. }) {
             continue;
         }
-        match spans.last_mut() {
-            Some(last) if last.last_hour.checked_add(1) == Some(run.first) => last.last_hour = run.last,
-            _ => spans.push(HourSpan { first_hour: run.first, last_hour: run.last }),
+        let clipped: Vec<(i32, i32)> = match within {
+            None => vec![(run.first, run.last)],
+            Some(within) => within.iter().map(|span| (run.first.max(span.first_hour), run.last.min(span.last_hour))).filter(|(first, last)| first <= last).collect(),
+        };
+        for (first, last) in clipped {
+            match spans.last_mut() {
+                Some(held) if held.last_hour.checked_add(1) == Some(first) => held.last_hour = last,
+                _ => spans.push(HourSpan { first_hour: first, last_hour: last }),
+            }
         }
     }
     spans

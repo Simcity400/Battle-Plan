@@ -51,7 +51,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const { data, error, retry, root, read: reading, shownAt, live: shownLive } = useHeadProduct<AirAcesReply>(runtime, useGate(runtime, widget), 'air-aces', track ? PARAMS : null, { active, validate: validateAces, structure });
+  const { data, error, retry, root, read: reading, shownAt, live: shownLive } = useHeadProduct(runtime, useGate(runtime, widget), 'air-aces', track ? PARAMS : null, { active, validate: validateAces, structure });
   useShownEachFrame(runtime.clock, shownAt, shownLive);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
   const read = data?.readHour ?? null;

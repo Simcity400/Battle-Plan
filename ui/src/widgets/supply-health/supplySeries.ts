@@ -10,7 +10,7 @@ import { loadProduct, loadTransientProduct } from '../../dashboard/products';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
-import type { CoveredBranch, GatedHour, GatedParams } from '../../dashboard/regionTime';
+import type { CoveredBranch, GatedHour } from '../../dashboard/regionTime';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { validateMeasureStates } from '../country-measure/measureSeriesData';
@@ -22,7 +22,9 @@ import { followAtHead } from '../../dashboard/tiles/head.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 import { DIVISIONS, SHARE_MEASURES, STATES, SUPPLY_FAMILY, liveShareRuns, mostDivisions, shareRunsFromLines, supplyAt } from './supplyHealthData';
 import type { SupplyAt } from './supplyHealthData';
-import { productRequest } from '../../dashboard/request.ts';
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
+import { withinParams } from '../../dashboard/keyedSeriesData.ts';
 
 const NO_RUNS: ShareRun[] = [];
 
@@ -34,7 +36,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, tags, within && [...within]]);
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
-  const lane = (measure: string) => enabled ? { source: source!, branchId: branchId!, family: { kind: SUPPLY_FAMILY, measure }, tags, within, lastHour } : null;
+  const lane = (measure: string) => enabled ? { source: source!, branchId: branchId!, family: { kind: SUPPLY_FAMILY, measure }, tags, within, span: gate.span, lastHour } : null;
   const none = useTiles(client, lane(SHARE_MEASURES[0]), active, following);
   const strained = useTiles(client, lane(SHARE_MEASURES[1]), active, following);
   const held = useTiles(client, lane(SHARE_MEASURES[2]), active, following);
@@ -70,8 +72,8 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const missing = useMemo(() => new Map(tags.map(tag => [tag, none.lines?.get(tag)?.missing ?? [] as MissingSpan[]])), [tags, none.lines]);
   const drawn = none.lines !== null && strained.lines !== null && held.lines !== null && total.lines !== null;
   const divisions = useMemo(() => new Map(tags.map(tag => [tag, mostDivisions(total.lines?.get(tag)?.summary)])), [tags, total.lines]);
-  const request = (product: string, measure: string, params: GatedParams) => (productRequest({ sourceId: source!.id, revision: source!.revision,
-    product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } }));
+  const request = <K extends DeclaredProduct>(product: K, measure: string, params: ParamsFor<K>) => forwardRequest(source!, product,
+    { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } as unknown as ParamsFor<K>);
   const content = useContentRevision(client);
   const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read] as const)).values()], [JSON.stringify(reads)]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,
@@ -88,7 +90,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
     const controller = new AbortController(); navigation.current = controller;
     const range = gate.span(x[0], Math.min(x[1], until ?? x[1]));
     if (!range) return;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { countries: tags.map(countryFromKey), measures: STATES.slice(1), key,
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { countries: tags.map(countryFromKey), ...withinParams(tags, within, gate.span), measures: STATES.slice(1), key,
       from: gate.within(from), ...range }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');

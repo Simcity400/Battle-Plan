@@ -38,7 +38,7 @@ const PARAMS = {} as const;
 export default function DecryptionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct<DecryptionReply>(runtime, useGate(runtime, widget), 'decryption', track ? PARAMS : null,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'decryption', track ? PARAMS : null,
     { active, validate: validateDecryption, structure: raceStructure });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const hour = head.at ?? shownHour(runtime, widget, head) ?? 0;

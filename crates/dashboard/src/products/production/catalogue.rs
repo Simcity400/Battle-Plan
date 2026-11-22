@@ -459,7 +459,7 @@ impl Product for EquipmentDesigns {
                 .into_iter()
                 .filter_map(|(id, (lives, obsolete))| Some(DesignHistory { id: id.to_string(), lives, obsolete, name: named.variants.remove(&id)? }))
                 .collect(),
-            known: held_hours(&query, &params.country, query.timeline.first, query.timeline.last),
+            known: held_hours(&query, &params.country, None, query.timeline.first, query.timeline.last),
             icons,
             warnings,
         };

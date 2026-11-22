@@ -2,7 +2,8 @@ import { countryFromKey, countryKey } from './countryKey.ts';
 import type { CountryRef } from './countrySlots.ts';
 import type { HourSpan, SeriesDrop, SeriesRun } from '../generated/dashboard';
 import { type FollowedAnswer, rowKey, rowName } from './follow/message.ts';
-import type { TileReply } from './tiles/tile';
+import type { TileReply } from './tiles/tile';
+import type { BoundWindow } from './regionTime';
 
 export interface SeriesKey { tag: string; part: string }
 
@@ -13,6 +14,23 @@ export interface KeyedStates { branchId: string; decimals: number; states: reado
 
 export interface SeriesPart { part: string; id: string | null; firstHour: number; lastHour: number }
 export interface SeriesParts { tag: string; parts: readonly SeriesPart[]; missing: readonly { firstHour: number; lastHour: number; reason: string }[]; partBits: number }
+export interface HeldPart extends SeriesPart { spans: readonly HourSpan[] }
+export interface HeldParts extends Omit<SeriesParts, 'parts'> { parts: readonly HeldPart[] }
+
+export function heldParts(pieces: readonly SeriesPart[]): HeldPart[] {
+  const byPart = new Map<string, SeriesPart[]>();
+  for (const piece of pieces) { const list = byPart.get(piece.part); if (list) list.push(piece); else byPart.set(piece.part, [piece]); }
+  return [...byPart.values()].map(list => {
+    const sorted = [...list].sort((a, b) => a.firstHour - b.firstHour);
+    const spans: HourSpan[] = [];
+    for (const piece of sorted) {
+      const last = spans.at(-1);
+      if (last && piece.firstHour <= last.lastHour + 1) last.lastHour = Math.max(last.lastHour, piece.lastHour);
+      else spans.push({ firstHour: piece.firstHour, lastHour: piece.lastHour });
+    }
+    return { part: sorted[0].part, id: sorted.find(piece => piece.id !== null)?.id ?? null, firstHour: spans[0].firstHour, lastHour: spans.at(-1)!.lastHour, spans };
+  });
+}
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const hour = (value: unknown): value is number => Number.isSafeInteger(value);
@@ -45,7 +63,12 @@ export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
   return { tag, parts, missing: owner.missing as SeriesParts['missing'], partBits: value.partBits as number };
 }
 
-export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Record<string, readonly HourSpan[]>> | undefined) {
+export const withinParams = (tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined,
+  span: (firstHour: number, lastHour: number) => BoundWindow | null) => within
+  ? { within: tags.map(tag => [countryFromKey(tag), (within.get(tag) ?? []).flatMap(held => span(held.firstHour, held.lastHour) ?? [])] as const) } : {};
+
+export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Record<string, readonly HourSpan[]>> | undefined,
+  span: (firstHour: number, lastHour: number) => BoundWindow | null) {
   const lines = keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part }));
   if (!within) return { lines };
   const byTag: Record<string, readonly HourSpan[]> = {};
@@ -55,7 +78,7 @@ export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Rec
     if (held && JSON.stringify(held) !== JSON.stringify(spans)) throw new Error('A country’s parts are drawn over one set of spans.');
     byTag[key.tag] = spans;
   }
-  return { lines, within: Object.entries(byTag).map(([tag, spans]) => [countryFromKey(tag), spans]) };
+  return { lines, within: Object.entries(byTag).map(([tag, spans]) => [countryFromKey(tag), spans.flatMap(held => span(held.firstHour, held.lastHour) ?? [])] as const) };
 }
 
 export function followedRow(answer: FollowedAnswer | undefined, key: SeriesKey, partBits: number): number {

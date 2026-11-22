@@ -256,7 +256,12 @@ impl ParamNode {
 
     fn object(&self) -> String {
         let fields = self.fields.iter().map(|(name, node)| format!("readonly {name:?}?: {} | null", node.render())).collect::<Vec<_>>();
-        if fields.is_empty() { "{}".to_owned() } else { format!("{{ readonly [key: string]: unknown; {} }}", fields.join("; ")) }
+        let positional = self.fields.keys().all(|name| name.bytes().all(|byte| byte.is_ascii_digit()));
+        match (fields.is_empty(), positional) {
+            (true, _) => "{}".to_owned(),
+            (false, true) => format!("{{ {} }}", fields.join("; ")),
+            (false, false) => format!("{{ readonly [key: string]: unknown; {} }}", fields.join("; ")),
+        }
     }
 }
 
