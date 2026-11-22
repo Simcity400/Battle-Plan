@@ -3635,7 +3635,11 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
         Vision::read(&frame, &links, &tags, &choice, Err("no fog content")).unwrap()
     };
     let missing = SharingUnknown::Relations("FactionMembers");
-    let countries = Countries::default();
+    let countries = countries([
+        (0, Allegiance::Ours),
+        (1, Allegiance::Other),
+        (2, Allegiance::Other),
+    ]);
     let templates = TemplateIcons {
         by_template: [(
             10,
