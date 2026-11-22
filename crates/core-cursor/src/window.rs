@@ -1,9 +1,116 @@
-use crate::{Coverage, Hours, Memory, Owner, PageInfo, Reservation};
+use crate::{Coverage, Hour, Hours, Memory, Missing, Owner, PageInfo, Reservation};
 use std::{io, mem::size_of, sync::Arc};
 
+#[derive(Clone, Copy)]
+struct RunRef<'a> {
+    hours: Hours,
+    missing: Option<&'a Missing>,
+    accepted_before: u64,
+}
+
+impl<'a> RunRef<'a> {
+    fn from_coverage(item: &'a Coverage) -> Self {
+        Self {
+            hours: item.hours,
+            missing: item.missing.as_ref(),
+            accepted_before: item.accepted_before,
+        }
+    }
+
+    fn clip(item: &'a Coverage, span: Hours) -> Option<Self> {
+        Self::from_coverage(item).clip_ref(span)
+    }
+
+    fn clip_ref(self, span: Hours) -> Option<Self> {
+        let hours = self.hours.intersection(span)?;
+        let accepted_before = if hours.first == self.hours.first {
+            self.accepted_before
+        } else {
+            self.accepted_through(hours.first - 1)
+        };
+        Some(Self {
+            hours,
+            missing: self.missing,
+            accepted_before,
+        })
+    }
+
+    fn accepted_through(&self, hour: Hour) -> u64 {
+        self.accepted_before
+            + if self.missing.is_none() && hour >= self.hours.first {
+                (i64::from(hour.min(self.hours.last)) - i64::from(self.hours.first) + 1) as u64
+            } else {
+                0
+            }
+    }
+
+    fn can_merge(&self, next: &Self) -> bool {
+        self.missing == next.missing
+            && self.accepted_through(next.hours.first.saturating_sub(1)) == next.accepted_before
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SpanSummary<'a> {
+    runs: usize,
+    first: RunRef<'a>,
+    last: RunRef<'a>,
+}
+
+fn combine<'a>(
+    left: Option<SpanSummary<'a>>,
+    right: Option<SpanSummary<'a>>,
+) -> Option<SpanSummary<'a>> {
+    let Some(l) = left else {
+        return right;
+    };
+    let Some(r) = right else {
+        return Some(l);
+    };
+    let merged_end = if i64::from(r.first.hours.first) == i64::from(l.last.hours.last) + 1 {
+        l.last.can_merge(&r.first).then_some(r.first.hours.last)
+    } else if r.first.hours.first <= l.last.hours.last {
+        if r.runs == 1 && r.last.hours.last <= l.last.hours.last {
+            return Some(l);
+        } else if r.first.hours.last > l.last.hours.last {
+            r.first
+                .clip_ref(Hours {
+                    first: l.last.hours.last + 1,
+                    last: r.first.hours.last,
+                })
+                .filter(|clipped| l.last.can_merge(clipped))
+                .map(|clipped| clipped.hours.last)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(end) = merged_end {
+        let merged = RunRef {
+            hours: Hours {
+                first: l.last.hours.first,
+                last: end,
+            },
+            missing: l.last.missing,
+            accepted_before: l.last.accepted_before,
+        };
+        Some(SpanSummary {
+            runs: l.runs + r.runs - 1,
+            first: if l.runs == 1 { merged } else { l.first },
+            last: if r.runs == 1 { merged } else { r.last },
+        })
+    } else {
+        Some(SpanSummary {
+            runs: l.runs + r.runs,
+            first: l.first,
+            last: r.last,
+        })
+    }
+}
+
 pub(crate) fn can_merge(previous: &Coverage, next: &Coverage) -> bool {
-    previous.missing == next.missing
-        && previous.accepted_through(next.hours.first.saturating_sub(1)) == next.accepted_before
+    RunRef::from_coverage(previous).can_merge(&RunRef::from_coverage(next))
 }
 
 pub(crate) fn coverage_runs(coverage: &[Coverage]) -> usize {
@@ -22,26 +129,104 @@ fn boundary_reduction(left: &[Coverage], right: &[Coverage]) -> usize {
     let (Some(prev), Some(next)) = (left.last(), right.first()) else {
         return 0;
     };
+    let prev = RunRef::from_coverage(prev);
     if i64::from(next.hours.first) == i64::from(prev.hours.last) + 1 {
-        usize::from(can_merge(prev, next))
+        usize::from(prev.can_merge(&RunRef::from_coverage(next)))
     } else if next.hours.first <= prev.hours.last {
         if right.len() == 1 && next.hours.last <= prev.hours.last {
             1
         } else if next.hours.last > prev.hours.last {
-            crate::reference::clip(
+            RunRef::clip(
                 next,
                 Hours {
                     first: prev.hours.last + 1,
                     last: next.hours.last,
                 },
             )
-            .map_or(0, |clipped| usize::from(can_merge(prev, &clipped)))
+            .map_or(0, |clipped| usize::from(prev.can_merge(&clipped)))
         } else {
             0
         }
     } else {
         0
     }
+}
+
+fn summarize_entry<'a, T: Entry>(entry: &'a T, span: Hours) -> Option<SpanSummary<'a>> {
+    let hours = entry.info().hours;
+    if hours.last < span.first || hours.first > span.last {
+        return None;
+    }
+    let items = entry.coverage();
+    if items.is_empty() {
+        return None;
+    }
+    if hours.first >= span.first && hours.last <= span.last {
+        let mut first = RunRef::from_coverage(items.first()?);
+        let mut last = RunRef::from_coverage(items.last()?);
+        let runs = entry.coverage_runs();
+        if runs == 1 {
+            let whole = RunRef {
+                hours: Hours {
+                    first: first.hours.first,
+                    last: last.hours.last,
+                },
+                missing: first.missing,
+                accepted_before: first.accepted_before,
+            };
+            first = whole;
+            last = whole;
+        }
+        return Some(SpanSummary { runs, first, last });
+    }
+    let start = items.partition_point(|item| item.hours.last < span.first);
+    let end = items.partition_point(|item| item.hours.first <= span.last);
+    let mut summary: Option<SpanSummary<'a>> = None;
+    for item in &items[start..end] {
+        if let Some(run) = RunRef::clip(item, span) {
+            summary = combine(
+                summary,
+                Some(SpanSummary {
+                    runs: 1,
+                    first: run,
+                    last: run,
+                }),
+            );
+        }
+    }
+    summary
+}
+
+fn summarize_node<'a, T: Entry>(link: &'a Link<T>, span: Hours) -> Option<SpanSummary<'a>> {
+    let n = link.as_deref()?;
+    if n.last.hours.last < span.first || n.first.hours.first > span.last {
+        return None;
+    }
+    if n.first.hours.first >= span.first && n.last.hours.last <= span.last {
+        let mut first = RunRef::from_coverage(n.first_entry.coverage().first()?);
+        let mut last = RunRef::from_coverage(n.last_entry.coverage().last()?);
+        if n.coverage_runs == 1 {
+            let whole = RunRef {
+                hours: Hours {
+                    first: first.hours.first,
+                    last: last.hours.last,
+                },
+                missing: first.missing,
+                accepted_before: first.accepted_before,
+            };
+            first = whole;
+            last = whole;
+        }
+        return Some(SpanSummary {
+            runs: n.coverage_runs,
+            first,
+            last,
+        });
+    }
+    let left = summarize_node(&n.left, span);
+    let mid = summarize_entry(&*n.value, span);
+    let right = summarize_node(&n.right, span);
+    combine(combine(left, mid), right)
 }
 
 pub(crate) trait Entry {
@@ -285,8 +470,8 @@ impl<T: Entry> Tree<T> {
     pub fn directory_bytes(&self) -> usize {
         self.0.as_ref().map_or(0, |n| n.directory_bytes)
     }
-    pub fn coverage_runs(&self) -> usize {
-        self.0.as_ref().map_or(0, |n| n.coverage_runs)
+    pub fn coverage_runs_for(&self, span: Hours) -> usize {
+        summarize_node(&self.0, span).map_or(0, |summary| summary.runs)
     }
     pub fn first(&self) -> Option<PageInfo> {
         self.0.as_ref().map(|n| n.first)

@@ -2714,3 +2714,38 @@ fn a_contended_control_refuses_frame_advances_without_blocking_or_dropping_takes
     assert_eq!(held.head, Some(72));
     assert!(held.holds(&states[0][0][72]));
 }
+
+#[test]
+fn drive_until_wakes_and_errors_when_a_hook_panics_after_an_empty_poll() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<i32>();
+    let (polled_tx, polled_rx) = std::sync::mpsc::channel::<()>();
+    let hook: super::Hook = Box::new(move |step, _| {
+        let _keep = &step_tx;
+        let _ = polled_rx.recv();
+        panic!("hook panicked at hour {}", step.last());
+    });
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), Some(hook)).unwrap();
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let mut signaled = false;
+    let error = playhead
+        .drive_until(&mut consumer, 0, || match step_rx.try_recv() {
+            Ok(_) => std::ops::ControlFlow::Break(Ok(())),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if !signaled {
+                    signaled = true;
+                    polled_tx.send(()).unwrap();
+                }
+                std::ops::ControlFlow::Continue(())
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                std::ops::ControlFlow::Break(Err("step hook channel disconnected".into()))
+            }
+        })
+        .expect_err("drive_until must wake and fail when the hook panics");
+    assert!(error.contains("panicked") || error.contains("disconnected"), "unexpected error: {error}");
+    let newest_error = playhead.wait_newest(0).expect_err("wait_newest must wake on stepper panic");
+    assert!(newest_error.contains("panicked"), "unexpected wait_newest error: {newest_error}");
+}

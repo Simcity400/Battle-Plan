@@ -797,6 +797,22 @@ enum Help {
     Prepares,
 }
 
+struct StepperExit {
+    shared: Arc<Shared>,
+}
+
+impl Drop for StepperExit {
+    fn drop(&mut self) {
+        let panicked = std::thread::panicking();
+        self.shared.nudge(|control| {
+            control.stop = true;
+            if panicked && control.error.is_none() {
+                control.error = Some("playhead stepper panicked".into());
+            }
+        });
+    }
+}
+
 pub struct Playhead {
     shared: Arc<Shared>,
     stepper: Option<JoinHandle<Vec<Lane>>>,
@@ -952,6 +968,7 @@ impl Playhead {
         }
         let held = Arc::clone(&shared);
         let stepper = std::thread::Builder::new().name("playhead stepper".into()).spawn(move || {
+            let _exit = StepperExit { shared: Arc::clone(&held) };
             entered(Thread::Stepper);
             Stepper::new(held, hook, helpers).run()
         })?;
@@ -1232,12 +1249,15 @@ impl Playhead {
                 return result;
             }
             let mut control = lock(&self.shared.control);
-            while control.version == version {
+            loop {
                 if let Some(error) = &control.error {
                     return Err(error.clone());
                 }
                 if control.stop {
                     return Err("playhead stopped".into());
+                }
+                if control.version != version {
+                    break;
                 }
                 control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
             }

@@ -1629,7 +1629,7 @@ fn prepare_frame_for<S: LogSource>(
             .load(Ordering::Acquire)
             .max(pending_rates);
         let changes = frame_capacity(snapshot, span, snapshot.selection.len(), rates);
-        let coverage = snapshot.pages.coverage_runs();
+        let coverage = snapshot.pages.coverage_runs_for(snapshot.served);
         prepare_workspace(request, coverage, changes)?;
     }
     Ok(())
@@ -2048,6 +2048,16 @@ fn fill<S: LogSource>(
             end += 1;
             (first, end)
         };
+        let mut covered_last = plan[first].hours.last;
+        for info in &plan[first + 1..last] {
+            if i64::from(info.hours.first) > i64::from(covered_last) + 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "page directory omitted served hours",
+                ));
+            }
+            covered_last = covered_last.max(info.hours.last);
+        }
         let mut missing = Buffer::new(&request.memory.soft(), Owner::Metadata, last - first)?;
         for info in &plan[first..last] {
             if pages.get(info.id).is_none() {
