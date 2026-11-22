@@ -11,6 +11,7 @@ import type { Live } from '../../charts/live';
 export interface FollowedAll {
   entries: readonly (FollowEntry | null)[];
   reason?: string;
+  failure?: string;
   current: (at: number) => FollowEntry | null;
   subscribe: (changed: () => void) => () => void;
 }
@@ -25,7 +26,7 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   const held = box.current;
   const subscribe = useCallback((changed: () => void) => { held.listeners.add(changed); return () => { held.listeners.delete(changed); }; }, [held]);
   const snapshot = useSyncExternalStore(subscribe, () => held.entries.map(entry => !entry ? ''
-    : `${renders === 'entries' ? entry.id : ''}\u0001${entry.status === 'unavailable' ? entry.reason ?? 'unavailable' : ''}`).join('\u0000'), () => '');
+    : `${renders === 'entries' ? entry.id : ''}\u0001${entry.status === 'unavailable' || entry.status === 'failed' ? `${entry.status}:${entry.reason ?? ''}` : ''}`).join('\u0000'), () => '');
   const keyed = useRef(key); keyed.current = key;
   const swap = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -71,7 +72,8 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   return useMemo(() => {
     const entries = held.key === key ? held.entries : queries.map(() => null);
     const unavailable = entries.find((entry, at) => queries[at] && entry?.status === 'unavailable');
-    return { entries, reason: unavailable?.reason, current, subscribe: watchSets };
+    const failed = entries.find((entry, at) => queries[at] && entry?.status === 'failed');
+    return { entries, reason: unavailable?.reason, ...(failed && { failure: failed.reason ?? 'The followed stream failed' }), current, subscribe: watchSets };
   }, [snapshot, held, key, current, watchSets]);
 }
 
@@ -83,7 +85,7 @@ export function handedLive<T>(store: Pick<FollowStore, 'watch'>, all: () => Foll
   const liveOf = (entry: FollowEntry) => { let live = made.get(entry); if (!live) made.set(entry, live = make(entry)); return live; };
   const source = () => {
     const entry = all().current(at);
-    if (entry?.status === 'unavailable') { held.delete(slot); return { entry, live: liveOf(entry) }; }
+    if (entry?.status === 'unavailable' || entry?.status === 'failed') { held.delete(slot); return { entry, live: liveOf(entry) }; }
     if (entry && entry.answer !== undefined) {
       const live = liveOf(entry);
       if (held.get(slot)?.entry !== entry) held.set(slot, { entry, live });

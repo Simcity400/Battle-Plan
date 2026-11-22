@@ -1,6 +1,7 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { asFailure } from '../../dashboard/queryError.ts';
 import { liveByColumn, liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -275,6 +276,8 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const hour = followedHead ? Math.floor(headAt(structureHour) ?? lastHour) : moment;
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
+    const failure = followedHead ? ranking.failure ?? columnsFollowed.failure : undefined;
+    if (failure) return <WidgetState kind="error" failure={asFailure(new Error(failure))} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (registryResult.error) return <WidgetState kind="error" failure={registryResult.error} onRetry={registryResult.retry} />;
     if (result.error && !followedHead) return <WidgetState kind="error" failure={result.error} onRetry={result.retry} />;

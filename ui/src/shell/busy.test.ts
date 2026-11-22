@@ -81,7 +81,7 @@ test('a followed answer is in flight until painted, and a seek clears it', () =>
   frames.run();
   assert.equal(busyKinds().follow, 0);
 
-  store.seek('7');
+  transport.reading({ id: 1, hour: 24, through: 24, panel: null, answer: null, values: null }, 'empty');
   assert.equal(handle.entry.answer, undefined);
   handle.release();
   assert.equal(busyKinds().follow, 0, 'its last query let go, no message will come');

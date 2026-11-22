@@ -3,9 +3,12 @@ import type { PlaybackController } from '../dashboard/playback';
 import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
+import type { PictureInterval } from './pictureDate';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
 import { heldPicture } from './held.ts';
 import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
+
+export interface PanelInspection { texts: ReadonlyMap<string, string>; live: ReadonlyMap<string, number | string>; date: PictureInterval }
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
   own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void, hold: () => void) {
@@ -18,7 +21,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   content.append(canvas);
   const offscreen = canvas.transferControlToOffscreen();
   const stopClock = drawClock(clock);
-  let owner = 0, fixed: number | undefined, closed = false, first = true, rebound = false;
+  let owner = 0, fixed: number | undefined, follows = false, closed = false, first = true, rebound = false;
   let origin = { x: 0, y: 0 };
   const visible = (show: boolean) => {
     if (canvas.hidden === !show) return;
@@ -38,7 +41,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
       if (closed) return;
       origin = { x: left, y: top };
       Object.assign(canvas.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' });
-      fixed = reading.fixed;
+      fixed = reading.fixed; follows = reading.follow !== undefined;
       drawPost({ type: 'surface', id, owner, width, height, dpr: devicePixelRatio, model: { ...reading, cells },
         ...(first && { canvas: offscreen }) }, first ? [offscreen] : []);
       if (reading.widget) { canvas.dataset.placement = String(id); canvas.dataset.surface = reading.view; }
@@ -46,8 +49,8 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     };
   };
   const refresh = () => { if (!closed) { owner++; invalidateGeometry(measure); } };
-  let request = 0, inspecting: { request: number; done: (values?: ReadonlyMap<string, string>) => void } | undefined;
-  const settle = (values?: ReadonlyMap<string, string>) => { inspecting?.done(values); inspecting = undefined; };
+  let request = 0, inspecting: { request: number; done: (picture?: PanelInspection) => void } | undefined;
+  const settle = (picture?: PanelInspection) => { inspecting?.done(picture); inspecting = undefined; };
   const rebind = (exact: boolean) => {
     if (closed) return;
     settle();
@@ -55,18 +58,19 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     else { rebound = false; held.drop(); visible(false); own(false, !exact); hit(null); }
     refresh();
   };
-  const inspect = () => new Promise<ReadonlyMap<string, string> | undefined>(done => {
+  const inspect = () => new Promise<PanelInspection | undefined>(done => {
     settle();
     if (closed || canvas.hidden || held.stale) { done(undefined); return; }
     inspecting = { request: ++request, done };
     drawPost({ type: 'inspectPanel', id, owner, request });
   });
-  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) { settle(); release(); } });
+  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1 || message.type === 'followFailure' && follows) { settle(); release(); } });
   const off = onSurface(id, notice => {
     if (notice.type === 'failed') { settle(); release(); return; }
     if (notice.type === 'hit') { if (notice.owner === owner && !canvas.hidden && !held.stale) hit(notice.key); return; }
     if (notice.type === 'panelInspection') {
-      if (inspecting?.request === notice.request) settle(notice.values && !canvas.hidden && !held.stale ? new Map(notice.values) : undefined);
+      if (inspecting?.request === notice.request) settle(notice.values && notice.date && !canvas.hidden && !held.stale
+        ? { texts: new Map(notice.values), live: new Map(notice.live ?? []), date: notice.date } : undefined);
       return;
     }
     if (notice.type !== 'present') return;
@@ -75,7 +79,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     const clockHour = clock.positionAt(shownTime(p.shown));
     if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { settle(); release(); return; }
     const hour = pictureHour(p.date, clockHour, fixed);
-    if (hour === null && (p.waiting || rebound) && held.stale) return;
+    if (hour === null && (p.waiting || rebound) && !canvas.hidden) { if (!rebound) held.wait(); return; }
     settle(); rebound = false;
     if (hour === null) held.drop(); else held.present(p.holdsThrough);
     visible(hour !== null);

@@ -8,37 +8,38 @@ export type FollowQuery = Readonly<Record<string, unknown>>;
 
 export interface PageReading {
   id: number; hour: number; through: number; coverage?: { start: number; through: number };
-  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
+  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null; structure?: string;
 }
+
+export type Placed = 'current' | 'held' | 'empty' | 'dated';
 
 export interface FollowTransport {
   follow(id: number, query: FollowQuery): Promise<Availability> | void;
   unfollow(id: number): void;
-  listen(receive: (reading: PageReading, quiet: boolean) => void, fail: (reason: string) => void): () => void;
+  listen(receive: (reading: PageReading, placed: Placed) => void, fail: (reason: string) => void): () => void;
 }
 
 export type Availability = { available: true } | { available: false; reason: string };
 
-export interface Landed { panel: FollowedPanel; values?: Map<string, number | string>; hour: number; through: number }
+export interface Landed { panel: FollowedPanel; values?: Map<string, number | string>; hour: number; through: number; structure?: string }
 
 export interface FollowEntry {
   readonly id: number;
   values?: Map<string, number | string>;
   coverage?: { start: number; through: number };
-  status: 'pending' | 'followed' | 'unavailable';
+  status: 'pending' | 'followed' | 'unavailable' | 'failed';
   reason?: string;
   answer: FollowedAnswer | undefined;
   panel?: FollowedPanel;
+  structure?: string;
   landed?: Landed | null;
   hour: number;
   through: number;
   version: number;
+  dated?: number;
 }
 
 export const shownThrough = (entry: FollowEntry): number | null => entry.answer === undefined && entry.panel === undefined ? null : entry.through;
-
-export const showsAt = (reading: Pick<PageReading, 'panel' | 'answer' | 'coverage'>, paused: number | null) => paused === null || !reading.panel && !reading.answer
-  || !!reading.coverage && reading.coverage.start <= paused && paused <= reading.coverage.through;
 
 export function queryBranch(query: FollowQuery): string | null {
   const branch = query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId;
@@ -85,7 +86,6 @@ export class FollowStore {
   private readonly ids: () => number;
   private framed = false;
   private painting: (() => void) | null = null;
-  private failed: string | null = null;
   private stop?: () => void;
   private readonly transport: FollowTransport;
   private readonly frame: FrameScheduler;
@@ -99,9 +99,8 @@ export class FollowStore {
   }
 
   private listen() {
-    this.stop ??= this.transport.listen((reading, quiet) => this.receive(reading, quiet), reason => {
-      this.failed = reason;
-      for (const held of this.byId.values()) this.settle(held, { available: false, reason });
+    this.stop ??= this.transport.listen((reading, placed) => this.receive(reading, placed), reason => {
+      for (const held of this.byId.values()) this.fail(held, reason);
     });
   }
 
@@ -117,7 +116,7 @@ export class FollowStore {
       const asked = held;
       perfLog?.follow(held.entry.id, 'pending', typeof query.product === 'string' ? query.product : typeof query.panel === 'string' ? query.panel
         : typeof query.head === 'string' ? query.head : null);
-      const told = this.failed === null ? this.transport.follow(held.entry.id, query) : Promise.resolve<Availability>({ available: false, reason: this.failed });
+      const told = this.transport.follow(held.entry.id, query);
       if (told) told.then(availability => this.settle(asked, availability),
         error => this.settle(asked, { available: false, reason: error instanceof Error ? error.message : String(error) }));
       else held.entry.status = 'followed';
@@ -167,28 +166,34 @@ export class FollowStore {
     return () => { listeners.delete(changed); if (!listeners.size) this.liveListeners.delete(entry.id); };
   }
 
-  seek(branch: string, retainThrough?: number, stepped = false) {
-    if (retainThrough !== undefined && !stepped) return;
-    for (const held of this.byId.values()) if (held.branch === branch) {
-      const entry = held.entry;
-      if (retainThrough !== undefined && showsAt(entry, retainThrough)) continue;
-      entry.coverage = undefined;
-      entry.panel = undefined; entry.answer = undefined; entry.values = undefined;
-      if (retainThrough === undefined && entry.landed) entry.landed = null;
-      this.changed(held);
-    }
-  }
-
-  private receive(reading: PageReading, quiet = false) {
+  private receive(reading: PageReading, placed: Placed) {
     const held = this.byId.get(reading.id);
     if (!held || held.entry.status === 'unavailable') return;
     const entry = held.entry;
+    if (entry.status === 'failed') {
+      if (placed === 'empty') return;
+      entry.status = 'followed'; entry.reason = undefined;
+      this.tellStructure(held);
+    }
     entry.hour = reading.hour; entry.through = reading.through; entry.coverage = reading.coverage;
-    if (quiet) { if (entry.landed && entry.landed.panel === entry.panel) entry.landed.through = entry.through; return; }
-    if (reading.panel !== undefined) entry.panel = reading.panel ?? undefined;
-    if (reading.answer !== undefined) entry.answer = reading.answer ?? undefined;
-    if (reading.values !== undefined) entry.values = reading.values ?? undefined;
-    if (entry.panel) entry.landed = { panel: entry.panel, values: entry.values, hour: entry.hour, through: entry.through };
+    if (placed === 'dated') {
+      if (entry.landed && !entry.panel) entry.landed.through = entry.through;
+      else if (entry.landed && entry.landed.panel === entry.panel) entry.landed.through = entry.through;
+      entry.dated = (entry.dated ?? 0) + 1;
+      this.tellLive(held);
+      return;
+    }
+    if (placed === 'held') {
+      entry.panel = undefined; entry.answer = undefined; entry.values = undefined; entry.structure = reading.structure;
+      entry.landed = reading.panel ? { panel: reading.panel, values: reading.values ?? undefined, hour: reading.hour, through: reading.through, structure: reading.structure } : entry.landed;
+    } else if (placed === 'empty') {
+      entry.panel = undefined; entry.answer = undefined; entry.values = undefined; entry.structure = undefined; entry.coverage = undefined;
+      if (entry.landed) entry.landed = null;
+    } else {
+      entry.panel = reading.panel ?? undefined; entry.answer = reading.answer ?? undefined; entry.values = reading.values ?? undefined;
+      entry.structure = reading.structure;
+      if (entry.panel) entry.landed = { panel: entry.panel, values: entry.values, hour: entry.hour, through: entry.through, structure: entry.structure };
+    }
     this.changed(held);
   }
 
@@ -206,12 +211,27 @@ export class FollowStore {
   close(): void {
     this.stop?.();
     this.stop = undefined;
-    this.failed = null;
+  }
+
+  private fail(held: Held, reason: string): void {
+    const entry = held.entry;
+    if (entry.status === 'unavailable') return;
+    entry.answer = undefined; entry.panel = undefined; entry.values = undefined; entry.landed = undefined; entry.structure = undefined; entry.coverage = undefined;
+    entry.status = 'failed'; entry.reason = reason;
+    perfLog?.follow(entry.id, 'failed', undefined, reason);
+    entry.version++;
+    this.tellLive(held);
+    this.tellStructure(held);
+  }
+
+  private tellStructure(held: Held): void {
+    const listeners = this.structure.get(held.entry.id);
+    if (listeners) for (const changed of [...listeners]) changed();
   }
 
   private settle(held: Held, availability: Availability): void {
     if (this.byId.get(held.entry.id) !== held) return;
-    if (this.failed !== null) availability = { available: false, reason: this.failed };
+    if (held.entry.status === 'failed') return;
     if (!availability.available) {
       held.entry.answer = undefined;
       held.entry.panel = undefined;
@@ -222,8 +242,7 @@ export class FollowStore {
     held.entry.status = availability.available ? 'followed' : 'unavailable';
     held.entry.reason = availability.available ? undefined : availability.reason;
     perfLog?.follow(held.entry.id, held.entry.status, undefined, held.entry.reason);
-    const listeners = this.structure.get(held.entry.id);
-    if (listeners) for (const changed of [...listeners]) changed();
+    this.tellStructure(held);
   }
 
   private tellLive(held: Held): void {

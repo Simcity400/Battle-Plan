@@ -81,8 +81,9 @@ export class DatedStore {
     try { packet.apply(); } finally { this.at = -Infinity; }
   }
 
-  private touch(r: Reading) {
-    r.due = this.at; r.entry.version++; this.changed(r.entry);
+  private touch(r: Reading, content = true) {
+    if (content || r.due === -Infinity) r.due = this.at;
+    r.entry.version++; this.changed(r.entry);
   }
 
   private applyThrough(hour: number, route: number) {
@@ -157,7 +158,7 @@ export class DatedStore {
       const interval = retainThrough === undefined ? undefined : this.coverage(r.entry);
       r.candidate = undefined; r.ends = undefined; r.waiting = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
       if (retainThrough !== undefined && interval && interval.start <= retainThrough && retainThrough <= interval.through) {
-        r.shown = interval; this.touch(r); continue;
+        r.shown = interval; this.touch(r, false); continue;
       }
       r.shown = undefined; r.cells.clear();
       r.entry.panel = undefined; r.entry.answer = undefined;
@@ -343,9 +344,11 @@ export class DatedStore {
     if (r.entry.panel === candidate.panel && r.shown && r.shown.through > through) return;
     if (r.entry.panel === candidate.panel && r.entry.through === candidate.through && r.shown?.through === through &&
       r.shown.start === start && candidate.cells.every(id => r.cells.get(id) === cells.get(id))) return;
+    const content = r.entry.panel !== candidate.panel || r.entry.hour !== candidate.start
+      || r.cells.size !== cells.size || [...cells].some(([id, group]) => r.cells.get(id) !== group);
     r.entry.panel = candidate.panel; r.entry.hour = candidate.start; r.entry.through = candidate.through; r.ends = undefined;
     r.shown = { start, through }; r.cells = cells;
-    this.touch(r);
+    this.touch(r, content);
   }
 
   drain(head: number) {
@@ -385,6 +388,10 @@ export class DatedStore {
   }
   due(entry: FollowEntry) { return this.readings.get(entry.id)?.due ?? -Infinity; }
   receivedThrough(entry: FollowEntry) { return this.readings.get(entry.id)?.stream?.receivedThrough; }
+  confirmed(entry: FollowEntry) {
+    const r = this.readings.get(entry.id);
+    return Math.max(r?.stream?.through ?? -Infinity, r?.lane?.hour ?? -Infinity);
+  }
   get stepHour() { return this.byId.values().next().value?.stepHour; }
   eligibleThrough(entry: FollowEntry) {
     return Math.min(this.head + (this.readings.get(entry.id)?.offset ?? 0), this.coverage(entry)?.through ?? entry.hour);

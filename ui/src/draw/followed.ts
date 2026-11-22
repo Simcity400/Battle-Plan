@@ -12,10 +12,13 @@ export interface WirePanel { refused: string | null; bytes?: Uint8Array; data?: 
 export interface TimedReading {
   due: number; hour: number; coverage?: Coverage;
   panel: WirePanel | null; answer: FollowedAnswer | null; values: Values | null;
+  structure?: string; kept?: true;
 }
 
+export type Structure = (panel: FollowedPanel, hour: number) => string | undefined;
+
 export interface FollowUpdate {
-  id: number; epoch: number; keep: number;
+  id: number; epoch: number;
   put?: TimedReading[]; cover?: [due: number, through: number][]; drop?: number[];
 }
 
@@ -37,6 +40,13 @@ export class Followed {
   private readonly entries = new Map<number, FollowEntry>();
   private readonly sent = new Map<number, Map<number, Held>>();
   private readonly wires = new WeakMap<FollowedPanel, WirePanel>();
+  private readonly structures = new Map<number, Structure>();
+  private readonly shapes = new WeakMap<FollowedPanel, Map<number, string | undefined>>();
+  private readonly models = new Map<number, string>();
+  private readonly routes = new Map<number, string>();
+  private readonly failed = new Set<string>();
+  private readonly consumed = new Map<string, { epoch: number; hour: number }>();
+  private readonly passed = new Map<number, Map<number, Lead>>();
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
     this.store = new DatedStore(entry => changed?.(entry.id), release);
@@ -44,31 +54,55 @@ export class Followed {
 
   get size() { return this.entries.size; }
 
-  add(id: number, branch: string) {
+  add(id: number, branch: string, structure?: Structure) {
     const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
     this.branches.set(id, branch);
+    if (structure) this.structures.set(id, structure);
     this.entries.set(id, entry);
     this.store.add(entry, branch);
   }
   remove(id: number) {
-    this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
+    this.store.remove(id); this.entries.delete(id); this.sent.delete(id); this.models.delete(id); this.structures.delete(id); this.passed.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
-    if (branch && ![...this.branches.values()].includes(branch)) this.epochs.delete(branch);
+    if (branch && ![...this.branches.values()].includes(branch)) {
+      this.epochs.delete(branch); this.failed.delete(branch);
+      for (const [route, owner] of this.routes) if (owner === branch) this.routes.delete(route);
+    }
   }
   seek(branch: string, seek: number, epoch: number, retainThrough?: number) {
-    for (const [id, owner] of this.branches) if (owner === branch) this.sent.delete(id);
+    for (const [id, owner] of this.branches) if (owner === branch) { this.sent.delete(id); this.models.delete(id); this.passed.delete(id); }
+    this.failed.delete(branch);
     this.epochs.set(branch, epoch); this.store.seek(branch, seek, retainThrough);
   }
-  bind(branch: string, route: number, seek: number) { this.store.bind(branch, route, seek); }
+  bind(branch: string, route: number, seek: number) {
+    for (const [held, owner] of this.routes) if (owner === branch) this.routes.delete(held);
+    this.routes.set(route, branch);
+    this.store.bind(branch, route, seek);
+  }
   land(items: readonly FollowItem[]) {
     for (const item of items) {
-      if (item.kind !== 'failure') { this.store.accept(item); continue; }
-      this.sent.clear();
+      if (item.kind !== 'failure') {
+        const route = item.kind === 'panels' ? item.batch.route : item.message.route, branch = this.routes.get(route);
+        if (branch === undefined ? this.failed.size > 0 : this.failed.has(branch)) continue;
+        this.store.accept(item);
+        continue;
+      }
+      for (const branch of new Set(this.branches.values())) this.failed.add(branch);
+      this.sent.clear(); this.models.clear(); this.passed.clear();
       this.store.fail();
     }
   }
-  drain(head: number) { this.store.drain(head); }
+  consume(branch: string, epoch: number, hour: number) { this.consumed.set(branch, { epoch, hour }); }
+  isFailed(id: number) { const branch = this.branches.get(id); return branch !== undefined && this.failed.has(branch); }
+  drain(head: number) {
+    for (const [id, entry] of this.entries) for (const lead of this.store.ahead(entry, head)) {
+      let leads = this.passed.get(id);
+      if (!leads) this.passed.set(id, leads = new Map());
+      leads.set(lead.hour, lead);
+    }
+    this.store.drain(head);
+  }
   get stepHour() { return this.store.stepHour; }
   receivedThrough(id: number) {
     const entry = this.entries.get(id);
@@ -97,38 +131,72 @@ export class Followed {
 
   private timeline(entry: FollowEntry, aheadThrough: number): Map<number, Held> {
     const coverage = this.store.coverage(entry) ?? undefined, due = this.store.due(entry);
-    const out = new Map<number, Held>([[due, { panel: entry.panel ?? null, answer: entry.answer ?? null, values: this.values(entry, entry.panel),
-      hour: entry.hour, start: coverage?.start, through: coverage?.through }]]);
+    const out = new Map<number, Held>();
+    if (entry.panel || entry.answer) out.set(due, { panel: entry.panel ?? null, answer: entry.answer ?? null, values: this.values(entry, entry.panel),
+      hour: entry.hour, start: coverage?.start, through: coverage?.through });
     for (const lead of this.store.ahead(entry, aheadThrough)) if (lead.hour > due)
       out.set(lead.hour, { panel: lead.panel, answer: null, values: this.values(entry, lead.panel), hour: lead.hour, start: lead.hour, through: lead.hour });
     return out;
   }
 
-  private reading(due: number, held: Held): TimedReading {
+  private structure(id: number, panel: FollowedPanel | null, hour: number): string | undefined {
+    const shape = this.structures.get(id);
+    if (!shape || !panel) return undefined;
+    let byHour = this.shapes.get(panel);
+    if (!byHour) this.shapes.set(panel, byHour = new Map());
+    if (!byHour.has(hour)) {
+      let made: string | undefined;
+      try { made = panel.refused !== null ? undefined : shape(panel, hour); } catch { made = undefined; }
+      byHour.set(hour, made);
+    }
+    return byHour.get(hour);
+  }
+
+  private reading(id: number, due: number, held: Held): TimedReading {
+    const structure = this.structure(id, held.panel, held.hour);
+    const kept = structure !== undefined && this.models.get(id) === structure;
+    if (structure !== undefined && !kept) this.models.set(id, structure);
     return { due, hour: held.hour, ...(held.start !== undefined && { coverage: { start: held.start, through: held.through! } }),
-      panel: this.wire(held.panel ?? undefined), answer: held.answer, values: held.values };
+      panel: kept ? null : this.wire(held.panel ?? undefined), answer: held.answer, values: held.values,
+      ...(structure !== undefined && !kept && { structure }), ...(kept && { kept: true as const }) };
   }
 
   *updates(aheadThrough: number): Iterable<FollowUpdate> {
     for (const [id, entry] of this.entries) {
+      if (this.isFailed(id)) continue;
+      const branch = this.branches.get(id)!, epoch = this.epochs.get(branch) ?? 0;
       const timeline = this.timeline(entry, aheadThrough);
       let mirror = this.sent.get(id);
       if (!mirror) this.sent.set(id, mirror = new Map());
-      const keep = this.store.due(entry), put: TimedReading[] = [], cover: [number, number][] = [], drop: number[] = [];
-      let kept = false;
-      for (const due of mirror.keys()) if (due < keep) { mirror.delete(due); kept = true; }
+      const keep = this.store.due(entry), told = this.consumed.get(branch), consumed = told?.epoch === epoch ? told.hour : -Infinity;
+      let floor = -Infinity;
+      for (const [due, held] of mirror) if (due > floor && Math.max(due, held.start ?? -Infinity) <= consumed) floor = due;
+      for (const due of mirror.keys()) if (due < floor) mirror.delete(due);
+      const put: TimedReading[] = [], cover: [number, number][] = [], drop: number[] = [];
+      for (const due of [...mirror.keys()]) if (due >= keep && !timeline.has(due)) { drop.push(due); mirror.delete(due); }
+      for (const [hour, lead] of this.passed.get(id) ?? []) if (hour < keep && hour >= floor && !mirror.has(hour))
+        timeline.set(hour, { panel: lead.panel, answer: null, values: this.values(entry, lead.panel), hour, start: hour, through: hour });
+      this.passed.delete(id);
+      const confirmed = this.store.confirmed(entry), order = [...new Set([...mirror.keys(), ...timeline.keys()])].sort((a, b) => a - b);
+      order.forEach((due, at) => {
+        const next = order[at + 1];
+        if (due >= keep || next === undefined) return;
+        const after = timeline.get(next) ?? mirror.get(next)!, held = timeline.get(due) ?? mirror.get(due)!;
+        const through = Math.max(held.through ?? held.hour, Math.min(Math.max(next, after.start ?? -Infinity) - 1, confirmed));
+        if (timeline.has(due)) { held.through = through; return; }
+        if (held.through !== through) { cover.push([due, through]); held.through = through; }
+      });
       for (const [due, held] of timeline) {
         const was = mirror.get(due);
         if (was && was.panel === held.panel && was.answer === held.answer && was.hour === held.hour && was.start === held.start && sameValues(was.values, held.values)) {
           if (was.through !== held.through) { cover.push([due, held.through!]); was.through = held.through; }
           continue;
         }
-        put.push(this.reading(due, held));
+        put.push(this.reading(id, due, held));
         mirror.set(due, held);
       }
-      for (const due of mirror.keys()) if (!timeline.has(due)) { drop.push(due); mirror.delete(due); }
-      if (!kept && !put.length && !cover.length && !drop.length) continue;
-      yield { id, epoch: this.epochs.get(this.branches.get(id)!) ?? 0, keep, ...(put.length && { put }), ...(cover.length && { cover }), ...(drop.length && { drop }) };
+      if (!put.length && !cover.length && !drop.length) continue;
+      yield { id, epoch, ...(put.length && { put }), ...(cover.length && { cover }), ...(drop.length && { drop }) };
     }
   }
 

@@ -1,6 +1,7 @@
 import type { LiveValues } from '../../charts/live';
 import { ArsenalPicture } from '../arsenal.ts';
 import type { PanelGeometry, PanelView } from './view';
+import type { Structure } from '../followed';
 import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
@@ -45,6 +46,13 @@ const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
   return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
+}
+
+export function readingStructure(product: string | undefined): Structure | undefined {
+  const view = product === undefined ? undefined : panelViews[product]?.structure, table = product === undefined ? undefined : tableStructures[product];
+  if (view) return (panel, hour) => panel.data === undefined ? undefined : view(panel.data, hour);
+  if (table) return panel => panel.data === undefined ? undefined : table(panel.data);
+  return undefined;
 }
 
 export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {

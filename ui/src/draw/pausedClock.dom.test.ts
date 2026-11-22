@@ -6,7 +6,7 @@ interface Surface { visible: boolean; opacity: number; busy: boolean; hour: numb
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
   askedStrict: number | null; warned: string[]; aces: string | null; shortAces: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; raceFocused: boolean; focused?: Shown; arsenalRace: { held: string | null; opacity: number }; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
-  panel: Surface; race: Surface; headed: Surface; asked: Surface;
+  panel: Surface; race: Surface; headed: Surface; asked: Surface; pinned: Surface; table: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
 const lit = (surface: Surface, hour: number) => surface.visible && surface.opacity === 1 && !surface.busy && surface.hour === hour;
@@ -122,5 +122,17 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     const refusal = await act<{ error?: string; held: number | null; data: number | null; framed: string[] }>('refusedAsk()');
     assert.ok(refusal.error?.startsWith('Refused at') && refusal.held === null && refusal.data === null && refusal.framed.length === 0,
       `a refused ask of the paused hour is the head's own error, with nothing held to wait on, and no copy beside the frame: ${JSON.stringify(refusal)}`);
+    const pinned = (await act<Surface[]>('pinnedRebind()')).slice(1);
+    t.diagnostic(`pinned 30 to 54 with 54 not yet asked: ${pinned.length} samples`);
+    const keeps = (surface: Surface) => surface.visible && surface.opacity === muted && surface.busy && (surface.hour === 30 || surface.hour === null);
+    assert.ok(pinned.every(surface => keeps(surface) || lit(surface, 54)) && pinned.some(keeps) && lit(pinned.at(-1)!, 54),
+      `a pinned rebind to an hour not yet read keeps the hour-30 pixels visible and dimmed until 54 paints, never blank: ${JSON.stringify(pinned.find(surface => !keeps(surface) && !lit(surface, 54)))}`);
+    const { from, seen: pausing, pending: pausedUncovered, done: pausedDone } = await act<{ from: number; seen: Shown[]; pending: Shown; done: Shown }>('pauseUncovered()');
+    const blank = pausing.find(state => !state.headed.visible || !state.table.visible);
+    assert.equal(blank, undefined, `pausing past what the followed readings cover never hides their pictures: ${show(blank)}`);
+    assert.ok(dim(pausedUncovered.headed, from) && pausedUncovered.table.visible && pausedUncovered.table.busy && pausedUncovered.table.opacity === muted,
+      `while the paused hour is unread, the followed panel and the table stay visible, dimmed and busy: ${show(pausedUncovered)}`);
+    assert.ok(lit(pausedDone.headed, pausedDone.hour) && lit(pausedDone.table, pausedDone.hour),
+      `once the paused hour is read, both paint it at full strength: ${show(pausedDone)}`);
   }, 120_000));
 });

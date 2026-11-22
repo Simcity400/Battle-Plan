@@ -28,7 +28,7 @@ function lanes(): DrawLanes {
   const made = new DrawLanes(workers, heard);
   workers.forEach((worker, lane) => {
     worker.onmessage = ({ data }: MessageEvent<FromWorker>) => made.receive(lane, data);
-    worker.onerror = event => { for (const listener of listeners) listener({ type: 'failed', page: -1, reason: event.message }); };
+    worker.onerror = event => made.receive(lane, { type: 'failed', page: -1, reason: event.message || 'A drawing worker stopped' });
   });
   const options = () => workers.forEach((worker, lane) => worker.postMessage({ type: 'options', cap: cap(), measured: !!perfLog,
     rate: Number((window as { __weakCpu?: number }).__weakCpu) || 1, lane } satisfies ToWorker));

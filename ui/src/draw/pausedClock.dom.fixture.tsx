@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles.css';
@@ -26,6 +26,8 @@ import type { NuclearArsenalReply } from '../generated/dashboard';
 import type { Present } from './notifications';
 import type { FromWorker, ToWorker } from './kit';
 import { HeldFailures, HeldFailuresContext } from '../dashboard/heldFailures';
+import { attachTable } from './tables/host';
+import type { TableSurfaceModel } from './tables/surface';
 
 document.documentElement.dataset.motion = 'reduced';
 const HOURS = 100_000;
@@ -64,7 +66,9 @@ class GatedWorker extends Worker {
     if (message.type === 'inspectRace') inspected.push({ id: message.id, owner: message.owner });
     const canvas = (message.type === 'surface' || message.type === 'race') && message.canvas && offscreens.get(message.canvas);
     if (canvas) surfaces.set(canvas, message.id);
-    if (message.type === 'surface' || message.type === 'race') owners.set(message.id, message.owner);
+    if (message.type === 'surface' || message.type === 'race' || message.type === 'table') owners.set(message.id, message.owner);
+    const table = message.type === 'table' && message.canvas && offscreens.get(message.canvas);
+    if (table) surfaces.set(table, message.id);
     super.postMessage(message, transfer as Transferable[]);
   }
 }
@@ -155,23 +159,20 @@ const DOCTRINE_TIPS = 'doctrine-mastery:doctrine';
 const presents = new Map<number, Present>();
 const drawn = new Map<number, number | null>();
 const racePresents = new Map<number, Extract<FromWorker, { type: 'racePresent' }>>();
-const emptied = { seek: -1 };
 let strict: number | null = null, askedStrict: number | null = null, followedSurface = false, listedRead = '';
 const waiting = new Set<() => void>();
 const wake = () => queueMicrotask(() => { for (const heard of [...waiting]) heard(); });
+const tableHour = new Map<number, number | null>();
 function delivered(message: FromWorker) {
   if (message.type === 'present') for (const surface of message.surfaces) {
+    if (surface.readHour !== undefined || !surface.waiting) tableHour.set(surface.id, surface.readHour ?? null);
     presents.set(surface.id, surface);
     const accepted = surface.owner === owners.get(surface.id) && surface.seek === clock.getSnapshot().seekSequence && surface.generation === clockGeneration(clock);
     if (accepted && (surface.readHour !== undefined || !surface.waiting)) drawn.set(surface.id, surface.readHour ?? null);
   }
   if (message.type === 'racePresent') racePresents.set(message.id, message);
 }
-onDraw(message => {
-  if (message.type === 'structure' && message.updates.some(update => update.id === native.id && update.put?.some(reading => reading.panel === null)))
-    emptied.seek = clock.getSnapshot().seekSequence;
-  wake();
-});
+onDraw(() => wake());
 tooltipStore.subscribe(wake);
 const ink = (panel: string) => document.querySelector<HTMLElement>(`#${panel} [data-paint="empty"]`)?.dataset.rowInk ?? null;
 const inkOf = (panel: string) => document.querySelector<HTMLCanvasElement>(`#${panel} canvas.draw-panel-ink`);
@@ -220,6 +221,38 @@ function Refused() {
   });
   return <div id="refused" ref={read.root} style={{ width: '480px', height: '40px' }} />;
 }
+const pinnedAt = { set: (_: number) => {} };
+function Pinned() {
+  const [hour, setHour] = useState(30);
+  pinnedAt.set = setHour;
+  const widget = useMemo(() => ({ ...headed, id: 'pinned', time: { mode: 'pin', windows: { main: { firstOffset: hour, lastOffset: hour } } } }) as unknown as WidgetSpec, [hour]);
+  const root = useRef<HTMLDivElement | null>(null);
+  const read = useHeadProduct(runtime, widget, ASKED, NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const head = withHeld(read);
+  useDrawnPanel(root, clock, panelFeed('nuclear-arsenal', read, arsenalStructure, widget, runtime), true);
+  const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; read.root(element); }, [read.root]);
+  return <div id="pinned" ref={attach} style={{ width: '480px', height: '40px' }}>
+    {head.data && <span data-paint="empty">{arsenalNotice(head.data, hour)}</span>}
+  </div>;
+}
+
+const tableOwned = { on: false };
+const tableModel = (follow: number, width: number, height: number): TableSurfaceModel => ({ follow, offset: 0, rows: [], columns: [], width, height, scrollLeft: 0,
+  empty: 'No stockpile rows', settings: { density: 'comfortable', overflow: 'wrap', sort: { column: 'total', direction: 'desc' }, columns: {} } as never });
+function Table() {
+  const body = useRef<HTMLDivElement | null>(null);
+  const read = useHeadProduct(runtime, headed, 'nuclear-arsenal', NO_PARAMS, { active: true, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const follow = read.workerFollow;
+  const attach = useCallback((element: HTMLDivElement | null) => { body.current = element; read.root(element); }, [read.root]);
+  useLayoutEffect(() => {
+    if (!body.current || follow === undefined) return;
+    const handle = attachTable(body.current, clock, (_id, _owner, width, height) => tableModel(follow, width, height), visible => { tableOwned.on = visible; wake(); },
+      () => {}, () => {}, () => 0);
+    return () => handle?.close();
+  }, [follow]);
+  return <div id="table" ref={attach} style={{ width: '480px', height: '60px', overflow: 'auto' }} />;
+}
+
 const failures = new HeldFailures();
 failures.subscribe(wake);
 
@@ -298,7 +331,11 @@ function shown() {
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(surfaceOf(ink1) ?? -1)),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent()?.hour),
     headed: surface(ink2, document.querySelector('#headed'), !!ink2 && !ink2.hidden, drawn.get(surfaceOf(ink2) ?? -1)),
-    asked: surface(ink3, document.querySelector('#asked'), !!ink3 && !ink3.hidden, drawn.get(surfaceOf(ink3) ?? -1)) };
+    asked: surface(ink3, document.querySelector('#asked'), !!ink3 && !ink3.hidden, drawn.get(surfaceOf(ink3) ?? -1)),
+    pinned: (() => { const pin = inkOf('pinned'); return surface(pin, document.querySelector('#pinned'), !!pin && !pin.hidden, drawn.get(surfaceOf(pin) ?? -1)); })(),
+    table: (() => { const canvas = document.querySelector<HTMLCanvasElement>('#table canvas'), region = document.querySelector('#table');
+      return { visible: !!canvas && tableOwned.on, opacity: opacity(canvas), busy: region?.getAttribute('aria-busy') === 'true',
+        hour: tableHour.get(surfaceOf(canvas) ?? -1) ?? null }; })() };
 }
 const lit = (now: { visible: boolean; opacity: number }) => now.visible && now.opacity === 1;
 const painted = () => { const now = shown(); return now.field === 'worker' && now.headedField === 'worker' && lit(now.panel) && lit(now.race) && lit(now.headed); };
@@ -307,7 +344,7 @@ const currentOf = (...given: (Present | Extract<FromWorker, { type: 'racePresent
   return given.every(present => present?.generation === generation && present.seek === seek);
 };
 const current = () => currentOf(panelPresent(), headedPresent(), racePresent());
-const readEmptied = () => emptied.seek === clock.getSnapshot().seekSequence && strict === null;
+const readEmptied = () => strict === null;
 
 function until(ready: () => boolean) {
   return new Promise<void>(resolve => {
@@ -447,7 +484,7 @@ async function raceScroll(hour: number) {
 export const fixture = {
   async mount() {
     pop.showPopover();
-    createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed /><Asked /><HeldFailuresContext.Provider value={failures}><Refused /></HeldFailuresContext.Provider>{createPortal(<Listed />, pop)}<Probe />
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<><div style={{ display: 'flex', gap: '8px' }}><Table /><Pinned /></div><Panel /><Race /><Headed /><Asked /><HeldFailuresContext.Provider value={failures}><Refused /></HeldFailuresContext.Provider>{createPortal(<Listed />, pop)}<Probe />
       <div style={{ display: 'flex', gap: '8px' }}><div id="aces" style={box}><AcesWidget {...aces} /></div>
         <div id="short-aces" style={box}><AcesWidget {...shortAces} /></div>
         <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div>
@@ -523,6 +560,31 @@ export const fixture = {
   staleStep,
   raceHold,
   raceScroll,
+  state: () => ({ ...shown(), landed: landed(clock.getHour()), current: current() }),
+  async pinnedRebind() {
+    await until(() => shown().pinned.hour === 30 && lit(shown().pinned));
+    askedHold.on = true;
+    const seen = await watch(() => pinnedAt.set(54), async () => {
+      await framed(() => false, 8);
+      releaseAsked();
+      await until(() => shown().pinned.hour === 54 && lit(shown().pinned));
+    });
+    return seen.map(state => state.pinned);
+  },
+  async pauseUncovered() {
+    await until(() => landed(clock.getHour()) && lit(shown().table));
+    const start = Math.ceil(performance.now()), from = clock.getHour();
+    at(start, () => clock.setPlaying(true));
+    await until(current);
+    native.hold = true;
+    at(start + 50, () => clock.setPlaying(false));
+    const seen: ReturnType<typeof shown>[] = [];
+    await framed(() => { seen.push(shown()); return false; }, 12);
+    const pending = shown();
+    native.hold = false; push();
+    await until(() => landed(clock.getHour()) && lit(shown().table) && shown().table.hour === clock.getHour());
+    return { from, seen, pending, done: shown() };
+  },
   async playFor(milliseconds: number) {
     const start = Math.ceil(performance.now());
     at(start, () => clock.setPlaying(true));

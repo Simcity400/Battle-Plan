@@ -1,11 +1,14 @@
 import { decode } from '@msgpack/msgpack';
 import type { FollowUpdate, TimedReading, WirePanel } from '../../draw/followed';
 import type { FollowedPanel } from './message';
-import type { PageReading } from './store';
+import type { PageReading, Placed } from './store';
 
-export type Shown = Omit<TimedReading, 'panel'> & { panel: FollowedPanel | null };
-interface Line { epoch: number; readings: Shown[]; shown?: Shown; held: boolean; through?: number; coverage?: Shown['coverage'] }
-export type Show = (reading: PageReading, quiet: boolean) => void;
+export type Shown = Omit<TimedReading, 'panel' | 'kept'> & { panel: FollowedPanel | null };
+export type Show = (reading: PageReading, placed: Placed) => void;
+interface Line {
+  epoch: number; readings: Shown[]; carried?: Shown; model?: { structure: string; panel: FollowedPanel | null };
+  shown?: Shown; placed: Placed; through?: number; coverage?: Shown['coverage'];
+}
 
 export function pagePanel(wire: WirePanel | null): FollowedPanel | null {
   if (!wire?.bytes) return wire as FollowedPanel | null;
@@ -20,7 +23,7 @@ export function pagePanel(wire: WirePanel | null): FollowedPanel | null {
 export const coversHour = (reading: Pick<Shown, 'panel' | 'answer' | 'coverage'>, hour: number) => !reading.panel && !reading.answer
   || !!reading.coverage && reading.coverage.start <= hour && hour <= reading.coverage.through;
 
-const from = (reading: Shown) => Math.max(reading.due, reading.coverage?.start ?? -Infinity);
+export const readingFrom = (reading: Pick<Shown, 'due' | 'coverage'>) => Math.max(reading.due, reading.coverage?.start ?? -Infinity);
 
 export class LatestReadings {
   private readonly lines = new Map<number, Line>();
@@ -33,17 +36,28 @@ export class LatestReadings {
   get waiting() { return this.due.size > 0; }
 
   land(update: FollowUpdate, hour: number, paused: boolean, show: Show) {
-    if (this.epoch(update.id) !== update.epoch) return;
+    const epoch = this.epoch(update.id);
+    if (epoch !== update.epoch) return;
     let line = this.lines.get(update.id);
-    if (line?.epoch !== update.epoch) this.lines.set(update.id, line = { epoch: update.epoch, readings: [], held: false });
+    if (!line) this.lines.set(update.id, line = { epoch, readings: [], placed: 'empty' });
+    else if (line.epoch !== epoch) this.renewLine(line, epoch, false);
     const drop = new Set(update.drop);
-    const readings = line.readings.filter(r => r.due >= update.keep && !drop.has(r.due));
+    const readings = drop.size ? line.readings.filter(r => !drop.has(r.due)) : line.readings;
     for (const [due, through] of update.cover ?? []) {
       const held = readings.find(r => r.due === due);
       if (held?.coverage) held.coverage = { start: held.coverage.start, through };
     }
     for (const put of update.put ?? []) {
-      const reading: Shown = { ...put, panel: pagePanel(put.panel) };
+      let panel: FollowedPanel | null, structure = put.structure;
+      if (put.kept) {
+        if (!line.model) throw new Error('A followed reading keeps a panel the page does not hold');
+        ({ panel, structure } = line.model);
+      } else {
+        panel = pagePanel(put.panel);
+        if (structure !== undefined) line.model = { structure, panel };
+      }
+      const reading: Shown = { due: put.due, hour: put.hour, coverage: put.coverage, panel, answer: put.answer, values: put.values,
+        ...(structure !== undefined && { structure }) };
       let at = readings.length;
       while (at > 0 && readings[at - 1]!.due >= reading.due) at--;
       readings.splice(at, readings[at]?.due === reading.due ? 1 : 0, reading);
@@ -69,30 +83,48 @@ export class LatestReadings {
     for (const [id, line] of this.lines) this.place(id, line, hour, paused, show);
   }
 
+  renew(ids: Iterable<number>, carry: boolean) {
+    for (const id of ids) {
+      const line = this.lines.get(id), epoch = this.epoch(id);
+      if (line && epoch !== undefined) this.renewLine(line, epoch, carry);
+    }
+  }
+
   forget(ids: Iterable<number>) {
     for (const id of ids) { this.lines.delete(id); this.due.delete(id); }
   }
 
+  private renewLine(line: Line, epoch: number, carry: boolean) {
+    line.carried = carry ? line.shown ?? line.carried : undefined;
+    line.epoch = epoch; line.readings = []; line.model = undefined;
+  }
+
   private place(id: number, line: Line, hour: number, paused: boolean, show: Show) {
     if (this.epoch(id) !== line.epoch) return;
-    let candidate: Shown | undefined, next = Infinity;
-    for (const reading of line.readings) {
-      const at = from(reading);
-      if (at <= hour) candidate = reading;
-      else if (at < next) next = at;
-    }
+    let at = -1, next = Infinity;
+    line.readings.forEach((reading, index) => {
+      const from = readingFrom(reading);
+      if (from <= hour) at = index;
+      else if (from < next) next = from;
+    });
+    if (at > 0) line.readings = line.readings.slice(at);
+    if (at >= 0) line.carried = undefined;
+    const candidate = at >= 0 ? line.readings[0] : line.carried;
     const coverage = candidate?.coverage, through = coverage ? Math.min(coverage.through, hour) : candidate?.hour ?? hour;
     if (coverage && through < coverage.through && through + 1 < next) next = through + 1;
     if (next < Infinity) { this.due.add(id); if (next < this.next) this.next = next; } else this.due.delete(id);
-    if (!candidate) return;
-    if (paused && !coversHour(candidate, hour)) {
-      if (!line.held) show({ id, hour, through: hour, panel: null, answer: null, values: null }, false);
-      line.held = true; line.shown = candidate; line.through = line.coverage = undefined;
+    if (!candidate) {
+      if (line.placed === 'empty') return;
+      line.placed = 'empty'; line.shown = line.through = line.coverage = undefined;
+      show({ id, hour, through: hour, panel: null, answer: null, values: null }, 'empty');
       return;
     }
-    const changed = line.held || line.shown !== candidate;
+    const reading = { id, hour: candidate.hour, through, coverage, panel: candidate.panel, answer: candidate.answer, values: candidate.values,
+      ...(candidate.structure !== undefined && { structure: candidate.structure }) };
+    const placed: Placed = paused && !coversHour(candidate, hour) ? 'held' : 'current';
+    const changed = line.placed !== placed || line.shown !== candidate;
     if (!changed && line.through === through && line.coverage === coverage) return;
-    line.held = false; line.shown = candidate; line.through = through; line.coverage = coverage;
-    show({ id, hour: candidate.hour, through, coverage, panel: candidate.panel, answer: candidate.answer, values: candidate.values }, !changed);
+    line.placed = placed; line.shown = candidate; line.through = through; line.coverage = coverage;
+    show(reading, changed ? placed : 'dated');
   }
 }

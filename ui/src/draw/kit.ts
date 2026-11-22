@@ -53,9 +53,10 @@ export interface DrawRegion {
 export type ToWorker =
   | { type: 'audit'; start: boolean; limit?: number }
   | { type: 'port'; port: MessagePort }
-  | { type: 'add'; id: number; branch: string }
+  | { type: 'add'; id: number; branch: string; product?: string }
   | { type: 'remove'; id: number }
   | { type: 'seek'; branch: string; seek: number; epoch: number; retainThrough?: number }
+  | { type: 'consumed'; branch: string; epoch: number; hour: number }
   | { type: 'bind'; branch: string; route: number; seek: number }
   | { type: 'clock'; anchor: ClockAnchor }
   | { type: 'surface'; id: number; owner: number; width: number; height: number; dpr: number; canvas?: OffscreenCanvas; model: import('./panels/view').PanelModel }
@@ -79,7 +80,7 @@ export type FromWorker = { type: 'displayRate'; hz: number } | import('./notific
   | { type: 'raceHover'; id: number; owner: number; seek: number; item?: import('../charts/race/race').RaceItem }
   | { type: 'raceInspection'; id: number; owner: number; request: number; seek: number; picture?: import('./arsenal').RaceInspection }
   | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; holdsThrough: number | null; waiting: boolean; at: number; shown?: number; rows?: readonly { row: string; key: string; value: string }[] }
-  | { type: 'panelInspection'; id: number; owner: number; request: number; values: [key: string, text: string][] | null }
+  | { type: 'panelInspection'; id: number; owner: number; request: number; values: [key: string, text: string][] | null; live?: [key: string, value: number | string][]; date?: import('./pictureDate').PictureInterval }
   | { type: 'tableRead'; id: number; owner: number; request: number; reading: import('./tables/surface').TableReading | null }
   | { type: 'tableRows'; id: number; owner: number; count: number; empty?: string }
   | { type: 'tableColumns'; id: number; owner: number; widths: Record<string, number> }

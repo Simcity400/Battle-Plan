@@ -305,4 +305,38 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   landed([{ kind: 'panels', batch: { route: 30, clock: 0, seek: 20, completed: 24,
     panels: [{ id: 50, hour: 24, stepped: true, panel: { data: germany(24), refused: null } }] } }]);
   assert.deepEqual(inspected(3), described, 'a reading the lane holds but has not painted is not what the pointer is over');
+  const dated = sent.flatMap(m => m.type === 'panelInspection' && m.request === 3 ? [m.date] : []).at(-1);
+  assert.deepEqual(dated, { since: 23, through: 24 }, 'and it dates what it describes by the picture it painted');
+
+  const tableClears: number[][] = [];
+  const tableInk = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }), clearRect: (...args: number[]) => tableClears.push(args) },
+    { get: (o, k) => Reflect.get(o, k) ?? (() => {}) });
+  post({ type: 'table', id: 10, owner: 1, canvas: { width: 1, height: 1, getContext: () => tableInk } as unknown as OffscreenCanvas, width: 200, height: 100, dpr: 1,
+    model: { follow: 50, offset: 0, rows: [], columns: [], width: 200, height: 100, scrollLeft: 0,
+      settings: { density: 'comfortable', overflow: 'wrap', sort: { column: 'total', direction: 'desc' }, columns: {} } as never } });
+  now += 17; frame();
+  const tabled = () => sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 10).at(-1);
+  assert.equal(tabled()?.readHour, 24, 'a followed table paints its covered paused hour');
+  tableClears.length = 0;
+  post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position: 25, seek: 20, lastHour: 199, playing: false, speed: 1, generation: 10, forwardSeek: true } });
+  now += 17; frame();
+  assert.deepEqual([tableClears.length, tabled()?.readHour, tabled()?.waiting], [0, undefined, true],
+    'paused past what its reading covers, a table keeps its picture and waits, as panels and races do');
+  landed([{ kind: 'panels', batch: { route: 30, clock: 0, seek: 20, completed: 25, panels: [] } }]);
+  now += 17; frame();
+  assert.deepEqual([tabled()?.readHour, tabled()?.waiting], [25, false], 'and a confirmation of the paused hour alone shows it again');
+
+  post({ type: 'seek', branch: 'arsenal', seek: 21, epoch: 2, retainThrough: 60 });
+  post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position: 60, seek: 21, lastHour: 199, playing: false, speed: 1, generation: 14, forwardSeek: true } });
+  now += 17; frame();
+  post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position: 60, seek: 21, lastHour: 199, playing: true, speed: 1, generation: 15, forwardSeek: true } });
+  now += 17; frame();
+  const resumed = sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 8 && s.generation === 15).at(-1);
+  assert.deepEqual([resumed?.readHour, resumed?.waiting], [undefined, true], 'resumed before any reading of the new position, a painted panel keeps its picture waiting, never blank');
+
+  sent.length = 0;
+  post({ type: 'race', id: 11, owner: 1, canvas: { width: 1, height: 1, getContext: () => null } as unknown as OffscreenCanvas,
+    model: { view: 'nuclear-arsenal', offset: 0, follow: 50, top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(),
+      scroll: 0, width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } as never } });
+  assert.deepEqual(sent.filter(m => m.type === 'failed').map(m => m.type === 'failed' && m.page), [11], 'a surface that cannot be made fails by its own id, never the page');
 });

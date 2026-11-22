@@ -213,3 +213,16 @@ test('the 1440 h/s preset banks fractional positions and stops exactly at the br
   assert.equal(clock.getSnapshot().fraction, 0);
   assert.equal(clock.getSnapshot().playing, false);
 });
+
+test('every publish tells its publish listeners first, so a seek is handled before any frame or anchor listener of the new position', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 200 });
+  clock.seek(100);
+  const heard: string[] = [];
+  clock.onPublish((previous, next) => heard.push(`publish ${previous.hour}->${next.hour}`));
+  clock.onAnchor(() => heard.push('anchor'));
+  clock.subscribeFrame(() => heard.push(`frame ${clock.getHour()}`));
+  clock.subscribe(() => heard.push('subscribe'));
+  clock.seek(20);
+  assert.deepEqual(heard, ['publish 100->20', 'anchor', 'frame 20', 'subscribe']);
+});

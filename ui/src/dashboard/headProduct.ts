@@ -19,6 +19,7 @@ import { recordedPanelRows } from '../draw/panels/views.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { PlaybackController } from './playback';
 import { pageClock } from './widgetClock.ts';
+import { asFailure } from './queryError.ts';
 
 export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>, track: BoundTrack | undefined, tracks: BoundTrack[],
   hoverHour: number | null): { follows: boolean; hourAt: (clockHour: number) => number | null } {
@@ -32,9 +33,10 @@ export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>,
   };
 }
 
-export function headSource(following: boolean, status: 'off' | FollowEntry['status'], landed: boolean, hidden = false): 'pushed' | 'fallback' | 'asked' | 'idle' {
+export function headSource(following: boolean, status: 'off' | FollowEntry['status'], landed: boolean, hidden = false): 'pushed' | 'fallback' | 'asked' | 'idle' | 'failed' {
   if (following && hidden) return 'idle';
   if (!following || status === 'off') return 'asked';
+  if (status === 'failed') return 'failed';
   return status === 'followed' && landed ? 'pushed' : 'fallback';
 }
 
@@ -108,6 +110,8 @@ export interface HeadProductOptions<T> {
 
 export interface HeadProduct<T> extends ProductState<T> {
   exactRead?: (hour: number) => Promise<unknown>;
+  structure?: string;
+  outside: boolean;
   held?: HeldReading<T>;
   workerFollow?: number;
   root: (element: Element | null) => void;
@@ -177,6 +181,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const latest = useRef({ validate, structure, paint });
   latest.current = { validate, structure, paint };
   const shape = useCallback((_answer: FollowedAnswer | undefined, entry: FollowEntry) => {
+    if (entry.panel && entry.structure !== undefined) return `=${entry.structure}`;
+    if (!entry.panel && entry.landed && entry.landed.structure !== undefined) return `~${entry.landed.structure}`;
     const { data, error } = panelReply(entry.panel, latest.current.validate);
     if (error) return `!${error.message}`;
     if (data === undefined) return entry.landed ? '~' : entry.landed === null ? '-' : '';
@@ -194,13 +200,13 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
   const idle = source === 'idle';
-  const pushed = source === 'pushed';
+  const pushed = source === 'pushed', failed = source === 'failed';
   const panelLive = useMemo(() => store && entry ? followedLive(store, entry, () => entry.values) : null, [store, entry]);
   const heldLive = useMemo(() => store && entry ? followedLive(store, entry, () => entry.landed?.values) : null, [store, entry]);
   const fallback = source === 'fallback';
   const requestHour = useFallbackHour(runtime.clock, fallback);
   const playing = useSyncExternalStore(runtime.clock.subscribe, () => runtime.clock.getSnapshot().playing, () => runtime.clock.getSnapshot().playing);
-  const hour = pushed || idle || !track || !params ? null : hourAt(fallback ? requestHour : runtime.clock.getHour());
+  const hour = pushed || idle || failed || !track || !params ? null : hourAt(fallback ? requestHour : runtime.clock.getHour());
   const pausedAt = follows && !playing ? hourAt(runtime.clock.getHour()) : null;
   const askedShows = useCallback((moment: string | undefined) => shownAsked(momentHour(moment) ?? hour, pausedAt), [hour, pausedAt]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : { sourceId: track!.source.id, revision: track!.source.revision,
@@ -210,20 +216,25 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const targetHour: TargetHour = follows ? { through: runtime.clock.getHour() + (track?.axisOffset ?? 0) } : { exact: hour };
   const dueAt = 'through' in targetHour && askedAt !== null && askedAt > targetHour.through ? askedAt - (track?.axisOffset ?? 0) : null;
   useRenderAt(dueAt, runtime.clock);
-  held.current = retain(held.current, runtime.client, headSubject(track, product, params), asked.data, askedAt, targetHour);
+  const subject = headSubject(track, product, params);
+  held.current = retain(held.current, runtime.client, subject, asked.data, askedAt, targetHour);
+  const pinnedBefore = useRef<Retained<T> | null>(null);
+  if (follows || subject === null || pinnedBefore.current && (pinnedBefore.current.client !== runtime.client || pinnedBefore.current.subject !== subject)) pinnedBefore.current = null;
+  if (!follows && held.current) pinnedBefore.current = held.current;
   const fromPanel = pushed ? panelReply(entry?.panel, validate) : {};
   const landed = pushed ? heldPanel(entry) : undefined;
   const heldData = landed ? panelReply(landed.panel, validate).data : undefined;
   const heldReading = useMemo(() => heldData !== undefined && landed && heldLive ? { data: heldData, hour: landed.hour, through: landed.through, live: heldLive } : undefined,
     [heldData, landed, heldLive]);
-  const kept = outside || pushed ? undefined : held.current ?? undefined;
+  const kept = outside || pushed || failed ? undefined : held.current ?? undefined;
   const shown = kept && shownAsked(kept.hour, pausedAt) ? kept : undefined;
   const data = outside ? undefined : pushed ? fromPanel.data : shown?.data;
   const dataAt = shown?.hour ?? null;
-  const error: Failure | undefined = outside ? undefined : pushed ? fromPanel.error : asked.error;
+  const followFailure = useMemo(() => failed ? asFailure(new Error(followed.reason ?? 'The followed stream failed')) : undefined, [failed, followed.reason]);
+  const error: Failure | undefined = outside ? undefined : failed ? followFailure : pushed ? fromPanel.error : asked.error;
   const askedData = pushed ? undefined : data;
   const askedLive = useMemo(() => repliedCells(askedData), [askedData]);
-  const askedHeld = kept && !shown && !asked.error ? kept : undefined;
+  const askedHeld = asked.error || shown || outside || pushed || failed ? undefined : kept ?? pinnedBefore.current ?? undefined;
   const askedReading = useMemo(() => askedHeld && askedHeld.hour !== null
     ? { data: askedHeld.data, hour: askedHeld.hour, through: askedHeld.hour, live: repliedCells(askedHeld.data) } : undefined, [askedHeld]);
   const live = pushed && panelLive ? panelLive : askedLive;
@@ -238,7 +249,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);
   return {
-    data, error, retry: asked.retry, root, hour, live,
+    data: failed ? undefined : data, error, retry: asked.retry, root, hour, live, outside,
+    structure: outside || failed ? undefined : pushed ? entry?.panel ? entry.structure : undefined : undefined,
     exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,
@@ -246,7 +258,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     shownAt: outside ? () => null : pushed && entry ? () => entry.panel ? entry.through : null : () => data === undefined ? null : dataAt,
     current: outside ? () => undefined : pushed && entry ? () => panelReply(entry.panel, latest.current.validate).data
       : () => follows && dataAt !== null && dataAt > runtime.clock.getHour() + (track?.axisOffset ?? 0) ? undefined : data,
-    read: outside ? 'off' : pushed ? 'followed' : fallback || idle ? 'fallback' : hour === null ? 'off' : 'asked',
+    read: outside ? 'off' : pushed || failed ? 'followed' : fallback || idle ? 'fallback' : hour === null ? 'off' : 'asked',
     ...(followed.status === 'unavailable' && followed.reason ? { reason: followed.reason } : {}),
   };
 }

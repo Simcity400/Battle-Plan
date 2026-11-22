@@ -6,6 +6,7 @@ export type ExactRows = (hour: number) => Promise<readonly string[] | null>;
 import type { PlaybackController } from '../../dashboard/playback';
 import type { TableReading, TableSurfaceModel } from './surface.ts';
 import { ROW_HEIGHT } from './logic.ts';
+import { heldPicture } from '../held.ts';
 
 export interface TableHostHandle {
   refresh(): void;
@@ -49,18 +50,14 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
     first = false;
   };
   const stopClock = drawClock(clock);
-  let asked = { seek: clock.getSnapshot().seekSequence, playing: clock.getSnapshot().playing };
-  const stopFit = clock.subscribe(() => {
-    const now = clock.getSnapshot();
-    if (!now.playing) extend(rowCount, true);
-    if (now.seekSequence === asked.seek && now.playing === asked.playing) return;
-    asked = { seek: now.seekSequence, playing: now.playing };
-    if (shown) own(true, true);
-  });
-  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) own(false, true); });
+  const release = () => { held.drop(); if (shown) perfLog?.ink(id, false); shown = false; own(false, true); hover(null); };
+  const held = heldPicture(clock, body, () => true, release, () => hover(null));
+  const stopFit = clock.subscribe(() => { if (!clock.getSnapshot().playing) extend(rowCount, true); });
+  const stopDiscard = clock.onDiscard(release);
+  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1 || message.type === 'followFailure') release(); });
   const off = onSurface(id, notice => {
-    if (notice.type === 'failed') { own(false, true); return; }
-    if (notice.type === 'hit') { if (notice.owner === owner && shown) hover(at ? notice.key : null, at ?? undefined); return; }
+    if (notice.type === 'failed') { release(); return; }
+    if (notice.type === 'hit') { if (notice.owner === owner && shown && !held.stale) hover(at ? notice.key : null, at ?? undefined); return; }
     if (notice.type === 'tableRows') { if (notice.owner === owner) { extend(notice.count); drawnRows?.(notice.count, notice.empty); } return; }
     if (notice.type === 'tableColumns') { if (notice.owner === owner) drawnWidths?.(notice.widths); return; }
     if (notice.type === 'tableRead') {
@@ -71,11 +68,14 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
     if (notice.type !== 'present') return;
     const surface = notice.surface;
     if (surface.owner !== owner || surface.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(surface.generation, clockGeneration(clock))) return;
-    const now = surface.readHour !== undefined;
-    if (now !== shown) perfLog?.ink(id, now);
-    shown = now;
-    own(shown, !shown);
-    if (!shown) hover(null);
+    if (surface.readHour === undefined) {
+      if (surface.waiting && shown) held.wait();
+      else release();
+      return;
+    }
+    if (!shown) perfLog?.ink(id, true);
+    shown = true; held.present(surface.holdsThrough ?? surface.readHour);
+    own(true, false);
   });
   const point = () => {
     if (!at) return;
@@ -83,7 +83,7 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
     drawPost({ type: 'tablePointer', id, owner, scrollLeft: body.scrollLeft, point: [at.x - box.left, at.y - box.top] });
   };
   const pointer = (event: PointerEvent) => {
-    if (!shown || !event.isTrusted) return;
+    if (!shown || held.stale || !event.isTrusted) return;
     at = { x: event.clientX, y: event.clientY }; point();
   };
   const leave = () => { at = null; hover(null); drawPost({ type: 'tablePointer', id, owner, scrollLeft: body.scrollLeft, point: null }); };
@@ -96,7 +96,7 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
   });
   return { refresh, read, close() {
     if (closed) return;
-    closed = true; own(false); hover(null); off(); offPage(); stopClock(); stopFit(); observer.disconnect();
+    closed = true; own(false); hover(null); off(); offPage(); stopClock(); stopFit(); stopDiscard(); held.close(); observer.disconnect();
     for (const resolve of reads.values()) resolve(null);
     reads.clear();
     body.removeEventListener('pointermove', pointer); body.removeEventListener('pointerleave', leave); body.removeEventListener('scroll', onScroll);

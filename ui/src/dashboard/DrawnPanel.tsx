@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { hideTooltip, tooltipStore } from '../charts/tooltip.ts';
 import { panelValues, panelViews } from '../draw/panels/views.ts';
-import { attachPanel } from '../draw/host.ts';
+import { attachPanel, type PanelInspection } from '../draw/host.ts';
 import type { PanelFeed } from './panelFeed';
 import type { PanelGeometry, RowCell } from '../draw/panels/view';
 import type { PlaybackController } from './playback';
@@ -64,10 +64,14 @@ interface Attached {
   inputs: readonly unknown[]; reconcile: (rebinding: boolean) => void; close: () => void;
 }
 
-export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: PlaybackController, feed: PanelFeed | null, active: boolean) {
+export interface DrawnPanel { inspected(): PanelInspection | null | undefined }
+
+export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: PlaybackController, feed: PanelFeed | null, active: boolean): DrawnPanel {
   const widget = measuredWidget(), latest = useRef(feed);
   latest.current = feed;
   const attached = useRef<Attached | null>(null);
+  const inspection = useRef<PanelInspection | null>(null);
+  const drawn = useRef<DrawnPanel>({ inspected: () => latest.current?.follow === undefined ? undefined : inspection.current });
   const binding = feed && `${feed.follow}|${feed.fixed}|${feed.offset}`;
   const inputs = [binding, feed?.structure, feed?.reply, feed?.follow === undefined ? feed?.date?.through : undefined];
   useLayoutEffect(() => {
@@ -87,6 +91,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     kept.reconcile(rebinding);
   });
   useLayoutEffect(() => () => { attached.current?.close(); attached.current = null; }, []);
+  return drawn.current;
 
   function attachRoot(node: HTMLElement, view: PanelFeed['view']) {
     const layout = panelViews[view]?.geometry ?? {};
@@ -100,10 +105,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
       return true;
     });
-    const handles = new Map<HTMLElement, { refresh: () => void; rebind: (exact: boolean) => void; inspect: () => Promise<ReadonlyMap<string, string> | undefined>; close: () => void; readonly stale: boolean }>();
+    const handles = new Map<HTMLElement, { refresh: () => void; rebind: (exact: boolean) => void; inspect: () => Promise<PanelInspection | undefined>; close: () => void; readonly stale: boolean }>();
     let interaction = 0;
     const hold = () => {
-      interaction++;
+      interaction++; inspection.current = null;
       const tip = tooltipStore.get();
       if (tip && node.matches(':hover, :focus-within')) hideTooltip(tip.owner);
     };
@@ -123,6 +128,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       };
       const own = (accepted: boolean, pending = false) => {
         content.toggleAttribute('data-worker-panel', accepted);
+        if (accepted) queueMicrotask(() => reinspect(content));
         for (const field of fields) field.dataset.rowInk = accepted ? 'worker' : pending || clock.getSnapshot().playing && latest.current?.fixed === undefined ? 'pending' : 'page';
       };
       const hit = (row: string | null) => {
@@ -146,18 +152,33 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
       for (const content of contents) if (!handles.has(content)) attach(content);
     };
-    const inspect = async (event: Event) => {
+    let last: { target: HTMLElement; replay: () => void } | null = null;
+    const inspect = (event: Event) => {
       const target = event.target;
       if (!event.isTrusted || !(target instanceof HTMLElement) || !owned(target)) return;
       if (held(target)) { event.stopPropagation(); return; }
-      const content = layer(target), handle = handles.get(content);
-      if (!handle || latest.current?.follow === undefined) return;
-      const ticket = ++interaction;
+      if (!handles.has(layer(target)) || latest.current?.follow === undefined) return;
       event.stopPropagation();
-      const values = await handle.inspect();
-      if (ticket !== interaction || handle.stale || !node.contains(target)) return;
-      if (values && handles.get(content) === handle) for (const field of fieldsIn(content)) {
-        const { key, label } = identity(field, layout), value = values.get(key);
+      const replay = event instanceof PointerEvent ? () => target.dispatchEvent(new PointerEvent(event.type, event))
+        : () => target.dispatchEvent(new FocusEvent(event.type, event as FocusEvent));
+      last = { target, replay };
+      void read(target, replay);
+    };
+    const reinspect = (content: HTMLElement) => {
+      const target = last?.target;
+      if (!last || !target || inspection.current || layer(target) !== content || !node.contains(target)) return;
+      if (target.matches(':hover') || target.contains(document.activeElement)) void read(target, last.replay);
+    };
+    const read = async (target: HTMLElement, replay: () => void) => {
+      const content = layer(target), handle = handles.get(content);
+      if (!handle) return;
+      const ticket = ++interaction;
+      const picture = await handle.inspect();
+      if (ticket !== interaction || handle.stale || !node.contains(target) || handles.get(content) !== handle) return;
+      inspection.current = picture ?? null;
+      if (!picture) return;
+      for (const field of fieldsIn(content)) {
+        const { key, label } = identity(field, layout), value = picture.texts.get(key);
         if (value === undefined) continue;
         if (label === 'bar') {
           const meter = field.closest('[role="meter"]');
@@ -165,10 +186,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
           else { meter?.removeAttribute('aria-valuenow'); meter?.setAttribute('aria-valuetext', 'Not recorded'); }
         } else if (field.textContent !== value) field.textContent = value;
       }
-      if (event instanceof PointerEvent) target.dispatchEvent(new PointerEvent(event.type, event));
-      else if (event instanceof FocusEvent) target.dispatchEvent(new FocusEvent(event.type, event));
+      replay();
     };
-    const cancel = () => { interaction++; };
+    const cancel = () => { interaction++; inspection.current = null; };
+    const leave = () => { cancel(); last = null; };
     let seek = clock.getSnapshot().seekSequence;
     const stop = clock.subscribe(() => {
       const s = clock.getSnapshot();
@@ -179,10 +200,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
     });
     node.addEventListener('pointermove', inspect, true); node.addEventListener('focusin', inspect, true);
-    node.addEventListener('focusout', cancel); node.addEventListener('pointerleave', cancel);
+    node.addEventListener('focusout', leave); node.addEventListener('pointerleave', leave);
     return { reconcile, close() {
-      cancel(); stop(); node.removeEventListener('pointermove', inspect, true); node.removeEventListener('focusin', inspect, true);
-      node.removeEventListener('focusout', cancel); node.removeEventListener('pointerleave', cancel);
+      leave(); stop(); node.removeEventListener('pointermove', inspect, true); node.removeEventListener('focusin', inspect, true);
+      node.removeEventListener('focusout', leave); node.removeEventListener('pointerleave', leave);
       handles.forEach(handle => handle.close());
     } };
   }

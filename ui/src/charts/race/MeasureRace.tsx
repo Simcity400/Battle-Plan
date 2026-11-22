@@ -12,6 +12,7 @@ import { useKeyTagsAt } from '../../dashboard/useKeyTagsAt.ts';
 import type { ReactNode } from 'react';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import WidgetState from '../../components/WidgetState';
+import { headState } from '../../dashboard/HeadState';
 import type { IconName } from '../../components/Icons';
 import CountryRaceView from './CountryRaceView';
 import type { CountryRaceEntry, CountryRaceLine, CountryRacePart } from './countryRace';
@@ -326,7 +327,8 @@ export default function MeasureRace({ arsenal, held = false, widget, runtime, ac
   [groups.data, groups.error, partsRead, askedParts.error, label]);
   useEffect(() => { onWarnings?.(warnings); }, [warnings, onWarnings]);
   const state = (() => {
-    if (arsenal?.error) return <WidgetState kind="error" failure={arsenal.error} onRetry={arsenal.retry} />;
+    const shared = headState(arsenal);
+    if (shared) return shared;
     if (!track) return <WidgetState kind="empty" icon={icon} message={`Load a campaign to see ${label.toLowerCase()}.`} />;
     if ((widget.time.mode === 'range' || pinned) && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

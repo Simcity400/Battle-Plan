@@ -1,21 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, cellState, cellValue, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
-import type { FollowItem, FollowedAnswer } from './message.ts';
+import type { FollowedAnswer } from './message.ts';
 import { datedPanel, fakeTransport, manualFrames, message } from './messages.fixture.ts';
 import { BarCell, TextCell, formatAmountFast, paintArmy, paintMeasure, paintStability } from './painters.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { FollowStore } from './store.ts';
 import { Followed } from '../../draw/followed.ts';
-import type { FollowUpdate } from '../../draw/followed';
-import { StructureOutbox } from '../../draw/structureOutbox.ts';
-import { LatestReadings, type Show } from './latest.ts';
-import { serialize } from 'node:v8';
 import { liveKey } from '../../charts/live.ts';
 import { DatedStore } from './datedStore.ts';
 import { FollowDecoder } from './decode.ts';
-import type { FollowEntry, PageReading } from './store.ts';
-import type { FollowedPanel } from './message.ts';
+import type { FollowEntry } from './store.ts';
+import { panels, pipeline, VALUE, type Content } from './pipeline.fixture.ts';
 
 const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: [value] });
 
@@ -40,40 +36,30 @@ test('two widgets share one follow and the last unfollow sends unfollow', () => 
   assert.equal(again.entry.id, 2, 'a new follow after the last one ended');
 });
 
-test('a seek that keeps what covers its hour leaves the choice to the worker, whose coverage is current', () => {
+test('the page store shows what the readings place: current, held apart with its values, dated quietly, emptied', () => {
   const transport = fakeTransport();
   const store = new FollowStore(transport, manualFrames().schedule);
-  const { entry } = store.acquire({ product: 'series-state', params: { branchId: '1' } });
-  const answer = parseFollowed(message(10, [{ id: entry.id, answer: one(1n, 7n) }], false, 9, 1)).answers[0]!.answer;
-  transport.reading({ id: entry.id, hour: 10, through: 10, coverage: { start: 10, through: 10 }, answer });
-  store.seek('1', 40);
-  assert.equal(entry.answer, answer, 'an answer last sent covering hour 10 can still stand at hour 40');
-  transport.reading({ id: entry.id, hour: 10, through: 10, answer: null });
-  assert.equal(entry.answer, undefined, 'the worker drops it');
-  transport.reading({ id: entry.id, hour: 41, through: 41, coverage: { start: 41, through: 41 }, answer });
-  store.seek('1');
-  assert.equal(entry.answer, undefined, 'a seek that keeps nothing clears at once');
-
-  const { entry: drawn } = store.acquire({ panel: 'nuclear-arsenal', branchId: '1' });
-  const landed = () => drawn.landed;
-  const step = (hour: number) => transport.reading({ id: drawn.id, hour, through: hour, coverage: { start: hour, through: hour },
+  const { entry } = store.acquire({ panel: 'nuclear-arsenal', branchId: '1' });
+  let structure = 0, live = 0;
+  store.watch(entry, () => structure++);
+  store.watchLive(entry, () => live++);
+  const reading = (hour: number, through = hour) => ({ id: entry.id, hour, through, coverage: { start: hour, through }, structure: `S${hour}`,
     panel: { data: { hour }, refused: null }, values: new Map([['GER:total', hour]]) });
+  const landed = () => entry.landed;
   assert.equal(landed(), undefined, 'nothing has landed on a new follow');
-  step(23); step(24);
-  transport.reading({ id: drawn.id, hour: 24, through: 24, panel: null, values: null });
-  assert.deepEqual([drawn.panel, landed()?.panel.data, landed()?.values?.get('GER:total'), landed()?.hour, landed()?.through],
-    [undefined, { hour: 24 }, 24, 24, 24], 'a forward step that empties the reading keeps the last panel to arrive, with its values and hours, whatever rendered in between');
-  store.seek('1', 30);
-  assert.equal(landed()?.hour, 24, 'a forward seek leaves it to the worker');
-  store.seek('1');
-  assert.equal(landed(), null, 'a backward seek discards it, and the follow stays one that has landed');
-  step(25);
-  assert.equal(landed()?.hour, 25);
-  store.seek('1', 25, true);
-  assert.deepEqual(drawn.panel?.data, { hour: 25 }, 'a paused step to an hour the reading covers keeps it');
-  store.seek('1', 26, true);
-  assert.deepEqual([drawn.panel, drawn.values, landed()?.hour], [undefined, undefined, 25],
-    'a paused step past what the reading covers empties it at once, before the worker says so, and holds the last panel apart');
+  transport.reading(reading(23));
+  assert.deepEqual([entry.panel?.data, entry.structure, entry.values?.get('GER:total'), structure], [{ hour: 23 }, 'S23', 23, 1]);
+  const version = entry.version;
+  transport.reading(reading(23, 30), 'dated');
+  assert.deepEqual([entry.through, entry.version, structure, live, landed()?.through], [30, version, 1, 2, 30],
+    'a coverage patch dates the reading for its live readers without a new version or a structure change');
+  transport.reading(reading(24), 'held');
+  assert.deepEqual([entry.panel, entry.values, landed()?.panel.data, landed()?.values?.get('GER:total'), landed()?.structure], [undefined, undefined, { hour: 24 }, 24, 'S24'],
+    'a held reading is kept apart with its values and structure, to be dimmed, and nothing is current');
+  transport.reading(reading(24), 'current');
+  assert.deepEqual(entry.panel?.data, { hour: 24 }, 'a resume shows what was held as current at once');
+  transport.reading({ id: entry.id, hour: 25, through: 25, panel: null, answer: null, values: null }, 'empty');
+  assert.deepEqual([entry.panel, landed(), entry.structure], [undefined, null, undefined], 'a discarding seek empties it and remembers that something had landed');
 });
 
 test('a painter runs at most once a frame and only when its version moved', () => {
@@ -702,392 +688,215 @@ test('a shown panel stands only until the hour a new panel waiting on its first 
   assert.equal(followed.current(3)?.coverage?.through, 11, 'a later waiting panel never moves the end of the shown one');
 });
 
-type Answers = Parameters<typeof message>[1];
-interface Seen { panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null; hour: number; coverage?: { start: number; through: number } }
+interface Shown { failed?: true; content?: { structure: string; value: number | string | undefined }; through?: number; held?: boolean }
+interface Segment { kind: 'discard' | 'carry' | 'failed'; serial: number; restart: number; hour: number; left: number; readings: Map<number, { hour: number; content: Content }[]>; completed: number[] }
+interface Known { segments: Segment[]; drained: number; lead: number }
+type Picture = { failed: true } | { content: Content; end: number } | null;
 
-const describe = (answer: FollowedAnswer) => answer.kind === 'notRecorded' ? answer.reason
-  : `${answer.kind}:${rowKeys(answer)}:${Array.from({ length: answer.rows * answer.columns }, (_, at) => String(cellValue(answer, at))).join(',')}`;
-const contentOf = (r: Seen | undefined) => !r || !r.panel && !r.answer ? 'empty'
-  : JSON.stringify([r.panel ? [r.panel.refused, r.panel.data] : null, r.answer ? describe(r.answer) : null, r.values ? [...r.values] : null, r.hour, r.coverage?.start ?? null]);
-const covering = (r: Seen | undefined, hour: number) => !r || !r.panel && !r.answer || !!r.coverage && r.coverage.start <= hour && hour <= r.coverage.through;
-const CELLS = 0x80000001;
-const cellPanel = (seedHour: number, value: number) => ({ live: { groups: [{ table: 0, keys: ['1'], columns: [0], follow: CELLS, seedHour, values: [value] }],
-  rows: ['1'], kinds: [{ id: 'progress', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] } });
+const pictureOf = (entry: FollowEntry): Shown => entry.status === 'failed' ? { failed: true }
+  : entry.panel ? { content: { structure: entry.structure!, value: entry.values?.get(VALUE) }, through: entry.through, held: false }
+  : entry.landed ? { content: { structure: entry.landed.structure!, value: entry.landed.values?.get(VALUE) }, through: entry.landed.through, held: true } : {};
 
-function pipeline(ids = [3], horizon = 0) {
-  const decoders = [new FollowDecoder(), new FollowDecoder()];
-  const worker = new Followed(what => decoders[0]!.release(what)), reference = new Followed(what => decoders[1]!.release(what));
-  for (const followed of [worker, reference]) { for (const id of ids) followed.add(id, 'branch'); followed.bind('branch', 9, 1); }
-  let seek = 1, epoch = 0, told = true, holding = false, playing = true, hour = 0, head = 0, recorded = -1, epochFrom = 0, failed = false;
-  const history = new Map<number, Map<number, { content: string; covers: boolean; through?: number }>>(ids.map(id => [id, new Map()]));
-  const known = new Map<number, Map<string, { start: number; through: number }[]>>(ids.map(id => [id, new Map()]));
-  const learn = (id: number, content: string, coverage: { start: number; through: number } | undefined) => {
-    if (content === 'empty' || !coverage) return;
-    const spans = known.get(id)!;
-    let held = spans.get(content);
-    if (!held) spans.set(content, held = []);
-    if (!held.some(span => span.start === coverage.start && span.through === coverage.through)) held.push({ ...coverage });
-  };
-  const order = [...ids];
-  let receive: (reading: PageReading, quiet: boolean) => void = () => {}, fail: (reason: string) => void = () => {};
-  const store = new FollowStore({ follow: () => {}, unfollow: () => {}, listen: (r, f) => { receive = r; fail = f; return () => {}; } },
-    manualFrames().schedule, () => order.shift()!);
-  const entries = new Map(ids.map(id => [id, store.acquire({ q: id, branchId: 'branch' }).entry]));
-  const page = new LatestReadings(id => ids.includes(id) && told ? epoch : undefined);
-  const shown: string[] = [], posted: FollowUpdate[][] = [], channel: FollowUpdate[][] = [];
-  const label = (r: Seen) => `${r.hour}:${r.panel?.refused ?? (r.panel ? 'panel' : r.answer?.kind === 'notRecorded' ? r.answer.reason : r.answer?.kind ?? 'pending')}`;
-  const show: Show = (r, quiet) => { receive(r, quiet); if (!quiet) shown.push(ids.length > 1 ? `${r.id}@${label(r)}` : label(r)); };
-  const outbox = new StructureOutbox(() => {
-    const updates = [...worker.updates(head + (playing ? horizon : 0))];
-    if (updates.length) { channel.push(updates); posted.push(updates); }
-    return updates.length > 0;
-  });
-  const deliver = () => {
-    const updates = channel.shift();
-    if (!updates) return false;
-    for (const update of updates) page.land(update, hour, !playing, show);
-    outbox.taken();
-    return true;
-  };
-  const settle = () => { if (!holding) while (deliver()); };
-  const note = (at: number) => {
-    reference.drain(at);
-    for (const id of ids) {
-      const r = reference.current(id), content = contentOf(r);
-      history.get(id)!.set(at, { content, covers: covering(r, at), through: r?.coverage?.through });
-      learn(id, content, r?.coverage);
-      for (const lead of reference.ahead(id)) {
-        const coverage = { start: lead.hour, through: lead.hour };
-        learn(id, contentOf({ panel: lead.panel, hour: lead.hour, coverage }), coverage);
-      }
+function pictures(log: readonly Known[], at: number, window: number, id: number, hour: number, carry: number, applied?: number,
+  index = log[at]!.segments.length - 1, memo = new Map<string, Picture[]>()): Picture[] {
+  const key = `${at}:${window}:${hour}:${applied}:${index}`, known = memo.get(key);
+  if (known) return known;
+  const segment = log[at]!.segments[index]!, out: Picture[] = [];
+  memo.set(key, out);
+  for (let cut = Math.max(0, at - window); cut <= at; cut++) {
+    const known = log[cut]!.segments[index];
+    if (known?.serial !== segment.serial) continue;
+    if (known.kind === 'failed') { out.push({ failed: true }); continue; }
+    const readings = known.readings.get(id) ?? [], drained = applied ?? log[cut]!.drained, reach = drained + (applied === undefined ? log[cut]!.lead : 0);
+    let found = -1;
+    readings.forEach((reading, index) => { if (reading.hour <= hour && reading.hour <= reach) found = index; });
+    if (found >= 0) {
+      const confirmed = Math.max(-Infinity, ...known.completed.filter(through => through <= drained));
+      out.push({ content: readings[found]!.content, end: Math.max(readings[found]!.hour, Math.min(readings[found + 1] ? readings[found + 1]!.hour - 1 : Infinity, confirmed)) });
+      continue;
     }
-  };
-  const record = (to: number) => {
-    for (let at = recorded + 1; at <= to; at++) note(at);
-    recorded = Math.max(recorded, to);
-  };
-  const tick = (at: number) => { head = at; record(at); worker.drain(at); outbox.flush(); settle(); };
-  const arrive = (items: FollowItem[]) => { worker.land(items); reference.land(items); note(recorded); tick(head); };
-  const moved = (sought: boolean, retainThrough: number | undefined) => {
-    if (sought) seek++;
-    epoch++; told = true;
-    page.forget(ids); store.seek('branch', retainThrough, true);
-    worker.seek('branch', seek, epoch, retainThrough); reference.seek('branch', seek, epoch, retainThrough);
-    if (!sought) note(recorded);
-  };
-  const check = (where: string) => {
-    for (const [id, entry] of entries) {
-      if (failed) {
-        if (entry.status !== 'unavailable' || entry.panel || entry.answer) assert.fail(`${where}: subscription ${id} shows data after the stream failed`);
-        continue;
-      }
-      const content = contentOf(entry);
-      if (content === 'empty') continue;
-      if (entry.through > hour || (entry.coverage?.start ?? -Infinity) > hour)
-        assert.fail(`${where}: subscription ${id} shows ${label(entry)} through ${entry.through}, ahead of the page at ${hour}`);
-      if (!playing && !covering(entry, hour)) assert.fail(`${where}: paused at ${hour}, subscription ${id} shows ${label(entry)}, which does not cover it, as current`);
-      const spans = known.get(id)!.get(content) ?? [];
-      if (entry.through >= epochFrom && !spans.some(span => span.start <= entry.through && entry.through <= span.through))
-        assert.fail(`${where}: subscription ${id} dates ${content} at ${entry.through}, which no direct read ever held at that hour`);
+    if (index === 0) { out.push(null); continue; }
+    for (let before = Math.max(0, segment.restart - carry - 1); before <= segment.restart; before++) {
+      if (log[before]!.segments[index - 1]?.serial !== log[segment.restart]!.segments[index - 1]!.serial) continue;
+      const left = before === segment.restart ? log[before - 1]?.drained ?? 0 : undefined;
+      for (const base of pictures(log, before, 0, id, segment.left, carry, left, index - 1, memo))
+        out.push(base && 'failed' in base ? base : segment.kind === 'carry' ? base : null);
+      if (segment.kind === 'carry') for (const kept of pictures(log, before, 0, id, segment.hour, carry, Math.max(segment.hour, log[before]!.drained), index - 1, memo))
+        if (kept && 'content' in kept && kept.end >= segment.hour) out.push(kept);
     }
-  };
-  const exact = (where: string) => {
-    if (failed) { check(where); return; }
-    for (const [id, entry] of entries) {
-      const truth = history.get(id)!.get(hour)!;
-      const expected = !playing && !truth.covers ? 'empty' : truth.content;
-      if (contentOf(entry) !== expected)
-        assert.fail(`${where}: at ${hour} subscription ${id} shows ${contentOf(entry)}, a direct read gives ${expected}${expected === 'empty' ? ' (held, uncovered)' : ''}`);
-      const through = truth.through === undefined ? undefined : Math.min(truth.through, hour);
-      if (expected !== 'empty' && through !== undefined && entry.through !== through)
-        assert.fail(`${where}: at ${hour} subscription ${id} is dated through ${entry.through}, a direct read through ${through}`);
-    }
-    check(where);
-  };
-  record(0);
-  const panels = (id: number, at: number, data: unknown, refused: string | null, stepped: boolean) => arrive([{ kind: 'panels', batch: { route: 9, clock: 0, seek,
-    completed: undefined, panels: [{ id, hour: at, stepped, panel: { data, refused } }] } }]);
-  const lane = (bytes: Uint8Array) => {
-    const items = decoders.map(decoder => decoder.item(bytes.slice().buffer));
-    worker.land([items[0]!]); reference.land([items[1]!]); note(recorded); tick(head);
-  };
-  return {
-    worker, entries, page, shown, posted, channel, label,
-    get head() { return head; }, get hour() { return hour; }, get playing() { return playing; },
-    panel: (at: number, refused: string | null, stepped = true, id = ids[0]!) => panels(id, at, { rows: [at] }, refused, stepped),
-    data: (at: number, data: unknown, id = ids[0]!, stepped = true) => panels(id, at, data, null, stepped),
-    step: (at: number, answers: Answers) => lane(datedStep(at, answers, seek)),
-    completed: (at: number) => arrive([{ kind: 'panels', batch: { route: 9, clock: 0, seek, completed: at, panels: [] } }]),
-    reset: (at: number, answers: Answers = []) => lane(datedStep(at, answers, seek, true)),
-    fail: () => {
-      const item: FollowItem = { kind: 'failure', reason: 'stream closed' };
-      worker.land([item]); reference.land([item]); page.forget(ids); fail('stream closed'); failed = true; tick(head);
-    },
-    frame: (at: number) => tick(at),
-    view: (at: number) => { hour = at; record(at); page.advance(at, !playing, show); },
-    pause: () => { playing = false; moved(false, hour); page.refresh(hour, true, show); tick(head); },
-    resume: () => { playing = true; page.refresh(hour, false, show); },
-    seekTo: (to: number, forward: boolean) => {
-      playing = false; told = false; hour = to;
-      const before = shown.length;
-      page.advance(to, true, show);
-      if (shown.length !== before) assert.fail(`a frame listener told of the seek to ${to} before its anchor showed ${shown.slice(before)}`);
-      moved(true, forward ? to : undefined);
-      hour = to; epochFrom = to; recorded = to - 1;
-      for (const spans of known.values()) spans.clear();
-      record(to);
-      page.refresh(hour, true, show); tick(to); page.advance(to, true, show);
-    },
-    unanchored: () => { told = false; },
-    deliver, hold: (held: boolean) => { holding = held; if (!held) settle(); },
-    check, exact,
-    sync: (where: string) => { holding = false; tick(head); hour = head; record(hour); page.advance(hour, !playing, show); settle(); exact(where); },
-  };
+  }
+  const unique = [...new Map(out.map(picture => [JSON.stringify(picture), picture])).values()];
+  memo.set(key, unique);
+  return unique;
 }
 
-test('the page shows, for its own hour, the latest reading that is due, each sent once and replaced by its due hour', () => {
-  let seek = 5;
-  const page = new LatestReadings(() => seek), shown: string[] = [];
-  const show: Show = (r, quiet) => { if (!quiet) shown.push(`${r.id}@${r.hour}:${r.through}`); };
-  const at = (due: number) => ({ due, hour: due, coverage: { start: due, through: due }, panel: { refused: String(due) }, answer: null, values: null });
-  page.land({ id: 1, epoch: 5, keep: 10, put: [at(10), at(12), at(20)] }, 4, false, show);
-  assert.deepEqual(shown, [], 'nothing is due at hour 4, so the page shows nothing from hour 10');
-  page.advance(11, false, show);
-  page.advance(15, false, show);
-  assert.deepEqual(shown, ['1@10:10', '1@12:12']);
-  page.land({ id: 1, epoch: 5, keep: 12, cover: [[12, 18]], drop: [20], put: [at(24)] }, 15, false, show);
-  page.advance(22, false, show);
-  assert.deepEqual(shown, ['1@10:10', '1@12:12'], 'a coverage patch dates the shown reading quietly; a dropped lead never shows');
-  page.advance(24, false, show);
-  assert.deepEqual(shown.at(-1), '1@24:24');
-  seek = 6;
-  page.land({ id: 1, epoch: 5, keep: 30, put: [at(30)] }, 30, false, show);
-  page.advance(40, false, show);
-  assert.equal(shown.at(-1), '1@24:24', 'nothing of an earlier seek is shown, on landing or on a frame');
-});
+function expected(log: readonly Known[], window: number, id: number, hour: number, paused: boolean): string[] {
+  return [...new Set(pictures(log, log.length - 1, window, id, hour, window).map(picture => JSON.stringify(!picture ? {} : 'failed' in picture ? picture
+    : { content: { structure: picture.content.structure, value: picture.content.value }, through: Math.min(hour, picture.end), held: paused && picture.end < hour })))];
+}
 
-test('a reading the worker drained ahead of the page waits for its hour, and the page never dates anything past its own hour', () => {
-  const p = pipeline([6]);
-  p.step(0, [{ id: 6, answer: one(1n, 1n) }]);
-  p.sync('start');
-  for (let at = 1; at <= 24; at++) p.step(at, at === 24 ? [{ id: 6, answer: one(1n, 24n) }] : []);
-  p.frame(24);
-  p.view(4); p.check('page at 4, worker through 24');
-  assert.equal(p.entries.get(6)!.through <= 4 && describe(p.entries.get(6)!.answer!), 'rows:1:1');
-  p.view(24); p.exact('page at 24');
-});
-
-test('a changing value with an unchanged structure reaches the page at every step', () => {
-  const p = pipeline([6]);
-  for (let at = 0; at <= 96; at += 24) {
-    p.step(at, [{ id: 6, answer: one(1n, BigInt(7 + at)) }]);
-    p.frame(at); p.view(at); p.exact(`hour ${at}`);
+async function randomRun(run: number, ops: number, random: (n: number) => number, mutate?: (p: Awaited<ReturnType<typeof pipeline>>) => void) {
+  const ids = [1, 2, 3], WINDOW = 3, p = await pipeline(ids);
+  mutate?.(p);
+  const changes = new Map(ids.map(id => [id, new Map<number, Content>()]));
+  let structures = 0, values = 0;
+  for (const id of ids) for (let hour = random(10); hour < 6000; hour += 1 + random(30)) {
+    const before = [...changes.get(id)!.values()].at(-1);
+    changes.get(id)!.set(hour, { structure: !before || random(4) === 0 ? `S${++structures}` : before.structure, value: ++values });
   }
-  assert.equal(describe(p.entries.get(6)!.answer!), 'rows:1:103');
-});
-
-test('a panel whose followed cells change reaches the page with each new value', () => {
-  const p = pipeline([7]);
-  p.data(0, cellPanel(0, 5), 7, false);
-  for (let at = 1; at <= 30; at += 3) { p.step(at, [{ id: CELLS, answer: one(1n, BigInt(at)) }]); p.completed(at); p.sync(`hour ${at}`); }
-});
-
-test('resuming after a paused reading short of its hour never puts an older roster over a newer one', () => {
-  const p = pipeline([3], 100);
-  p.panel(23, 'A');
-  p.frame(23); p.view(23); p.frame(24); p.view(24); p.pause();
-  p.exact('paused at 24 with only the hour-23 roster');
-  p.panel(90, 'C');
-  p.panel(24, 'B');
-  p.resume();
-  p.frame(25); p.view(25); p.exact('playing at 25');
-  for (const at of [60, 89, 90, 91]) { p.frame(at); p.view(at); p.exact(`playing at ${at}`); }
-  assert.equal(p.entries.get(3)!.panel?.refused, 'C');
-});
-
-test('a paused reading short of the paused hour is held until its coverage reaches it, then shown once', () => {
-  const p = pipeline([3, 6]);
-  p.panel(23, 'A', true, 3);
-  p.step(23, [{ id: 6, answer: one(1n, 7n) }]);
-  p.frame(23); p.view(23); p.frame(24); p.view(24); p.pause();
-  p.exact('paused at 24');
-  assert.deepEqual([p.entries.get(3)!.panel, p.entries.get(3)!.landed?.panel.refused, p.entries.get(6)!.answer], [undefined, 'A', undefined],
-    'the panel is held apart, to be dimmed, and the answer is missing');
-  p.panel(23, 'A', true, 3);
-  p.step(24, [{ id: 6, hour: 23, answer: one(1n, 7n) }]);
-  p.exact('native sends the paused hour again');
-  const before = p.shown.length;
-  p.completed(24);
-  p.exact('coverage reaches 24');
-  assert.deepEqual(p.shown.slice(before), ['3@23:A']);
-  p.completed(24); p.step(24, []);
-  assert.equal(p.shown.length, before + 1, 'only once');
-});
-
-test('a paused correction that never reached the page still arrives after a resume', () => {
-  const p = pipeline([3, 6]);
-  p.step(23, [{ id: 6, answer: one(1n, 7n) }]);
-  p.frame(23); p.view(23); p.frame(24); p.view(24); p.pause();
-  p.hold(true);
-  p.panel(24, 'X', false, 3);
-  p.step(24, [{ id: 6, answer: one(1n, 9n) }]);
-  p.resume();
-  p.hold(false);
-  p.sync('after the resume');
-  assert.equal(describe(p.entries.get(6)!.answer!), 'rows:1:9');
-});
-
-test('a forward seek publishes nothing queued from the previous seek, even to a frame that runs before the seek is told', () => {
-  const p = pipeline([3], 100);
-  p.panel(10, 'old');
-  p.panel(30, 'queued');
-  p.frame(10); p.view(10);
-  p.unanchored();
-  p.view(30);
-  assert.notEqual(p.entries.get(3)!.panel?.refused, 'queued', `a frame between the seek and its anchor shows nothing of the old seek: ${p.shown}`);
-});
-
-test('a paused forward seek dates the new reading by its own coverage', () => {
-  const p = pipeline([3]);
-  p.panel(20, 'O', false);
-  p.frame(23); p.view(23); p.pause();
-  p.panel(24, 'P', false);
-  p.seekTo(24, true);
-  p.exact('after the seek to 24');
-  const entry = p.entries.get(3)!;
-  assert.deepEqual([entry.panel?.refused, entry.through, entry.coverage], ['P', 24, { start: 24, through: 24 }]);
-});
-
-test('a stream failure drops what arrived before the subscription was bound', () => {
-  const followed = new Followed(() => {});
-  followed.add(3, 'branch');
-  followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 3, hour: 10, stepped: true, panel: { data: { rows: [10] }, refused: 'before' } }] } }]);
-  followed.land([{ kind: 'failure', reason: 'stream closed' }]);
-  followed.bind('branch', 9, 1);
-  followed.drain(10);
-  assert.equal(followed.current(3)?.panel, null);
-});
-
-test('a seek or a stream failure forgets what the page holds, so the same reading after it goes again', () => {
-  const p = pipeline([3, 4]);
-  p.panel(10, 'A', false, 3);
-  p.frame(10); p.view(10);
-  p.hold(true);
-  p.panel(10, 'X', false, 4);
-  p.seekTo(10, true);
-  p.panel(10, 'A', false, 3);
-  p.hold(false);
-  p.sync('after the seek');
-  assert.equal(p.entries.get(3)!.panel?.refused, 'A');
-});
-
-test('a native reset replaces what it supersedes, on every path', () => {
-  const p = pipeline([3, 6]);
-  p.panel(10, 'old', true, 3); p.sync('10');
-  p.panel(20, 'abandoned', true, 3);
-  p.reset(18, [{ id: 6, hour: 25, answer: one(1n, 7n) }]);
-  p.panel(18, 'replacement', true, 3);
-  for (const at of [18, 20, 25, 26]) { p.frame(at); p.sync(`hour ${at}`); }
-  const q = pipeline([3]);
-  q.panel(10, 'A'); q.sync('A');
-  q.panel(20, 'B'); q.frame(20); q.view(20);
-  q.reset(20); q.panel(20, 'A');
-  q.sync('back to A');
-  assert.equal(q.entries.get(3)!.panel?.refused, 'A');
-  const r = pipeline([6]);
-  r.step(10, [{ id: 6, answer: one(1n, 7n) }]); r.sync('10');
-  r.step(20, [{ id: 6, answer: { notRecorded: 'Twenty' } }]);
-  r.reset(25, [{ id: 6, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
-  r.frame(20); r.view(20); r.check('20');
-  r.frame(25); r.sync('25');
-  assert.deepEqual(r.entries.get(6)!.answer, { kind: 'notRecorded', reason: 'Corrected from 18' });
-});
-
-test('a reset while paused sends its correction, which covers the paused hour', () => {
-  const p = pipeline([6]);
-  p.step(20, [{ id: 6, answer: one(1n, 7n) }]);
-  p.frame(20); p.view(20); p.pause();
-  p.reset(20, [{ id: 6, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
-  p.exact('corrected while paused');
-  assert.equal(p.shown.at(-1), '18:Corrected from 18');
-});
-
-test('a steady frame at 1,440 h/s sends each new reading once, and 114 subscriptions of 128-country panels stay small', () => {
-  const ids = Array.from({ length: 114 }, (_, i) => i + 1), speed = 1440, fps = 60, step = speed / fps;
-  const decoder = new FollowDecoder(), followed = new Followed(what => decoder.release(what));
-  for (const id of ids) followed.add(id, 'b');
-  followed.bind('b', 9, 1);
-  const arsenal = (day: number) => ({ missing: null, warnings: [], types: [1, 2, 3].map(ordinal => ({ ordinal, token: `nuke_${ordinal}`, name: `Nuke ${ordinal}` })),
-    countries: Array.from({ length: 128 }, (_, i) => ({ tag: `C${i}`, countryId: i, total: i * 3 + day, counts: [1, 2, 3].map(ordinal => ({ ordinal, value: i + ordinal + day, ready: i })) })) });
-  const landDays = (from: number, to: number) => {
-    for (let day = from; day <= to; day++) for (const id of ids) {
-      const packet = datedPanel(id, day * 24, arsenal(day));
-      packet[33] = 1;
-      followed.land([decoder.item(packet.slice().buffer)]);
+  const contentAt = (id: number, hour: number) => { let found: Content | undefined; for (const [at, content] of changes.get(id)!) if (at <= hour) found = content; return found; };
+  let segments: Segment[] = [{ kind: 'carry', serial: 0, restart: 0, hour: 0, left: 0, readings: new Map(), completed: [] }];
+  const log: Known[] = [];
+  let read = -1, fresh = true, frame = 1, drained = 0, lead = 0, held = false;
+  const snapshot = (): Known => ({ drained, lead, segments: segments.map(segment => ({ ...segment, completed: [...segment.completed], readings: new Map([...segment.readings].map(([id, list]) => [id, [...list]])) })) });
+  let left = 0;
+  const restart = (kind: Segment['kind'], hour: number) => {
+    segments = [...segments, { kind, serial: segments.length, restart: frame, hour, left, readings: new Map(), completed: [] }];
+    read = hour - 1; fresh = true; drained = hour;
+  };
+  const native = (to: number) => {
+    const s = p.clock.getSnapshot(), segment = segments.at(-1)!;
+    if (to <= read || segment.kind === 'failed') return;
+    const batch: { id: number; hour: number; content: Content }[] = [];
+    for (let hour = read + 1; hour <= to; hour++) for (const id of ids) {
+      const content = contentAt(id, hour);
+      if (!content || !(fresh && hour === read + 1) && !changes.get(id)!.has(hour)) continue;
+      batch.push({ id, hour, content });
+    }
+    fresh = false; read = to;
+    p.lane.land([panels(s.seekSequence, to, batch)]);
+    for (const { id, hour, content } of batch) {
+      let list = segment.readings.get(id);
+      if (!list) segment.readings.set(id, list = []);
+      list.push({ hour, content });
+    }
+    segment.completed.push(to);
+  };
+  const check = (where: string) => {
+    const s = p.clock.getSnapshot();
+    for (const id of ids) {
+      const shown = JSON.stringify(pictureOf(p.entries.get(id)!)), allowed = expected(log, WINDOW, id, s.hour, !s.playing);
+      if (!allowed.includes(shown))
+        assert.fail(`run ${run} ${where} at hour ${s.hour}${s.playing ? '' : ' (paused)'}: subscription ${id} shows ${shown}; within ${WINDOW} frames a direct read gives one of ${allowed.join(' ')}`);
     }
   };
-  landDays(0, 30);
-  followed.drain(0);
-  const first = [...followed.updates(0 + step * 2)];
-  const sizes: number[] = [], readings: number[] = [];
-  let head = 0, day = 30;
-  const held = new Map(ids.map(id => [id, new Set(first.find(u => u.id === id)?.put?.map(r => r.due))]));
-  for (let frame = 0; frame < 120; frame++) {
-    head += step;
-    while (day * 24 < head + 720) landDays(++day, day);
-    followed.drain(head);
-    const updates = [...followed.updates(head + step * 2)];
-    for (const update of updates) for (const reading of update.put ?? []) {
-      const seen = held.get(update.id)!;
-      if (seen.has(reading.due)) assert.fail(`frame ${frame}: subscription ${update.id} was sent its reading for ${reading.due} again`);
-      seen.add(reading.due);
-    }
-    sizes.push(serialize({ type: 'structure', updates }).byteLength);
-    readings.push(updates.reduce((n, u) => n + (u.put?.length ?? 0), 0));
+  const step = 24;
+  log.push(snapshot());
+  for (let op = 0; op < ops; op++, frame++) {
+    const s = p.clock.getSnapshot(), kind = random(20), where = `op ${op} (${kind})`;
+    left = s.hour;
+    if (random(3)) native(Math.max(read, s.hour + random(72)));
+    if (kind < 12) p.clock.frame(s.playing ? s.position + random(step + 1) : s.position);
+    else if (kind < 14) { if (s.playing) { p.clock.pause(); restart('carry', p.clock.getSnapshot().hour); } else p.clock.resume(); }
+    else if (kind === 14) { const to = s.hour + 1 + random(60); p.clock.seek(to); restart('carry', to); }
+    else if (kind === 15 && s.hour > 0) { const to = Math.max(0, s.hour - 1 - random(60)); p.clock.seek(to); restart('discard', to); }
+    else if (kind === 16 && !s.playing) { p.clock.step(1); restart('carry', p.clock.getSnapshot().hour); }
+    else if (kind === 17 && !s.playing && s.hour > 0) { p.clock.step(-1); restart('discard', p.clock.getSnapshot().hour); }
+    else if (kind === 18 && random(8) === 0) { p.lane.land([{ kind: 'failure', reason: 'stream closed' }]); restart('failed', s.hour); p.clock.frame(s.position); }
+    else p.clock.frame(s.position);
+    log.push(snapshot());
+    check(`${where}, as the clock publishes`);
+    const now = p.clock.getSnapshot();
+    drained = Math.max(drained, now.hour + (now.playing ? random(step) : 0)); lead = now.playing ? 2 * step : 0;
+    p.lane.frame(drained, lead);
+    log[log.length - 1]!.drained = drained; log[log.length - 1]!.lead = lead;
+    if (held || random(4)) { held = false; while (p.lane.deliver()); } else held = true;
+    check(`${where}, after its messages`);
   }
-  sizes.sort((a, b) => a - b); readings.sort((a, b) => a - b);
-  const p95 = sizes[Math.floor(sizes.length * 0.95)]!;
-  assert.ok(serialize({ type: 'structure', updates: first }).byteLength < 114 * 3 * 16 * 1024, 'the first message holds at most the readings due within two frames');
-  assert.ok(readings.at(-1)! <= 114 * 2, `at most two new readings per subscription a frame: ${readings.at(-1)}`);
-  assert.ok(p95 < 2 * 1024 * 1024, `a frame's message stays under 2 MiB: ${(p95 / 1024).toFixed(0)} KiB`);
-});
+}
 
-test('random interleavings agree every frame with a direct read at the page hour, and are exact whenever the pipeline is caught up', () => {
+test('every page frame, through seeks, pauses, steps and failures, shows a direct read of its own hour no more than three frames old', async () => {
   let seed = 0x2545f491;
   const random = (n: number) => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % n; };
-  for (let run = 0; run < 400; run++) {
-    const ids = [3, 4, 5, 6, 7], p = pipeline(ids, random(3) * 8);
-    let value = 0;
-    const answer = () => random(5) ? one(1n, BigInt(++value)) : { notRecorded: `none ${value}` };
-    const confirm = () => { p.completed(p.head); p.step(p.head, random(3) ? [] : [{ id: CELLS, answer: one(1n, BigInt(++value)) }]); };
-    const resend = () => {
-      p.panel(Math.max(0, p.head - random(3)), 'ABC'[random(3)]!, true, 3 + random(2));
-      p.step(p.head, [{ id: 6, hour: Math.max(0, p.head - random(3)), answer: answer() }]);
-      if (random(2)) confirm();
-    };
-    for (let op = 0; op < 80; op++) {
-      const kind = random(24), where = `run ${run} op ${op} (${kind})`;
-      if (kind < 3) p.panel(p.head + random(10), 'ABC'[random(3)]!, true, 3 + random(2));
-      else if (kind === 3) p.panel(p.head + random(6), 'XY'[random(2)]!, false, 5);
-      else if (kind < 6) p.step(p.head + random(4), [{ id: 6, answer: answer() }, ...random(2) ? [{ id: CELLS, answer: one(1n, BigInt(++value)) }] : []]);
-      else if (kind === 6) p.completed(p.head + random(4));
-      else if (kind === 7) p.data(p.head + random(4), cellPanel(p.head, ++value), 7, random(2) === 0);
-      else if (kind < 11) { if (p.playing) p.frame(p.head + random(5)); if (random(2)) confirm(); }
-      else if (kind < 13) p.view(p.playing ? Math.min(p.head, p.hour + random(6)) : p.hour);
-      else if (kind === 13) p.hold(random(2) === 0);
-      else if (kind < 17) p.sync(where);
-      else if (kind === 17) p.reset(p.head + random(3), random(2) ? [{ id: 6, hour: Math.max(0, p.head - random(4)), answer: answer() }] : []);
-      else if (kind === 18) {
-        const forward = random(2) === 0;
-        p.seekTo(forward ? p.head + 1 + random(3) : Math.max(0, p.hour - 1 - random(10)), forward);
-        if (random(3)) resend();
-      } else if (kind < 21) {
-        if (p.playing) { p.frame(p.head); p.view(p.head); p.pause(); if (random(2)) resend(); } else p.resume();
-      } else if (kind === 21 && random(10) === 0) p.fail();
-      else if (p.playing) p.frame(p.head + random(3));
-      p.check(where);
-    }
-    p.sync(`run ${run} end`);
+  for (let run = 0; run < 300; run++) await randomRun(run, 120, random);
+});
+
+const settle = (p: Awaited<ReturnType<typeof pipeline>>, head: number, ahead = 48) => { p.lane.frame(head, ahead); while (p.lane.deliver()); };
+const shown = (p: Awaited<ReturnType<typeof pipeline>>, id = 1) => pictureOf(p.entries.get(id)!);
+const content = (structure: string, value: number) => ({ structure, value });
+
+test('a reading the page still shows is kept until the page has moved past it, though the worker drained ahead', async () => {
+  const p = await pipeline([1]);
+  for (let day = 0; day <= 5; day++) p.lane.land([panels(0, day * 24 + 23, [{ id: 1, hour: day * 24, content: content('S', day) }])]);
+  for (const hour of [23, 47, 71, 95, 119]) {
+    p.clock.frame(hour - 1); settle(p, hour);
+    p.clock.frame(hour); settle(p, hour + 1);
+    assert.deepEqual(shown(p), { content: { structure: 'S', value: (hour - 23) / 24 }, through: hour, held: false },
+      `at ${hour}, a worker one hour ahead has made the next day current, and the page still shows its own day`);
   }
+});
+
+test('a reading becomes current at the hour the clock published, whatever the worker or the wall clock reached', async () => {
+  const p = await pipeline([1]);
+  p.lane.land([panels(0, 40, [{ id: 1, hour: 0, content: content('S', 0) }, { id: 1, hour: 12, content: content('S', 12) }])]);
+  p.clock.frame(0); settle(p, 30);
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 0 }, through: 0, held: false }, 'the worker drained to 30, the page published 0');
+  p.clock.frame(12);
+  assert.deepEqual(shown(p)?.content, { structure: 'S', value: 12 }, 'the reading sent ahead shows when the clock publishes its hour, before any message');
+});
+
+test('a seek empties what it discards before any frame listener runs for the new position', async () => {
+  const p = await pipeline([1]);
+  p.lane.land([panels(0, 120, [{ id: 1, hour: 100, content: content('S', 100) }])]);
+  p.clock.frame(100); settle(p, 100);
+  const seen: Shown[] = [];
+  p.clock.frames.add(() => seen.push(shown(p)));
+  p.clock.seek(20);
+  assert.deepEqual(seen, [{}], 'a frame listener of the seek to 20 sees nothing of hour 100');
+  settle(p, 20, 0);
+  assert.deepEqual(shown(p), {}, 'and nothing of it arrives later');
+});
+
+test('a reading whose structure is unchanged crosses without its panel, and the page keeps the panel it decoded with the new values', async () => {
+  const p = await pipeline([1]);
+  p.lane.land([panels(0, 10, [{ id: 1, hour: 0, content: content('S', 1) }, { id: 1, hour: 5, content: content('S', 2) }, { id: 1, hour: 8, content: content('T', 3) }])]);
+  p.clock.frame(0); settle(p, 0);
+  const first = p.entries.get(1)!.panel;
+  p.clock.frame(5);
+  const puts = p.lane.delivered.flat().flatMap(update => update.put ?? []);
+  assert.deepEqual(puts.map(put => [put.due, put.kept ?? false, put.panel !== null, put.structure ?? null]), [[0, false, true, 'S'], [5, true, false, null], [8, false, true, 'T']]);
+  assert.equal(p.entries.get(1)!.panel, first, 'the page keeps the panel object of the structure');
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 2 }, through: 5, held: false }, 'and shows the new values');
+  p.clock.frame(8);
+  assert.deepEqual(shown(p).content, { structure: 'T', value: 3 });
+});
+
+test('a coverage-only confirmation moves the coverage of the reading the page holds, never resends it', () => {
+  const followed = new Followed(() => {});
+  followed.add(3, 'branch', () => 'S');
+  followed.bind('branch', 9, 1);
+  followed.land([panels(1, undefined, [{ id: 3, hour: 10, content: content('S', 1) }])]);
+  followed.drain(10);
+  assert.equal([...followed.updates(10)][0]?.put?.length, 1);
+  followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: 14, panels: [{ id: 3, hour: 14, panel: null, stepped: true }] } }]);
+  followed.drain(14);
+  assert.deepEqual([...followed.updates(14)], [{ id: 3, epoch: 0, cover: [[10, 14]] }]);
+});
+
+test('a follow failure is terminal for its epoch on both sides and named on the page, until a later epoch brings data', async () => {
+  const p = await pipeline([1]);
+  p.lane.land([panels(0, 10, [{ id: 1, hour: 0, content: content('S', 1) }])]);
+  p.clock.frame(5); settle(p, 5);
+  p.lane.land([{ kind: 'failure', reason: 'stream closed' }]);
+  assert.deepEqual([p.entries.get(1)!.status, p.entries.get(1)!.reason], ['failed', 'stream closed']);
+  p.lane.land([panels(0, 20, [{ id: 1, hour: 6, content: content('S', 6) }])]);
+  p.clock.frame(8); settle(p, 8);
+  assert.deepEqual(shown(p), { failed: true }, 'a panel after the failure is not taken by the worker nor the page');
+  p.clock.seek(30);
+  p.lane.land([panels(1, 30, [{ id: 1, hour: 30, content: content('S', 30) }])]);
+  settle(p, 30, 0);
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 30 }, through: 30, held: false }, 'a later epoch with data recovers');
+});
+
+test('pausing keeps the picture held, and resuming shows it again with no new reading', async () => {
+  const p = await pipeline([1]);
+  p.lane.land([panels(0, 23, [{ id: 1, hour: 23, content: content('S', 23) }])]);
+  p.clock.frame(23); settle(p, 23);
+  p.clock.frame(24.5);
+  p.clock.pause();
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 23 }, through: 23, held: true }, 'paused at 24 with a reading of 23, it is held, not blank');
+  settle(p, 24, 0);
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 23 }, through: 23, held: true }, 'and stays held while nothing covers 24');
+  p.clock.resume();
+  assert.deepEqual(shown(p), { content: { structure: 'S', value: 23 }, through: 23, held: false }, 'resuming shows it as current at once');
 });

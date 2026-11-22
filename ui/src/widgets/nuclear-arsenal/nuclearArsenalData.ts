@@ -37,7 +37,7 @@ export function arsenalStructureRows(reply: NuclearArsenalReply): string[] {
 export function arsenalStructure(reply: NuclearArsenalReply) {
   const countries: Record<number, unknown> = {};
   for (const row of reply.countries) countries[row.countryId] = [row.tag, row.total > 0, row.counts.map(v => v.ordinal)];
-  return JSON.stringify([reply.missing, reply.types, reply.warnings, countries]);
+  return JSON.stringify([reply.missing, reply.types, reply.warnings, countries, reply.countries.map(row => row.countryId)]);
 }
 
 const integer = Number.isSafeInteger;
