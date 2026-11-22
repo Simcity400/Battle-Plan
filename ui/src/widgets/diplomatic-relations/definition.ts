@@ -18,7 +18,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'diplomatic-relations', version: 1, title: 'Diplomatic relations', icon: 'handshake', category: 'Diplomacy',
   description: 'Every chosen country’s opinion of every other, with a pair’s history.',
-  timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
+  timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, ownsOutsideState: true, history: false,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, rankedBy: 'the Top N by measure' },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS, variants: breakdownVariants('Diplomatic relations', OPTIONS),
