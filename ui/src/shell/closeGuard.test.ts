@@ -21,6 +21,7 @@ function desktop(judge?: () => boolean) {
     leaveFails: false,
     refreshFails: false,
     refreshes: 0,
+    installing: false,
     holdRefreshes: false,
     heldRefreshes: [] as ((seq: number) => void)[],
     subscriptions: [] as ((batch: CloseBatch) => boolean)[],
@@ -72,7 +73,7 @@ function desktop(judge?: () => boolean) {
   const batch = (...asks: CloseAsk[]): CloseBatch => {
     for (const { id, about } of asks) host.waiting.set(id, about);
     const listed = (asked: Map<number, CloseAbout>) => [...asked].map(([id, about]) => ({ id, about }));
-    return { seq: ++host.seq, waiting: listed(host.waiting), holds: listed(host.holds) };
+    return { seq: ++host.seq, waiting: listed(host.waiting), holds: listed(host.holds), installing: host.installing };
   };
   const deliver = (sent: CloseBatch) => watcher.get(0)?.(sent);
   const send = (...asks: CloseAsk[]) => deliver(batch(...asks));
@@ -539,7 +540,7 @@ test('a recheck the host dispatched keeps its Try again until the page runs a ba
   guard.recheck();
   await flush();
   assert.deepEqual([host.refreshes, shown().map(({ message }) => message), locked()], [1, [UNRECHECKED], 'update'], 'the host dispatched its batch, but the page hasn’t run it, so Restarting… keeps Try again');
-  deliver({ seq: queued, waiting: [], holds: [{ id: 1, about: 'install' }] });
+  deliver({ seq: queued, waiting: [], holds: [{ id: 1, about: 'install' }], installing: false });
   assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNRECHECKED], 'update'], 'a batch older than the one named doesn’t settle it');
   shown()[0]!.retry();
   await flush();
@@ -562,6 +563,31 @@ test('a restart whose reply is lost while its installer still starts keeps Try a
   retire(1);
   batch();
   assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNRECHECKED], 'update'], 'setup failed and its release batch was lost, and the page can still ask');
+  shown()[0]!.retry();
+  await flush();
+  send();
+  assert.deepEqual([locked(), shown()], [null, []], 'the batch Try again brought unlocks the page');
+});
+
+test('a restart whose reply is lost before its install question is posed keeps Try again through the question and a lost release', async () => {
+  const { host, start, batch, send, ask, hold, retire, shown, locked } = desktop();
+  const guard = start();
+  await flush();
+  host.installing = true;
+  guard.recheck();
+  await flush();
+  send();
+  assert.deepEqual([locked(), shown()], [null, []], 'the updater is still checking the recorder, so nothing locks and nothing is shown');
+  ask(1, 'install');
+  hold(1, 'install');
+  send();
+  assert.deepEqual([locked(), shown().map(({ message }) => message)], ['update', [UNRECHECKED]], 'the install the page asked for locks it, and the lock keeps Try again');
+  retire(1);
+  batch();
+  host.installing = false;
+  batch();
+  await flush();
+  assert.deepEqual([locked(), shown().map(({ message }) => message)], ['update', [UNRECHECKED]], 'the launch failed and both its release batches were lost, and the page can still ask');
   shown()[0]!.retry();
   await flush();
   send();
@@ -629,9 +655,9 @@ async function replay(seed: number, trace: Traced[]) {
       await flush();
       out = expected;
     } else if (kind === 'b') {
-      const [, , dirty, confirmed, seq, waiting, holds, returned, expected] = event as [string, number, boolean | null, boolean, number, [number, CloseAbout][], [number, CloseAbout][], boolean, Out];
+      const [, , dirty, confirmed, seq, waiting, holds, returned, expected, installing] = event as [string, number, boolean | null, boolean, number, [number, CloseAbout][], [number, CloseAbout][], boolean, Out, boolean];
       Object.assign(facts, { dirty, confirmed });
-      assert.equal(entry.onBatch!({ seq, waiting: asks(waiting), holds: asks(holds) }), returned, `${where}: what the callback returned`);
+      assert.equal(entry.onBatch!({ seq, waiting: asks(waiting), holds: asks(holds), installing }), returned, `${where}: what the callback returned`);
       out = expected;
     } else if (kind === 'r') {
       const [, , dirty, confirmed, id, reply, expected] = event as [string, number, boolean | null, boolean, number, boolean | null, Out];

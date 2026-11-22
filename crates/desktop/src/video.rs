@@ -73,6 +73,7 @@ pub struct VideoState(
     pub Mutex<Result<VideoSettings, String>>,
     AtomicBool,
     AtomicU64,
+    Mutex<()>,
 );
 impl Default for VideoState {
     fn default() -> Self {
@@ -83,6 +84,7 @@ impl Default for VideoState {
             Mutex::new(load()),
             AtomicBool::new(requested),
             AtomicU64::new(0),
+            Mutex::new(()),
         )
     }
 }
@@ -429,27 +431,42 @@ fn diagnostics_switch(state: &VideoState) -> MapSwitch {
     })
 }
 
+fn changing(state: &VideoState) -> std::sync::MutexGuard<'_, ()> {
+    state.3.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<bool, String> {
-    let requested = state.1.swap(false, Ordering::AcqRel);
+    let consumed = std::cell::Cell::new(false);
     let saved = commit(
         path,
         &state.0,
-        |settings| settings.map_diagnostics = enabled.unwrap_or(!(requested || settings.map_diagnostics)),
+        |settings| {
+            let requested = state.1.swap(false, Ordering::AcqRel);
+            consumed.set(requested);
+            settings.map_diagnostics = enabled.unwrap_or(!(requested || settings.map_diagnostics));
+        },
         |current, saved| current.map_diagnostics = saved.map_diagnostics,
     );
-    if saved.is_err() && requested {
+    if saved.is_err() && consumed.get() {
         state.1.store(true, Ordering::Release);
     }
     saved.map(|saved| saved.map_diagnostics)
 }
 
+fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>, announce: impl FnOnce(bool, bool) -> T) -> Result<T, String> {
+    let _changing = changing(state);
+    let muted = muted_in(&*stored(&state.0)?);
+    let enabled = set_diagnostics(path, state, enabled)?;
+    Ok(announce(enabled, muted))
+}
+
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
-    let muted = muted_in(&*stored(&state.0)?);
-    let enabled = set_diagnostics(&path()?, &state, enabled)?;
-    let changed = announce_diagnostics(app, &state, enabled);
-    let now_muted = muted_in(&*stored(&state.0)?);
-    let muted = (now_muted != muted).then(|| announce_muted(app, &state, !muted));
+    let (changed, muted) = toggle_diagnostics(&path()?, &state, enabled, |enabled, muted| {
+        let changed = announce_diagnostics(app, &state, enabled);
+        let now_muted = stored(&state.0).map_or(muted, |stored| muted_in(&stored));
+        (changed, (now_muted != muted).then(|| announce_muted(app, &state, !muted)))
+    })?;
     let _ = app.emit("map-diagnostics", changed);
     if let Some(muted) = muted {
         let _ = app.emit("map-muted", muted);
@@ -491,6 +508,7 @@ fn muted_switch(state: &VideoState) -> MapSwitch {
 
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
+    let _changing = changing(&state);
     let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
     commit(&path()?, &state.0, |settings| settings.map_muted = muted, |current, saved| current.map_muted = saved.map_muted)?;
     let changed = announce_muted(app, &state, muted);
@@ -648,7 +666,7 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("hoi4-video-toggle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         let path = folder.join("video.json");
-        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(false), AtomicU64::new(0));
+        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(false), AtomicU64::new(0), Mutex::new(()));
         update(&path, None, |saved| saved.map_diagnostics = true).unwrap();
         assert!(!set_diagnostics(&path, &state, None).unwrap(), "a toggle that waited on another writer flips what that writer saved, not what this window last read");
         assert!(!load_from(&path).unwrap().map_diagnostics);
@@ -656,9 +674,39 @@ mod tests {
         assert!(state.0.lock().unwrap().as_ref().unwrap().map_diagnostics);
         assert!(load_from(&path).unwrap().map_diagnostics);
 
-        let requested = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0));
+        let requested = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()));
         assert!(!set_diagnostics(&path, &requested, None).unwrap(), "--diagnostics shows them, so the first toggle hides them");
         assert!(set_diagnostics(&path, &requested, None).unwrap());
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn concurrent_diagnostics_toggles_announce_the_value_they_saved_last() {
+        let folder = std::env::temp_dir().join(format!("hoi4-video-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        let path = folder.join("video.json");
+        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()));
+        let announced = Mutex::new(Vec::new());
+        let announce = |value: bool, _muted: bool| {
+            assert!(state.3.try_lock().is_err(), "no other toggle decides, saves or announces while this one announces");
+            let switch = MapSwitch { value, sequence: next_change(&state) };
+            announced.lock().unwrap().push(switch);
+            switch
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..25 {
+                        toggle_diagnostics(&path, &state, None, announce).unwrap();
+                    }
+                });
+            }
+        });
+        let announced = announced.into_inner().unwrap();
+        let last = announced.iter().max_by_key(|switch| switch.sequence).unwrap();
+        assert_eq!(last.value, load_from(&path).unwrap().map_diagnostics, "the newest announcement is what the file holds");
+        assert!(announced.windows(2).all(|pair| pair[0].sequence < pair[1].sequence && pair[0].value != pair[1].value), "each toggle announces in the order it saved, and flips the one before it");
+        assert!(!announced[0].value, "--diagnostics was consumed by the first toggle, under its file lock");
         fs::remove_dir_all(&folder).unwrap();
     }
 

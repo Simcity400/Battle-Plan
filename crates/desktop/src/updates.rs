@@ -10,6 +10,12 @@ impl Host {
 }
 
 impl app_update::Host for Host {
+    fn install_starting(&self) -> app_update::Starting {
+        self.leaving().install_starting();
+        let app = self.0.clone();
+        app_update::Starting::until(move || app.state::<Leaving>().install_resolved())
+    }
+
     fn busy(&self) -> Option<String> {
         self.leaving().busy()
     }
@@ -25,7 +31,7 @@ impl app_update::Host for Host {
     }
 
     fn closed_for_update(&self) {
-        self.leaving().exit();
+        self.leaving().acknowledged();
         self.0.exit(0);
     }
 

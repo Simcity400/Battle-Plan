@@ -16,7 +16,31 @@ impl app_update::Host for Host {
         self.0.leave(Leave::Exit)
     }
 
+    fn closed_for_update(&self) {
+        self.0.acknowledged();
+    }
+
     fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        let _acting = self.0.acting().map_err(std::io::Error::other)?;
         replay::writes::WRITES.begin()?.replace(path, |out| std::io::Write::write_all(out, bytes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Host;
+    use app_update::Host as _;
+    use std::sync::Arc;
+
+    #[test]
+    fn an_update_channel_change_asked_for_once_the_recorder_quits_is_refused_and_writes_nothing() {
+        let folder = std::env::temp_dir().join(format!("battleplan-recorder-channel-{}", std::process::id()));
+        let path = folder.join("update-channel");
+        let recorder = Arc::new(crate::worker::Recorder::default());
+        let host = Host(Arc::clone(&recorder));
+        recorder.commit_exit();
+        assert!(host.write_preference(&path, b"nightly").is_err(), "the channel writer takes the recorder’s own admission, not only the write gate");
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

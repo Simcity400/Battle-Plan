@@ -549,7 +549,7 @@ mod tests {
         inner.export_requests += 1;
         let request = inner.export_requests;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer, _writing: writes.begin().unwrap() });
+        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer, permit: std::sync::Arc::new(writes.begin().unwrap()) });
         inner.pending.actions.push_back(dashboard::protocol::MapAction::Export { path: path.into(), view_id: None, request });
         answered
     }

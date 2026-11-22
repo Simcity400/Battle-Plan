@@ -551,6 +551,7 @@ struct Capture {
     index: u32,
     paced: bool,
     request: Option<u64>,
+    permit: Option<replay::writes::Permit>,
 }
 
 pub(crate) struct VisualStale {
@@ -854,6 +855,7 @@ pub struct Viewer {
     overlay_art_retries: u32,
     held_since: Option<Instant>,
     export_results: Vec<(u64, Result<String, String>)>,
+    export_permits: Vec<(u64, replay::writes::Permit)>,
     combat_inputs: Option<usize>,
     overlay_pools: viewer_foundation::map::icon_windows::Pools,
 
@@ -1195,6 +1197,7 @@ impl Viewer {
             index: 0,
             paced: false,
             request: None,
+            permit: None,
         });
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
@@ -1401,6 +1404,7 @@ impl Viewer {
             overlay_art_retries: 0,
             held_since: None,
             export_results: Vec::new(),
+            export_permits: Vec::new(),
             combat_inputs: None,
 
             counter_view,
@@ -1651,6 +1655,19 @@ impl Viewer {
         self.overlay_hour = None;
         self.close_playhead();
         self.rendered = None;
+    }
+
+    pub(crate) fn holds_export(&self) -> bool {
+        self.capture.as_ref().is_some_and(|capture| capture.request.is_some()) || self.dashboard.as_ref().is_some_and(|dashboard| dashboard.holds_export())
+    }
+
+    pub(crate) fn take_permit(&mut self, request: u64) -> Option<replay::writes::Permit> {
+        let at = self.export_permits.iter().position(|(held, _)| *held == request)?;
+        Some(self.export_permits.swap_remove(at).1)
+    }
+
+    pub(crate) fn hold_permit(&mut self, request: u64, permit: Option<replay::writes::Permit>) {
+        self.export_permits.extend(permit.map(|permit| (request, permit)));
     }
 
     fn not_drawn(&mut self) {
@@ -3069,7 +3086,7 @@ impl Viewer {
 
     #[cfg(test)]
     pub(crate) fn arm_export(&mut self, path: &str, id: u64) {
-        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(id) });
+        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(id), permit: None });
     }
 
     pub(crate) fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
@@ -3252,8 +3269,8 @@ impl Viewer {
             if !unverified.is_empty() {
                 render::render_banner(scene, &state.device, &state.queue, &unverified)?;
             }
-            match capture.request {
-                Some(_) => render::write_png_under(&replay::writes::WRITES.admitted(), scene, &state.device, &state.queue, &output),
+            match &capture.permit {
+                Some(permit) => render::write_png_under(permit, scene, &state.device, &state.queue, &output),
                 None => render::write_png(scene, &state.device, &state.queue, &output),
             }
         })();
@@ -6841,7 +6858,7 @@ impl eframe::App for Viewer {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::perf_log::frame_start();
         let _other_cost = replay_frame::cpu::scope("frame.logic", Some("other"));
-        if ctx.input(|input| input.viewport().visible()) == Some(false) || self.embedded.as_ref().is_some_and(|embedded| !embedded.visible()) {
+        if (ctx.input(|input| input.viewport().visible()) == Some(false) || self.embedded.as_ref().is_some_and(|embedded| !embedded.visible())) && !self.holds_export() {
             self.not_drawn();
         }
         engine_executable::executable_tables::scope(self.tables(), || {
@@ -6911,6 +6928,7 @@ impl Viewer {
             .embedded
             .as_ref()
             .is_some_and(|embedded| !embedded.visible())
+            && !self.holds_export()
         {
             self.not_drawn();
             if self.dashboard_active
@@ -7466,6 +7484,7 @@ pub(crate) mod tests {
             index: 0,
             paced: false,
             request: None,
+            permit: None,
         };
         assert!(!builds_warnings(false, None));
         for remaining in [0, 1, 3_321] {
@@ -8638,7 +8657,7 @@ pub(crate) mod tests {
     }
 
     fn export(path: &str, request: u64) -> Capture {
-        Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(request) }
+        Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(request), permit: None }
     }
 
     fn closes(output: &egui::FullOutput) -> bool {
@@ -8744,6 +8763,33 @@ pub(crate) mod tests {
         viewer.host_map_action(dashboard::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
         assert_eq!(viewer.take_export_results(), [(8, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(viewer.error.is_none() && viewer.capture.is_none());
+    }
+
+    #[test]
+    fn an_admitted_export_still_renders_once_battleplan_hides_its_window_and_the_exit_waits_for_its_picture() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+        let (parent, _) = crate::host::Window::create(None, [64, 64], "BattlePlan (test host)").unwrap();
+        // SAFETY: the window was created on this thread and is still alive.
+        unsafe { ShowWindow(parent.hwnd() as _, SW_HIDE) };
+        let (window, _inputs) = crate::host::Window::create(Some(parent.hwnd()), [1, 1], crate::host::MAP_WINDOW_TITLE).unwrap();
+        let (_commands, received) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let service = dashboard::Service::new(Arc::new(|_| true)).unwrap();
+        let controller = crate::embedded::Parent::new(window.clone(), received, Arc::new(|_| {}), service).attach(&ctx).unwrap();
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), Some(controller), None);
+        assert!(!viewer.embedded.as_ref().unwrap().visible(), "the map’s window reports itself hidden, as it does once BattlePlan hides its own");
+        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
+        viewer.capture = Some(Capture { permit: Some(Arc::new(writes.begin().unwrap())), ..export("map.png", 5) });
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut output = ctx.run_ui(Default::default(), |ui| eframe::App::logic(&mut viewer, ui.ctx(), &mut frame));
+        output.textures_delta.clear();
+        assert!(viewer.take_export_results().is_empty(), "the export the host accepted isn’t refused because its window hid");
+        assert!(viewer.capture.as_ref().is_some_and(|capture| capture.request == Some(5)), "it stays armed to render");
+        assert!(writes.close_admission() && !writes.drained_within(std::time::Duration::ZERO), "and the exit waits for its picture");
+        viewer.refused("the test ends");
+        assert!(writes.drained_within(std::time::Duration::ZERO), "the map lets the permit go once the export is answered");
+        window.destroy();
+        parent.destroy();
     }
 
     fn window_dump_viewer() -> Viewer {

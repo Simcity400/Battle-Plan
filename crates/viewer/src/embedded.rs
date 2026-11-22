@@ -68,6 +68,7 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard::protocol::MapAction>,
+    pub permits: Vec<(u64, replay::writes::Permit)>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -91,6 +92,7 @@ impl Pending {
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
+            && self.permits.is_empty()
             && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
@@ -101,13 +103,17 @@ impl Pending {
             && self.error.is_none()
     }
 
-    fn push(&mut self, command: NativeCommand) -> Result<(), String> {
+    fn push(&mut self, command: impl Into<crate::host::Command>) -> Result<(), String> {
         if self.close {
             return Ok(());
         }
+        let crate::host::Command { native: command, permit } = command.into();
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
+                if let (dashboard::protocol::MapAction::Export { request, .. }, Some(permit)) = (&action, permit) {
+                    self.permits.push((*request, permit));
+                }
                 if let dashboard::protocol::MapAction::Unload { path } = &action {
                     let path = Path::new(path);
                     if self
@@ -320,7 +326,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn input(&self, command: NativeCommand) {
+    fn input(&self, command: crate::host::Command) {
         let mut pending = self
             .pending
             .lock()
@@ -550,7 +556,7 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
 
 pub struct Parent {
     window: crate::host::Window,
-    commands: mpsc::Receiver<NativeCommand>,
+    commands: mpsc::Receiver<crate::host::Command>,
     events: crate::host::Events,
     service: Arc<dashboard::Service>,
 }
@@ -558,7 +564,7 @@ pub struct Parent {
 impl Parent {
     pub fn new(
         window: crate::host::Window,
-        commands: mpsc::Receiver<NativeCommand>,
+        commands: mpsc::Receiver<crate::host::Command>,
         events: crate::host::Events,
         service: Arc<dashboard::Service>,
     ) -> Self {
@@ -595,13 +601,13 @@ impl Parent {
             .spawn_carried(move || {
                 while !input.stopped.load(Ordering::Acquire) {
                     let Ok(command) = commands.recv() else { break };
-                    let close = matches!(command, NativeCommand::Close);
+                    let close = matches!(command.native, NativeCommand::Close);
                     input.input(command);
                     if close {
                         return;
                     }
                 }
-                input.input(NativeCommand::Close);
+                input.input(NativeCommand::Close.into());
             })?;
         let output = Arc::clone(&shared);
         let output_events = Arc::clone(&events);

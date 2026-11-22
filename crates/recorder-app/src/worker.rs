@@ -65,10 +65,23 @@ struct Inner {
     last_flags: BTreeMap<String, FlagImage>,
     leaving: Option<Leaving>,
     launching: bool,
+    acknowledging: bool,
     exiting: bool,
     departing: bool,
     acting: usize,
     tray: u64,
+}
+
+pub struct SessionEnding(pub AppHandle);
+
+impl app_update::session::Ending for SessionEnding {
+    fn commit(&self) {
+        self.0.state::<Arc<Recorder>>().exit_requested(&self.0);
+    }
+
+    fn drained_within(&self, limit: Duration) -> bool {
+        self.0.state::<Arc<Recorder>>().drained_within(limit)
+    }
 }
 
 pub enum Leave {
@@ -93,16 +106,11 @@ const QUITTING: &str = "BattlePlan Recorder is quitting, so it starts nothing mo
 const STARTING_UPDATE: &str = "Starting the update before BattlePlan Recorder quits…";
 const FINISHING_RECORDING: &str = "Saving the recording before BattlePlan Recorder quits…";
 const SAVING: &str = "Saving your changes before BattlePlan Recorder quits…";
+pub const SESSION_ENDING: &str = "Saving the recording and your changes before BattlePlan Recorder quits…";
 const SESSION_ENDED: &str = "The session you asked about has already ended, so nothing was changed.";
 const SESSION_STOPPING: &str = "BattlePlan Recorder is already stopping this session.";
 const SESSION_SAVING: &str =
     "BattlePlan Recorder had already begun saving this session, so nothing was changed.";
-
-enum Quitting {
-    Prompt,
-    Stop,
-    Wait,
-}
 
 fn cancelled(inner: &mut Inner, through: u64, stopping: bool) {
     inner.prompts.retire(through);
@@ -112,13 +120,51 @@ fn cancelled(inner: &mut Inner, through: u64, stopping: bool) {
 }
 
 impl Inner {
-    fn quit(&mut self) -> Quitting {
+    fn quit(&mut self) -> bool {
         if let Some(session) = self.live_session() {
             self.ask(session, true);
-            return Quitting::Prompt;
+            return true;
         }
         self.exit();
-        if self.capturing && !self.snapshot.stopping { Quitting::Stop } else { Quitting::Wait }
+        false
+    }
+
+    fn settle(&mut self, control: &Control) -> bool {
+        if !self.capturing && self.quit_after_stop.is_some() {
+            self.exit();
+        }
+        if self.exiting && self.capturing && (control.stopping() || control.stop(Stop::Save)) && !self.snapshot.stopping {
+            self.snapshot.stopping = true;
+            self.prompts.clear();
+            if self.snapshot.phase == Phase::Recording {
+                self.snapshot.phase = Phase::Saving;
+                self.snapshot.problem = None;
+            }
+        }
+        std::mem::take(&mut self.departing)
+    }
+
+    fn reserve_capture(&mut self) -> bool {
+        if self.exiting {
+            return false;
+        }
+        self.capturing = true;
+        true
+    }
+
+    fn take_leave(&mut self) -> Option<(Leaving, Option<&'static str>)> {
+        let leaving = self.leaving.take()?;
+        let refused = update_busy(self);
+        if refused.is_none() {
+            match leaving.leave {
+                Leave::Install(_) => self.launching = true,
+                Leave::Exit => {
+                    self.acknowledging = true;
+                    self.exit();
+                }
+            }
+        }
+        Some((leaving, refused))
     }
 
     fn exit(&mut self) {
@@ -566,7 +612,7 @@ impl Recorder {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
-            let departing = std::mem::take(&mut inner.departing);
+            let departing = inner.settle(&self.control);
             let published = inner.publish(&before);
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
@@ -633,9 +679,16 @@ impl Recorder {
         done(&inner)
     }
 
+    pub fn drained_within(&self, limit: Duration) -> bool {
+        self.settled_within(limit, |inner| !inner.launching && !inner.acknowledging && !inner.capturing && !inner.unloading && inner.acting == 0) && {
+            replay::writes::WRITES.close_admission();
+            replay::writes::WRITES.drained_within(limit)
+        }
+    }
+
     fn drain(&self, show: impl FnOnce(&'static str) -> Result<app_update::saving::Saving, String>) {
         use app_update::saving::{Wait, drained};
-        let launched = |limit: Duration| self.settled_within(limit, |inner| !inner.launching);
+        let launched = |limit: Duration| self.settled_within(limit, |inner| !inner.launching && !inner.acknowledging);
         let captured = |limit: Duration| self.settled_within(limit, |inner| !inner.capturing && !inner.unloading);
         let acted = |limit: Duration| self.settled_within(limit, |inner| inner.acting == 0);
         let written = |limit: Duration| {
@@ -746,15 +799,12 @@ impl Recorder {
     }
 
     pub fn quit(&self, app: &AppHandle) {
-        let mut quitting = Quitting::Wait;
-        self.update(app, |inner| quitting = inner.quit());
-        match quitting {
-            Quitting::Prompt => panel::open(app, None, true),
-            Quitting::Stop => {
-                self.control.stop(Stop::Save);
-                self.wake.notify_all();
-            }
-            Quitting::Wait => self.wake.notify_all(),
+        let mut prompted = false;
+        self.update(app, |inner| prompted = inner.quit());
+        if prompted {
+            panel::open(app, None, true);
+        } else {
+            self.wake.notify_all();
         }
     }
 
@@ -805,6 +855,7 @@ impl Recorder {
         {
             let mut inner = self.lock();
             if (inner.exiting || inner.launching) && matches!(leave, Leave::Exit) {
+                inner.acknowledging = true;
                 return Ok(());
             }
             if inner.exiting {
@@ -834,6 +885,11 @@ impl Recorder {
         }
     }
 
+    pub fn acknowledged(&self) {
+        self.lock().acknowledging = false;
+        self.settled.notify_all();
+    }
+
     #[cfg(test)]
     pub(crate) fn commit_exit(&self) {
         self.lock().exit();
@@ -851,19 +907,16 @@ impl Recorder {
         Ok(Acting(Arc::clone(self)))
     }
 
-    fn leave_now(&self, app: &AppHandle, Leaving { leave, reply }: Leaving) -> bool {
+    fn leave_now(&self, app: &AppHandle) -> bool {
+        if self.lock().leaving.is_none() {
+            return false;
+        }
+        let mut taken = None;
+        self.update(app, |inner| taken = inner.take_leave());
+        let Some((Leaving { leave, reply }, refused)) = taken else {
+            return false;
+        };
         let installing = matches!(leave, Leave::Install(_));
-        let mut refused = None;
-        self.update(app, |inner| {
-            refused = (inner.acting > 0).then_some(SAVING_FOR_UPDATE);
-            if refused.is_none() {
-                if installing {
-                    inner.launching = true;
-                } else {
-                    inner.exit();
-                }
-            }
-        });
         if let Some(reason) = refused {
             let _ = reply.send(Err(reason.into()));
             return false;
@@ -915,18 +968,7 @@ impl Recorder {
                     continue;
                 }
             }
-            let quitting = {
-                let inner = self.lock();
-                inner.exiting || inner.quit_after_stop.is_some()
-            };
-            if quitting {
-                self.update(app, Inner::exit);
-                return;
-            }
-            let leaving = self.lock().leaving.take();
-            if let Some(leaving) = leaving
-                && self.leave_now(app, leaving)
-            {
+            if self.lock().exiting || self.leave_now(app) {
                 return;
             }
             let settings = RecorderSettings::load().unwrap_or_else(|error| {
@@ -947,8 +989,10 @@ impl Recorder {
                 (choice, look)
             });
             if let Ok((_, look)) = &listed {
-                if look.pass {
-                    abandoned_retry.after(self.end_abandoned(app, &settings));
+                if look.pass
+                    && let Some(retry) = self.end_abandoned(app, &settings)
+                {
+                    abandoned_retry.after(retry);
                     ended_abandoned = true;
                 }
                 if look.gone {
@@ -1043,18 +1087,27 @@ impl Recorder {
         }
     }
 
-    fn end_abandoned(&self, app: &AppHandle, settings: &RecorderSettings) -> bool {
-        let mut retry = false;
-        for root in settings.session_roots() {
-            let root = root.canonicalize().unwrap_or(root);
-            let pass = controller::end_abandoned_sessions(&root);
-            for error in pass.errors {
-                eprintln!("An earlier session could not be ended: {error}");
+    fn abandoned_pass(self: &Arc<Self>, pass: impl FnOnce() -> bool) -> Option<bool> {
+        let _acting = self.acting().ok()?;
+        Some(pass())
+    }
+
+    fn end_abandoned(&self, app: &AppHandle, settings: &RecorderSettings) -> Option<bool> {
+        let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
+        let retry = recorder.abandoned_pass(|| {
+            let mut retry = false;
+            for root in settings.session_roots() {
+                let root = root.canonicalize().unwrap_or(root);
+                let pass = controller::end_abandoned_sessions(&root);
+                for error in pass.errors {
+                    eprintln!("An earlier session could not be ended: {error}");
+                }
+                retry |= pass.retry;
             }
-            retry |= pass.retry;
-        }
+            retry
+        })?;
         recordings_changed(app);
-        retry
+        Some(retry)
     }
 
     fn idle(
@@ -1133,6 +1186,12 @@ impl Recorder {
                 return Ended::held();
             }
         };
+        self.control.reset();
+        let mut admitted = false;
+        self.update(app, |inner| admitted = inner.reserve_capture());
+        if !admitted {
+            return Ended::again();
+        }
         let folders = (|| -> Result<(PathBuf, PathBuf, PathBuf), String> {
             let root = save_root(settings)?;
             let target = match &loaded {
@@ -1162,7 +1221,6 @@ impl Recorder {
                 return Ended::held();
             }
         };
-        self.control.reset();
         let automatic = settings.record_every_campaign;
         let opening = loaded.as_ref().map(|loaded| {
             let recording = targets::recording(&target, &loaded.campaign);
@@ -1175,13 +1233,7 @@ impl Recorder {
         let flag_folders = probe
             .and_then(Probe::game_dir)
             .map(|game_dir| (game_dir, user.clone()));
-        let mut admitted = false;
         self.update(app, |inner| {
-            if inner.exiting {
-                return;
-            }
-            admitted = true;
-            inner.capturing = true;
             inner.game_running = true;
             inner.result = false;
             inner.sticky = None;
@@ -1213,9 +1265,6 @@ impl Recorder {
                 snapshot.saved_bytes = bytes;
             }
         });
-        if !admitted {
-            return Ended::again();
-        }
         let settings_path = RecorderSettings::path();
         let session_dir: RefCell<Option<PathBuf>> = RefCell::new(None);
         let admission = SessionAdmission {
@@ -1493,6 +1542,7 @@ impl Recorder {
             Some(path) => {
                 let span = Replay::read_hour_span(&path).ok().flatten();
                 let bytes = fs::metadata(&path).ok().map(|metadata| metadata.len());
+                let named = campaign_of(&path);
                 self.update(app, |inner| {
                     inner.capturing = false;
                     inner.session = None;
@@ -1502,7 +1552,7 @@ impl Recorder {
                     let snapshot = &mut inner.snapshot;
                     snapshot.phase = Phase::Saved;
                     snapshot.omitted = omitted;
-                    snapshot.campaign = campaign_of(&path).or(snapshot.campaign.take());
+                    snapshot.campaign = named.or(snapshot.campaign.take());
                     snapshot.name = file_name(&path);
                     snapshot.recording = Some(path.display().to_string());
                     snapshot.first_hour = span.map(|(first, _)| first);
@@ -1836,7 +1886,7 @@ mod tests {
     #[test]
     fn quit_waits_for_a_waiting_recording_being_saved_and_the_tray_says_so() {
         let mut inner = Inner { acting: 1, ..Inner::default() };
-        assert!(matches!(inner.quit(), Quitting::Wait), "a recording is being saved without a capture, so Quit doesn’t end the process inside it");
+        assert!(!inner.quit(), "a recording is being saved without a capture, so Quit doesn’t end the process inside it");
         assert!(inner.exiting && inner.saving_to_quit());
         assert!(tray::tooltip_for(&inner.snapshot, inner.saving_to_quit()).contains("Saving a recording, then quitting"));
         inner.acting = 0;
@@ -1859,20 +1909,23 @@ mod tests {
     #[test]
     fn every_way_the_recorder_quits_commits_once_before_anything_more_is_admitted() {
         let mut idle = Inner::default();
-        assert!(matches!(idle.quit(), Quitting::Wait));
+        assert!(!idle.quit());
         assert!(!idle.finishing(), "an idle Quit waits on nothing, but still leaves through the ordered quit");
         committed(idle, "tray Quit while idle");
 
         let mut saving = Inner { acting: 1, ..Inner::default() };
-        assert!(matches!(saving.quit(), Quitting::Wait));
+        assert!(!saving.quit());
         committed(saving, "tray Quit during an offline save");
 
+        let control = Control::new();
         let mut connected = Inner { capturing: true, ..Inner::default() };
-        assert!(matches!(connected.quit(), Quitting::Stop));
+        assert!(!connected.quit());
+        assert!(connected.settle(&control) && control.stopping(), "the transition itself asks the capture to stop");
+        connected.departing = true;
         committed(connected, "tray Quit while connected to the game");
 
         let mut launching = Inner { launching: true, ..Inner::default() };
-        assert!(matches!(launching.quit(), Quitting::Wait));
+        assert!(!launching.quit());
         assert!(launching.finishing(), "Quit during the installer handoff waits for it to start or fail");
         committed(launching, "tray Quit during the installer handoff");
 
@@ -1881,7 +1934,7 @@ mod tests {
         answered.snapshot.phase = Phase::Recording;
         answered.new_session();
         let live = answered.snapshot.session_key.unwrap();
-        assert!(matches!(answered.quit(), Quitting::Prompt));
+        assert!(answered.quit());
         assert!(!answered.exiting, "a Quit that asks first commits to nothing until it is answered");
         assert_eq!(accept_stop(&mut answered, &control, false, live), Ok(true));
         committed(answered, "the Quit prompt answered with Save");
@@ -1891,6 +1944,97 @@ mod tests {
         asked.exit();
         assert_eq!(answer.try_recv(), Ok(Err(QUITTING.to_owned())), "an install setup asked for before the quit is refused by name");
         committed(asked, "setup’s close, an installer that started or Tauri’s own exit");
+    }
+
+    fn recording(control: &Control) -> Inner {
+        control.reset();
+        let mut inner = Inner { capturing: true, ..Inner::default() };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        inner
+    }
+
+    #[test]
+    fn an_exit_asked_for_in_code_or_by_windows_stops_the_live_capture_it_then_waits_for() {
+        let control = Control::new();
+        let mut inner = recording(&control);
+        inner.exit();
+        assert!(inner.settle(&control), "the exit starts its one ordered quit");
+        assert!(control.stopping(), "the stop is asked for in the transition, before anything waits on the capture");
+        assert!(inner.snapshot.stopping && inner.snapshot.phase == Phase::Saving && inner.saving_to_quit());
+        assert!(control.stop(Stop::Save), "and it is a save, never a discard");
+
+        let control = Control::new();
+        let mut inner = Inner::default();
+        assert!(inner.reserve_capture(), "a capture is reserved under the lock before it touches the save folder");
+        control.reset();
+        inner.exit();
+        assert!(inner.settle(&control) && control.stopping(), "a capture reserved before the quit is stopped as soon as the quit commits");
+        inner.snapshot = Snapshot::default();
+        inner.settle(&control);
+        assert!(inner.snapshot.stopping, "and a capture that sets itself up afterwards still shows that it stops");
+        assert!(!inner.reserve_capture(), "no capture is reserved once the quit commits, so a refused one consumes no New file");
+    }
+
+    #[test]
+    fn a_quit_left_waiting_commits_under_the_lock_that_ends_its_session() {
+        let control = Control::new();
+        let mut inner = recording(&control);
+        assert!(inner.quit(), "a Quit during a live session asks first");
+        assert!(!inner.settle(&control) && !inner.exiting);
+        inner.capturing = false;
+        assert!(inner.settle(&control), "the update that ends the session commits the Quit at once");
+        assert!(inner.exiting);
+    }
+
+    #[test]
+    fn a_quit_between_setups_install_being_taken_and_its_launch_waits_for_the_installer() {
+        let launch = || Leave::Install(Box::new(|| -> Result<(), String> { Ok(()) }));
+        let (reply, answer) = mpsc::sync_channel(1);
+        let mut inner = Inner { leaving: Some(Leaving { leave: launch(), reply }), ..Inner::default() };
+        let (taken, refused) = inner.take_leave().expect("the install is taken");
+        assert!(refused.is_none() && inner.launching, "taking it and reserving it are one decision");
+        assert!(!inner.quit());
+        assert!(inner.exiting && inner.finishing(), "a Quit after the take waits for the installer to start or fail");
+        assert!(answer.try_recv().is_err(), "and refuses nothing it already took");
+        drop(taken);
+
+        let (reply, answer) = mpsc::sync_channel(1);
+        let mut inner = Inner { leaving: Some(Leaving { leave: launch(), reply }), ..Inner::default() };
+        assert!(!inner.quit());
+        assert_eq!(answer.try_recv(), Ok(Err(QUITTING.to_owned())), "a Quit before the take refuses the install by name");
+        assert!(inner.take_leave().is_none(), "so the worker finds nothing to launch");
+
+        let (reply, _answer) = mpsc::sync_channel(1);
+        let mut inner = Inner { acting: 1, leaving: Some(Leaving { leave: launch(), reply }), ..Inner::default() };
+        let (_, refused) = inner.take_leave().unwrap();
+        assert_eq!(refused, Some(SAVING_FOR_UPDATE));
+        assert!(!inner.launching);
+    }
+
+    #[test]
+    fn setups_close_keeps_the_recorder_alive_until_it_has_answered_setup() {
+        let (reply, _answer) = mpsc::sync_channel(1);
+        let mut inner = Inner { leaving: Some(Leaving { leave: Leave::Exit, reply }), ..Inner::default() };
+        inner.take_leave().unwrap();
+        assert!(inner.exiting && inner.acknowledging, "the close commits when it is taken, and the quit waits to answer setup");
+        let recorder = Arc::new(Recorder::default());
+        *recorder.lock() = inner;
+        assert!(!recorder.settled_within(Duration::ZERO, |inner| !inner.acknowledging));
+        recorder.acknowledged();
+        assert!(recorder.settled_within(Duration::ZERO, |inner| !inner.acknowledging));
+    }
+
+    #[test]
+    fn an_abandoned_session_is_ended_only_under_the_recorders_admission_and_the_quit_waits_for_it() {
+        let recorder = Arc::new(Recorder::default());
+        let during = recorder.abandoned_pass(|| {
+            assert!(recorder.lock().finishing(), "a quit committed now waits for the pass");
+            true
+        });
+        assert_eq!(during, Some(true));
+        recorder.commit_exit();
+        assert_eq!(recorder.abandoned_pass(|| unreachable!("no recovery starts once the recorder quits")), None);
     }
 
     #[test]

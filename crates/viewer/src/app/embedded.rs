@@ -20,6 +20,7 @@ impl Viewer {
         if pending.close {
             return;
         }
+        self.export_permits.extend(pending.permits);
         if pending.campaign_map {
             self.dashboard_active = false;
             self.last_step = Instant::now();
@@ -351,6 +352,7 @@ impl Viewer {
     fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
         for action in actions {
             if let dashboard::protocol::MapAction::Export { request, .. } = action {
+                drop(self.take_permit(request));
                 self.export_results.push((request, Err(why.to_owned())));
             }
         }
@@ -407,8 +409,9 @@ impl Viewer {
                 view_id: Some(id),
                 request,
             } => {
+                let permit = self.take_permit(request);
                 let refused = match self.dashboard.as_mut() {
-                    Some(dashboard) => dashboard.export_view(&id, path, request, ctx, frame).err(),
+                    Some(dashboard) => dashboard.export_view(&id, path, request, permit, ctx, frame).err(),
                     None => Some("The requested map widget is unavailable".into()),
                 };
                 if let Some(why) = refused {
@@ -432,6 +435,7 @@ impl Viewer {
                         index: 0,
                         paced: false,
                         request: Some(request),
+                        permit: self.take_permit(request),
                     });
                 } else {
                     self.export_results.push((request, Err("Open a map and wait for any active export to finish".into())));

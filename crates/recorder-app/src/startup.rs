@@ -4,8 +4,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GetLastError,
-        HANDLE,
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS,
+        GetLastError, HANDLE,
     },
     System::{
         Registry::{
@@ -56,33 +56,72 @@ pub fn single_instance() -> Option<Instance> {
     Some(Instance(handle))
 }
 
-fn run_value_set(name: &str) -> Result<bool, String> {
+fn unread(status: u32) -> String {
+    format!("Start with Windows couldn’t be read: {}", std::io::Error::from_raw_os_error(status as i32))
+}
+
+pub fn run_value() -> Result<Option<OsString>, String> {
+    use std::os::windows::ffi::OsStringExt;
     let key = wide(OsStr::new(RUN_KEY));
-    let value = wide(OsStr::new(name));
-    let mut size = 0_u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut size,
-        )
-    };
-    match status {
-        ERROR_SUCCESS => Ok(true),
-        ERROR_FILE_NOT_FOUND => Ok(false),
-        status => Err(format!(
-            "Start with Windows couldn’t be read: {}",
-            std::io::Error::from_raw_os_error(status as i32)
-        )),
+    let value = wide(OsStr::new(RUN_VALUE));
+    loop {
+        let mut size = 0_u32;
+        let status = unsafe {
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size)
+        };
+        match status {
+            ERROR_SUCCESS => {}
+            ERROR_FILE_NOT_FOUND => return Ok(None),
+            status => return Err(unread(status)),
+        }
+        let mut data = vec![0_u16; (size as usize).div_ceil(2)];
+        let mut read = size;
+        let status = unsafe {
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data.as_mut_ptr().cast::<c_void>(), &mut read)
+        };
+        match status {
+            ERROR_SUCCESS => {
+                data.truncate((read as usize / 2).saturating_sub(1));
+                return Ok(Some(OsString::from_wide(&data)));
+            }
+            ERROR_MORE_DATA => continue,
+            ERROR_FILE_NOT_FOUND => return Ok(None),
+            status => return Err(unread(status)),
+        }
     }
 }
 
 pub fn starts_with_windows() -> Result<bool, String> {
-    run_value_set(RUN_VALUE)
+    run_value().map(|value| value.is_some())
+}
+
+pub fn write_run_value(command: Option<&OsStr>) -> Result<(), String> {
+    let key = wide(OsStr::new(RUN_KEY));
+    let status = match command {
+        Some(command) => {
+            let data = wide(command);
+            let value = wide(OsStr::new(RUN_VALUE));
+            unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    value.as_ptr(),
+                    REG_SZ,
+                    data.as_ptr().cast::<c_void>(),
+                    (data.len() * 2) as u32,
+                )
+            }
+        }
+        None => remove_run_value(&key, RUN_VALUE),
+    };
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "Start with Windows couldn’t be changed: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        ))
+    }
 }
 
 fn remove_run_value(key: &[u16], name: &str) -> u32 {
@@ -94,35 +133,14 @@ fn remove_run_value(key: &[u16], name: &str) -> u32 {
 }
 
 pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
-    let key = wide(OsStr::new(RUN_KEY));
-    let status = if enabled {
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let mut command = OsString::from("\"");
-        command.push(executable.as_os_str());
-        command.push("\"");
-        let data = wide(&command);
-        let value = wide(OsStr::new(RUN_VALUE));
-        unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                key.as_ptr(),
-                value.as_ptr(),
-                REG_SZ,
-                data.as_ptr().cast::<c_void>(),
-                (data.len() * 2) as u32,
-            )
-        }
-    } else {
-        remove_run_value(&key, RUN_VALUE)
-    };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(format!(
-            "Start with Windows couldn’t be changed: {}",
-            std::io::Error::from_raw_os_error(status as i32)
-        ))
+    if !enabled {
+        return write_run_value(None);
     }
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = OsString::from("\"");
+    command.push(executable.as_os_str());
+    command.push("\"");
+    write_run_value(Some(&command))
 }
 
 pub fn light_taskbar() -> bool {

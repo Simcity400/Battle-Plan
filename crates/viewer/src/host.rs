@@ -173,8 +173,19 @@ pub struct Launch {
     pub service: Arc<dashboard::Service>,
 }
 
+pub struct Command {
+    pub native: NativeCommand,
+    pub permit: Option<replay::writes::Permit>,
+}
+
+impl From<NativeCommand> for Command {
+    fn from(native: NativeCommand) -> Self {
+        Self { native, permit: None }
+    }
+}
+
 pub struct Map {
-    commands: mpsc::Sender<NativeCommand>,
+    commands: mpsc::Sender<Command>,
 }
 
 impl Map {
@@ -189,8 +200,8 @@ impl Map {
         Ok(Self { commands })
     }
 
-    pub fn send(&self, command: NativeCommand) -> bool {
-        self.commands.send(command).is_ok()
+    pub fn send(&self, command: impl Into<Command>) -> bool {
+        self.commands.send(command.into()).is_ok()
     }
 }
 
@@ -279,7 +290,7 @@ pub(crate) fn paced_window(
 
 fn embedded_map(
     launch: Launch,
-    commands: mpsc::Receiver<NativeCommand>,
+    commands: mpsc::Receiver<Command>,
     lost: &Lost,
 ) -> Result<(), String> {
     let Launch { args, window, inputs, events, role, service } = launch;

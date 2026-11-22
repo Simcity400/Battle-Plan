@@ -79,6 +79,7 @@ pub(super) fn viewer(
         index: 0,
         paced: true,
         request: None,
+        permit: None,
     });
     Ok(viewer)
 }

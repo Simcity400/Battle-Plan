@@ -661,6 +661,7 @@ pub(crate) fn measure(
         index: 0,
         paced: schedule.paced.is_some(),
         request: None,
+        permit: None,
     });
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);

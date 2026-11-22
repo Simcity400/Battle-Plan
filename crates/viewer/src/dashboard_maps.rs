@@ -189,6 +189,7 @@ impl DashboardMaps {
         id: &str,
         path: String,
         request: u64,
+        permit: Option<replay::writes::Permit>,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) -> Result<(), String> {
@@ -200,6 +201,7 @@ impl DashboardMaps {
             return Err("Wait for the map widget to finish loading before exporting".into());
         }
         let tables = view.viewer.tables();
+        view.viewer.hold_permit(request, permit);
         engine_executable::executable_tables::scope(tables, || {
             view.viewer.host_map_action(
                 dashboard::protocol::MapAction::Export {
@@ -260,6 +262,10 @@ impl DashboardMaps {
         for view in self.views.values_mut() {
             view.viewer.release_audio();
         }
+    }
+
+    pub fn holds_export(&self) -> bool {
+        self.views.values().any(|view| view.viewer.holds_export())
     }
 
     pub fn not_drawn(&mut self) {
@@ -1481,6 +1487,7 @@ mod tests {
 
         maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
+        assert!(maps.holds_export(), "a widget’s admitted export keeps the map drawing while BattlePlan’s window is hidden");
         maps.not_drawn();
         assert_eq!(maps.take_export_results(), [(6, Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned()))]);
     }

@@ -4,6 +4,7 @@ mod control;
 mod feed;
 mod install;
 pub mod saving;
+pub mod session;
 
 pub use channel::Channel;
 
@@ -62,7 +63,27 @@ impl Role {
 
 pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
+#[derive(Default)]
+pub struct Starting(Option<Box<dyn FnOnce() + Send>>);
+
+impl Starting {
+    pub fn until(resolved: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(resolved)))
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if let Some(resolved) = self.0.take() {
+            resolved();
+        }
+    }
+}
+
 pub trait Host: Send + Sync + 'static {
+    fn install_starting(&self) -> Starting {
+        Starting::default()
+    }
     fn install_blocked(&self) -> Option<String> {
         None
     }
@@ -622,6 +643,7 @@ impl Updates {
     }
 
     pub fn install(&self, app: &AppHandle) -> Result<(), String> {
+        let _starting = self.host.install_starting();
         let (package, version) = self.start(app, false, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner

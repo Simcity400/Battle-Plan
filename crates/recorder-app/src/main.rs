@@ -53,6 +53,9 @@ fn main() {
                 app_update::Role::Recorder,
                 Arc::new(updates::Host(Arc::clone(&recorder))),
             )?;
+            if let Err(error) = app_update::session::watch(Arc::new(worker::SessionEnding(handle.clone())), worker::SESSION_ENDING) {
+                eprintln!("BattlePlan Recorder can’t hear Windows end the session, so a sign-out or shutdown may not wait for its recording to be saved: {error}");
+            }
             recorder.start(handle)?;
             Ok(())
         })
@@ -93,7 +96,10 @@ fn main() {
         tauri::RunEvent::ExitRequested { api, .. } if app.state::<Arc<worker::Recorder>>().exit_requested(app) => {
             api.prevent_exit();
         }
-        tauri::RunEvent::Exit => replay::writes::WRITES.close(),
+        tauri::RunEvent::Exit => {
+            app_update::session::end(&worker::SessionEnding(app.clone()));
+            replay::writes::WRITES.close();
+        }
         _ => {}
     });
 }

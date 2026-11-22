@@ -2,7 +2,7 @@ import { errorMessage } from './errors.ts';
 
 export type CloseAbout = 'close' | 'install' | 'leave' | 'query';
 export interface CloseAsk { id: number; about: CloseAbout }
-export interface CloseBatch { seq: number; waiting: readonly CloseAsk[]; holds: readonly CloseAsk[] }
+export interface CloseBatch { seq: number; waiting: readonly CloseAsk[]; holds: readonly CloseAsk[]; installing: boolean }
 export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
@@ -45,7 +45,7 @@ const unanswered = (about: CloseAbout, stays: boolean) =>
 const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false, unresolved = false, applied = -1;
+  let ended = false, watching = false, watched = false, leavingByChoice = false, unresolved = false, installing = false, applied = -1;
   let recheckAfter: number | undefined;
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
@@ -82,7 +82,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   const recheck = () => {
     if (!failures.has('recheck') && committed.size > 0) fail('recheck', UNRECHECKED, AWAITED, recheck);
     refresh('recheck', UNRECHECKED, recheck, seq => {
-      if (applied < seq || updating()) {
+      if (applied < seq || updating() || installing) {
         recheckAfter = seq;
         if (committed.size > 0) fail('recheck', UNRECHECKED, AWAITED, recheck);
         return;
@@ -177,6 +177,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     if (batch.seq <= applied) return judge(batch.waiting.filter(ask => waiting.some(({ id }) => id === ask.id)), false);
     applied = batch.seq;
     waiting = batch.waiting;
+    installing = batch.installing;
     const live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
     for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
@@ -192,7 +193,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     show();
     resendDue();
     const handled = judge(waiting, true);
-    if (!ended && rechecked && !updating()) {
+    if (!ended && rechecked && !updating() && !installing) {
       recheckAfter = undefined;
       unresolved = false;
       clear('recheck');

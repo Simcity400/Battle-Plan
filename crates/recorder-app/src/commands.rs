@@ -6,7 +6,7 @@ use crate::{
     startup,
     worker::{Acting, Recorder, recordings_changed, save_folder},
 };
-use replay::recorder_settings::{Held, NextLoad, RecorderSettings};
+use replay::recorder_settings::{NextLoad, RecorderSettings};
 use replay_data::identity::is_campaign_uuid;
 use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
@@ -59,44 +59,55 @@ fn change_settings(
 ) -> Result<SettingsView, String> {
     let recorder = app.state::<Arc<Recorder>>();
     RecorderSettings::hold_at(&RecorderSettings::path(), |held| {
-        patched(held, recorder.acting(), start_with_windows, &Windows, change)
+        patched(recorder.acting(), start_with_windows, &Windows, || held.update(change).map(|(settings, ())| settings))
     })
-    .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
+    .map_err(|error| {
+        if replay::writes::is_unconfirmed(&error) {
+            format!("Recorder settings were changed, but Windows didn’t confirm they were saved: {error}")
+        } else {
+            format!("Recorder settings couldn’t be saved: {error}")
+        }
+    })
     .and_then(view)
 }
 
 trait Startup {
-    fn starts(&self) -> Result<bool, String>;
+    fn read(&self) -> Result<Option<std::ffi::OsString>, String>;
     fn set(&self, enabled: bool) -> Result<(), String>;
+    fn put_back(&self, value: Option<&std::ffi::OsStr>) -> Result<(), String>;
 }
 
 struct Windows;
 
 impl Startup for Windows {
-    fn starts(&self) -> Result<bool, String> {
-        startup::starts_with_windows()
+    fn read(&self) -> Result<Option<std::ffi::OsString>, String> {
+        startup::run_value()
     }
 
     fn set(&self, enabled: bool) -> Result<(), String> {
         startup::set_start_with_windows(enabled)
     }
+
+    fn put_back(&self, value: Option<&std::ffi::OsStr>) -> Result<(), String> {
+        startup::write_run_value(value)
+    }
 }
 
 fn patched(
-    held: &Held<'_>,
     admitted: Result<Acting, String>,
     start_with_windows: Option<bool>,
     startup: &dyn Startup,
-    change: impl FnOnce(&mut RecorderSettings),
+    save: impl FnOnce() -> std::io::Result<RecorderSettings>,
 ) -> std::io::Result<RecorderSettings> {
     let _acting = admitted.map_err(std::io::Error::other)?;
-    let before = start_with_windows.map(|_| startup.starts()).transpose().map_err(std::io::Error::other)?;
+    let before = start_with_windows.map(|_| startup.read()).transpose().map_err(std::io::Error::other)?;
     if let Some(enabled) = start_with_windows {
         startup.set(enabled).map_err(std::io::Error::other)?;
     }
-    held.update(change).map(|(settings, ())| settings).inspect_err(|_| {
-        if let Some(before) = before
-            && let Err(error) = startup.set(before)
+    save().inspect_err(|error| {
+        if let Some(before) = &before
+            && !replay::writes::is_unconfirmed(error)
+            && let Err(error) = startup.put_back(before.as_deref())
         {
             eprintln!("Start with Windows couldn’t be put back after the settings failed to save: {error}");
         }
@@ -573,17 +584,39 @@ pub async fn open_replay(path: Option<String>) -> Result<(), String> {
 mod tests {
     use super::{Startup, patched, plain_path};
     use replay::recorder_settings::RecorderSettings;
-    use std::{cell::RefCell, path::PathBuf, sync::Arc};
+    use std::{
+        cell::RefCell,
+        ffi::{OsStr, OsString},
+        path::PathBuf,
+        sync::Arc,
+    };
 
-    struct Registry(RefCell<Vec<bool>>);
+    const OURS: &str = "\"C:\\this\\recorder.exe\"";
+
+    struct Registry(RefCell<Vec<Option<OsString>>>);
+
+    impl Registry {
+        fn holding(value: Option<&str>) -> Self {
+            Self(RefCell::new(vec![value.map(OsString::from)]))
+        }
+
+        fn now(&self) -> Option<OsString> {
+            self.0.borrow().last().cloned().flatten()
+        }
+    }
 
     impl Startup for Registry {
-        fn starts(&self) -> Result<bool, String> {
-            Ok(self.0.borrow().last().copied().unwrap_or(false))
+        fn read(&self) -> Result<Option<OsString>, String> {
+            Ok(self.now())
         }
 
         fn set(&self, enabled: bool) -> Result<(), String> {
-            self.0.borrow_mut().push(enabled);
+            self.0.borrow_mut().push(enabled.then(|| OsString::from(OURS)));
+            Ok(())
+        }
+
+        fn put_back(&self, value: Option<&OsStr>) -> Result<(), String> {
+            self.0.borrow_mut().push(value.map(OsStr::to_owned));
             Ok(())
         }
     }
@@ -595,22 +628,43 @@ mod tests {
         let path = folder.join("recorder.json");
         let writes = replay::writes::Writes::new();
         let recorder = Arc::new(crate::worker::Recorder::default());
-        let registry = Registry(RefCell::new(Vec::new()));
+        let registry = Registry::holding(None);
         let saved = RecorderSettings::hold_under(&writes, &path, |held| {
-            patched(held, recorder.acting(), Some(true), &registry, |settings| settings.auto_save = true)
+            patched(recorder.acting(), Some(true), &registry, || held.update(|settings| settings.auto_save = true).map(|(settings, ())| settings))
         })
         .unwrap();
         assert!(saved.auto_save);
-        assert_eq!(*registry.0.borrow(), [true]);
+        assert_eq!(registry.now().as_deref(), Some(OsStr::new(OURS)));
 
         recorder.commit_exit();
         let refused = RecorderSettings::hold_under(&writes, &path, |held| {
-            patched(held, recorder.acting(), Some(false), &registry, |settings| settings.auto_save = false)
+            patched(recorder.acting(), Some(false), &registry, || held.update(|settings| settings.auto_save = false).map(|(settings, ())| settings))
         });
         assert!(refused.is_err(), "a patch asked for once Quit commits is refused whole");
-        assert_eq!(*registry.0.borrow(), [true], "With Windows isn’t changed by a patch whose settings were refused");
+        assert_eq!(registry.0.borrow().len(), 2, "With Windows isn’t changed by a patch whose settings were refused");
         assert!(RecorderSettings::load_from(&path).unwrap().auto_save);
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_failed_save_puts_back_the_startup_value_windows_held_and_an_unconfirmed_one_keeps_the_new_value() {
+        let earlier = "\"D:\\older install\\battleplan-recorder.exe\" --tray";
+        let registry = Registry::holding(Some(earlier));
+        let recorder = Arc::new(crate::worker::Recorder::default());
+        let failed = patched(recorder.acting(), Some(true), &registry, || Err(std::io::Error::other("the rename was refused")));
+        assert!(failed.is_err());
+        assert_eq!(registry.now().as_deref(), Some(OsStr::new(earlier)), "the value put back is the one Windows held, not this recorder’s path");
+
+        let registry = Registry::holding(None);
+        let unconfirmed = patched(recorder.acting(), Some(true), &registry, || {
+            Err(replay::writes::unconfirmed(std::io::Error::other("the disk didn’t answer")))
+        });
+        assert!(unconfirmed.is_err_and(|error| replay::writes::is_unconfirmed(&error)));
+        assert_eq!(
+            registry.now().as_deref(),
+            Some(OsStr::new(OURS)),
+            "the new settings are already the file, so With Windows keeps the value they name"
+        );
     }
 
     #[test]

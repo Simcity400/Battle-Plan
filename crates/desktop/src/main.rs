@@ -556,6 +556,9 @@ fn main() {
             })?;
             if let Some(window) = app.get_webview_window("main") {
                 watch_page(&window)?;
+                if let Err(error) = app_update::session::follow(window.hwnd()?.0 as isize, Arc::new(SessionEnding(app.handle().clone())), SAVING_CHANGES) {
+                    eprintln!("BattlePlan can’t hear Windows end the session, so a sign-out or shutdown may not wait for its changes to be saved: {error}");
+                }
                 app.state::<NativeHost>().ensure_started(&window)?;
             }
             Ok(())
@@ -648,8 +651,21 @@ fn main() {
             }
         },
         tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
+        tauri::RunEvent::Exit => app_update::session::end(&SessionEnding(app.clone())),
         _ => {}
     });
+}
+
+struct SessionEnding(tauri::AppHandle);
+
+impl app_update::session::Ending for SessionEnding {
+    fn commit(&self) {
+        exit_after_maps(&self.0);
+    }
+
+    fn drained_within(&self, limit: std::time::Duration) -> bool {
+        self.0.state::<Leaving>().launched_within(limit) && replay::writes::WRITES.drained_within(limit)
+    }
 }
 
 const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);

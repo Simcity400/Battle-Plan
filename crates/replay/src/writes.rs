@@ -3,12 +3,33 @@ use std::{
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
-        Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 pub const CLOSED: &str = "BattlePlan is closing, so nothing more is written.";
+
+pub type Permit = Arc<Writing<'static>>;
+
+#[derive(Debug)]
+struct Unconfirmed(io::Error);
+
+impl std::fmt::Display for Unconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the file was replaced, but Windows didn’t confirm it reached the disk: {}", self.0)
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+pub fn unconfirmed(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), Unconfirmed(error))
+}
+
+pub fn is_unconfirmed(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Unconfirmed>())
+}
 
 #[derive(Default)]
 struct Count {
@@ -54,11 +75,6 @@ impl Writes {
         }
         count.running += 1;
         Ok(Writing(self))
-    }
-
-    pub fn admitted(&self) -> Writing<'_> {
-        self.lock().running += 1;
-        Writing(self)
     }
 
     pub fn under_lock<T>(&self, lock: &Path, work: impl FnOnce(&Writing<'_>) -> io::Result<T>) -> io::Result<T> {
@@ -109,7 +125,10 @@ impl Writing<'_> {
             file.sync_all()?;
             drop(file);
             #[cfg(windows)]
-            let replaced = crate::publication::replace_file(&staged, path).map_err(io::Error::from);
+            let replaced = crate::publication::replace_file(&staged, path).map_err(|error| match error {
+                crate::publication::ReplaceError::Unrenamed(error) => error,
+                crate::publication::ReplaceError::Unflushed(error) => unconfirmed(error),
+            });
             #[cfg(not(windows))]
             let replaced = fs::rename(&staged, path);
             replaced
@@ -202,19 +221,28 @@ mod tests {
     }
 
     #[test]
-    fn a_write_another_permit_admitted_goes_ahead_after_the_close_and_the_exit_waits_for_it() {
-        let writes = Writes::new();
-        let accepted = writes.begin().unwrap();
+    fn a_permit_the_host_carries_to_the_map_holds_the_exit_until_the_map_drops_it() {
+        let writes: &'static Writes = Box::leak(Box::new(Writes::new()));
+        let permit: Permit = Arc::new(writes.begin().unwrap());
+        let carried = Arc::clone(&permit);
+        drop(permit);
         assert!(writes.close_admission());
+        assert!(!writes.drained_within(std::time::Duration::ZERO), "the export the host accepted is still being written");
+        assert!(writes.begin().is_err(), "nothing new is admitted once BattlePlan closes");
         let folder = scratch("admitted");
         let path = folder.join("campaign-map.png");
-        let writing = writes.admitted();
-        drop(accepted);
-        assert!(!writes.drained_within(std::time::Duration::ZERO), "the export the host accepted is still being written");
-        writing.replace(&path, |out| out.write_all(b"the image")).unwrap();
-        drop(writing);
+        carried.replace(&path, |out| out.write_all(b"the image")).unwrap();
+        drop(carried);
         assert!(writes.drained_within(std::time::Duration::ZERO));
         assert_eq!(fs::read(&path).unwrap(), b"the image");
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_replacement_whose_flush_was_not_confirmed_says_so_apart_from_one_that_never_replaced() {
+        let failed = unconfirmed(io::Error::other("the disk didn’t answer"));
+        assert!(is_unconfirmed(&failed));
+        assert!(failed.to_string().contains("didn’t confirm"));
+        assert!(!is_unconfirmed(&io::Error::other("the rename was refused")));
     }
 }

@@ -24,6 +24,7 @@ pub struct Batch {
     pub seq: u64,
     pub waiting: Vec<Ask>,
     pub holds: Vec<Ask>,
+    pub installing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,7 +133,9 @@ struct State {
     outbox: Vec<Out>,
     offering: bool,
     hung: bool,
+    starting: usize,
     launching: usize,
+    acknowledging: usize,
     exiting: bool,
     writes: &'static Writes,
     stop: Option<Stop>,
@@ -154,13 +157,24 @@ impl State {
         self.exiting
     }
 
+    fn handing_off(&self) -> bool {
+        self.launching > 0 || self.acknowledging > 0
+    }
+
     fn hold(&mut self, ask: Ask) {
         if ask.about == About::Close {
             self.exit_as(ask.id);
             return;
         }
         self.holds.push(ask);
-        self.launching += usize::from(ask.about == About::Install);
+        match ask.about {
+            About::Install => self.launching += 1,
+            About::Leave => {
+                self.acknowledging += 1;
+                self.exit();
+            }
+            About::Close | About::Query => {}
+        }
     }
 
     fn askable(&self) -> bool {
@@ -196,7 +210,7 @@ impl State {
             }
         }
         self.sent.push((seq, waiting.iter().map(|ask| ask.id).collect()));
-        self.outbox.push(Out::Batch(reach, Batch { seq, waiting, holds: self.holds.clone() }));
+        self.outbox.push(Out::Batch(reach, Batch { seq, waiting, holds: self.holds.clone(), installing: self.starting > 0 }));
         Some(seq)
     }
 
@@ -270,7 +284,9 @@ impl Leaving {
                 outbox: Vec::new(),
                 offering: false,
                 hung: false,
+                starting: 0,
                 launching: 0,
+                acknowledging: 0,
                 exiting: false,
                 writes,
                 stop: None,
@@ -506,13 +522,13 @@ impl Leaving {
             state.sent.clear();
             let closing = state.questions.iter().any(|question| question.about == About::Close);
             state.questions.retain(|question| question.about != About::Close);
+            if closing {
+                state.exit();
+            }
             for at in 0..state.questions.len() {
                 if state.questions[at].verdict.is_none() {
                     state.leave_without_page(at);
                 }
-            }
-            if closing {
-                state.exit();
             }
             closing
         })
@@ -532,6 +548,7 @@ impl Leaving {
     fn pose(&self, about: About) -> Result<Posed, Verdict> {
         self.act(|state| {
             if state.exiting() {
+                state.acknowledging += usize::from(about == About::Leave);
                 return Err(if about == About::Install { Verdict::Closing } else { Verdict::Leaving });
             }
             if state.blind {
@@ -625,8 +642,26 @@ impl Leaving {
 
     pub fn launched_within(&self, limit: Duration) -> bool {
         let state = self.lock();
-        let (state, _) = self.answered.wait_timeout_while(state, limit, |state| state.launching > 0).unwrap_or_else(PoisonError::into_inner);
-        state.launching == 0
+        let (state, _) = self.answered.wait_timeout_while(state, limit, |state| state.handing_off()).unwrap_or_else(PoisonError::into_inner);
+        !state.handing_off()
+    }
+
+    pub fn acknowledged(&self) {
+        self.act(|state| {
+            state.acknowledging = state.acknowledging.saturating_sub(1);
+            state.exit();
+        });
+    }
+
+    pub fn install_starting(&self) {
+        self.lock().starting += 1;
+    }
+
+    pub fn install_resolved(&self) {
+        self.act(|state| {
+            state.starting = state.starting.saturating_sub(1);
+            state.send();
+        });
     }
 
     pub fn install(&self, launch: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -1236,8 +1271,7 @@ mod tests {
             let (_, install, _) = heard(&leaving, &page);
             assert!(leave(&leaving, &page), "{how}");
             committed(&leaving, writes, how);
-            let gone = matches!(leaving.lock().page, super::Page::Gone);
-            if gone {
+            if how.starts_with("Alt+F4") {
                 assert_eq!(leaving.wait(asking).0, Verdict::Leaving, "{how}: the install a dead page held was agreed to before the exit, so the exit waits for it");
                 continue;
             }
@@ -1483,6 +1517,49 @@ mod tests {
     }
 
     #[test]
+    fn every_batch_says_whether_an_install_the_page_asked_for_is_still_on_its_way_before_its_question_is_posed() {
+        let page = Page::default();
+        let leaving = Leaving::gated(gate());
+        watched(&leaving, &page, 7);
+        leaving.install_starting();
+        let seq = leaving.refresh(leaving.document(), 1).unwrap();
+        let (_, batch) = page.hears(&leaving);
+        assert_eq!(batch.seq, seq);
+        assert!(batch.installing && batch.waiting.is_empty() && batch.holds.is_empty(), "nothing stands yet, but the install the page asked for may still be posed: {batch:?}");
+        leaving.install_resolved();
+        let (_, batch) = page.hears(&leaving);
+        assert!(!batch.installing, "its end is sent to the page, so a page that lost the reply hears it: {batch:?}");
+    }
+
+    #[test]
+    fn the_page_agreeing_to_setups_close_commits_at_once_and_the_exit_waits_to_answer_setup() {
+        let page = Page::default();
+        let writes = gate();
+        let leaving = Leaving::gated(writes);
+        watched(&leaving, &page, 7);
+        let closing = leaving.pose(About::Leave);
+        let asking = leaving.pose(About::Install);
+        let (_, batch) = page.hears(&leaving);
+        assert_eq!(leaving.answer(waiting(&batch, About::Leave), false, &[]), Answered::Heard);
+        committed(&leaving, writes, "the page agreed to setup’s close");
+        assert_eq!(leaving.leave_after(asking, || unreachable!("an install still asked when setup’s close was agreed to never launches")), Err(Verdict::CLOSING.to_owned()));
+        assert_eq!(leaving.wait(closing).0, Verdict::Leaving);
+        assert!(!leaving.launched_within(Duration::ZERO), "the exit waits until setup has its answer");
+        leaving.acknowledged();
+        assert!(leaving.launched_within(Duration::ZERO));
+
+        let page = Page::default();
+        let leaving = Leaving::gated(gate());
+        watched(&leaving, &page, 7);
+        leaving.exit();
+        page.hears(&leaving);
+        assert_eq!(leaving.close_for_update(), Ok(()), "setup’s close after the exit is agreed to");
+        assert!(!leaving.launched_within(Duration::ZERO), "and is answered before BattlePlan ends");
+        leaving.acknowledged();
+        assert!(leaving.launched_within(Duration::ZERO));
+    }
+
+    #[test]
     fn a_page_process_that_ends_during_a_reload_takes_its_reload_with_it() {
         let page = Page::default();
         let leaving = Leaving::gated(gate());
@@ -1541,6 +1618,7 @@ mod tests {
             refreshes: usize,
             recheck_after: Option<u64>,
             unresolved: bool,
+            installing: bool,
             shown: Option<Option<bool>>,
         }
 
@@ -1591,6 +1669,7 @@ mod tests {
             Edit,
             Save,
             Restart,
+            Pose,
             CancelRestart,
             DiscardAndClose,
             CloseWindow,
@@ -1619,10 +1698,11 @@ mod tests {
             Choose,
         }
 
-        const STEPS: [(Step, usize); 29] = [
+        const STEPS: [(Step, usize); 30] = [
             (Step::Edit, 18),
             (Step::Save, 6),
             (Step::Restart, 9),
+            (Step::Pose, 9),
             (Step::CancelRestart, 6),
             (Step::DiscardAndClose, 1),
             (Step::CloseWindow, 2),
@@ -1651,8 +1731,9 @@ mod tests {
             (Step::Choose, 3),
         ];
 
-        const AFTER_EXIT: [Step; 16] = [
+        const AFTER_EXIT: [Step; 17] = [
             Step::Edit,
+            Step::Pose,
             Step::CloseWindow,
             Step::RunBatch,
             Step::DropBatch,
@@ -1670,8 +1751,9 @@ mod tests {
             Step::Launch,
         ];
 
-        const DRAIN: [Step; 12] = [
+        const DRAIN: [Step; 13] = [
             Step::Register,
+            Step::Pose,
             Step::Refresh,
             Step::RefreshReply,
             Step::RunBatch,
@@ -1708,6 +1790,7 @@ mod tests {
             answers: VecDeque<(usize, usize, u64, bool, Vec<u64>, About)>,
             replies: VecDeque<(usize, usize, u64, Option<bool>, (About, bool, Vec<u64>))>,
             posed: Vec<(Pending, Posed)>,
+            starting: Vec<(Restart, bool)>,
             launching: Vec<(Restart, Option<u64>, bool)>,
             restarts: VecDeque<Restart>,
             navigations: Vec<u64>,
@@ -1740,7 +1823,7 @@ mod tests {
         fn shape(event: &Value) -> String {
             let kind = event[0].as_str().expect("an event names its kind");
             let (facts, out) = match kind {
-                "b" => (format!("{} {} {} {}", event[2], event[7], event[5].as_array().is_some_and(|asks| !asks.is_empty()), event[6].as_array().is_some_and(|asks| !asks.is_empty())), &event[8]),
+                "b" => (format!("{} {} {} {} {}", event[2], event[7], event[5].as_array().is_some_and(|asks| !asks.is_empty()), event[6].as_array().is_some_and(|asks| !asks.is_empty()), event[9]), &event[8]),
                 "r" => (format!("{} {}", event[2], event[5]), &event[6]),
                 "t" => (format!("{} {}", event[2], event[4].as_str().is_some_and(|key| key.starts_with("answer:"))), &event[5]),
                 "w" => (event[2].to_string(), &event[3]),
@@ -1781,6 +1864,7 @@ mod tests {
                     answers: VecDeque::new(),
                     replies: VecDeque::new(),
                     posed: Vec::new(),
+                    starting: Vec::new(),
                     launching: Vec::new(),
                     restarts: VecDeque::new(),
                     navigations: Vec::new(),
@@ -2005,7 +2089,7 @@ mod tests {
                 let returned = self.apply(doc, guard, batch);
                 let trace = self.docs[doc].guards[guard].trace;
                 let out = self.out(doc, guard);
-                self.record(json!(["b", trace, dirty, confirmed, batch.seq, asks(&batch.waiting), asks(&batch.holds), returned, out]));
+                self.record(json!(["b", trace, dirty, confirmed, batch.seq, asks(&batch.waiting), asks(&batch.holds), returned, out, batch.installing]));
                 returned
             }
 
@@ -2022,6 +2106,7 @@ mod tests {
                 self.log.push(format!("  doc {doc} guard {guard} hears {batch:?}"));
                 state.applied = Some(batch.seq);
                 state.waiting.clone_from(&batch.waiting);
+                state.installing = batch.installing;
                 let live: BTreeSet<u64> = batch.waiting.iter().chain(&batch.holds).map(|ask| ask.id).collect();
                 state.committed.retain(|id, _| live.contains(id));
                 state.judged.retain(|id| live.contains(id));
@@ -2036,7 +2121,7 @@ mod tests {
                 let waiting = self.docs[doc].guards[guard].waiting.clone();
                 let handled = self.judge(doc, guard, waiting, true);
                 let state = &mut self.docs[doc].guards[guard];
-                if !state.ended && rechecked && !state.committed.values().any(|&(update, _)| update) {
+                if !state.ended && rechecked && !state.committed.values().any(|&(update, _)| update) && !state.installing {
                     state.recheck_after = None;
                     state.unresolved = false;
                     state.failures.remove("recheck");
@@ -2112,7 +2197,7 @@ mod tests {
                     return;
                 };
                 if asking.key == "recheck" {
-                    if state.applied.is_some_and(|applied| applied >= after) && !state.committed.values().any(|&(update, _)| update) {
+                    if state.applied.is_some_and(|applied| applied >= after) && !state.committed.values().any(|&(update, _)| update) && !state.installing {
                         state.recheck_after = None;
                         state.unresolved = false;
                         state.failures.remove("recheck");
@@ -2201,16 +2286,19 @@ mod tests {
                             "{}",
                             self.fail("setup heard that a page whose process ended had reloaded")
                         );
-                        if let Pending::Install(restart, _) = pending {
+                        if let Pending::Install(restart, early) = pending {
                             assert_ne!(verdict, Verdict::Leaving, "{}", self.fail("an install went ahead without its page"));
-                            self.restarts.push_back(restart);
+                            if !early {
+                                self.restarts.push_back(restart);
+                            }
+                            self.leaving.install_resolved();
                         }
                     }
                 }
             }
 
             fn installing(&self) -> bool {
-                !self.launching.is_empty() || self.posed.iter().any(|(pending, _)| matches!(pending, Pending::Install(..)))
+                !self.starting.is_empty() || !self.launching.is_empty() || self.posed.iter().any(|(pending, _)| matches!(pending, Pending::Install(..)))
             }
 
             fn chance(&mut self, one_in: usize) -> bool {
@@ -2241,10 +2329,22 @@ mod tests {
                         self.docs[live].confirmed = confirmed;
                         let restart = Restart { doc: live, confirmed };
                         let early = self.chance(4);
-                        let posed = self.posed.len();
-                        self.pose(Pending::Install(restart, early), About::Install);
-                        if early && self.posed.len() > posed {
+                        self.leaving.install_starting();
+                        self.starting.push((restart, early));
+                        if early {
                             self.restarts.push_back(restart);
+                        }
+                    }
+                    Step::Pose => {
+                        let Some((restart, early)) = self.starting.pop() else { return false };
+                        if self.chance(5) {
+                            self.log.push("  the other app is busy, so the install is refused before it is posed".into());
+                            if !early {
+                                self.restarts.push_back(restart);
+                            }
+                            self.leaving.install_resolved();
+                        } else {
+                            self.pose(Pending::Install(restart, early), About::Install);
                         }
                     }
                     Step::CancelRestart if self.docs[live].confirmed && !self.docs[live].locked => self.docs[live].confirmed = false,
@@ -2476,6 +2576,7 @@ mod tests {
                                     if !early {
                                         self.restarts.push_back(restart);
                                     }
+                                    self.leaving.install_resolved();
                                 }
                                 Pending::Pipe if verdict == Verdict::Leaving => {
                                     self.leaving.exit();
@@ -2490,6 +2591,7 @@ mod tests {
                         let Some((restart, id, replied)) = self.launching.pop() else { return false };
                         let started = self.chance(3);
                         self.leaving.act(|state| Leaving::launched(state, started, id));
+                        self.leaving.install_resolved();
                         if started {
                             self.exit(false, "the installer started");
                         } else if !replied {
@@ -2625,7 +2727,7 @@ mod tests {
                 if self.exited {
                     return self.after_exit();
                 }
-                assert!(self.posed.is_empty(), "{}", self.fail("a question setup waits on was never settled"));
+                assert!(self.posed.is_empty() && self.starting.is_empty(), "{}", self.fail("a question setup waits on was never settled"));
                 assert!(!self.closing, "{}", self.fail("a close went unanswered with no choice offered"));
                 assert!(
                     self.leaving.lock().questions.iter().all(|question| question.verdict.is_some() || question.asked.is_none()),

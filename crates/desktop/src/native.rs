@@ -58,7 +58,7 @@ struct Export {
     request: u64,
     generation: u64,
     answer: tokio::sync::oneshot::Sender<Result<String, String>>,
-    _writing: replay::writes::Writing<'static>,
+    permit: replay::writes::Permit,
 }
 
 pub type StatusChanged = Arc<dyn Fn() + Send + Sync>;
@@ -91,8 +91,14 @@ impl Inner {
         if !self.pending.can_send(visible) {
             return;
         }
-        for command in self.pending.take_commands(visible) {
-            if !map.send(command) {
+        for native in self.pending.take_commands(visible) {
+            let permit = match &native {
+                dashboard::protocol::NativeCommand::MapAction { action: dashboard::protocol::MapAction::Export { request, .. } } => {
+                    self.exports.iter().find(|export| export.request == *request).map(|export| Arc::clone(&export.permit))
+                }
+                _ => None,
+            };
+            if !map.send(viewer::host::Command { native, permit }) {
                 break;
             }
         }
@@ -106,10 +112,10 @@ impl Inner {
         let request = self.export_requests + 1;
         let action = dashboard::protocol::MapAction::Export { path, view_id, request };
         action.validate().map_err(str::to_owned)?;
-        let writing = replay::writes::WRITES.begin().map_err(|error| error.to_string())?;
+        let permit = Arc::new(replay::writes::WRITES.begin().map_err(|error| error.to_string())?);
         self.export_requests = request;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        self.exports.push(Export { request, generation: self.generation, answer, _writing: writing });
+        self.exports.push(Export { request, generation: self.generation, answer, permit });
         self.pending.actions.push_back(action);
         self.flush();
         Ok(answered)

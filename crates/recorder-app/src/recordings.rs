@@ -1305,13 +1305,12 @@ mod tests {
         refresh(&settings, Some("Z01"));
         *response.lock().unwrap() = Some("Repaired country".into());
         for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY;
+            assert_eq!(known.retry, Some(NAME_RETRY));
+            known.retry = Some(Duration::ZERO);
         }
         refresh(&settings, Some("Repaired country"));
         *response.lock().unwrap() = Some("Changed game installation".into());
-        for known in library.names.lock().unwrap().known.values_mut() {
-            known.checked = Instant::now() - NAME_RETRY_MAX;
-        }
+        assert!(library.names.lock().unwrap().known.values().all(|known| known.retry.is_none()));
         let view = library.view("panel", visit.get(), true);
         let listed = library.list(&settings, view, &live, &BTreeMap::new(), || {});
         assert_eq!(listed.unsaved[0].name.as_deref(), Some("Repaired country"));
