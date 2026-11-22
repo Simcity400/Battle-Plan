@@ -327,10 +327,7 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
             drop(lifecycle);
             drop(process);
         }
-        unsafe {
-            FreeLibraryAndExitThread(module, 0);
-        }
-        0
+        unsafe { FreeLibraryAndExitThread(module, 0) }
     })
 }
 

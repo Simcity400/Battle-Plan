@@ -286,7 +286,7 @@ fn equipment_destruction_capture_admission_drains_reads_and_refuses_later_captur
     let passed = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
-            wait_acquisitions(&admission, Instant::now()).unwrap();
+            wait_acquisitions(|| admission.quiet(), Instant::now()).unwrap();
             passed.store(true, Ordering::SeqCst);
         });
         assert!(!passed.load(Ordering::SeqCst));
@@ -335,7 +335,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     let restoration_error = restore_result.unwrap_err();
     let admission = CaptureAdmission::new();
     admission.close();
-    wait_acquisitions(&admission, Instant::now()).unwrap();
+    wait_acquisitions(|| admission.quiet(), Instant::now()).unwrap();
     assert!(observers_active());
     let retained_shared = SharedSlot::retained_for_test();
     let pointer = retained_shared.identity_for_test();
