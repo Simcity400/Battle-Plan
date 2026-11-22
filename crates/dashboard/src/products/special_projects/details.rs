@@ -7,6 +7,7 @@ use crate::{
     products::{
         LoadContext,
         at_hour::{At, AtHour, Keys, Owner, Read},
+        game_text::{GameRun, runs},
     },
 };
 use dashboard_query::{Index, Query, cost, identity::Holder};
@@ -203,8 +204,18 @@ dashboard_base::reply_warnings!(SpecialProjectDetails);
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEffects {
-    pub text: String,
+    pub runs: Vec<GameRun>,
     pub refusals: BTreeMap<String, usize>,
+}
+
+impl From<dashboard_text::effect_description::Description> for ProjectEffects {
+    fn from(mut description: dashboard_text::effect_description::Description) -> Self {
+        let runs = runs(&description.text).unwrap_or_else(|why| {
+            *description.refusals.entry(why).or_default() += 1;
+            Vec::new()
+        });
+        Self { runs, refusals: description.refusals }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -926,7 +937,7 @@ fn effects(
         let scripted = catalogue.scripted_content()?;
         let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot);
         let cache = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None));
+        let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None)).with_entity_links();
         let facility = (|| {
             if project.program_reference == 0 {
                 return Ok(None);
@@ -944,14 +955,8 @@ fn effects(
         Ok(dashboard_text::effect_description::project_output_description(output, &context, project.owner, project.local_id, scientist.clone(), facility))
     };
     match render() {
-        Ok(mut description) => {
-            let text = crate::catalogue::plain_text(&description.text).unwrap_or_else(|why| {
-                *description.refusals.entry(why).or_default() += 1;
-                String::new()
-            });
-            ProjectEffects { text, refusals: description.refusals }
-        }
-        Err(why) => ProjectEffects { text: String::new(), refusals: BTreeMap::from([(why, 1)]) },
+        Ok(description) => description.into(),
+        Err(why) => ProjectEffects { runs: Vec::new(), refusals: BTreeMap::from([(why, 1)]) },
     }
 }
 

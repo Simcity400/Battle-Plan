@@ -30,9 +30,12 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], readHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
-  const effects = { hour: 24, output: { text: 'Output', refusals: { 'Scope unavailable': 1 } }, options: [{ text: '', refusals: {} }], unavailable: null, warnings: [] };
+  const runs = [{ kind: 'text', text: 'Unlocks ', tone: 'H' }, { kind: 'link', entity: 'technology', token: 'mod_technology', text: 'Gun Carriages', tone: 'H' }];
+  const effects = { hour: 24, output: { runs, refusals: { 'Scope unavailable': 1 } }, options: [{ runs: [], refusals: {} }], unavailable: null, warnings: [] };
   assert.equal(validateProjectEffects(effects), effects);
-  assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: { reason: 0 } } }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, output: { runs, refusals: { reason: 0 } } }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: {} } }), /Invalid/, 'plain text is no longer the output');
+  assert.throws(() => validateProjectEffects({ ...effects, options: [{ runs: [{ kind: 'link', entity: 'technology', token: '', text: 'x', tone: null }], refusals: {} }] }), /Invalid/);
 });
 
 test('an iteration reply is the game\'s headed output read at that iteration\'s own hour, and names what it could not show', () => {

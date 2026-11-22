@@ -288,6 +288,9 @@ impl AtHour for EntityStatsAt {
                 EntityKind::Building => {
                     return Err("Building stats are not read from the recorded content".into());
                 }
+                EntityKind::Technology => {
+                    return Err("A technology has no stats sheet; its effects describe it".into());
+                }
             }
             Ok(())
         })();

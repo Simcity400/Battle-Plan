@@ -20,7 +20,7 @@ export function GameRuns({ runs, onOpen }: { runs: readonly GameRun[]; onOpen?: 
         const open = onOpen && ((event: MouseEvent<HTMLButtonElement>) => onOpen({ kind: run.entity, token: run.token, text: run.text, x: event.clientX, y: event.clientY }));
         return open
           ? <button key={at} type="button" className={toned('game-text-link', run.tone)} onClick={open}
-            data-tooltip={`${ENTITY_LABELS[run.entity]} stats`}>{run.text}</button>
+            data-tooltip={run.entity === 'technology' ? 'Technology effects' : `${ENTITY_LABELS[run.entity]} stats`}>{run.text}</button>
           : <span key={at} className={toned('game-text-run', run.tone)}>{run.text}</span>;
       }
     }

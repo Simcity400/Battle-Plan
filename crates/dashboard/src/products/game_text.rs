@@ -16,6 +16,7 @@ pub enum EntityKind {
     SubUnit,
     Building,
     Tactic,
+    Technology,
 }
 
 impl From<Marked> for EntityKind {
@@ -26,6 +27,7 @@ impl From<Marked> for EntityKind {
             Marked::SubUnit => Self::SubUnit,
             Marked::Building => Self::Building,
             Marked::Tactic => Self::Tactic,
+            Marked::Technology => Self::Technology,
         }
     }
 }

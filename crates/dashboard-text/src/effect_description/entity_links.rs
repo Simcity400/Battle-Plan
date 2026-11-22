@@ -11,15 +11,17 @@ pub enum EntityKind {
     SubUnit,
     Building,
     Tactic,
+    Technology,
 }
 
 impl EntityKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Equipment,
         Self::Module,
         Self::SubUnit,
         Self::Building,
         Self::Tactic,
+        Self::Technology,
     ];
 
     fn code(self) -> char {
@@ -29,6 +31,7 @@ impl EntityKind {
             Self::SubUnit => 's',
             Self::Building => 'b',
             Self::Tactic => 't',
+            Self::Technology => 'r',
         }
     }
 }
@@ -106,9 +109,10 @@ mod tests {
     #[test]
     fn marked_names_split_into_links_around_game_pieces() {
         let text = format!(
-            "Equipment:\u{11}H{}\u{11}!, {}\n",
+            "Equipment:\u{11}H{}\u{11}!, {}, {}\n",
             mark(EntityKind::Equipment, "mod_equipment", "Alpha"),
-            mark(EntityKind::Tactic, "mod_tactic", "Beta")
+            mark(EntityKind::Tactic, "mod_tactic", "Beta"),
+            mark(EntityKind::Technology, "mod_technology", "Gamma")
         );
         assert_eq!(
             spans(&text).unwrap(),
@@ -129,10 +133,17 @@ mod tests {
                 },
                 Span::Piece(Piece::Text("Beta")),
                 Span::Close,
+                Span::Piece(Piece::Text(", ")),
+                Span::Open {
+                    kind: EntityKind::Technology,
+                    token: "mod_technology"
+                },
+                Span::Piece(Piece::Text("Gamma")),
+                Span::Close,
                 Span::Piece(Piece::Text("\n")),
             ]
         );
-        assert_eq!(unmark(&text), "Equipment:\u{11}HAlpha\u{11}!, Beta\n");
+        assert_eq!(unmark(&text), "Equipment:\u{11}HAlpha\u{11}!, Beta, Gamma\n");
     }
 
     #[test]

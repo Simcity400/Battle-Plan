@@ -13,15 +13,15 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useProduct } from '../../dashboard/products';
-import EntityStatsWindow from '../research/EntityStatsWindow';
+import { OpenedLink } from '../research/TechnologyWindow';
 import GameText, { GameRuns, type EntityLink } from '../research/GameText';
 import { trimLabel, trimValue } from '../research/gameRuns';
-import { DetailValues, Effects, Name, Painted } from './ProjectDetails';
+import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
 import { projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
-import type { ProjectChoice, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
 
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
@@ -86,13 +86,23 @@ function Runtime({ runtime, widget, tag, active, card, onWarnings }: Asked & { c
   </div>;
 }
 
+function Output({ value, state, onOpen }: { value: ProjectEffects | null | undefined; state: string | null; onOpen: (link: EntityLink) => void }) {
+  if (state) return <p className="dossier-missing">{state}</p>;
+  if (!value) return <p className="dossier-missing">Effects unavailable.</p>;
+  const refusals = Object.entries(value.refusals);
+  return <>
+    {value.runs.length > 0 ? <GameText runs={value.runs} onOpen={onOpen} /> : !refusals.length && <p className="dossier-note">No effects to describe.</p>}
+    {refusals.map(([reason, count]) => <p className="dossier-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
+  </>;
+}
+
 function Rewards({ runtime, widget, tag, active, project, done }: Asked & { project: ProjectRuntimeDetails; done: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', { country: countryFromKey(tag), owner: project.owner, project: project.id },
     { active, validate: validateProjectEffects, structure: effectsStructure });
   const state = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effects.data.unavailable;
   useLayoutEffect(() => { effects.root(box.current); }, [effects.root]);
-  useDrawnPanel(box, runtime.clock, panelFeed('special-project-effects', effects, effectsStructure, widget, runtime), active);
+  const [opened, setOpened] = useState<EntityLink | null>(null);
   const at = `j:${project.owner}:${project.id}`;
   return <div ref={box} className="project-window-sections">
     {!done && <section className="dossier-section">
@@ -102,13 +112,13 @@ function Rewards({ runtime, widget, tag, active, project, done }: Asked & { proj
         {project.pending.description && <p className="dossier-note">{project.pending.description}</p>}
         {project.pending.unavailable && <p className="dossier-missing">{project.pending.unavailable}</p>}
         <div className="project-page-options">{project.pending.options.map((option, index) => <div className="project-page-option" key={index}>
-          <h5><Name label={option.label} /></h5><Effects prefix={String(index)} value={effects.data?.options[index]} state={state} /></div>)}</div>
+          <h5><Name label={option.label} /></h5><Output value={effects.data?.options[index]} state={state} onOpen={setOpened} /></div>)}</div>
       </>}
     </section>}
-    <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} />
+    <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} onOpen={setOpened} />
     <section className="dossier-section">
       <h4>Project output</h4>
-      <Effects prefix="output" value={effects.data?.output} state={state} />
+      <Output value={effects.data?.output} state={state} onOpen={setOpened} />
     </section>
     <details className="dossier-section project-page-variables">
       <summary>Project variables <Painted at={`${at}:read`} /></summary>
@@ -116,11 +126,11 @@ function Rewards({ runtime, widget, tag, active, project, done }: Asked & { proj
         : <dl>{project.variables.map((variable, index) => <div key={index}><dt>{variable.name}</dt><dd><Painted at={`${at}:var:${index}`} /></dd></div>)}</dl>}
       {project.seed !== null && <p className="dossier-note">Variable random seed <Painted at={`${at}:seed`} /></p>}
     </details>
+    <OpenedLink runtime={runtime} widget={widget} tag={tag} active={active} opened={opened} onClose={() => setOpened(null)} />
   </div>;
 }
 
-function Iterations({ runtime, widget, tag, active, project }: Asked & { project: ProjectRuntimeDetails }) {
-  const [opened, setOpened] = useState<EntityLink | null>(null);
+function Iterations({ runtime, widget, tag, active, project, onOpen }: Asked & { project: ProjectRuntimeDetails; onOpen: (link: EntityLink) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const choices = project.choices;
   return <section className="dossier-section">
@@ -130,9 +140,8 @@ function Iterations({ runtime, widget, tag, active, project }: Asked & { project
         <time>{dayLabel(choice.date)}</time>
         <p className="project-window-choice-name"><Name label={choice.reward} />
           {choice.option.name && <span className="project-window-option"> · <Name label={choice.option} /></span>}</p>
-        <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={setOpened} />
+        <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
       </li>)}</ol>}
-    {opened && <EntityStatsWindow key={`${opened.kind}:${opened.token}`} runtime={runtime} widget={widget} tag={tag} link={opened} active={active} onClose={() => setOpened(null)} />}
   </section>;
 }
 

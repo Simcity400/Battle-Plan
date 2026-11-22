@@ -150,6 +150,32 @@ fn effects_without_the_recorded_content_are_refused_by_name() {
 }
 
 #[test]
+fn project_output_is_the_game_text_with_its_links_and_names_what_it_cannot_show() {
+    use dashboard_text::effect_description::Description;
+    let shown = ProjectEffects::from(Description {
+        text: "On research completed:\n\u{11}HUnlocks \u{1}rmod_tech\u{2}Gun Carriages\u{3}\u{11}!\nSub units: \u{1}smod_unit\u{2}Super-Heavy Artillery\u{3}\n".into(),
+        refusals: BTreeMap::from([("Scope unavailable".to_owned(), 2)]),
+    });
+    assert_eq!(
+        serde_json::to_value(&shown).unwrap(),
+        json!({
+            "runs": [
+                { "kind": "text", "text": "On research completed:\n", "tone": null },
+                { "kind": "text", "text": "Unlocks ", "tone": "H" },
+                { "kind": "link", "entity": "technology", "token": "mod_tech", "text": "Gun Carriages", "tone": "H" },
+                { "kind": "text", "text": "\nSub units: ", "tone": null },
+                { "kind": "link", "entity": "subUnit", "token": "mod_unit", "text": "Super-Heavy Artillery", "tone": null },
+                { "kind": "text", "text": "\n", "tone": null },
+            ],
+            "refusals": { "Scope unavailable": 2 },
+        })
+    );
+    let broken = ProjectEffects::from(Description { text: "Unlocks \u{1}rmod_tech\u{2}unclosed".into(), refusals: BTreeMap::new() });
+    assert!(broken.runs.is_empty(), "{broken:?}");
+    assert_eq!(broken.refusals.values().sum::<usize>(), 1, "an output the links cannot frame is withheld by name, never shown broken: {broken:?}");
+}
+
+#[test]
 fn an_iteration_is_read_at_its_own_hour_and_names_what_was_not_recorded() {
     let source = recording();
     let iteration = |ordinal: u32, hour: i32| asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour }));

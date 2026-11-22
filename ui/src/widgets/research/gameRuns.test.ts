@@ -16,6 +16,7 @@ const runs: GameRun[] = [
 test('game text runs validate every run shape and refuse unknown ones', () => {
   assert.equal(validGameRuns(runs), true);
   assert.equal(validGameRuns([{ kind: 'flag', tag: 'GER' }]), true);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', text: 'Gun Carriages', tone: null }]), true);
   assert.equal(validGameRuns([{ kind: 'text', text: 'x', tone: 'GG' }]), false);
   assert.equal(validGameRuns([{ kind: 'link', entity: 'planet', token: 'x', text: 'x', tone: null }]), false);
   assert.equal(validGameRuns([{ kind: 'link', entity: 'module', token: '', text: 'x', tone: null }]), false);

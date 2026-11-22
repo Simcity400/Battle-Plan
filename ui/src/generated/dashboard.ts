@@ -5773,7 +5773,7 @@ output: ProjectEffects | null,
  * The pending reward's options, in its order; empty with none pending.
  */
 options: Array<ProjectEffects>, unavailable: string | null, warnings: Array<string>, };
-export type ProjectEffects = { text: string, refusals: { [key in string]?: number }, };
+export type ProjectEffects = { runs: Array<GameRun>, refusals: { [key in string]?: number }, };
 export type SpecialProjectEffectsParamsAtHour = SpecialProjectEffectsParams & { hour: number };
 export type SpecialProjectIterationParams = { branchId: string, country: CountryRef,
 /**
@@ -5814,7 +5814,7 @@ runs: Array<GameRun>,
  */
 refusals: { [key in string]?: number }, unavailable: string | null, warnings: Array<string>, };
 export type GameRun = { "kind": "text", text: string, tone: string | null, } | { "kind": "icon", sprite: string, } | { "kind": "flag", tag: string, } | { "kind": "link", entity: EntityKind, token: string, text: string, tone: string | null, };
-export type EntityKind = "equipment" | "module" | "subUnit" | "building" | "tactic";
+export type EntityKind = "equipment" | "module" | "subUnit" | "building" | "tactic" | "technology";
 export type TechnologyEffectsParamsAtHour = TechnologyEffectsParams & { hour: number };
 export type EntityStatsParams = { branchId: string, country: CountryRef, kind: EntityKind, token: string, };
 export type EntityStats = { hour: number, kind: EntityKind, token: string,

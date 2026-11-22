@@ -6,7 +6,7 @@ fn text(text: &str, tone: Option<&str>) -> GameRun {
 
 #[test]
 fn game_text_keeps_lines_tones_icons_and_unlock_links() {
-    let rendered = "\u{13}GFX_unit_icon|1 Infantry\n   Soft:\u{11}G0.17\u{11}!\nEnables \u{11}H\u{1}eequipment_a\u{2}Rifle\u{3}\u{11}! and \u{12}GER\n";
+    let rendered = "\u{13}GFX_unit_icon|1 Infantry\n   Soft:\u{11}G0.17\u{11}!\nEnables \u{11}H\u{1}eequipment_a\u{2}Rifle\u{3}\u{11}! and \u{12}GER\nUnlocks \u{1}rtech_a\u{2}Gun Carriages\u{3}\n";
     assert_eq!(
         runs(rendered).unwrap(),
         [
@@ -17,6 +17,8 @@ fn game_text_keeps_lines_tones_icons_and_unlock_links() {
             GameRun::Link { entity: EntityKind::Equipment, token: "equipment_a".into(), text: "Rifle".into(), tone: Some("H".into()) },
             text(" and ", None),
             GameRun::Flag { tag: "GER".into() },
+            text("\nUnlocks ", None),
+            GameRun::Link { entity: EntityKind::Technology, token: "tech_a".into(), text: "Gun Carriages".into(), tone: None },
             text("\n", None),
         ]
     );

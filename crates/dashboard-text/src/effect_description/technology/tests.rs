@@ -73,6 +73,7 @@ fn fixture() -> (Fixture, Folder) {
                 " FACTION_ACCESS_TAB_REASEARCH:0 \"Research [Root.GetTag]\"\n FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
                 " mod_category:0 \"Category\"\n AAA_mod_category:0 \"Alpha category [Root.GetTag]\"\n mod_other:0 \"Other\"\n mod_parent:0 \"Parent\"\n AAA_mod_parent:0 \"Alpha parent\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n",
                 " EFFECT_GIVE_TECHNOLOGY:0 \"Give $NAME$\"\n AND:0 \"plus \"\n EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n",
+                " MOD_UNLOCK_TECH:0 \"Unlocks $TECH|H$.\"\n mod_tech:0 \"Mod technology\"\n",
                 " EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"Bonus $BONUS|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS_AHEAD_ONLY:0 \"Ahead $AHEAD|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS:0 \"Both $AHEAD|2$/$BONUS|2$/$USES|0$:$LIST$\"\n",
                 " mod_folder_name:0 \"Folder\"\n mod_track_name:0 \"Track\"\n mod_grand_name:0 \"Grand\"\n mod_sub_name:0 \"Sub\"\n",
                 " SET_SUB_DOCTRINE_EFFECT:0 \"Set sub $NAME$\"\n SET_GRAND_DOCTRINE_EFFECT:0 \"Set grand $NAME$\"\n ADD_DAILY_MASTERY_EFFECT:0 \"Daily $AMOUNT|2$/$DAYS|0$\"\n ADD_MASTERY_BONUS_EFFECT:0 \"Mastery bonus $BONUS|2$/$DAYS|0$\"\n",
@@ -657,6 +658,62 @@ fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
             (EntityKind::Tactic, "mod_tactic", "Alpha tactic".to_owned()),
         ]
     );
+}
+
+#[test]
+fn technology_names_link_to_their_technology_only_when_asked() {
+    use crate::effect_description::entity_links::unmark;
+    use crate::effect_description::{EntityKind, Span, spans};
+    use content_reader_localisation::localisation::Piece;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    for (body, expected, name) in [
+        ("set_technology={mod_tech=1}", "Give Alpha parent\n", "Alpha parent"),
+        (
+            "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
+            "Bonus 0.50/2 uses:Alpha equipment\n",
+            "Alpha equipment",
+        ),
+        (
+            "custom_effect_tooltip={localization_key=MOD_UNLOCK_TECH TECH=mod_tech}",
+            "Unlocks \u{11}HMod technology\u{11}!.",
+            "Mod technology",
+        ),
+    ] {
+        let items = content_reader_core::effect_keys::read_body(
+            body.as_bytes(),
+            content.view(None).key_names.unwrap(),
+        )
+        .unwrap();
+        let render = |links| {
+            fixture.with_context_linking(content.view(None), links, |context| {
+                describe(&items, context, &mut fresh())
+            })
+        };
+        let (plain, linked) = (render(false), render(true));
+        assert_eq!(plain.text, expected, "{body}: {:?}", plain.refusals);
+        assert!(plain.refusals.is_empty(), "{body}: {:?}", plain.refusals);
+        assert_eq!(plain.refusals, linked.refusals);
+        assert_eq!(unmark(&linked.text), plain.text, "{body}");
+        let spans = spans(&linked.text).unwrap();
+        let links: Vec<_> = spans
+            .windows(3)
+            .filter_map(|window| match window {
+                [Span::Open { kind, token }, Span::Piece(Piece::Text(text)), Span::Close] => {
+                    Some((*kind, *token, *text))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links, [(EntityKind::Technology, "mod_tech", name)], "{body}");
+    }
 }
 
 #[test]

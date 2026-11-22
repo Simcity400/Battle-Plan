@@ -9,14 +9,13 @@ import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, ea
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
-import { effectsStructure, effectTexts } from './projectDetailsData.ts';
+import { effectsStructure } from './projectDetailsData.ts';
 
-test('an open effect keeps its layout when its dated line or refusal count changes', () => {
-  const record = (hour: number, count: number) => ({ hour, options: [], warnings: [], unavailable: null,
-    output: { text: 'Modifier\nAmount ' + count, refusals: { 'Unknown effect': count } } });
-  assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 8)));
-  assert.equal(effectTexts(record(24, 8)).get('output:1'), 'Amount 8');
-  assert.equal(effectTexts(record(24, 8)).get('output:reason:Unknown effect'), 'Unknown effect (8)');
+test('project effects render again when their game text changes, never only because the hour moved', () => {
+  const record = (hour: number, amount: number) => ({ hour, options: [], warnings: [], unavailable: null,
+    output: { runs: [{ kind: 'text' as const, text: 'Amount ' + amount, tone: null }], refusals: { 'Unknown effect': 1 } } });
+  assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 3)));
+  assert.notEqual(effectsStructure(record(24, 3)), effectsStructure(record(24, 8)));
 });
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],

@@ -16,6 +16,7 @@
 .game-text-link.is-positive { color: var(--positive); }
 .game-text-link.is-negative { color: var(--error); }
 
+.technology-window { width: min(460px, calc(100vw - 24px)); }
 .entity-stats-window { width: min(340px, calc(100vw - 24px)); }
 .entity-stats { display: grid; gap: 10px; padding: 14px 16px 16px; }
 .entity-stats h3 { margin: 0; color: var(--text); font-size: 0.9375rem; font-weight: 650; }

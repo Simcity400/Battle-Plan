@@ -14,7 +14,7 @@ const reference = (value: unknown) => typeof value === 'string' && /^(0|[1-9][0-
 const label = (value: unknown) => object(value) && typeof value.token === 'string' && nullable(value.name);
 const person = (value: unknown) => object(value) && (value.assigned === null || typeof value.assigned === 'boolean') && (value.id === null || uint(value.id)) && nullable(value.name) && nullable(value.portrait) && nullable(value.missing);
 const counts = (value: unknown) => object(value) && Object.values(value).every(count => integer(count) && count > 0);
-const effects = (value: unknown) => object(value) && typeof value.text === 'string' && counts(value.refusals);
+const effects = (value: unknown) => object(value) && validGameRuns(value.runs) && counts(value.refusals);
 const byte = (value: unknown) => integer(value) && value >= 0 && value <= 255;
 const facility = (value: unknown) => object(value) && (value.speedRaw === null || raw(value.speedRaw)) && nullable(value.unavailable)
   && Array.isArray(value.sources) && value.sources.every(source => object(source) && typeof source.kind === 'string' && typeof source.unit === 'string'
@@ -66,22 +66,7 @@ export function validateProjectIteration(value: unknown, hour: number): SpecialP
   return value as unknown as SpecialProjectIteration;
 }
 
-export function effectsStructure(reply: SpecialProjectEffects) {
-  const shape = (value: SpecialProjectEffects['output']) => value && [value.text ? value.text.split('\n').length : 0, Object.keys(value.refusals)];
-  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.warnings]);
-}
-
-export function effectTexts(reply: SpecialProjectEffects) {
-  const out = new Map<string, string>();
-  const add = (prefix: string, value: SpecialProjectEffects['output']) => {
-    if (!value) return;
-    value.text.split('\n').forEach((line, i) => out.set(prefix + ':' + i, line));
-    for (const [reason, count] of Object.entries(value.refusals)) out.set(prefix + ':reason:' + reason, reason + ' (' + count + ')');
-  };
-  reply.options.forEach((value, i) => add(String(i), value));
-  add('output', reply.output);
-  return out;
-}
+export const effectsStructure = (reply: SpecialProjectEffects) => JSON.stringify([reply.unavailable, reply.options, reply.output, reply.warnings]);
 
 const number = (value: string) => researchNumber(BigInt(value));
 const read = (hour: number | null) => hour === null ? '' : ` · read ${dayLabel(hour)}`;

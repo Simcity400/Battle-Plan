@@ -8,20 +8,12 @@ import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
 import { detailsStructure, detailTexts, validateProjectDetails } from './projectDetailsData';
-import type { ProgramDetails, ProjectEffects, ProjectLabel, SpecialProjectDetails } from '../../generated/dashboard';
+import type { ProgramDetails, ProjectLabel, SpecialProjectDetails } from '../../generated/dashboard';
 
 export const Name = ({ label }: { label: ProjectLabel }) => <span data-tooltip={contentTitleHint(label.token)}>{contentTitle(label.name, label.token, 'Name unavailable')}</span>;
 export const DetailValues = createContext<ReadonlyMap<string, string>>(new Map());
 export const Painted = ({ at }: { at: string }) => <span data-paint={at}>{useContext(DetailValues).get(at)}</span>;
 
-export function Effects({ prefix, value, state }: { prefix: string; value: ProjectEffects | null | undefined; state: string | null }) {
-  if (state) return <p>{state}</p>;
-  if (!value) return <p>Effects unavailable.</p>;
-  return <div data-effects-ink="">{value.text && <pre className="project-effect-text">{value.text.split('\n').map((line, i) =>
-    <span key={i}>{i > 0 && '\n'}<span data-prose="" data-paint={prefix + ':' + i}>{line}</span></span>)}</pre>}
-    {Object.entries(value.refusals).map(([reason, count]) => <p className="project-detail-missing" key={reason}>
-      <span data-paint={prefix + ':reason:' + reason} data-prose="">{reason} ({count})</span></p>)}</div>;
-}
 const Count = ({ roster, label }: { roster: readonly unknown[] | null; label: string }) => roster === null ? null : <span className="pill" data-panel-label={label}>{roster.length}</span>;
 
 function Facility({ program }: { program: ProgramDetails }) {

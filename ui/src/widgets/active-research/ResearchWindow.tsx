@@ -1,22 +1,16 @@
-import { useRef, useState } from 'react';
-import WidgetState from '../../components/WidgetState';
+import { useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import FloatingPanel from '../../components/FloatingPanel';
 import type { FloatingAnchor } from '../../components/FloatingPanel';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useHeadProduct } from '../../dashboard/headProduct';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import ResearchExplanation from '../research/ResearchExplanation';
+import { TechnologyEffects } from '../research/TechnologyWindow';
 import { researchAt } from '../research/researchData';
 import { slotNumbers } from '../research/researchSlots';
-import { technologyEffectsStructure, validateTechnologyEffects } from '../research/technologyEffects';
-import GameText, { type EntityLink } from '../research/GameText';
-import EntityStatsWindow from '../research/EntityStatsWindow';
-import type { TechnologyEffects } from '../../generated/dashboard';
 import type { ResearchData, ResearchSlotsAt } from '../research/types';
 import type { ActiveSlot } from './activeResearchData';
 import { completedResearch } from './activeResearchData';
@@ -51,7 +45,7 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
       </div>}
       {finished && <div className="dossier-progress is-done"><strong className="dossier-progress-value">Completed {researchDate(finished.hour)}</strong></div>}
       <div className="dossier-body">
-      <Effects runtime={runtime} widget={widget} tag={tag} token={shown.token} active={active} />
+      <TechnologyEffects runtime={runtime} widget={widget} tag={tag} token={shown.token} active={active} />
       {item && slot && (item.entry
         ? <section className="dossier-section"><h4>Research time</h4>
           <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={reply.hour} history={data.history} slots={slots} slot={slot} entry={item.entry} daysLeft={numbers?.left ?? null} />
@@ -63,23 +57,4 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
       </div>
     </div>
   </FloatingPanel>;
-}
-
-function Effects({ runtime, widget, tag, token, active }: { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; token: string; active: boolean }) {
-  const effects = useHeadProduct<TechnologyEffects>(runtime, widget, 'technology-effects', { country: countryFromKey(tag), token },
-    { active, validate: validateTechnologyEffects, structure: technologyEffectsStructure });
-  const [opened, setOpened] = useState<EntityLink | null>(null);
-  const { data, error, retry } = effects;
-  const refusals = Object.entries(data?.refusals ?? {});
-  return <section className="dossier-section" ref={effects.root}>
-    <h4>Effects</h4>
-    {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
-      : !data ? <p className="dossier-missing">Loading effects…</p>
-        : <>
-          {data.unavailable && <p className="dossier-missing">{data.unavailable}</p>}
-          {data.runs.length ? <GameText runs={data.runs} onOpen={setOpened} /> : !data.unavailable && !refusals.length && <p className="dossier-missing">No effects to describe.</p>}
-          {refusals.map(([reason, count]) => <p className="dossier-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
-        </>}
-    {opened && <EntityStatsWindow key={`${opened.kind}:${opened.token}`} runtime={runtime} widget={widget} tag={tag} link={opened} active={active} onClose={() => setOpened(null)} />}
-  </section>;
 }

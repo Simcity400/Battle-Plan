@@ -1,4 +1,5 @@
 use super::*;
+use crate::effect_description::entity_links::EntityKind;
 use replay_data::rows::{
     BuildingRow, CountryAppearanceRow, RaidFacilityRow, TechnologyDefinitionRow,
 };
@@ -21,7 +22,7 @@ pub(super) struct TechBonus {
 }
 
 impl Renderer<'_, '_, '_> {
-    fn technology_catalog(&self) -> Result<&content_reader_core::technology::Catalog, String> {
+    pub(in crate::effect_description) fn technology_catalog(&self) -> Result<&content_reader_core::technology::Catalog, String> {
         self.context
             .content
             .doctrines
@@ -557,12 +558,15 @@ impl Renderer<'_, '_, '_> {
                 continue;
             };
             let name = self.technology_name(template, country, scopes, false)?;
-            out.push_str(&self.char_native_line(
-                b"EFFECT_GIVE_TECHNOLOGY",
-                &[("NAME", Argument::Text(&name))],
-                scopes,
-                false,
-            )?);
+            let name = self.technology_entity(EntityKind::Technology, &template.id, name);
+            out.push_str(&self.linked_text(&name, |name| {
+                self.char_native_line(
+                    b"EFFECT_GIVE_TECHNOLOGY",
+                    &[("NAME", Argument::Text(name))],
+                    scopes,
+                    false,
+                )
+            })?);
         }
         Ok(out)
     }
@@ -583,41 +587,43 @@ impl Renderer<'_, '_, '_> {
             scopes,
             false,
         )?;
-        if ahead == 0 {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS_BONUS_ONLY",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("BONUS", Argument::Fixed5(bonus)),
-                    ("USES", Argument::Text(&uses_text)),
-                ],
-                scopes,
-                false,
-            )
-        } else if bonus == 0 {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS_AHEAD_ONLY",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("AHEAD", Argument::Fixed5(ahead)),
-                    ("USES", Argument::Text(&uses_text)),
-                ],
-                scopes,
-                false,
-            )
-        } else {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("AHEAD", Argument::Fixed5(ahead)),
-                    ("BONUS", Argument::Fixed5(bonus)),
-                    ("USES", Argument::Int32(uses)),
-                ],
-                scopes,
-                false,
-            )
-        }
+        self.linked_text(&list, |list| {
+            if ahead == 0 {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS_BONUS_ONLY",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("BONUS", Argument::Fixed5(bonus)),
+                        ("USES", Argument::Text(&uses_text)),
+                    ],
+                    scopes,
+                    false,
+                )
+            } else if bonus == 0 {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS_AHEAD_ONLY",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("AHEAD", Argument::Fixed5(ahead)),
+                        ("USES", Argument::Text(&uses_text)),
+                    ],
+                    scopes,
+                    false,
+                )
+            } else {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("AHEAD", Argument::Fixed5(ahead)),
+                        ("BONUS", Argument::Fixed5(bonus)),
+                        ("USES", Argument::Int32(uses)),
+                    ],
+                    scopes,
+                    false,
+                )
+            }
+        })
     }
 
     pub(super) fn technology_bonus_facts(
@@ -648,7 +654,8 @@ impl Renderer<'_, '_, '_> {
             if let Some(template) =
                 self.technology_template(entry.value.scalar().unwrap_or_default(), scopes)?
             {
-                list.push_str(&self.technology_name(template, country, scopes, true)?);
+                let name = self.technology_name(template, country, scopes, true)?;
+                list.push_str(&self.technology_entity(EntityKind::Technology, &template.id, name));
                 if index + 1 < technology.len() || !category.is_empty() {
                     list.push_str(", ");
                 }

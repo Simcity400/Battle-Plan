@@ -18,7 +18,6 @@ export interface PanelGeometry {
   extraFields?: string;
   meters?: string;
   knob?: (field: HTMLElement) => boolean;
-  owns?: (field: HTMLElement) => boolean;
   extendInline?: string;
 }
 export interface PanelView {

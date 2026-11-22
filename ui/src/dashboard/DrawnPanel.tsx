@@ -70,11 +70,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     if (!node || !active || !latest.current) return;
     const view = latest.current.view;
     const layout = panelViews[view]?.geometry ?? {};
-    const owned = layout.owns ?? (() => true);
     const fieldsSelector = layout.extraFields ? commonFields + ',' + layout.extraFields : commonFields;
     const layer = (field: HTMLElement) => (layout.layers ? field.closest<HTMLElement>(layout.layers) : null) ?? node;
     const fieldsIn = (content: HTMLElement) => [...content.querySelectorAll<HTMLElement>(fieldsSelector)].filter(f => {
-      if (!owned(f) || layer(f) !== content) return false;
+      if (layer(f) !== content) return false;
       for (let closed = f.closest('details:not([open])'); closed; closed = closed.parentElement?.closest('details:not([open])') ?? null) {
         if (!closed.querySelector(':scope > summary')?.contains(f)) return false;
       }
@@ -111,7 +110,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       } });
     };
     reconcile.current = () => {
-      const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].filter(owned).map(layer));
+      const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].map(layer));
       for (const [content, handle] of handles) {
         if (contents.has(content)) handle.refresh();
         else { handle.close(); handles.delete(content); }
@@ -120,7 +119,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     };
     const inspect = async (event: Event) => {
       const reading = latest.current, target = event.target;
-      if (!event.isTrusted || reading?.follow === undefined || !(target instanceof HTMLElement) || !owned(target)) return;
+      if (!event.isTrusted || reading?.follow === undefined || !(target instanceof HTMLElement)) return;
       const ticket = ++interaction, seek = clock.getSnapshot().seekSequence;
       event.stopPropagation();
       const picture = await inspectFollow(reading.follow);

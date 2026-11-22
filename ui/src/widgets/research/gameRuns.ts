@@ -3,7 +3,7 @@ import type { EntityKind, GameRun } from '../../generated/dashboard';
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const tone = (value: unknown) => value === null || (typeof value === 'string' && [...value].length === 1);
 
-export const ENTITY_KINDS: readonly EntityKind[] = ['equipment', 'module', 'subUnit', 'building', 'tactic'];
+export const ENTITY_KINDS: readonly EntityKind[] = ['equipment', 'module', 'subUnit', 'building', 'tactic', 'technology'];
 
 export const entityKind = (value: unknown): value is EntityKind => ENTITY_KINDS.includes(value as EntityKind);
 
@@ -32,7 +32,7 @@ const TONES: Record<string, string> = {
 export const toneClass = (code: string | null) => code ? TONES[code] ?? null : null;
 
 export const ENTITY_LABELS: Record<EntityKind, string> = {
-  equipment: 'Equipment', module: 'Module', subUnit: 'Sub-unit', building: 'Building', tactic: 'Tactic',
+  equipment: 'Equipment', module: 'Module', subUnit: 'Sub-unit', building: 'Building', tactic: 'Tactic', technology: 'Technology',
 };
 
 function trim(runs: readonly GameRun[], end: RegExp): GameRun[] {

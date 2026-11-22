@@ -484,15 +484,23 @@ impl Renderer<'_, '_, '_> {
         names: &str,
         scopes: Scopes,
     ) -> Result<(), String> {
-        let text = self.char_native_text(key, &[(argument, Argument::Text(names))], scopes, false)?;
-        if self.context.entity_links {
-            let plain = unmark(names);
-            let plain = self.char_native_text(key, &[(argument, Argument::Text(&plain))], scopes, false)?;
-            out.push_str(if unmark(&text) == plain { &text } else { &plain });
-        } else {
-            out.push_str(&text);
-        }
+        out.push_str(&self.linked_text(names, |names| {
+            self.char_native_text(key, &[(argument, Argument::Text(names))], scopes, false)
+        })?);
         out.push('\n');
         Ok(())
+    }
+
+    pub(super) fn linked_text(
+        &self,
+        names: &str,
+        render: impl Fn(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
+        let text = render(names)?;
+        if !self.context.entity_links {
+            return Ok(text);
+        }
+        let plain = render(&unmark(names))?;
+        Ok(if unmark(&text) == plain { text } else { plain })
     }
 }

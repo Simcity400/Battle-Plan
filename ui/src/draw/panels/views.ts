@@ -7,7 +7,7 @@ import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { detailTexts, detailsStructure, effectsStructure, effectTexts, validateProjectEffects, validateProjectDetails } from '../../widgets/special-projects/projectDetailsData.ts';
+import { detailTexts, detailsStructure, validateProjectDetails } from '../../widgets/special-projects/projectDetailsData.ts';
 import { projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
@@ -79,7 +79,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
 
 export const raceViews = { 'nuclear-arsenal': ArsenalPicture };
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
-const effectsLayer = '[data-effects-ink]';
 const extendInline = '.project-details [data-paint]:last-child';
 
 export const panelViews: Readonly<Record<string, PanelView>> = {
@@ -91,8 +90,6 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       return new Map([['empty', arsenalNotice(reply, hour)]]);
     },
   },
-  'special-project-effects': recordView(validateProjectEffects, effectsStructure, effectTexts,
-    { layers: effectsLayer, owns: field => !!field.closest(effectsLayer), extendInline }),
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
     slotValues(reply, hour, slot => source.get(liveKey(String(slot), 'progress'))),
     { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-rows', meters: '.research-now-meter' },
@@ -108,7 +105,7 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
     if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
     return values;
-  }, { owns: field => !field.closest(effectsLayer), extendInline }),
+  }, { extendInline }),
   'doctrine-mastery': recordView(validateDoctrineMastery, masteryStructure, (reply, values) => {
     const fields = new Map<string, string>();
     for (const folder of reply.folders) for (const track of folder.tracks) {
