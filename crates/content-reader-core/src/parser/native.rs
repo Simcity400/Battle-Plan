@@ -69,6 +69,14 @@ impl Token {
         }
     }
 
+    fn shown_reference(&self) -> String {
+        if self.kind == Kind::End && !self.text.is_empty() {
+            format!("`{}`", String::from_utf8_lossy(&self.text))
+        } else {
+            self.shown()
+        }
+    }
+
     pub fn quoted(&self) -> bool {
         self.quoted
     }
@@ -787,7 +795,7 @@ impl<'n> Reader<'n> {
                         line: token.line,
                         what: format!(
                             "variable {} was defined on line {defined_line} inside block `{}` under unknown dispatch, so whether it was reached is unknown and this value cannot be resolved",
-                            token.shown(),
+                            token.shown_reference(),
                             String::from_utf8_lossy(&block),
                         ),
                     });
@@ -810,7 +818,7 @@ impl<'n> Reader<'n> {
                         line: name.line,
                         what: format!(
                             "variable {} was defined on line {defined_line} inside block `{}` under unknown dispatch, so whether it is already taken here is unknown",
-                            name.shown(),
+                            name.shown_reference(),
                             String::from_utf8_lossy(&block),
                         ),
                     });
@@ -821,7 +829,7 @@ impl<'n> Reader<'n> {
                 name.line,
                 format!(
                     "variable {} is already taken, so its `=` and value are read as what follows",
-                    name.shown()
+                    name.shown_reference()
                 ),
             );
             return;
@@ -2211,7 +2219,11 @@ impl<'n> Reader<'n> {
             let raw_token = self.peek().clone();
             self.advance();
             if raw_token.kind == Kind::End {
+                let line = raw_token.line;
                 self.current = self.resolve(raw_token);
+                if self.unsettled.is_none() && self.has_tokens_after_end() {
+                    self.refuse_balanced_end(line);
+                }
                 return items;
             }
             match raw_token.kind {
@@ -2268,6 +2280,10 @@ impl<'n> Reader<'n> {
                         if self.unsettled.is_some() {
                             return items;
                         }
+                        if raw_value.kind == Kind::End && self.has_tokens_after_end() {
+                            self.refuse_balanced_end(raw_value.line);
+                            return items;
+                        }
                         if raw_value.kind != value.kind
                             && matches!(value.kind, Kind::Open | Kind::Close)
                         {
@@ -2303,6 +2319,31 @@ impl<'n> Reader<'n> {
         items
     }
 
+    fn has_tokens_after_end(&self) -> bool {
+        self.tokens[self.next.min(self.tokens.len())..]
+            .iter()
+            .any(|token| token.kind != Kind::End || !token.text.is_empty())
+    }
+
+    fn refuse_balanced_end(&mut self, line: u32) {
+        if self.unsettled.is_some() {
+            return;
+        }
+        let what = match self.unknown_scopes.last() {
+            Some((_, block)) => format!(
+                "an embedded end marker inside block `{}` under unknown dispatch stops a list or skip reader while a key reader can resume after it, so what follows is unknown",
+                String::from_utf8_lossy(block),
+            ),
+            None => "an embedded end marker inside a block under unknown dispatch stops a list or skip reader while a key reader can resume after it, so what follows is unknown".into(),
+        };
+        self.unsettled = Some(Misread {
+            kind: crate::DiagnosticKind::Unsettled,
+            count: None,
+            line,
+            what,
+        });
+    }
+
     fn refuse_balanced_brace(&mut self, reference: &Token, resolved_kind: Kind) {
         if self.unsettled.is_some() {
             return;
@@ -2315,12 +2356,12 @@ impl<'n> Reader<'n> {
         let what = match self.unknown_scopes.last() {
             Some((_, block)) => format!(
                 "variable {} resolves to {brace} inside block `{}` under unknown dispatch, so whether it shifts the block boundary is unknown",
-                reference.shown(),
+                reference.shown_reference(),
                 String::from_utf8_lossy(block),
             ),
             None => format!(
                 "variable {} resolves to {brace} inside a block under unknown dispatch, so whether it shifts the block boundary is unknown",
-                reference.shown(),
+                reference.shown_reference(),
             ),
         };
         self.unsettled = Some(Misread {

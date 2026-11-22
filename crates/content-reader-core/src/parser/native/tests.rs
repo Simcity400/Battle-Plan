@@ -1389,7 +1389,9 @@ fn balanced_final_variable_reference_at_eof_refuses_unknown_dispatch_definition(
         None,
         &mut |(), _field: &Field<'_>| Shape::ByKey,
     );
-    assert!(read.unsettled.is_some(), "{read:?}");
+    let unsettled = read.unsettled.as_ref().expect("unsettled refusal");
+    assert!(unsettled.what.contains("@v"), "{unsettled:?}");
+    assert!(unsettled.what.contains("`a`"), "{unsettled:?}");
     assert_eq!(keys(&read.items), ["a", "b"]);
     let b = block(&read.items, "b");
     assert_eq!(b.len(), 1, "{b:?}");
@@ -1415,4 +1417,24 @@ fn balanced_variable_resolving_to_open_brace_refuses_without_shifting_boundary()
     let trigger = block(block(&read.items, "a"), "trigger");
     assert_eq!(trigger.len(), 1, "{trigger:?}");
     assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
+}
+
+#[test]
+fn balanced_embedded_end_marker_refuses_instead_of_continuing_past_scan() {
+    let read = read(
+        b"opaque = { one two k = 1\xff @x = 7 marker = yes } probe = @x ",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["opaque"]);
+    let opaque = block(&read.items, "opaque");
+    assert_eq!(opaque.len(), 2, "{opaque:?}");
+    assert_eq!(opaque[0].value, Value::Scalar(b"one".to_vec()));
+    assert_eq!(opaque[1].value, Value::Scalar(b"two".to_vec()));
 }
