@@ -446,13 +446,31 @@ fn equipment_icons_follow_the_production_rows_rule() {
     );
     let by_technology = content(&["GFX_infantry_weapons1_medium"]);
     let unknown = icon_at(&no_appearance, &by_technology, &from_italy, "rifles_1").unwrap_err();
-    assert!(unknown.contains("original tag is unknown"), "{unknown}");
+    assert!(
+        unknown.contains("country appearance table is unavailable"),
+        "{unknown}"
+    );
     let tagged = content(&[
         "GFX_ITA_infantry_weapons1_medium",
         "GFX_western_infantry_weapons1_medium",
         "GFX_infantry_weapons1_medium",
     ]);
-    let unknown = icon_at(&no_appearance, &tagged, &from_italy, "rifles_1").unwrap_err();
+    assert_eq!(
+        icon_at(&no_appearance, &tagged, &from_italy, "rifles_1"),
+        sprite("GFX_ITA_infantry_weapons1_medium")
+    );
+    let mut dynamic_no_appearance = no_appearance.clone();
+    *dynamic_no_appearance.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            replay_data::rows::ReservedCountryNamingRow {
+                dynamic_tag_boundary: replay_data::rows::Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+        ]));
+    let unknown =
+        icon_at(&dynamic_no_appearance, &by_technology, &from_italy, "rifles_1").unwrap_err();
+    assert!(unknown.contains("original tag is unknown"), "{unknown}");
+    let unknown = icon_at(&dynamic_no_appearance, &tagged, &from_italy, "rifles_1").unwrap_err();
     assert!(unknown.contains("original tag is unknown"), "{unknown}");
     let mut cultured = frame.clone();
     *cultured.tables[TableId::CountryAppearance.index()] =
@@ -1286,5 +1304,152 @@ fn dynamic_creator_fallback_uses_original_reference_and_witnessed_handle_tag() {
     assert_eq!(
         chosen(&content, &hour, &from_dynamic_alias_without_ref, "tanks_1"),
         Ok(Some(Icon::Sprite("GFX_D02_tanks_1_medium".into())))
+    );
+}
+
+#[test]
+fn static_slot_technology_tag_and_missing_boundary_agreement() {
+    use super::{Icon, IconContent, IconHour};
+    use content_reader_core::technology::{Enabler, Enablers};
+    use replay_data::rows::{
+        CountryAppearanceRow, Recorded, ReservedCountryNamingRow, VariantDefinitionRow,
+    };
+
+    content_reader_core::test_game::enter();
+    let units = equipment_types(&[br#"
+        equipments = {
+            rifles = { is_archetype = yes type = infantry }
+            rifles_1 = { archetype = rifles }
+        }
+    "#])
+    .unwrap();
+    let enablers = Enablers {
+        plain: [(
+            "rifles_1".to_owned(),
+            vec![Enabler {
+                id: "infantry_weapons1".into(),
+                parent: Ok(None),
+            }],
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let content = IconContent::from_parts(
+        units,
+        enablers,
+        Default::default(),
+        Default::default(),
+        [
+            "GFX_STA_infantry_weapons1_medium".to_owned(),
+            "GFX_AAA_infantry_weapons1_medium".to_owned(),
+            "GFX_D02_infantry_weapons1_medium".to_owned(),
+        ]
+        .into(),
+        Default::default(),
+    );
+
+    let mut frame = production_frame(PRODUCTION_HOUR, true, true, 11, &[], Some(&[]));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        country(41, 3, b"AAA"),
+        country(51, 4, b"STA"),
+        country(31, 50, b"D01"),
+        country(32, 51, b"D02"),
+    ]));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(41, 3), (51, 4), (31, 50), (32, 51), (88, 51)]
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .to_vec(),
+    ));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                dynamic_tag_boundary: Recorded::Value(Some(50)),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            CountryAppearanceRow {
+                country: 41,
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 51,
+                original_tag_reference: Recorded::Value(Some(41)),
+                original_tag: Recorded::Value(Some(b"AAA".to_vec())),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 31,
+                original_tag_reference: Recorded::Value(Some(41)),
+                original_tag: Recorded::Value(Some(b"AAA".to_vec())),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 32,
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+        ]));
+
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let from_static_with_ref = VariantDefinitionRow {
+        id: 1,
+        creator_link: 51,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &hour, &from_static_with_ref, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_STA_infantry_weapons1_medium".into())))
+    );
+    let from_dynamic_with_ref = VariantDefinitionRow {
+        id: 2,
+        creator_link: 31,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &hour, &from_dynamic_with_ref, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_AAA_infantry_weapons1_medium".into())))
+    );
+
+    let mut no_boundary = frame.clone();
+    *no_boundary.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                dynamic_tag_boundary: Recorded::NotRecorded,
+                ..Default::default()
+            },
+        ]));
+    let no_boundary_hour = IconHour::read(&no_boundary, &content).unwrap();
+    let unambiguous_creator = VariantDefinitionRow {
+        id: 3,
+        creator_link: 41,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(&content, &no_boundary_hour, &unambiguous_creator, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_AAA_infantry_weapons1_medium".into())))
+    );
+    assert!(
+        chosen(&content, &no_boundary_hour, &from_static_with_ref, "rifles_1")
+            .unwrap_err()
+            .contains("dynamic-tag boundary")
+    );
+    let alias_creator = VariantDefinitionRow {
+        id: 4,
+        creator_link: 88,
+        ..Default::default()
+    };
+    assert!(
+        chosen(&content, &no_boundary_hour, &alias_creator, "rifles_1")
+            .unwrap_err()
+            .contains("dynamic-tag boundary")
     );
 }

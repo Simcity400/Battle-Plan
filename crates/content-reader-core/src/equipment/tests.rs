@@ -1303,3 +1303,21 @@ fn role_masks_keep_allow_add_forbid_override_and_exact_category_restrictions_sep
         second
     );
 }
+
+#[test]
+fn archetype_copy_preserves_prior_upgrades_and_skips_unknown_or_duplicate_upgrades() {
+    let database = read(&[(
+        "upgrades.txt",
+        "upgrades = {
+            gun = { lg_attack = 1 }
+            engine = { naval_speed = 0.1 }
+         }
+         equipments = {
+            hull = { is_archetype = yes type = convoy upgrades = { engine } }
+            child = { upgrades = { gun gun missing_up } archetype = hull }
+         }",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    assert_eq!(named(&database, "hull").upgrades, [b"engine".to_vec()]);
+    assert_eq!(named(&database, "child").upgrades, [b"gun".to_vec()]);
+}

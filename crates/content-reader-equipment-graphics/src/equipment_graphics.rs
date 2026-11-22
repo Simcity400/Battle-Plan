@@ -234,6 +234,9 @@ impl Pool {
     }
 }
 
+type PoolRank = (std::cmp::Reverse<i64>, usize, u8);
+type RankedPools<'p, 'a> = (Vec<(&'p Pool, usize, u8)>, Option<(PoolRank, &'a str)>);
+
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     buckets: BTreeMap<Bucket, BTreeMap<String, Vec<Pool>>>,
@@ -498,11 +501,15 @@ impl Content {
         limits: &impl PoolLimits,
         entity_exists: impl Fn(&str) -> bool,
     ) -> Result<Vec<Candidate>, String> {
-        let mut matches = self.matching(context, limits, |pool| !pool.models.is_empty())?;
-        matches.sort_by_key(|pool| std::cmp::Reverse(pool.weight()));
+        let (mut matches, continent_cutoff) =
+            self.matching_ranked(context, limits, |pool| !pool.models.is_empty(), Pool::weight)?;
+        if let Some((_, why)) = continent_cutoff {
+            return Err(why.to_owned());
+        }
+        matches.sort_by_key(|&(pool, _, _)| std::cmp::Reverse(pool.weight()));
         let mut seen = BTreeSet::new();
         let mut candidates = Vec::new();
-        for pool in matches {
+        for (pool, _, _) in matches {
             for entity in pool.models.iter().rev() {
                 if seen.insert(entity.as_str()) && entity_exists(entity) {
                     insert(
@@ -525,13 +532,23 @@ impl Content {
         limits: &impl PoolLimits,
         declared: impl Fn(&str) -> bool,
     ) -> Result<Option<String>, String> {
-        let mut pools = self.matching(context, limits, |pool| !pool.models.is_empty())?;
-        pools.sort_by_key(|pool| std::cmp::Reverse(pool.weight()));
-        Ok(pools
-            .into_iter()
-            .flat_map(|pool| pool.models.iter().rev())
-            .find(|name| declared(name))
-            .cloned())
+        let (mut pools, continent_cutoff) =
+            self.matching_ranked(context, limits, |pool| !pool.models.is_empty(), Pool::weight)?;
+        pools.sort_by_key(|&(pool, _, _)| std::cmp::Reverse(pool.weight()));
+        for (pool, context_index, phase) in pools {
+            if let Some((cutoff, why)) = continent_cutoff
+                && (std::cmp::Reverse(pool.weight()), context_index, phase) > cutoff
+            {
+                return Err(why.to_owned());
+            }
+            if let Some(found) = pool.models.iter().rev().find(|name| declared(name)) {
+                return Ok(Some(found.clone()));
+            }
+        }
+        if let Some((_, why)) = continent_cutoff {
+            return Err(why.to_owned());
+        }
+        Ok(None)
     }
 
     pub fn lookup_icon(
@@ -540,71 +557,102 @@ impl Content {
         has_dlc: impl Fn(&str) -> Option<bool>,
         exists: impl Fn(&str) -> bool,
     ) -> Result<Option<String>, String> {
-        let mut matches = self.matching(context, &has_dlc, |pool| !pool.icons.is_empty())?;
-        matches.sort_by_key(|pool| std::cmp::Reverse(pool.icons_weight()));
-        Ok(matches
-            .iter()
-            .flat_map(|pool| pool.icons.iter().rev())
-            .find(|icon| exists(icon))
-            .cloned())
+        let (mut matches, continent_cutoff) = self.matching_ranked(
+            context,
+            &has_dlc,
+            |pool| !pool.icons.is_empty(),
+            Pool::icons_weight,
+        )?;
+        matches.sort_by_key(|&(pool, _, _)| std::cmp::Reverse(pool.icons_weight()));
+        for (pool, context_index, phase) in matches {
+            if let Some((cutoff, why)) = continent_cutoff
+                && (std::cmp::Reverse(pool.icons_weight()), context_index, phase) > cutoff
+            {
+                return Err(why.to_owned());
+            }
+            if let Some(found) = pool.icons.iter().rev().find(|icon| exists(icon)) {
+                return Ok(Some(found.clone()));
+            }
+        }
+        if let Some((_, why)) = continent_cutoff {
+            return Err(why.to_owned());
+        }
+        Ok(None)
     }
 
-    fn matching(
+    fn matching_ranked<'a>(
         &self,
-        context: &Context<'_>,
+        context: &Context<'a>,
         limits: &impl PoolLimits,
         wanted: impl Fn(&Pool) -> bool,
-    ) -> Result<Vec<&Pool>, String> {
+        weight_of: impl Fn(&Pool) -> i64,
+    ) -> Result<RankedPools<'_, 'a>, String> {
         let mut buckets = Vec::new();
         let unknown_continent = match (context.country, context.capital_continent) {
             (Some(country), Ok(continent)) => {
-                buckets.push(Bucket::Country(country.to_owned()));
-                buckets.extend(context.faction_tags.iter().cloned().map(Bucket::Faction));
+                buckets.push((Bucket::Country(country.to_owned()), 0_u8));
+                buckets.extend(
+                    context
+                        .faction_tags
+                        .iter()
+                        .cloned()
+                        .map(|tag| (Bucket::Faction(tag), 0_u8)),
+                );
                 if let Some(continent) = continent {
-                    buckets.push(Bucket::Continent(continent.to_ascii_lowercase()));
+                    buckets.push((Bucket::Continent(continent.to_ascii_lowercase()), 1_u8));
                 }
                 None
             }
             (Some(country), Err(why)) => {
-                buckets.push(Bucket::Country(country.to_owned()));
-                buckets.extend(context.faction_tags.iter().cloned().map(Bucket::Faction));
+                buckets.push((Bucket::Country(country.to_owned()), 0_u8));
+                buckets.extend(
+                    context
+                        .faction_tags
+                        .iter()
+                        .cloned()
+                        .map(|tag| (Bucket::Faction(tag), 0_u8)),
+                );
                 Some(why)
             }
             (None, _) => None,
         };
-        buckets.push(Bucket::Default);
+        buckets.push((Bucket::Default, 2_u8));
         let mut contexts = vec![(context.equipment, context.archetype)];
         if let Some(family) = context.family
             && family.0 != context.equipment
         {
             contexts.push(family);
         }
-        if let Some(why) = unknown_continent {
-            let continent_could_match = self
-                .buckets
-                .iter()
-                .filter_map(|(bucket, definitions)| match bucket {
-                    Bucket::Continent(_) => Some(definitions),
-                    _ => None,
-                })
-                .any(|definitions| {
-                    contexts.iter().any(|&(equipment, archetype)| {
-                        [Some(equipment), archetype]
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|name| definitions.get(&name.to_ascii_lowercase()))
-                            .flat_map(|pools| pools.iter())
-                            .filter(|pool| wanted(pool) && pool.matches(context))
-                            .any(|pool| !matches!(limits.holds(pool.id, &pool.limit), Ok(false)))
-                    })
-                });
-            if continent_could_match {
-                return Err(why.to_owned());
+        let continent_cutoff = unknown_continent.and_then(|why| {
+            let mut best: Option<(std::cmp::Reverse<i64>, usize, u8)> = None;
+            for (bucket, definitions) in &self.buckets {
+                if !matches!(bucket, Bucket::Continent(_)) {
+                    continue;
+                }
+                for (context_index, &(equipment, archetype)) in contexts.iter().enumerate() {
+                    for name in [Some(equipment), archetype].into_iter().flatten() {
+                        let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
+                            continue;
+                        };
+                        for pool in pools.iter().filter(|pool| wanted(pool) && pool.matches(context))
+                        {
+                            if matches!(limits.holds(pool.id, &pool.limit), Ok(false)) {
+                                continue;
+                            }
+                            let rank = (std::cmp::Reverse(weight_of(pool)), context_index, 1_u8);
+                            best = Some(match best {
+                                Some(current) => current.min(rank),
+                                None => rank,
+                            });
+                        }
+                    }
+                }
             }
-        }
+            best.map(|rank| (rank, why))
+        });
         let mut matches = Vec::new();
-        for (equipment, archetype) in contexts {
-            for bucket in &buckets {
+        for (context_index, (equipment, archetype)) in contexts.into_iter().enumerate() {
+            for (bucket, phase) in &buckets {
                 let Some(definitions) = self.buckets.get(bucket) else {
                     continue;
                 };
@@ -623,13 +671,13 @@ impl Content {
                                 pool.file
                             )
                         })? {
-                            matches.push(pool);
+                            matches.push((pool, context_index, *phase));
                         }
                     }
                 }
             }
         }
-        Ok(matches)
+        Ok((matches, continent_cutoff))
     }
 }
 
@@ -1208,6 +1256,102 @@ mod tests {
         assert_eq!(
             pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),
             Ok(Some("null_icon".to_owned()))
+        );
+    }
+
+    #[test]
+    fn unknown_continent_still_picks_higher_or_tied_country_winner_and_refuses_lower() {
+        enter_pool_test_tables();
+        let pools = content(
+            br#"
+            GER = {
+                tank_1 = {
+                    pool = { weight = 10 models = { ger_model } icons = { GFX_ger_icon } }
+                }
+            }
+            europe = {
+                tank_1 = {
+                    pool = { weight = 1 models = { eur_model } icons = { GFX_eur_icon } }
+                }
+            }
+            default = {
+                tank_1 = {
+                    pool = { weight = 1 models = { def_model } icons = { GFX_def_icon } }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let mut unknown = context(Some("GER"), &[]);
+        unknown.capital_continent = Err("continent unknown");
+        unknown.subunit = None;
+        assert_eq!(
+            pools.lookup_icon(&unknown, |_| Some(true), |_| true),
+            Ok(Some("GFX_ger_icon".to_owned()))
+        );
+        assert_eq!(
+            pools.aircraft_override(&unknown, &(|_: &str| Some(true)), |_| true),
+            Ok(Some("ger_model".to_owned()))
+        );
+        assert_eq!(
+            pools.lookup_icon(&unknown, |_| Some(true), |name| name != "GFX_ger_icon"),
+            Err("continent unknown".to_owned())
+        );
+        assert_eq!(
+            pools.aircraft_override(
+                &unknown,
+                &(|_: &str| Some(true)),
+                |name| name != "ger_model"
+            ),
+            Err("continent unknown".to_owned())
+        );
+        assert_eq!(
+            pools.lookup(&unknown, |_| Some(true), |_| true),
+            Err("continent unknown".to_owned())
+        );
+
+        let tied = content(
+            br#"
+            GER = { tank_1 = { pool = { weight = 10 icons = { GFX_ger_icon } } } }
+            europe = { tank_1 = { pool = { weight = 10 icons = { GFX_eur_icon } } } }
+            default = { tank_1 = { pool = { weight = 10 icons = { GFX_def_icon } } } }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            tied.lookup_icon(&unknown, |_| Some(true), |_| true),
+            Ok(Some("GFX_ger_icon".to_owned()))
+        );
+        let mut other = context(Some("FRA"), &[]);
+        other.capital_continent = Err("continent unknown");
+        other.subunit = None;
+        assert_eq!(
+            tied.lookup_icon(&other, |_| Some(true), |_| true),
+            Err("continent unknown".to_owned())
+        );
+
+        let high_default = content(
+            br#"
+            europe = { tank_1 = { pool = { weight = 10 icons = { GFX_eur_icon } } } }
+            default = { tank_1 = { pool = { weight = 20 icons = { GFX_def_icon } } } }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            high_default.lookup_icon(&other, |_| Some(true), |_| true),
+            Ok(Some("GFX_def_icon".to_owned()))
+        );
+
+        let high_continent = content(
+            br#"
+            GER = { tank_1 = { pool = { weight = 10 icons = { GFX_ger_icon } } } }
+            europe = { tank_1 = { pool = { weight = 20 icons = { GFX_eur_icon } } } }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            high_continent.lookup_icon(&unknown, |_| Some(true), |_| true),
+            Err("continent unknown".to_owned())
         );
     }
 }

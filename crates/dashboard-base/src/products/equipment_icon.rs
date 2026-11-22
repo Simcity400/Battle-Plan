@@ -727,7 +727,7 @@ impl IconHour {
         Ok((raw > 0).then_some(raw as u32))
     }
 
-    fn technology_tag_of(&self, slot: u32, own_handle: u32) -> Result<String, String> {
+    fn dynamic_technology_tag_of(&self, slot: u32, own_handle: u32) -> Result<String, String> {
         let refs = self.original_refs.as_ref().map_err(Clone::clone)?;
         let (reference, original_tag) = refs.get(&slot).ok_or_else(|| {
             format!(
@@ -751,6 +751,18 @@ impl IconHour {
             return self.witnessed_tag(raw as u32).map(str::to_owned);
         }
         self.witnessed_tag(own_handle).map(str::to_owned)
+    }
+
+    fn technology_tag_of(&self, slot: u32, own_handle: u32) -> Result<String, String> {
+        let static_tag = || self.witnessed_tag(own_handle).map(str::to_owned);
+        match self.is_dynamic_slot(slot) {
+            Ok(false) => static_tag(),
+            Ok(true) => self.dynamic_technology_tag_of(slot, own_handle),
+            Err(boundary_err) => match (static_tag(), self.dynamic_technology_tag_of(slot, own_handle)) {
+                (Ok(static_tag), Ok(dynamic_tag)) if static_tag == dynamic_tag => Ok(static_tag),
+                _ => Err(boundary_err),
+            },
+        }
     }
 }
 
@@ -863,23 +875,30 @@ fn rule(
                 variant.creator_link
             )
         })?;
-        if hour.is_dynamic_slot(creator_slot)? {
+        let static_creator = (Some(variant.creator_link), Some(creator_slot));
+        let dynamic_creator = || -> Result<(Option<u32>, Option<u32>), String> {
             match hour.original_reference_of(creator_slot)? {
                 Some(original) => {
                     let slot = *hour.links.get(&original).ok_or_else(|| {
                         format!("original country reference {original} has no country link")
                     })?;
-                    (Some(original), Some(slot))
+                    Ok((Some(original), Some(slot)))
                 }
                 None => {
                     let own = *hour.slot_own_handles.get(&creator_slot).ok_or_else(|| {
                         format!("country slot {creator_slot} has no Countries row")
                     })?;
-                    (Some(own), Some(creator_slot))
+                    Ok((Some(own), Some(creator_slot)))
                 }
             }
-        } else {
-            (Some(variant.creator_link), Some(creator_slot))
+        };
+        match hour.is_dynamic_slot(creator_slot) {
+            Ok(false) => static_creator,
+            Ok(true) => dynamic_creator()?,
+            Err(boundary_err) => match dynamic_creator() {
+                Ok(dynamic) if dynamic == static_creator => dynamic,
+                _ => return Err(boundary_err),
+            },
         }
     } else {
         (None, None)

@@ -950,14 +950,12 @@ impl Database {
                             module_add_stats_multiplier,
                             module_multiply_stats_multiplier,
                             scaled_by_reliability,
-                            upgrades,
                             sprite,
                         ) = (
                             archetype.stats,
                             archetype.module_add_stats_multiplier.clone(),
                             archetype.module_multiply_stats_multiplier.clone(),
                             archetype.scaled_by_reliability.clone(),
-                            archetype.upgrades.clone(),
                             archetype.sprite.clone(),
                         );
                         let equipment = &mut self.equipment[at];
@@ -967,7 +965,6 @@ impl Database {
                         equipment.module_multiply_stats_multiplier =
                             module_multiply_stats_multiplier;
                         equipment.scaled_by_reliability = scaled_by_reliability;
-                        equipment.upgrades = upgrades;
                         if equipment.sprite.is_empty() {
                             equipment.sprite = sprite;
                         }
@@ -1057,11 +1054,12 @@ impl Database {
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
                 b"upgrades" => {
                     for upgrade in field.value.items().unwrap_or_default() {
-                        if let Some(value) = upgrade.value.scalar() {
-                            let name = c_string(value).to_ascii_lowercase();
-                            if !name.is_empty() && !self.equipment[at].upgrades.contains(&name) {
-                                self.equipment[at].upgrades.push(name);
-                            }
+                        if let Some(value) = upgrade.value.scalar()
+                            && let Token::Name(name) = Token::c_str(value)
+                            && self.upgrade_names.contains(&name)
+                            && !self.equipment[at].upgrades.contains(&name)
+                        {
+                            self.equipment[at].upgrades.push(name);
                         }
                     }
                 }

@@ -827,4 +827,236 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
     assert!(misreads.is_empty(), "{misreads:?}");
     assert_eq!(bound, Ok([0, 9_000]));
     assert_eq!(bounded_total(0, 1, Ok([0, 9_000])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { cancel = { add_stats = { lg_attack = 1 } multiply_stats = { lg_attack = -1.0 } } }
+         equipments = {
+            correlated_convoy = { type = convoy default_modules = { main = cancel } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 0]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
+}
+
+#[test]
+fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades() {
+    use replay_data::rows::{
+        LexicalTokenRow, Recorded, TableRows, VariantBonusSnapshotRow, VariantBonusSource,
+        VariantDefinitionRow, VariantDesignState, VariantStatEntry, VariantUpgradeRow,
+        variant_bonus_snapshot_id,
+    };
+    use std::fs;
+    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+
+    content_reader_core::test_game::enter();
+    let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap() as u32;
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_convoy_variants_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("common/units/equipment/convoys.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "upgrades = { global_gun = { lg_attack = 1.0 } }
+         equipments = {
+            convoy_1 = { type = convoy lg_attack = 0.6 }
+            vanilla_convoy = { type = convoy }
+         }",
+    )
+    .unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let database = content_reader_core::equipment::Database::load(&layers).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let (static_bound, misreads) = convoy_weapon_bound_from_database(&database);
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(static_bound, Ok([0, 60_000]));
+
+    let base_frame = |design: Recorded<VariantDesignState>,
+                      upgrades: Vec<VariantUpgradeRow>,
+                      snapshots: Vec<VariantBonusSnapshotRow>| {
+        let mut frame = test_frame(1);
+        put(
+            &mut frame,
+            TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: 10,
+                    literal: b"convoy_1".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 11,
+                    literal: b"lg_attack".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 12,
+                    literal: b"global_gun".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 13,
+                    literal: b"build_cost_ic".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 14,
+                    literal: b"vanilla_convoy".to_vec(),
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: 70,
+                equipment_token: 10,
+                design,
+                ..Default::default()
+            }]),
+        );
+        put(&mut frame, TableRows::VariantUpgrades(upgrades));
+        put(&mut frame, TableRows::VariantModules(Vec::new()));
+        put(&mut frame, TableRows::VariantBonusSnapshots(snapshots));
+        frame
+    };
+
+    let mio_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            design_team_bonus: vec![VariantStatEntry {
+                index: 11,
+                value: 100_000,
+            }],
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mio_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &mio_frame,
+    )
+    .unwrap();
+    assert_eq!(mio_bound, Ok([0, 120_000]));
+    assert_eq!(
+        bounded_total(0, 1, mio_bound.as_ref().copied().map_err(String::as_str)),
+        None
+    );
+
+    let bonus = VariantBonusSource {
+        stats: vec![VariantStatEntry {
+            index: lg_attack,
+            value: 100_000,
+        }],
+        ..Default::default()
+    };
+    let bonus_id = variant_bonus_snapshot_id(&bonus);
+    let source_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            bonus_sources: vec![bonus_id],
+            ..Default::default()
+        }),
+        Vec::new(),
+        vec![VariantBonusSnapshotRow {
+            id: bonus_id,
+            source: bonus,
+        }],
+    );
+    let source_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &source_frame,
+    )
+    .unwrap();
+    assert_eq!(source_bound, Ok([0, 120_000]));
+
+    let unresolved_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            named_bonuses: vec![9],
+            unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+                .filter(|index| {
+                    ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(index)
+                })
+                .map(|index| VariantStatEntry {
+                    index,
+                    value: if index == lg_attack { 120_000 } else { 0 },
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    let unresolved_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &unresolved_frame,
+    )
+    .unwrap();
+    assert_eq!(unresolved_bound, Ok([0, 120_000]));
+
+    let upgrade_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![VariantUpgradeRow {
+            variant: 70,
+            source_ordinal: 0,
+            definition_token: 12,
+            level: 1,
+        }],
+        Vec::new(),
+    );
+    let upgrade_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &upgrade_frame,
+    )
+    .unwrap();
+    assert_eq!(upgrade_bound, Ok([0, 120_000]));
+
+    let unrecorded_frame = base_frame(Recorded::NotRecorded, Vec::new(), Vec::new());
+    assert!(
+        convoy_weapon_bound_for_frame(
+            static_bound.as_ref().copied().map_err(String::as_str),
+            Some(&database),
+            &unrecorded_frame,
+        )
+        .unwrap()
+        .is_err()
+    );
+
+    let mut non_weapon_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            design_team_bonus: vec![VariantStatEntry {
+                index: 13,
+                value: -10_000,
+            }],
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    put(
+        &mut non_weapon_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 71,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState {
+                design_team_bonus: vec![VariantStatEntry {
+                    index: 13,
+                    value: -10_000,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+    );
+    let non_weapon_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &non_weapon_frame,
+    )
+    .unwrap();
+    assert_eq!(non_weapon_bound, Ok([0, 0]));
+    assert_eq!(
+        bounded_total(8_190_000, 1, non_weapon_bound.as_ref().copied().map_err(String::as_str)),
+        Some(81)
+    );
 }
