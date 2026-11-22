@@ -35,6 +35,7 @@ export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedR
 export interface FollowedPanel {
   data?: unknown;
   refused: string | null;
+  bytes?: Uint8Array;
 }
 
 const FAILURE_MAGIC = 0x314e4546;
@@ -206,7 +207,7 @@ export function parseDatedPanels(bytes: Uint8Array) {
     }
     if (kind === 5) { panels.push({ id, hour, panel: null, waiting: true }); at = aligned(end); continue; }
     const body = bytes.subarray(at + 16, end);
-    panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null } });
+    panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null, bytes: body } });
     if (data.getUint8(at + 9) & 1) panels.at(-1)!.stepped = true;
     at = aligned(end);
   }

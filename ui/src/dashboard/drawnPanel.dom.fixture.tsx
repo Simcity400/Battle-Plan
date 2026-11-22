@@ -75,7 +75,9 @@ export const fixture = {
     holding = true;
     flushSync(() => root.render(<Arsenal fixed={second} />));
     const secondCommit = commits === firstCommits + 1 ? commits : null;
-    const hiddenAtOnce = before.hidden, sameCanvas = canvas() === before, canvases = host.querySelectorAll('canvas').length;
+    const field = () => host.querySelector<HTMLElement>('[data-paint]');
+    const text = () => ({ ink: field()?.dataset.rowInk ?? null, fill: field() ? getComputedStyle(field()!).webkitTextFillColor : null, text: field()?.textContent ?? null });
+    const hiddenAtOnce = before.hidden, atOnce = text(), sameCanvas = canvas() === before, canvases = host.querySelectorAll('canvas').length;
     await until(() => held.length > 0);
     const surface = held[0]?.message as Extract<ToWorker, { type: 'surface' }> | undefined;
     const presents = () => heard.flatMap(message => message.type === 'present' ? message.surfaces.filter(p => p.id === surface?.id) : []);
@@ -83,14 +85,14 @@ export const fixture = {
     clock.seek(clock.getSnapshot().position);
     await until(() => presents().some(p => p.owner < (surface?.owner ?? 0)));
     await frames(2);
-    const oldOwnerPresents = presents().filter(p => p.owner < (surface?.owner ?? 0)).length, hiddenAfterOldOwner = before.hidden;
+    const oldOwnerPresents = presents().filter(p => p.owner < (surface?.owner ?? 0)).length, hiddenAfterOldOwner = before.hidden, afterOldOwner = text();
     const heldSurfaces = held.length;
     holding = false;
     for (const { worker, message, transfer } of held.splice(0)) worker.postMessage(message, transfer);
     const revealed = await until(() => !before.hidden);
     const newOwnerPresents = presents().filter(p => p.owner === surface?.owner).length, keptCanvas = canvas() === before;
     root.unmount(); host.remove();
-    return { shown, secondCommit, hiddenAtOnce, sameCanvas, keptCanvas, canvases, heldSurfaces, oldOwnerPresents, hiddenAfterOldOwner, revealed, newOwnerPresents,
+    return { shown, secondCommit, hiddenAtOnce, atOnce, afterOldOwner, sameCanvas, keptCanvas, canvases, heldSurfaces, oldOwnerPresents, hiddenAfterOldOwner, revealed, newOwnerPresents,
       fixed: surface?.model.fixed ?? null };
   },
   async due(at: number) {

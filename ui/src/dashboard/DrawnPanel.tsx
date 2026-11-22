@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { hideTooltip, tooltipStore } from '../charts/tooltip.ts';
-import { inspectFollow } from './follow/connection.ts';
 import { panelValues, panelViews } from '../draw/panels/views.ts';
 import { attachPanel } from '../draw/host.ts';
 import type { PanelFeed } from './panelFeed';
@@ -101,8 +100,13 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
       return true;
     });
-    const handles = new Map<HTMLElement, { refresh: () => void; rebind: () => void; close: () => void }>();
+    const handles = new Map<HTMLElement, { refresh: () => void; rebind: (exact: boolean) => void; inspect: () => Promise<ReadonlyMap<string, string> | undefined>; close: () => void; readonly stale: boolean }>();
     let interaction = 0;
+    const hold = () => {
+      interaction++;
+      const tip = tooltipStore.get();
+      if (tip && node.matches(':hover, :focus-within')) hideTooltip(tip.owner);
+    };
     const attach = (content: HTMLElement) => {
       let fields: HTMLElement[] = [];
       const model = (id: number, owner: number) => {
@@ -119,42 +123,40 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       };
       const own = (accepted: boolean, pending = false) => {
         content.toggleAttribute('data-worker-panel', accepted);
-        for (const field of fields) field.dataset.rowInk = accepted ? 'worker' : pending || clock.getSnapshot().playing ? 'pending' : 'page';
+        for (const field of fields) field.dataset.rowInk = accepted ? 'worker' : pending || clock.getSnapshot().playing && latest.current?.fixed === undefined ? 'pending' : 'page';
       };
       const hit = (row: string | null) => {
         if (row !== null) content.dataset.drawnRow = row;
         else { delete content.dataset.drawnRow; }
       };
-      const handle = attachPanel(content, clock, model, own, hit);
-      if (handle) handles.set(content, { refresh: handle.refresh, rebind: handle.rebind, close() {
+      const handle = attachPanel(content, clock, model, own, hit, hold);
+      if (handle) handles.set(content, { refresh: handle.refresh, rebind: handle.rebind, inspect: handle.inspect, get stale() { return handle.stale; }, close() {
         handle.close();
         for (const f of fields) delete f.dataset.rowInk;
       } });
     };
+    const held = (target: HTMLElement) => handles.get(layer(target))?.stale === true;
     const reconcile = (rebinding: boolean) => {
+      const feed = latest.current, exact = !!feed && !feed.held && (feed.fixed !== undefined || !clock.getSnapshot().playing);
       const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].filter(owned).map(layer));
       for (const [content, handle] of handles) {
         if (!contents.has(content)) { handle.close(); handles.delete(content); }
-        else if (rebinding) handle.rebind();
+        else if (rebinding) handle.rebind(exact);
         else handle.refresh();
       }
       for (const content of contents) if (!handles.has(content)) attach(content);
     };
     const inspect = async (event: Event) => {
-      const reading = latest.current, target = event.target;
-      if (!event.isTrusted || reading?.follow === undefined || !(target instanceof HTMLElement) || !owned(target)) return;
-      const ticket = ++interaction, seek = clock.getSnapshot().seekSequence;
+      const target = event.target;
+      if (!event.isTrusted || !(target instanceof HTMLElement) || !owned(target)) return;
+      if (held(target)) { event.stopPropagation(); return; }
+      const content = layer(target), handle = handles.get(content);
+      if (!handle || latest.current?.follow === undefined) return;
+      const ticket = ++interaction;
       event.stopPropagation();
-      const picture = await inspectFollow(reading.follow);
-      if (!picture?.panel || picture.seek !== seek || seek !== clock.getSnapshot().seekSequence || ticket !== interaction ||
-          !node.contains(target) || reading.follow !== latest.current?.follow) return;
-      const live = picture.values;
-      const values = panelViews[view]?.values(picture.panel.data, live ? {
-        get: k => typeof live.get(k) === 'number' ? live.get(k) as number : undefined,
-        missing: k => typeof live.get(k) === 'string' ? live.get(k) as string : 'Not recorded',
-      } : null, picture.through, reading.structure);
-      if (!values) return;
-      for (const content of handles.keys()) for (const field of fieldsIn(content)) {
+      const values = await handle.inspect();
+      if (ticket !== interaction || handle.stale || !node.contains(target)) return;
+      if (values && handles.get(content) === handle) for (const field of fieldsIn(content)) {
         const { key, label } = identity(field, layout), value = values.get(key);
         if (value === undefined) continue;
         if (label === 'bar') {

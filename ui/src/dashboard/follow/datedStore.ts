@@ -5,7 +5,7 @@ import type { Release } from './decode';
 
 export interface Coverage { start: number; through: number }
 interface Picture extends Coverage { panel: FollowedPanel; cells: number[]; seeds: Map<number, CellGroup> }
-interface Reading { entry: FollowEntry; branch: string; offset: number; ahead: Packet[]; seek?: number; candidate?: Picture; shown?: Coverage; stream?: Route; lane?: { hour: number }; cells: Map<number, CellGroup>;
+interface Reading { entry: FollowEntry; branch: string; offset: number; due: number; ahead: Packet[]; seek?: number; candidate?: Picture; shown?: Coverage; stream?: Route; lane?: { hour: number }; cells: Map<number, CellGroup>;
   ends?: number; waiting?: number }
 interface LaneClock { hour: number; limited?: Map<number, number> }
 function coverageClock(clock: LaneClock, id: number) {
@@ -30,6 +30,7 @@ export class DatedStore {
   private packets: Packet[] = [];
   private first = 0;
   private head = -Infinity;
+  private at = -Infinity;
 
   private enqueue(packet: Packet) {
     const route = this.byId.get(packet.route);
@@ -66,19 +67,22 @@ export class DatedStore {
     let at = r.ahead.length;
     while (at > 0 && r.ahead[at - 1]!.lead!.hour > packet.lead!.hour) at--;
     r.ahead.splice(at, 0, packet);
-    this.resend(r.entry);
   }
 
   private dropLead(packet: Packet) {
     const r = packet.lead && this.readings.get(packet.lead.id), at = r ? r.ahead.indexOf(packet) : -1;
     if (at < 0) return;
     r!.ahead.splice(at, 1);
-    this.resend(r!.entry);
   }
 
   private run(packet: Packet) {
     this.dropLead(packet);
-    packet.apply();
+    this.at = packet.hour + packet.clock;
+    try { packet.apply(); } finally { this.at = -Infinity; }
+  }
+
+  private touch(r: Reading) {
+    r.due = this.at; r.entry.version++; this.changed(r.entry);
   }
 
   private applyThrough(hour: number, route: number) {
@@ -103,14 +107,12 @@ export class DatedStore {
 
   private readonly release: (what: Release) => void;
 
-  private readonly resend: (entry: FollowEntry) => void;
-
-  constructor(changed: (entry: FollowEntry) => void, release: (what: Release) => void, resend: (entry: FollowEntry) => void = () => {}) {
-    this.changed = changed; this.release = release; this.resend = resend;
+  constructor(changed: (entry: FollowEntry) => void, release: (what: Release) => void) {
+    this.changed = changed; this.release = release;
   }
 
   add(entry: FollowEntry, branch: string) {
-    const reading: Reading = { entry, branch, offset: 0, ahead: [], cells: new Map() };
+    const reading: Reading = { entry, branch, offset: 0, due: -Infinity, ahead: [], cells: new Map() };
     this.readings.set(entry.id, reading);
     let members = this.members.get(branch);
     if (!members) this.members.set(branch, members = new Set());
@@ -155,11 +157,11 @@ export class DatedStore {
       const interval = retainThrough === undefined ? undefined : this.coverage(r.entry);
       r.candidate = undefined; r.ends = undefined; r.waiting = undefined; r.seek = undefined; r.stream = undefined; r.lane = undefined;
       if (retainThrough !== undefined && interval && interval.start <= retainThrough && retainThrough <= interval.through) {
-        r.shown = interval; r.entry.version++; this.changed(r.entry); continue;
+        r.shown = interval; this.touch(r); continue;
       }
       r.shown = undefined; r.cells.clear();
-      r.entry.panel = undefined; r.entry.answer = undefined; r.entry.version++;
-      this.changed(r.entry);
+      r.entry.panel = undefined; r.entry.answer = undefined;
+      this.touch(r);
     }
     if (route) {
       this.discard(p => p.route === route.id);
@@ -304,7 +306,7 @@ export class DatedStore {
               r.offset = message.clock;
               r.entry.answer = answer; r.entry.hour = start; r.entry.through = through;
               r.seek = stamp; r.lane = lane; r.shown = { start, through: r.entry.through }; r.waiting = undefined;
-              r.entry.version++; this.changed(r.entry);
+              this.touch(r);
             }
           }
         }
@@ -343,7 +345,7 @@ export class DatedStore {
       r.shown.start === start && candidate.cells.every(id => r.cells.get(id) === cells.get(id))) return;
     r.entry.panel = candidate.panel; r.entry.hour = candidate.start; r.entry.through = candidate.through; r.ends = undefined;
     r.shown = { start, through }; r.cells = cells;
-    r.entry.version++; this.changed(r.entry);
+    this.touch(r);
   }
 
   drain(head: number) {
@@ -376,13 +378,20 @@ export class DatedStore {
     }
     return r.stream && r.stream.through > r.shown.through ? { start: r.shown.start, through: r.stream.through } : r.shown;
   }
-  ahead(entry: FollowEntry): readonly Lead[] {
-    return this.readings.get(entry.id)?.ahead.map(p => p.lead!) ?? [];
+  ahead(entry: FollowEntry, through = Infinity): Lead[] {
+    const out: Lead[] = [];
+    for (const p of this.readings.get(entry.id)?.ahead ?? []) if (p.hour <= through) out.push(p.lead!);
+    return out;
   }
+  due(entry: FollowEntry) { return this.readings.get(entry.id)?.due ?? -Infinity; }
   receivedThrough(entry: FollowEntry) { return this.readings.get(entry.id)?.stream?.receivedThrough; }
   get stepHour() { return this.byId.values().next().value?.stepHour; }
   eligibleThrough(entry: FollowEntry) {
     return Math.min(this.head + (this.readings.get(entry.id)?.offset ?? 0), this.coverage(entry)?.through ?? entry.hour);
+  }
+  showsAt(entry: FollowEntry, head: number) {
+    const r = this.readings.get(entry.id), date = r && this.coverage(entry);
+    return !!date && date.start <= head + r.offset && head + r.offset <= date.through;
   }
   group(entry: FollowEntry, id: number) { return this.readings.get(entry.id)?.cells.get(id); }
   close() { this.packets = []; this.first = 0; this.early.clear(); this.groups.clear(); this.dependents.clear(); }

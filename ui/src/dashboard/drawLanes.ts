@@ -5,7 +5,7 @@ import { ROW_HEIGHT } from '../draw/tables/logic.ts';
 export interface DrawLane { postMessage(message: ToWorker, transfer: Transferable[]): void }
 
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
-  'racePointer', 'inspectRace', 'detach', 'closeRace']);
+  'racePointer', 'inspectRace', 'inspectPanel', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'followFailure']);
 
 export type SurfaceNotice = Extract<FromWorker, { id: number }> | { type: 'present'; surface: Present } | { type: 'failed'; page: number; reason: string };
@@ -29,7 +29,9 @@ export class DrawLanes {
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
   private readonly tables: number[];
-  private audit?: { waiting: number; records: DrawSample[]; done: boolean; failed?: Extract<FromWorker, { type: 'failed' }> };
+  private audit?: { waiting: number; records: DrawSample[]; done: boolean; start: boolean };
+  private auditing = false;
+  private auditFailure?: string;
 
   constructor(lanes: readonly DrawLane[], emit: (message: FromWorker) => void) {
     this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0); this.tables = lanes.map(() => 0);
@@ -64,8 +66,10 @@ export class DrawLanes {
       this.lanes[held.lane]!.postMessage(message, transfer);
       return;
     }
-    if (message.type === 'inspect') { this.lanes[0]!.postMessage(message, transfer); return; }
-    if (message.type === 'audit') this.audit = { waiting: this.lanes.length, records: [], done: true };
+    if (message.type === 'audit') {
+      if (message.start) { this.auditing = true; this.auditFailure = undefined; }
+      this.audit = { waiting: this.lanes.length, records: [], done: true, start: message.start };
+    }
     for (const lane of this.lanes) lane.postMessage(message, transfer);
   }
 
@@ -83,11 +87,14 @@ export class DrawLanes {
       audit.records.push(...message.records); audit.done &&= message.done;
       if (--audit.waiting > 0) return;
       this.audit = undefined;
-      this.emit(audit.failed ?? { type: 'audit', records: audit.records, done: audit.done });
+      const failure = this.auditFailure;
+      if (failure !== undefined || audit.done && !audit.start) this.auditing = false;
+      this.emit(failure !== undefined ? { type: 'audit', records: [], done: true, failure } : { type: 'audit', records: audit.records, done: audit.done });
       return;
     }
     if (message.type === 'present') { for (const surface of message.surfaces) this.surfaces.get(surface.id)?.({ type: 'present', surface }); return; }
-    if (message.type === 'failed' && message.page !== -1) { this.surfaces.get(message.page)?.(message); if (this.audit) this.audit.failed ??= message; return; }
+    if (message.type === 'failed' && this.auditing) this.auditFailure ??= message.reason;
+    if (message.type === 'failed' && message.page !== -1) { this.surfaces.get(message.page)?.(message); return; }
     if ('id' in message) { this.surfaces.get(message.id)?.(message); return; }
     if (message.type === 'structure') this.lanes[lane]!.postMessage({ type: 'structureTaken' }, []);
     if (lane !== 0 && PAGE_WIDE.has(message.type)) return;

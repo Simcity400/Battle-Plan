@@ -1,28 +1,14 @@
 import type { DashboardClient, DashboardSource } from '../client';
-import type { PlaybackController } from '../playback';
+import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { FollowStore, queryBranch } from './store.ts';
 import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate } from '../pulled.ts';
 import { LatestReadings } from './latest.ts';
-import type { FollowUpdate, PageReading } from '../../draw/followed';
 
 let nextId = 1;
 const ids = () => nextId++;
-const shown = new Map<number, PageReading>();
-
-let nextInspection = 1;
-export function inspectFollow(id: number): Promise<PageReading | undefined> {
-  const request = nextInspection++;
-  return new Promise<boolean>(resolve => {
-    const off = onDraw(message => {
-      if (message.type === 'inspection' && message.request === request) { off(); resolve(true); }
-      if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(false); }
-    });
-    drawPost({ type: 'inspect', id, request });
-  }).then(answered => answered ? shown.get(id) : undefined);
-}
 
 const clocks = new WeakMap<PlaybackController, PerClient<Map<string, FollowStore>>>();
 
@@ -35,17 +21,22 @@ function availability(data: unknown): Availability {
 }
 
 function followTransport(client: DashboardClient, source: DashboardSource, clock: PlaybackController, offset: number,
-  seek: (branch: string, retainThrough?: number) => void): FollowTransport {
+  seek: (branch: string, retainThrough: number | undefined, stepped: boolean) => void): FollowTransport {
   const nameOf = (branch: string) => JSON.stringify([source.id, source.revision, offset, branch]);
-  interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
+  interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; epoch: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
-  const readings = new LatestReadings(shown);
+  const owners = new Map<number, Branch>();
+  const readings = new LatestReadings(id => {
+    const owner = owners.get(id), s = clock.getSnapshot();
+    return owner?.sequence === s.seekSequence && owner.paused === pausedAt(s) ? owner.epoch : undefined;
+  });
   const ask = (product: string, params: Record<string, unknown>) => client.product({
     sourceId: source.id, revision: source.revision, product, params,
   }, new AbortController().signal);
+  const pausedAt = (s: PlaybackSnapshot) => s.playing ? null : Math.floor(s.position) + offset;
   const anchor = () => {
     const s = clock.getSnapshot();
-    const hour = Math.floor(s.position) + offset, paused = s.playing ? null : hour;
+    const hour = Math.floor(s.position) + offset, paused = pausedAt(s);
     const frameRate = playbackRate();
     const key = JSON.stringify([s.playing, s.hoursPerSecond, s.seekSequence, paused, frameRate]);
     for (const [name, b] of branches) {
@@ -56,9 +47,8 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
       if (sought || stopping) {
         readings.forget(b.ids);
         const retainThrough = (sought && s.forwardSeek) || (!sought && stopping) ? hour : undefined;
-        seek(name, retainThrough);
-        b.seek = s.seekSequence;
-        drawPost({ type: 'seek', branch: nameOf(name), seek: b.seek, retainThrough });
+        seek(name, retainThrough, !s.playing);
+        drawPost({ type: 'seek', branch: nameOf(name), seek: s.seekSequence, epoch: ++b.epoch, retainThrough });
       }
       const ticket = ++b.ticket;
       const composedAt = performance.timeOrigin + (s.composedAt ?? performance.now());
@@ -70,7 +60,6 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     }
   };
   let stopWorkerClock: (() => void) | undefined;
-  const owners = new Map<number, Branch>();
   const remove = (id: number) => {
     const owner = owners.get(id);
     if (!owner) return;
@@ -89,13 +78,13 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
       if (!client.openFollow || branch === null) return Promise.resolve(NO_CHANNEL);
       let owner = branches.get(branch);
       if (!owner) {
-        owner = { ready: false, ids: new Set(), serial: Promise.resolve(), ticket: 0, seek: 0 };
+        owner = { ready: false, ids: new Set(), serial: Promise.resolve(), ticket: 0, epoch: 0 };
         branches.set(branch, owner);
       }
       owner.ids.add(id);
       owners.set(id, owner);
       stopWorkerClock ??= drawClock(clock);
-      drawPost({ type: 'add', branch: nameOf(branch), id, product: typeof query.panel === 'string' ? query.panel : undefined });
+      drawPost({ type: 'add', branch: nameOf(branch), id });
       const registered = openFollow(client).then(() => ask('follow', { id, query, branchId: branch, clock: offset })).then(reply => {
         const told = availability(reply.data);
         if (!told.available) remove(id);
@@ -121,24 +110,23 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     listen(receive, fail) {
       let stopFrame: (() => void) | undefined;
       const hour = () => Math.floor(clock.positionAt()) + offset;
+      const paused = () => !clock.getSnapshot().playing;
       const watch = () => {
         if (readings.waiting) stopFrame ??= clock.subscribeFrame(advance);
         else { stopFrame?.(); stopFrame = undefined; }
       };
-      const advance = () => { readings.advance(hour(), receive); watch(); };
-      const land = (update: FollowUpdate) => {
-        const { id, seek } = update.now;
-        if (owners.get(id)?.seek === seek && clock.getSnapshot().seekSequence === seek) readings.land(update, hour(), receive);
-      };
-      const off = clock.subscribe(anchor), offRate = onPlaybackRate(anchor);
+      const advance = () => { readings.advance(hour(), paused(), receive); watch(); };
+      const moved = () => { anchor(); readings.refresh(hour(), paused(), receive); watch(); };
+      const off = clock.subscribe(moved), offRate = onPlaybackRate(anchor);
       const stop = onDraw(message => {
         if (message.type === 'followFailure' || (message.type === 'failed' && message.page === -1)) {
           readings.forget(owners.keys());
           fail(message.reason);
           watch();
         }
-        if (message.type === 'inspection' && message.update) { land(message.update); watch(); }
-        if (message.type === 'structure') { for (const update of message.updates) land(update); watch(); }
+        if (message.type !== 'structure') return;
+        for (const update of message.updates) readings.land(update, hour(), paused(), receive);
+        watch();
       });
       return () => { stopFrame?.(); stop(); off(); offRate(); };
     },
@@ -154,7 +142,7 @@ export function followStore(client: DashboardClient, source: DashboardSource, wi
   const key = `${source.id}\u0000${source.revision}\u0000${offset}`;
   let store = held.get(key);
   if (!store) {
-    const transport = followTransport(baseClient(client), source, clock, offset, (branch, retainThrough) => store?.seek(branch, retainThrough));
+    const transport = followTransport(baseClient(client), source, clock, offset, (branch, retainThrough, stepped) => store?.seek(branch, retainThrough, stepped));
     store = new FollowStore(transport, undefined, ids);
     held.set(key, store);
   }

@@ -13,9 +13,11 @@ export type OnScreen = (element: Element, changed: (visible: boolean) => void) =
 export const NEAR_SCREEN = '240px 0px';
 export const DASHBOARD_SCROLL = '.dash-grid-scroll';
 
+export const screenHolder = (element: Element) => element.closest('article.dash-widget, [popover]') ?? element;
+
 export const observeOnScreen: OnScreen = (element, changed) => {
   if (typeof IntersectionObserver !== 'function') { changed(true); return () => {}; }
-  element = element.closest('article.dash-widget') ?? element;
+  element = screenHolder(element);
   const root = element.closest(DASHBOARD_SCROLL);
   const reach: IntersectionObserverInit | undefined = root ? { root, rootMargin: NEAR_SCREEN } : undefined;
   if (getComputedStyle(element).display !== 'contents') {
@@ -130,7 +132,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
       box.show?.(visible);
       if (box.hidden !== hidden) { box.hidden = hidden; for (const changed of box.listeners) changed(); }
     };
-    if (!element || prepared) { seen(false, false); return; }
+    if (!element?.isConnected || prepared) { seen(false, false); return; }
     return onScreen(element, seen);
   }, [store, key, target, onScreen, box, prepared]);
   useLayoutEffect(() => { box.painter?.repaint(); }, [structure, box]);

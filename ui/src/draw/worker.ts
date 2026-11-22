@@ -19,18 +19,21 @@ import { buildDetail, buildStretch, buildTable, type BuiltTable } from './tables
 import { repliedCells } from '../dashboard/follow/liveCells.ts';
 
 const post = (message: FromWorker) => self.postMessage(message);
+const LEAD_FRAMES = 2;
+let drained = -Infinity;
 const outbox = new StructureOutbox(() => {
-  const updates = [...followed.structures(anchor.playing)];
+  const updates = [...followed.updates(drained + (anchor.playing ? anchor.speed * LEAD_FRAMES / (cap || 60) : 0))];
   if (updates.length) post({ type: 'structure', updates });
   return updates.length > 0;
 });
 const wall = () => performance.timeOrigin + performance.now();
+interface Backing { width: number; height: number; dpr: number }
 interface Panel {
-  kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
-  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; reply?: unknown; through?: number; nextText?: number;
+  kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; size: Backing; dpr?: number;
+  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; waiting?: boolean; remeasure?: boolean; reply?: unknown; through?: number; nextText?: number;
 }
 interface Race {
-  kind: 'race'; id: number; owner: number; model: Extract<ToWorker, { type: 'race' }>['model']; picture: InstanceType<(typeof raceViews)[keyof typeof raceViews]>; shown?: boolean; through?: number;
+  kind: 'race'; id: number; owner: number; model: Extract<ToWorker, { type: 'race' }>['model']; picture: InstanceType<(typeof raceViews)[keyof typeof raceViews]>; shown?: boolean; waiting?: boolean; through?: number;
   reply?: unknown; nextText?: number; confirmed?: number; since?: number;
 }
 interface Table {
@@ -73,7 +76,7 @@ let unreported = false;
 let anchor: ClockAnchor = { position: 0, at: 0, speed: 1, playing: false, lastHour: 0, seek: 0 };
 let rate = 1, cap = 60, frameNumber = 0;
 const PAINT_SHARE = 0.6;
-const deferred = new Set<Surface>();
+const deferred = new Set<Surface>(), uncovered = new Set<Panel | Race>();
 let responding = false;
 let audit: DrawSample[] | undefined;
 let auditOffset = 0;
@@ -114,7 +117,7 @@ function unbind(s: Surface) {
   }
   const due = scheduledChanges.findIndex(q => q.surface === s);
   if (due >= 0) scheduledChanges.splice(due, 1);
-  dirty.delete(s); deferred.delete(s);
+  dirty.delete(s); deferred.delete(s); if (s.kind !== 'table') uncovered.delete(s);
 }
 function bind(s: Surface) {
   for (const id of followIds(s)) {
@@ -126,8 +129,8 @@ function bind(s: Surface) {
 }
 function invalidate(s: Surface) {
   if (s.kind === 'panel') {
-    s.program.clear(); s.pointer.clear(); s.date.drawn = undefined; s.reply = undefined;
-  } else if (s.kind === 'race') s.picture.clear();
+    s.pointer.clear(); s.date.drawn = undefined; s.reply = undefined;
+  } else if (s.kind === 'race') s.picture.forget();
   else {
     s.state = undefined; s.held.clear(); s.order = undefined; s.markers.clear(); s.picture = tablePicture(); s.ctx.clearRect(0, 0, s.model.width, s.model.height);
     s.painted = false; s.split = false; s.waitFrom = undefined; s.markEnds = undefined;
@@ -157,6 +160,12 @@ function scheduleChange(surface: Surface, at: number) {
     if (scheduledChanges[mid]!.at > at) lo = mid + 1; else hi = mid;
   }
   scheduledChanges.splice(lo, 0, { surface, at });
+}
+function fit(s: Panel) {
+  const { width, height, dpr } = s.size;
+  if (s.canvas.width === width && s.canvas.height === height && s.dpr === dpr) return;
+  s.canvas.width = width; s.canvas.height = height; s.dpr = dpr;
+  s.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); s.program.reset();
 }
 function paint(s: Surface, head: number) {
   const { model } = s;
@@ -230,29 +239,28 @@ function paint(s: Surface, head: number) {
   }
   s.date.set(date ? date.through - m.offset : null, fixed, date ? date.since - m.offset : null);
   if (!raw || !s.date.canPaintAt(head)) {
-    if (s.date.drawn) s.program.clear();
-    s.date.drawn = undefined; s.through = undefined; s.pointer.clear();
+    s.date.drawn = undefined; s.through = undefined; s.remeasure = false; s.pointer.clear();
     return false;
   }
   const through = Math.floor(m.fixed ?? Math.min(head, date!.through - m.offset));
   const same = s.date.drawn && raw === s.reply && !m.clocked && !entry?.hasFollowedCells && (!view?.nextChange || s.through === through);
   let changed = false;
   if (!same) {
-    let values;
+    let values: ReadonlyMap<string, string> | null | undefined, refused = !view;
     try { values = view?.values(raw, entry?.live ?? null, through + m.offset, m.structure); }
-    catch { values = null; }
+    catch { refused = true; }
     if (!values) {
       if (anchor.playing && m.fixed === undefined && s.date.presentableAt(head)) return false;
-      s.program.clear(); s.pointer.clear(); s.date.drawn = undefined; s.through = undefined; return false;
+      if (refused) s.program.clear();
+      s.pointer.clear(); s.date.drawn = undefined; s.through = undefined; s.remeasure = !refused; return false;
     }
+    fit(s);
     changed = s.program.write(m.cells, values);
     s.reply = raw;
   }
-  s.date.paint(); s.through = through;
-  if (view?.nextChange) {
-    s.nextText = view.nextChange(raw, through + m.offset) - m.offset;
-    scheduleChange(s, s.nextText);
-  }
+  s.remeasure = false; s.date.paint(); s.through = through;
+  s.nextText = view?.nextChange ? view.nextChange(raw, through + m.offset) - m.offset : undefined;
+  if (s.nextText !== undefined) scheduleChange(s, s.nextText);
   if (changed) s.pointer.present((x, y) => s.program.hit(x, y));
   return changed;
 }
@@ -374,15 +382,28 @@ function advanceTable(table: Table, head: number) {
   drawTable(table.ctx, state, now, table.scrollLeft, table.icons, table.picture, table.dpr);
   table.markEnds = markEnd(state, now); table.painted = true;
 }
+function holdsThrough(s: Panel | Race) {
+  if (s.through === undefined) return undefined;
+  const next = (s.nextText ?? Infinity) - 1;
+  if (s.kind === 'race') return Math.min(s.confirmed ?? s.through, next);
+  const entry = s.model.follow === undefined ? undefined : followed.read(s.model.follow);
+  return entry?.hasFollowedCells || !s.date.drawn ? s.through : Math.min(s.date.drawn.through, next);
+}
+const covered = (s: Panel | Race, head: number) => followed.covers(s.model.follow!, Math.floor(s.model.fixed ?? head) + s.model.offset);
 function report(s: Surface, head: number, notices: Present[]) {
   const shown = s.through !== undefined;
-  if (s.shown === shown) return;
+  const short = s.kind !== 'table' && !shown && !anchor.playing && s.model.follow !== undefined && !covered(s, head);
+  if (s.kind !== 'table') { if (short) uncovered.add(s); else uncovered.delete(s); }
+  const asked = s.kind !== 'table' && !shown && !anchor.playing && s.model.follow === undefined && !!s.model.asked;
+  const held = s.kind !== 'table' && !shown && (short || asked || s.kind === 'panel' && !!s.remeasure);
+  if (s.shown === shown && (s.kind === 'table' || s.waiting === held)) return;
   s.shown = shown;
   if (s.kind === 'race') {
+    s.waiting = held;
     post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-      head: s.model.fixed ?? head, hour: s.through ?? null, at: wall(), shown: shownWall });
-  } else if (s.kind === 'panel') notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-    head: s.model.fixed ?? head, date: s.date.drawn, shown: shownWall });
+      head: s.model.fixed ?? head, hour: s.through ?? null, holdsThrough: holdsThrough(s) ?? null, waiting: held, at: wall(), shown: shownWall });
+  } else if (s.kind === 'panel') { s.waiting = held; notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
+    head: s.model.fixed ?? head, date: s.date.drawn, readHour: s.through, holdsThrough: holdsThrough(s), waiting: held, shown: shownWall }); }
   else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
     head: s.model.fixed ?? head, readHour: s.through, at: wall(), shown: shownWall });
 }
@@ -430,10 +451,9 @@ function frame(at: number) {
     const boundary = start === undefined ? undefined : anchor.at - performance.timeOrigin + (start - anchor.position) * 1000 / anchor.speed;
     if (!cadence.due(shown, cap, boundary)) { wake(); return; }
   }
-  followed.drain(head);
-  if (lane === 0) {
-    outbox.flush();
-  }
+  followed.drain(head); drained = head;
+  if (!anchor.playing) for (const s of uncovered) if (covered(s, head)) dirty.add(s);
+  if (lane === 0) outbox.flush();
   while (scheduledChanges.length && scheduledChanges.at(-1)!.at <= head) dirty.add(scheduledChanges.pop()!.surface);
   const changed = audit && new Set<string>();
   const notices: Present[] = [];
@@ -507,14 +527,13 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       m.port.onmessage = ({ data }: MessageEvent<FollowItem[]>) => {
         if (lane === 0) for (const item of data) if (item.kind === 'failure') post({ type: 'followFailure', reason: item.reason });
         followed.land(data);
-        if (lane === 0) outbox.flush();
         wake();
       };
       return;
     case 'structureTaken': outbox.taken(); return;
-    case 'add': followed.add(m.id, m.branch, m.product); return;
+    case 'add': followed.add(m.id, m.branch); return;
     case 'remove': followed.remove(m.id); break;
-    case 'seek': followed.seek(m.branch, m.seek, m.retainThrough); break;
+    case 'seek': followed.seek(m.branch, m.seek, m.epoch, m.retainThrough); break;
     case 'bind': followed.bind(m.branch, m.route, m.seek); break;
     case 'options':
       rate = m.rate; lane = m.lane;
@@ -587,12 +606,15 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       const race = races.get(m.id), picture = race?.owner === m.owner && race.shown ? race.picture.inspect(m.target) : undefined;
       post({ type: 'raceInspection', id: m.id, owner: m.owner, request: m.request, seek: anchor.seek, picture }); return;
     }
-    case 'inspect': post({ type: 'inspection', request: m.request, update: followed.inspect(m.id) }); return;
+    case 'inspectPanel': {
+      const s = panels.get(m.id), shown = !!s && s.through !== undefined && !!s.date.drawn;
+      post({ type: 'panelInspection', id: m.id, owner: m.owner, request: m.request, values: shown ? s!.program.texts() : null }); return;
+    }
     case 'clock':
-      const speedChanged = anchor.speed !== m.anchor.speed;
-      if (speedChanged || anchor.seek !== m.anchor.seek || anchor.playing !== m.anchor.playing) responding = true;
-      if (!m.anchor.playing && (anchor.playing || anchor.position !== m.anchor.position)) followed.paused();
-      if (anchor.playing !== m.anchor.playing || !m.anchor.playing && anchor.position !== m.anchor.position) {
+      const speedChanged = anchor.playing && m.anchor.playing && anchor.speed !== m.anchor.speed;
+      const moved = !m.anchor.playing && anchor.position !== m.anchor.position;
+      if (speedChanged || moved || anchor.seek !== m.anchor.seek || anchor.playing !== m.anchor.playing) responding = true;
+      if (anchor.playing !== m.anchor.playing || moved) {
         for (const s of [...panels.values(), ...races.values(), ...tables.values()]) if (s.model.fixed === undefined) dirty.add(s);
       }
       if (speedChanged) {
@@ -617,18 +639,18 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       anchor = m.anchor; break;
     case 'surface': {
       let s = panels.get(m.id);
+      const size = { width: Math.max(1, Math.round(m.width * m.dpr)), height: Math.max(1, Math.round(m.height * m.dpr)), dpr: m.dpr };
       if (!s) {
         const ctx = m.canvas?.getContext('2d');
         if (!ctx || !m.canvas) { post({ type: 'failed', page: m.id, reason: 'Panel drawing surface unavailable' }); break; }
         const pointer = new HeldPointer(key => post({ type: 'hit', id: m.id, owner: s!.owner, key }));
-        panels.set(m.id, s = { kind: 'panel', id: m.id, owner: m.owner, model: m.model, canvas: m.canvas, ctx,
+        panels.set(m.id, s = { kind: 'panel', id: m.id, owner: m.owner, model: m.model, canvas: m.canvas, ctx, size,
           program: new PanelProgram(ctx), pointer, date: new PictureDate() });
       } else unbind(s);
-      const w = Math.max(1, Math.round(m.width * m.dpr)), h = Math.max(1, Math.round(m.height * m.dpr));
-      const prior = s.model;
+      const prior = s.model, sized = s.size;
       const keep = s.date.drawn && prior.view === m.model.view && prior.follow === m.model.follow &&
         prior.offset === m.model.offset && prior.fixed === m.model.fixed && prior.structure === m.model.structure &&
-        s.canvas.width === w && s.canvas.height === h && prior.cells.length === m.model.cells.length &&
+        sized.width === size.width && sized.height === size.height && sized.dpr === size.dpr && prior.cells.length === m.model.cells.length &&
         prior.cells.every((c, i) => {
           const next = m.model.cells[i]!;
           return (Object.keys(c) as (keyof typeof c)[]).every(key => c[key] === next[key]) &&
@@ -636,10 +658,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
         });
       if (keep) m.model.cells = prior.cells;
       else invalidate(s);
-      s.model = m.model; s.owner = m.owner; s.shown = undefined;
-      if (s.canvas.width !== w) s.canvas.width = w;
-      if (s.canvas.height !== h) s.canvas.height = h;
-      s.ctx.setTransform(m.dpr, 0, 0, m.dpr, 0, 0);
+      s.model = m.model; s.owner = m.owner; s.shown = undefined; s.size = size;
       bind(s); break;
     }
     case 'pointer': {

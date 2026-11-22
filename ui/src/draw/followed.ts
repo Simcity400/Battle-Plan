@@ -1,59 +1,66 @@
-import { DatedStore, type Lead } from '../dashboard/follow/datedStore.ts';
+import { DatedStore, type Coverage, type Lead } from '../dashboard/follow/datedStore.ts';
 import type { Release } from '../dashboard/follow/decode';
 import type { FollowEntry } from '../dashboard/follow/store';
 import type { FollowItem, FollowedPanel, FollowedAnswer } from '../dashboard/follow/message';
-import { rowKey } from '../dashboard/follow/message.ts';
-import { panelStructure } from './panels/views.ts';
 import { liveKey } from '../charts/live.ts';
 import { sectionOf, sectionValues, sectionGroups } from '../dashboard/follow/liveCells.ts';
 
-export interface PageReading {
-  id: number; seek: number; hour: number; through: number; coverage?: { start: number; through: number };
-  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
+export type Values = Map<string, number | string>;
+
+export interface WirePanel { refused: string | null; bytes?: Uint8Array; data?: unknown }
+
+export interface TimedReading {
+  due: number; hour: number; coverage?: Coverage;
+  panel: WirePanel | null; answer: FollowedAnswer | null; values: Values | null;
 }
 
-export interface FollowUpdate { now: PageReading; ahead: PageReading[] }
+export interface FollowUpdate {
+  id: number; epoch: number; keep: number;
+  put?: TimedReading[]; cover?: [due: number, through: number][]; drop?: number[];
+}
 
 export interface Answered { answer: FollowedAnswer; date: { since: number; through: number } }
 
+interface Held { panel: FollowedPanel | null; answer: FollowedAnswer | null; values: Values | null; hour: number; start?: number; through?: number }
+
+const sameValues = (a: Values | null, b: Values | null) => {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const [key, value] of a) if (b.get(key) !== value) return false;
+  return true;
+};
+
 export class Followed {
-  private readonly pending = new Set<number>();
   private readonly branches = new Map<number, string>();
-  private readonly seeks = new Map<string, number>();
-  private readonly products = new Map<number, string>();
-  private readonly sent = new Map<number, readonly unknown[]>();
+  private readonly epochs = new Map<string, number>();
   private readonly store: DatedStore;
   private readonly entries = new Map<number, FollowEntry>();
-  private readonly shapes = new WeakMap<object, string>();
-  private readonly leads = new WeakMap<Lead, PageReading>();
+  private readonly sent = new Map<number, Map<number, Held>>();
+  private readonly wires = new WeakMap<FollowedPanel, WirePanel>();
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
-    this.store = new DatedStore(entry => { this.pending.add(entry.id); changed?.(entry.id); }, release, entry => this.pending.add(entry.id));
+    this.store = new DatedStore(entry => changed?.(entry.id), release);
   }
 
   get size() { return this.entries.size; }
 
-  add(id: number, branch: string, product = '') {
-    this.products.set(id, product);
+  add(id: number, branch: string) {
     const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
     this.branches.set(id, branch);
     this.entries.set(id, entry);
     this.store.add(entry, branch);
   }
   remove(id: number) {
-    this.pending.delete(id);
-    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
+    this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
-    if (branch && ![...this.branches.values()].includes(branch)) this.seeks.delete(branch);
+    if (branch && ![...this.branches.values()].includes(branch)) this.epochs.delete(branch);
   }
-  seek(branch: string, seek: number, retainThrough?: number) {
+  seek(branch: string, seek: number, epoch: number, retainThrough?: number) {
     for (const [id, owner] of this.branches) if (owner === branch) this.sent.delete(id);
-    this.seeks.set(branch, seek); this.store.seek(branch, seek, retainThrough);
+    this.epochs.set(branch, epoch); this.store.seek(branch, seek, retainThrough);
   }
-  bind(branch: string, route: number, seek: number) {
-    this.seeks.set(branch, seek); this.store.bind(branch, route, seek);
-  }
+  bind(branch: string, route: number, seek: number) { this.store.bind(branch, route, seek); }
   land(items: readonly FollowItem[]) {
     for (const item of items) {
       if (item.kind !== 'failure') { this.store.accept(item); continue; }
@@ -67,88 +74,75 @@ export class Followed {
     const entry = this.entries.get(id);
     return entry && this.store.receivedThrough(entry);
   }
-  snapshot(id: number): PageReading | undefined {
-    const entry = this.entries.get(id);
-    if (!entry) return;
-    const { hour, panel, answer } = entry;
-    return { id, hour, through: this.store.eligibleThrough(entry), coverage: this.store.coverage(entry) ?? undefined, seek: this.seekOf(id),
-      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel) };
-  }
 
-  private seekOf(id: number) { return this.seeks.get(this.branches.get(id)!) ?? 0; }
 
-  private values(id: number, panel?: FollowedPanel) {
-    const entry = this.entries.get(id)!;
+  private values(entry: FollowEntry, panel?: FollowedPanel) {
     const section = sectionOf(panel?.data);
-    const values = new Map<string, number | string>();
-    if (section) {
-      const live = sectionValues(section, sectionGroups(section, key => this.store.group(entry, key)));
-      for (let i = 0; i < section.cells.length; i += 3 + section.cells[i + 2]! * 3) {
-        const key = liveKey(section.rows[section.cells[i]!]!, section.kinds[section.cells[i + 1]!]!.id);
-        values.set(key, live.get(key) ?? live.missing(key));
+    if (!section) return null;
+    const values: Values = new Map();
+    const live = sectionValues(section, sectionGroups(section, key => this.store.group(entry, key)));
+    for (let i = 0; i < section.cells.length; i += 3 + section.cells[i + 2]! * 3) {
+      const key = liveKey(section.rows[section.cells[i]!]!, section.kinds[section.cells[i + 1]!]!.id);
+      values.set(key, live.get(key) ?? live.missing(key));
+    }
+    return values;
+  }
+
+  private wire(panel: FollowedPanel | undefined): WirePanel | null {
+    if (!panel) return null;
+    let wire = this.wires.get(panel);
+    if (!wire) this.wires.set(panel, wire = panel.bytes ? { refused: panel.refused, bytes: panel.bytes.slice() } : { refused: panel.refused, data: panel.data });
+    return wire;
+  }
+
+  private timeline(entry: FollowEntry, aheadThrough: number): Map<number, Held> {
+    const coverage = this.store.coverage(entry) ?? undefined, due = this.store.due(entry);
+    const out = new Map<number, Held>([[due, { panel: entry.panel ?? null, answer: entry.answer ?? null, values: this.values(entry, entry.panel),
+      hour: entry.hour, start: coverage?.start, through: coverage?.through }]]);
+    for (const lead of this.store.ahead(entry, aheadThrough)) if (lead.hour > due)
+      out.set(lead.hour, { panel: lead.panel, answer: null, values: this.values(entry, lead.panel), hour: lead.hour, start: lead.hour, through: lead.hour });
+    return out;
+  }
+
+  private reading(due: number, held: Held): TimedReading {
+    return { due, hour: held.hour, ...(held.start !== undefined && { coverage: { start: held.start, through: held.through! } }),
+      panel: this.wire(held.panel ?? undefined), answer: held.answer, values: held.values };
+  }
+
+  *updates(aheadThrough: number): Iterable<FollowUpdate> {
+    for (const [id, entry] of this.entries) {
+      const timeline = this.timeline(entry, aheadThrough);
+      let mirror = this.sent.get(id);
+      if (!mirror) this.sent.set(id, mirror = new Map());
+      const keep = this.store.due(entry), put: TimedReading[] = [], cover: [number, number][] = [], drop: number[] = [];
+      let kept = false;
+      for (const due of mirror.keys()) if (due < keep) { mirror.delete(due); kept = true; }
+      for (const [due, held] of timeline) {
+        const was = mirror.get(due);
+        if (was && was.panel === held.panel && was.answer === held.answer && was.hour === held.hour && was.start === held.start && sameValues(was.values, held.values)) {
+          if (was.through !== held.through) { cover.push([due, held.through!]); was.through = held.through; }
+          continue;
+        }
+        put.push(this.reading(due, held));
+        mirror.set(due, held);
       }
+      for (const due of mirror.keys()) if (!timeline.has(due)) { drop.push(due); mirror.delete(due); }
+      if (!kept && !put.length && !cover.length && !drop.length) continue;
+      yield { id, epoch: this.epochs.get(this.branches.get(id)!) ?? 0, keep, ...(put.length && { put }), ...(cover.length && { cover }), ...(drop.length && { drop }) };
     }
-    return section ? values : null;
   }
 
-  private shape(id: number, panel: FollowedPanel | undefined, answer: FollowedAnswer | undefined, hour: number) {
-    const key = panel ?? (answer?.kind === 'notRecorded' ? undefined : answer);
-    let shape = key && this.shapes.get(key);
-    if (shape !== undefined) return shape;
-    if (panel) {
-      try { shape = panel.refused ?? panelStructure(this.products.get(id)!, panel.data, hour); }
-      catch (error) { shape = String(error); }
-    } else if (answer && answer.kind !== 'notRecorded') {
-      shape = JSON.stringify(Array.from({ length: answer.rows }, (_, row) => String(rowKey(answer, row))).sort());
-    } else return answer?.reason ?? 'pending';
-    this.shapes.set(key!, shape);
-    return shape;
+  ahead(id: number): readonly Lead[] {
+    const entry = this.entries.get(id);
+    return entry ? this.store.ahead(entry) : [];
   }
 
-  private steps(entry: FollowEntry) {
-    const now = this.shape(entry.id, entry.panel, entry.answer, entry.hour), shapes: unknown[] = [now], leads: Lead[] = [];
-    let last = now;
-    for (const lead of this.store.ahead(entry)) {
-      if (lead.hour <= entry.hour) continue;
-      const shape = this.shape(entry.id, lead.panel, undefined, lead.hour);
-      if (shape === last) continue;
-      shapes.push(lead.hour, shape); leads.push(lead);
-      last = shape;
-    }
-    return { shapes, leads };
-  }
-
-  private update(id: number, leads: readonly Lead[]): FollowUpdate {
-    const ahead = leads.map(lead => {
-      let reading = this.leads.get(lead);
-      if (!reading) this.leads.set(lead, reading = { id, seek: this.seekOf(id), hour: lead.hour, through: lead.hour,
-        coverage: { start: lead.hour, through: lead.hour }, panel: lead.panel, values: this.values(id, lead.panel) });
-      return reading;
-    });
-    return { now: this.snapshot(id)!, ahead };
-  }
-
-  *structures(playing: boolean): Iterable<FollowUpdate> {
-    for (const id of this.pending) {
-      const entry = this.entries.get(id);
-      if (!entry) continue;
-      const { shapes, leads } = this.steps(entry), last = this.sent.get(id);
-      this.sent.set(id, shapes);
-      if (playing && last?.length === shapes.length && last.every((shape, at) => shape === shapes[at])) continue;
-      yield this.update(id, leads);
-    }
-    this.pending.clear();
-  }
-
-  inspect(id: number): FollowUpdate | undefined {
+  current(id: number) {
     const entry = this.entries.get(id);
     if (!entry) return;
-    const { shapes, leads } = this.steps(entry);
-    this.sent.set(id, shapes);
-    return this.update(id, leads);
+    const coverage = this.store.coverage(entry) ?? undefined;
+    return { hour: entry.hour, coverage, panel: entry.panel ?? null, answer: entry.answer ?? null, values: this.values(entry, entry.panel) };
   }
-
-  paused() { for (const id of this.entries.keys()) this.pending.add(id); }
 
   cellHour(id: number) {
     const entry = this.entries.get(id);
@@ -170,6 +164,10 @@ export class Followed {
     const entry = this.entries.get(id);
     const section = entry?.panel && sectionOf(entry.panel.data);
     return entry && section ? sectionValues(section, sectionGroups(section, key => this.store.group(entry, key))) : null;
+  }
+  covers(id: number, hour: number) {
+    const entry = this.entries.get(id), date = entry && this.store.coverage(entry);
+    return !!date && date.start <= hour && hour <= date.through;
   }
   read(id: number) {
     const entry = this.entries.get(id);

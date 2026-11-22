@@ -57,6 +57,7 @@ import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measu
 import type { MeasureParts, PartValues } from './measureParts';
 import { PartFollows, PartsHead, usePartStates } from './PartFollows';
 import PartsBreakdown from './PartsBreakdown';
+import '../../draw/held.css';
 
 const holds = (summary: ChartSummary) => summary.buckets.some(bucket => bucket !== null && bucket.maxValue > 0);
 
@@ -110,6 +111,7 @@ export interface MeasureRaceProps extends Pick<WidgetProps, 'widget' | 'runtime'
   options: Readonly<Record<string, OptionValue>>;
   label: string; icon: IconName;
   arsenal?: HeadProduct<NuclearArsenalReply>;
+  held?: boolean;
   format: (raw: string, decimals: number) => string;
   formatValue: (value: number) => string;
   onPick?: (hour: number, tag?: string) => void;
@@ -145,7 +147,7 @@ function joinedSummaries(first: Live<ReadonlyMap<string, TiledLine> | null> | nu
   };
 }
 
-export default function MeasureRace({ arsenal, widget, runtime, active, countrySlot = null, measure, decimals, view, options, label, icon, format, formatValue, onPick, children, onWarnings, note,
+export default function MeasureRace({ arsenal, held = false, widget, runtime, active, countrySlot = null, measure, decimals, view, options, label, icon, format, formatValue, onPick, children, onWarnings, note,
   parts, split = false, details, positiveOnly = false, breakdown = true, second: secondMeasure, mix, tooltip: ownTooltip, lineTooltip, onHover, beforeChart }: MeasureRaceProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
@@ -368,7 +370,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
 
   const attachRoot = useCallback((element: HTMLDivElement | null) => { setRoot(element); anchor.current = element; arsenal?.root(element); }, [arsenal?.root]);
   if (pinnedParts || view === 'mix') {
-    return <div className="parts-race" ref={attachRoot}>{follows}
+    return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}
       {pinnedParts && countrySlot && track ? createPortal(<DatedCountryChip label={breakdownTag ? headerLabels.labelAt(breakdownHour)(breakdownTag) : null}
         hour={breakdownHour} live={breakdownFollows ? headDate : undefined} reason={breakdownTag ? null : 'Choose a country in the widget settings.'} />, countrySlot) : null}
       {!track ? state : !breakdownTag ? <WidgetState kind="empty" icon={icon} message="Choose a country in the widget settings." /> : breakdownOf(breakdownTag, false)}
@@ -382,7 +384,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     perfLog?.present(widget.id, 'nuclear-arsenal', at === null ? null : { since: at - axisOffset, through: at - axisOffset }, head, 'race');
   } : undefined;
   const race = (visible: boolean) => <CountryRaceView arsenal={arsenal && { ...selection, exactRead: arsenal.exactRead, offset: axisOffset, follow: arsenal.workerFollow, reply: arsenal.workerFollow === undefined ? arsenal.data : undefined,
-      date: arsenal.at === null ? undefined : { since: arsenal.at, through: arsenal.at }, fixed: following ? undefined : moment - axisOffset }} runtime={runtime} track={track} active={active && visible} state={state} present={present} options={options}
+      date: arsenal.at === null ? undefined : { since: arsenal.at, through: arsenal.at }, asked: following && arsenal.workerFollow === undefined, fixed: following ? undefined : moment - axisOffset }} runtime={runtime} track={track} active={active && visible} state={state} present={present} options={options}
     view={lineMix ? 'mix' : raceView ?? 'race'} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} liveRanked={liveRanked ?? undefined} lines={lines}
     countryTags={arsenal ? entries.map(row => row.tag) : raceLookTags(raceView === 'race', liveRanked ? followedTags : null, lineTags)}
@@ -397,9 +399,9 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     presentation={{ exact: true, held: false, lineColourHours: 'labels', windowedLegend: true, linePadding: CHART_LAYOUT.countryEndLabels,
       raceEmptyState: false, resetTimeView: true }}
     tooltip={tooltip} />;
-  if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot}>{follows}{race(true)}{children}</div>;
+  if (!parts || !breakdown || !track) return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}{race(true)}{children}</div>;
   const drillTitle = drill.breakdown && breakdownName ? `${breakdownName}: ${parts.label.toLowerCase()}` : parts.label;
-  return <div className="parts-race" ref={attachRoot}>{follows}
+  return <div className="parts-race" ref={attachRoot} data-held={held ? 'stale' : undefined} aria-busy={held || undefined}>{follows}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={anchor} title={drillTitle}
       day={dayLabel(breakdownHour)} following={drill.follow} canFollow={following}
       returnFocus=".country-race-chart canvas" onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}

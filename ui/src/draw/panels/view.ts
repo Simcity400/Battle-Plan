@@ -8,7 +8,7 @@ export interface RowCell {
 }
 export interface PanelModel {
   widget?: string;
-  view: string; follow?: number; fixed?: number; offset: number; date?: PictureInterval;
+  view: string; follow?: number; fixed?: number; offset: number; date?: PictureInterval; asked?: boolean;
   structure: string; cells: RowCell[];
   reply?: unknown; clocked?: boolean;
 }

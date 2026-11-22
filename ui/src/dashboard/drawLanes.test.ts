@@ -54,12 +54,14 @@ test('a surface drawn again with more cells weighs its new picture', () => {
   assert.deepEqual([types(0), types(1)], [['surface', 'surface'], ['surface', 'surface', 'surface']]);
 });
 
-test('follows, the clock and options reach every lane; a follow inspection the first alone', () => {
+test('follows, the clock and options reach every lane; a panel inspection the lane that paints it alone', () => {
   const { draw, types } = lanes(3);
   draw.post({ type: 'add', id: 9, branch: 'b' });
   draw.post({ type: 'clock', anchor: { at: 0, position: 0, playing: false, speed: 1, lastHour: 0, seek: 0, generation: 0 } } as ToWorker);
-  draw.post({ type: 'inspect', id: 9, request: 1 });
-  assert.deepEqual([types(0), types(1), types(2)], [['add', 'clock', 'inspect'], ['add', 'clock'], ['add', 'clock']]);
+  draw.post({ type: 'surface', id: 4, owner: 1, width: 1, height: 1, dpr: 1, model: { view: 'v', offset: 0, structure: '', cells: [] } });
+  draw.post({ type: 'surface', id: 5, owner: 1, width: 1, height: 1, dpr: 1, model: { view: 'v', offset: 0, structure: '', cells: [] } });
+  draw.post({ type: 'inspectPanel', id: 5, owner: 1, request: 1 });
+  assert.deepEqual([types(0), types(1), types(2)], [['add', 'clock', 'surface'], ['add', 'clock', 'surface', 'inspectPanel'], ['add', 'clock']]);
 });
 
 test('a picture audit is answered once, from every lane’s records, done when every lane is', () => {
@@ -71,14 +73,32 @@ test('a picture audit is answered once, from every lane’s records, done when e
   assert.deepEqual(heard, [{ type: 'audit', records: [{ t: 'a' }, { t: 'b' }], done: false }]);
 });
 
-test('a surface that fails during a picture audit fails the audit, and still reaches its own surface', () => {
-  const { draw, heard } = lanes(2), told: string[] = [];
-  draw.listen(4, notice => told.push(notice.type));
+test('a surface that fails at any stage of a picture audit fails it, reaches only its own surface, and tells no other listener', () => {
+  for (const stage of ['before the first batch', 'during a batch', 'between batches'] as const) {
+    const { draw, heard } = lanes(2), told: string[] = [];
+    draw.listen(4, notice => told.push(notice.type));
+    draw.post({ type: 'audit', start: true });
+    draw.receive(0, { type: 'audit', records: [], done: true }); draw.receive(1, { type: 'audit', records: [], done: true });
+    const fail = () => draw.receive(1, { type: 'failed', page: 4, reason: 'Panel drawing surface unavailable' });
+    const batch = (done: boolean) => {
+      draw.post({ type: 'audit', start: false, limit: 10 });
+      if (stage === 'during a batch' && !done) fail();
+      draw.receive(0, { type: 'audit', records: [{ t: 'a' } as never], done }); draw.receive(1, { type: 'audit', records: [], done });
+    };
+    if (stage === 'before the first batch') fail();
+    batch(false);
+    if (stage === 'between batches') fail();
+    batch(true);
+    const failed = heard.filter(message => message.type === 'audit' && message.failure !== undefined);
+    assert.ok(failed.length > 0 && heard.every(message => message.type === 'audit'), `${stage}: ${JSON.stringify(heard)}`);
+    assert.deepEqual(told, ['failed'], stage);
+  }
+  const { draw, heard } = lanes(2);
+  draw.post({ type: 'audit', start: true });
+  draw.receive(0, { type: 'audit', records: [], done: true }); draw.receive(1, { type: 'audit', records: [], done: true });
   draw.post({ type: 'audit', start: false, limit: 10 });
-  draw.receive(1, { type: 'failed', page: 4, reason: 'Panel drawing surface unavailable' });
-  draw.receive(0, { type: 'audit', records: [], done: true });
-  draw.receive(1, { type: 'audit', records: [], done: true });
-  assert.deepEqual([heard, told], [[{ type: 'failed', page: 4, reason: 'Panel drawing surface unavailable' }], ['failed']]);
+  draw.receive(0, { type: 'audit', records: [], done: true }); draw.receive(1, { type: 'audit', records: [], done: true });
+  assert.equal(heard.filter(message => message.type === 'audit' && message.failure !== undefined).length, 0, 'an audit with no failure succeeds');
 });
 
 test('page-wide news comes from the first lane alone; a surface’s from any', () => {

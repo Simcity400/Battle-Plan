@@ -10,16 +10,18 @@ import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsena
 import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
 import { noticeMatchesAnchor, shownTime } from '../../draw/anchorGeneration.ts';
+import { heldPicture } from '../../draw/held.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
-  const container = useRef<HTMLDivElement>(null), extent = useRef<HTMLDivElement>(null), ranking = useRef<HTMLParagraphElement>(null);
+  const root = useRef<HTMLDivElement>(null), container = useRef<HTMLDivElement>(null), extent = useRef<HTMLDivElement>(null), ranking = useRef<HTMLParagraphElement>(null);
   const description = useRef<HTMLParagraphElement>(null), latest = useRef(props), update = useRef<() => void>(undefined);
   const owner = useId(), widget = measuredWidget();
   latest.current = props;
   useLayoutEffect(() => {
     const scroller = container.current;
-    if (!scroller || !props.active) return;
+    const region = root.current;
+    if (!scroller || !region || !props.active) return;
     const canvas = document.createElement('canvas');
     canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-describedby', owner + '-ranking');
     canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
@@ -27,15 +29,19 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const offscreen = canvas.transferControlToOffscreen(), id = surfaceId(), clock = props.clock;
     const stopClock = drawClock(clock);
     let point: { x: number; y: number } | undefined;
-    let version = 0, ready = false, first = true, selected = -1, ticket = 0;
-    let resolve: ((p?: RaceInspection) => void) | undefined;
+    let version = 0, ready = false, first = true, restoring = false, selected = -1, ticket = 0, chosen: string | undefined;
+    let resolve: ((p?: RaceInspection) => void) | undefined, pointed = false;
     const visible = (show: boolean) => {
       canvas.style.visibility = show ? '' : 'hidden';
       if (ready !== show) perfLog?.ink(id, show);
       ready = show;
     };
-    const clear = () => { visible(false); point = undefined; selected = -1; resolve?.(); resolve = undefined; hideTooltip(owner);
+    const describe = (on: boolean) => { if (on) canvas.setAttribute('aria-describedby', owner + '-ranking'); else canvas.removeAttribute('aria-describedby'); };
+    const silence = () => { resolve?.(); resolve = undefined; hideTooltip(owner);
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
+    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; chosen = undefined; restoring = false; silence(); };
+    const hold = () => { describe(false); silence(); restoring = true; };
+    const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, hold);
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
       if (!width || !height) { clear(); return; }
@@ -61,14 +67,14 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       first = false; canvas.setAttribute('aria-label', latest.current.label);
     };
     update.current = send;
-    const stopPage = onDraw(m => { if (m.type === 'failed' || m.type === 'followFailure') clear(); });
+    const stopPage = onDraw(m => { if (m.type === 'failed' && m.page === -1 || m.type === 'followFailure') clear(); });
     const stop = onSurface(id, m => {
       if (m.type === 'failed') { clear(); return; }
       if ((m.type !== 'racePresent' && m.type !== 'raceInspection' && m.type !== 'raceHover') || m.id !== id || m.owner !== version || m.seek !== clock.getSnapshot().seekSequence ||
           (m.type === 'racePresent' && !noticeMatchesAnchor(m.generation, clockGeneration(clock)))) return;
       if (m.type === 'raceHover') {
         if (!point) return;
-        const content = m.item && latest.current.tooltip?.(m.item.key, m.item);
+        const content = !held.stale && m.item && latest.current.tooltip?.(m.item.key, m.item);
         if (content && m.item) showTooltip(owner, content, point.x, point.y, m.item.key);
         else hideTooltip(owner);
         if (description.current) description.current.textContent = content ? tooltipText(content) : '';
@@ -76,22 +82,37 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       }
       if (m.type === 'raceInspection') { if (m.request === ticket) { resolve?.(m.picture); resolve = undefined; } return; }
       const clockHour = clock.positionAt(shownTime(m.shown));
-      if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour)) ||
-        m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
-      else visible(true);
+      const ahead = latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour);
+      if (m.hour === null && m.waiting && held.stale && !ahead) return;
+      if (m.hour === null || ahead || m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
+      else {
+        held.present(m.holdsThrough); visible(true); describe(true);
+        if (restoring && document.activeElement !== canvas) restoring = false;
+        if (restoring) {
+          const b = canvas.getBoundingClientRect();
+          void act(chosen === undefined ? undefined : { key: chosen }, 'read', b.right, b.top + b.height / 2);
+        }
+      }
     });
-    const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
-      resolve?.(); if (!ready) { done(undefined); return; }
-      resolve = done; drawPost({ type: 'inspectRace', id, owner: version, request: ++ticket, target });
+    const inspect = (target: RaceTarget | undefined, pointer: boolean) => new Promise<RaceInspection | undefined>(done => {
+      resolve?.(); if (!ready || held.stale) { done(undefined); return; }
+      resolve = done; pointed = pointer; drawPost({ type: 'inspectRace', id, owner: version, request: ++ticket, target });
     });
-    const act = async (target: RaceTarget | undefined, action: string, x: number, y: number) => {
-      const pic = await inspect(target), p = latest.current;
+    const act = async (target: RaceTarget | undefined, action: string, x: number, y: number, pointer = false) => {
+      const pic = await inspect(target, pointer), p = latest.current;
       if (!pic) return;
+      restoring = false;
       if (ranking.current) ranking.current.textContent = raceText(pic.items, p.name) || p.empty || '';
       if (extent.current) extent.current.style.height = `calc(${raceHeight(pic.items.length)}px - 100%)`;
-      if (!pic.item) { hideTooltip(owner); return; }
+      if (!pic.item) {
+        hideTooltip(owner);
+        if (!target || !('key' in target)) return;
+        selected = -1; chosen = undefined;
+        if (description.current) description.current.textContent = `${p.name(target.key)} is no longer in the ranking`;
+        return;
+      }
       const item = pic.item;
-      selected = pic.items.findIndex(i => i.key === item.key);
+      selected = pic.items.findIndex(i => i.key === item.key); chosen = item.key;
       if (action === 'pick') p.onPick?.(item.key, item);
       else if (action === 'menu') p.onContextMenu?.(item.key, x, y, item);
       else {
@@ -107,32 +128,35 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
         return;
       }
       if (event.type === 'contextmenu') event.preventDefault();
-      void act({ x: event.clientX - b.left, y: event.clientY - b.top }, event.type === 'click' ? 'pick' : event.type === 'contextmenu' ? 'menu' : 'tip', event.clientX, event.clientY);
+      void act({ x: event.clientX - b.left, y: event.clientY - b.top }, event.type === 'click' ? 'pick' : event.type === 'contextmenu' ? 'menu' : 'tip', event.clientX, event.clientY, true);
     };
-    const leave = () => { point = undefined; drawPost({ type: 'racePointer', id, owner: version }); ++ticket; resolve?.(); resolve = undefined; hideTooltip(owner); };
+    const cancel = () => { ++ticket; resolve?.(); resolve = undefined; };
+    const leave = () => {
+      point = undefined; drawPost({ type: 'racePointer', id, owner: version });
+      if (document.activeElement === canvas) { if (pointed) cancel(); return; }
+      cancel(); hideTooltip(owner);
+    };
+    const blur = () => { point = undefined; drawPost({ type: 'racePointer', id, owner: version }); restoring = false; cancel(); hideTooltip(owner); };
     const focus = () => { void act(undefined, 'read', 0, 0); };
     const key = (e: KeyboardEvent) => {
       const b = canvas.getBoundingClientRect();
-      if (e.key === 'Escape') { selected = -1; leave(); return; }
+      if (e.key === 'Escape') { selected = -1; chosen = undefined; restoring = false; cancel(); hideTooltip(owner); return; }
       const action = e.key === 'Enter' || e.key === ' ' ? 'pick' : e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey) ? 'menu' : 'tip';
       const index = e.key === 'Home' ? 0 : e.key === 'End' ? Number.MAX_SAFE_INTEGER : e.key === 'ArrowDown' ? selected + 1 : e.key === 'ArrowUp' ? Math.max(0, selected - 1) : selected;
       if (action === 'tip' && !['Home','End','ArrowDown','ArrowUp'].includes(e.key) || index < 0) return;
       e.preventDefault(); void act({ index }, action, b.right, b.top + b.height / 2);
     };
     const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
-    const stopClockAnchor = clock.onAnchor((previous, next) => {
-      if (latest.current.model.fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) clear();
-    });
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);
-    canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
+    canvas.addEventListener('focus', focus); canvas.addEventListener('blur', blur); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
     clear(); send();
-    return () => { clear(); stop(); stopPage(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
+    return () => { clear(); stop(); stopPage(); stopClock(); anchor(); held.close(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
       drawPost({ type: 'closeRace', id }); update.current = undefined; };
   }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);
-  return <div className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
+  return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>
     <p ref={ranking} id={owner + '-ranking'} className="sr-only">{raceText(props.items, props.name) || props.empty}</p>
     <p ref={description} className="sr-only" aria-live="polite" /></div>;

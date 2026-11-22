@@ -52,8 +52,8 @@ export const surfaceId = () => nextSurface++;
 export function capturePictures(start: boolean) {
   return new Promise<import('../draw/notifications').DrawSample[]>((resolve, reject) => {
     const off = onDraw(message => {
-      if (message.type === 'audit') { off(); resolve(message.records); }
-      else if (message.type === 'failed') { off(); reject(new Error(message.reason)); }
+      if (message.type === 'audit' && message.failure === undefined) { off(); resolve(message.records); }
+      else if (message.type === 'audit' || message.type === 'failed') { off(); reject(new Error(message.type === 'audit' ? message.failure : message.reason)); }
     });
     drawPost({ type: 'audit', start });
   });
@@ -62,8 +62,8 @@ export function capturePictures(start: boolean) {
 export function capturePicturesBatch(limit: number) {
   return new Promise<{ records: import('../draw/notifications').DrawSample[]; done: boolean }>((resolve, reject) => {
     const off = onDraw(message => {
-      if (message.type === 'audit') { off(); resolve({ records: message.records, done: message.done }); }
-      else if (message.type === 'failed') { off(); reject(new Error(message.reason)); }
+      if (message.type === 'audit' && message.failure === undefined) { off(); resolve({ records: message.records, done: message.done }); }
+      else if (message.type === 'audit' || message.type === 'failed') { off(); reject(new Error(message.type === 'audit' ? message.failure : message.reason)); }
     });
     drawPost({ type: 'audit', start: false, limit });
   });

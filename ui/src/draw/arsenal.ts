@@ -14,7 +14,7 @@ import { pictureHour } from './pictureDate.ts';
 import type { PictureInterval } from './pictureDate';
 
 export interface ArsenalFeed extends ArsenalSelection {
-  follow?: number; offset: number; fixed?: number; date?: PictureInterval; reply?: NuclearArsenalReply;
+  follow?: number; offset: number; fixed?: number; date?: PictureInterval; asked?: boolean; reply?: NuclearArsenalReply;
 }
 export interface ArsenalModel extends ArsenalFeed {
   widget?: string;
@@ -57,8 +57,7 @@ export class ArsenalPicture {
     if (!ctx) throw new Error('The Nuclear arsenal drawing surface is unavailable');
     this.ctx = ctx as unknown as CanvasRenderingContext2D;
   }
-  clear() {
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  forget() {
     this.state = this.layout = this.reply = this.day = this.hour = this.position = undefined;
     this.invalid = true;
     this.notice = undefined;
@@ -93,7 +92,7 @@ export class ArsenalPicture {
   draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, date: PictureInterval | undefined, head: number, fixed = model.fixed) {
     this.changed = false;
     const position = pictureHour(date, head + model.offset, fixed === undefined ? undefined : fixed + model.offset);
-    if (!reply || position === null) { if (this.state) this.clear(); return null; }
+    if (!reply || position === null) { if (this.state) this.forget(); return null; }
     const { tokens, width, height, dpr } = model, ctx = this.ctx;
     const previous = this.state, oldLayout = this.layout;
     const items = !this.invalid && previous && this.reply === reply && !model.membership ? previous.items :

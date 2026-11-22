@@ -14,8 +14,10 @@ export class PanelProgram {
 
   clear() {
     for (const cell of this.drawn) this.erase(cell);
-    this.drawn = []; this.values = [];
+    this.reset();
   }
+
+  reset() { this.drawn = []; this.values = []; }
 
   write(cells: readonly RowCell[], values: ReadonlyMap<string, string>) {
     if (cells !== this.drawn) this.clear();
@@ -41,6 +43,7 @@ export class PanelProgram {
     this.drawn = cells;
     return changed;
   }
+  texts(): [key: string, text: string][] { return this.drawn.map((cell, i) => [cell.key, this.values[i] ?? cell.text]); }
   snapshot() {
     return this.drawn.map((cell, i) => {
       const value = this.values[i];

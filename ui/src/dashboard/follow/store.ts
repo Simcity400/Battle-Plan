@@ -1,5 +1,4 @@
 import { canonical } from './canonical.ts';
-import type { PageReading } from '../../draw/followed';
 import { perfLog } from '../../shell/perf.ts';
 import { busy } from '../../shell/busy.ts';
 import { engine } from '../../engine/frame.ts';
@@ -7,13 +6,20 @@ import type { FollowedAnswer, FollowedPanel } from './message.ts';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
+export interface PageReading {
+  id: number; hour: number; through: number; coverage?: { start: number; through: number };
+  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
+}
+
 export interface FollowTransport {
   follow(id: number, query: FollowQuery): Promise<Availability> | void;
   unfollow(id: number): void;
-  listen(receive: (reading: PageReading) => void, fail: (reason: string) => void): () => void;
+  listen(receive: (reading: PageReading, quiet: boolean) => void, fail: (reason: string) => void): () => void;
 }
 
 export type Availability = { available: true } | { available: false; reason: string };
+
+export interface Landed { panel: FollowedPanel; values?: Map<string, number | string>; hour: number; through: number }
 
 export interface FollowEntry {
   readonly id: number;
@@ -23,12 +29,16 @@ export interface FollowEntry {
   reason?: string;
   answer: FollowedAnswer | undefined;
   panel?: FollowedPanel;
+  landed?: Landed | null;
   hour: number;
   through: number;
   version: number;
 }
 
 export const shownThrough = (entry: FollowEntry): number | null => entry.answer === undefined && entry.panel === undefined ? null : entry.through;
+
+export const showsAt = (reading: Pick<PageReading, 'panel' | 'answer' | 'coverage'>, paused: number | null) => paused === null || !reading.panel && !reading.answer
+  || !!reading.coverage && reading.coverage.start <= paused && paused <= reading.coverage.through;
 
 export function queryBranch(query: FollowQuery): string | null {
   const branch = query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId;
@@ -89,7 +99,7 @@ export class FollowStore {
   }
 
   private listen() {
-    this.stop ??= this.transport.listen(reading => this.receive(reading), reason => {
+    this.stop ??= this.transport.listen((reading, quiet) => this.receive(reading, quiet), reason => {
       this.failed = reason;
       for (const held of this.byId.values()) this.settle(held, { available: false, reason });
     });
@@ -157,24 +167,28 @@ export class FollowStore {
     return () => { listeners.delete(changed); if (!listeners.size) this.liveListeners.delete(entry.id); };
   }
 
-  seek(branch: string, retainThrough?: number) {
-    if (retainThrough !== undefined) return;
+  seek(branch: string, retainThrough?: number, stepped = false) {
+    if (retainThrough !== undefined && !stepped) return;
     for (const held of this.byId.values()) if (held.branch === branch) {
       const entry = held.entry;
+      if (retainThrough !== undefined && showsAt(entry, retainThrough)) continue;
       entry.coverage = undefined;
       entry.panel = undefined; entry.answer = undefined; entry.values = undefined;
+      if (retainThrough === undefined && entry.landed) entry.landed = null;
       this.changed(held);
     }
   }
 
-  private receive(reading: PageReading) {
+  private receive(reading: PageReading, quiet = false) {
     const held = this.byId.get(reading.id);
     if (!held || held.entry.status === 'unavailable') return;
     const entry = held.entry;
     entry.hour = reading.hour; entry.through = reading.through; entry.coverage = reading.coverage;
+    if (quiet) { if (entry.landed && entry.landed.panel === entry.panel) entry.landed.through = entry.through; return; }
     if (reading.panel !== undefined) entry.panel = reading.panel ?? undefined;
     if (reading.answer !== undefined) entry.answer = reading.answer ?? undefined;
     if (reading.values !== undefined) entry.values = reading.values ?? undefined;
+    if (entry.panel) entry.landed = { panel: entry.panel, values: entry.values, hour: entry.hour, through: entry.through };
     this.changed(held);
   }
 
@@ -202,6 +216,7 @@ export class FollowStore {
       held.entry.answer = undefined;
       held.entry.panel = undefined;
       held.entry.values = undefined;
+      held.entry.landed = undefined;
       this.tellLive(held);
     }
     held.entry.status = availability.available ? 'followed' : 'unavailable';

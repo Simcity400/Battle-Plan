@@ -4,10 +4,11 @@ import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
+import { heldPicture } from './held.ts';
 import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
-  own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void) {
+  own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void, hold: () => void) {
   if (typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== 'function') return;
   const id = surfaceId(), canvas = document.createElement('canvas');
   content.setAttribute('data-ink-content', '');
@@ -17,13 +18,14 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   content.append(canvas);
   const offscreen = canvas.transferControlToOffscreen();
   const stopClock = drawClock(clock);
-  let owner = 0, fixed: number | undefined, closed = false, first = true;
+  let owner = 0, fixed: number | undefined, closed = false, first = true, rebound = false;
   let origin = { x: 0, y: 0 };
   const visible = (show: boolean) => {
     if (canvas.hidden === !show) return;
     canvas.hidden = !show; perfLog?.ink(id, show);
   };
-  const release = () => { visible(false); own(false, true); hit(null); };
+  const release = () => { rebound = false; held.drop(); visible(false); own(false, true); hit(null); };
+  const held = heldPicture(clock, content, () => fixed === undefined, release, () => { hit(null); hold(); });
   const measure = () => {
     const reading = model(id, owner);
     if (!reading?.cells.length) return release;
@@ -44,23 +46,44 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     };
   };
   const refresh = () => { if (!closed) { owner++; invalidateGeometry(measure); } };
-  const rebind = () => { if (!closed) { release(); refresh(); } };
-  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) release(); });
+  let request = 0, inspecting: { request: number; done: (values?: ReadonlyMap<string, string>) => void } | undefined;
+  const settle = (values?: ReadonlyMap<string, string>) => { inspecting?.done(values); inspecting = undefined; };
+  const rebind = (exact: boolean) => {
+    if (closed) return;
+    settle();
+    if (!exact && !canvas.hidden) { rebound = true; held.hold(); }
+    else { rebound = false; held.drop(); visible(false); own(false, !exact); hit(null); }
+    refresh();
+  };
+  const inspect = () => new Promise<ReadonlyMap<string, string> | undefined>(done => {
+    settle();
+    if (closed || canvas.hidden || held.stale) { done(undefined); return; }
+    inspecting = { request: ++request, done };
+    drawPost({ type: 'inspectPanel', id, owner, request });
+  });
+  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) { settle(); release(); } });
   const off = onSurface(id, notice => {
-    if (notice.type === 'failed') { release(); return; }
-    if (notice.type === 'hit') { if (notice.owner === owner && !canvas.hidden) hit(notice.key); return; }
+    if (notice.type === 'failed') { settle(); release(); return; }
+    if (notice.type === 'hit') { if (notice.owner === owner && !canvas.hidden && !held.stale) hit(notice.key); return; }
+    if (notice.type === 'panelInspection') {
+      if (inspecting?.request === notice.request) settle(notice.values && !canvas.hidden && !held.stale ? new Map(notice.values) : undefined);
+      return;
+    }
     if (notice.type !== 'present') return;
     const p = notice.surface;
     if (p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) return;
     const clockHour = clock.positionAt(shownTime(p.shown));
-    if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); return; }
+    if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { settle(); release(); return; }
     const hour = pictureHour(p.date, clockHour, fixed);
+    if (hour === null && (p.waiting || rebound) && held.stale) return;
+    settle(); rebound = false;
+    if (hour === null) held.drop(); else held.present(p.holdsThrough);
     visible(hour !== null);
     own(hour !== null, hour === null);
     if (hour === null) hit(null);
   });
   const point = (e: PointerEvent) => {
-    if (canvas.hidden || !e.isTrusted) return;
+    if (canvas.hidden || held.stale || !e.isTrusted) return;
     const box = content.getBoundingClientRect();
     drawPost({ type: 'pointer', id, owner, point: [e.clientX - box.left - content.clientLeft + content.scrollLeft - origin.x,
       e.clientY - box.top - content.clientTop + content.scrollTop - origin.y] });
@@ -72,12 +95,9 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   const stopAnchor = clock.onDiscard(() => {
     if (fixed === undefined) { release(); refresh(); }
   });
-  const stopClockAnchor = clock.onAnchor((previous, next) => {
-    if (fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) release();
-  });
   refresh();
-  return { refresh, rebind, close() {
-    closed = true; cancelGeometry(measure); release(); off(); offPage(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
+  return { refresh, rebind, inspect, get stale() { return held.stale; }, close() {
+    closed = true; settle(); cancelGeometry(measure); release(); off(); offPage(); stopAnchor(); held.close(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');
   } };

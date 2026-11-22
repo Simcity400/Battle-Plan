@@ -27,6 +27,7 @@ export const browserTests = [
   'ui/src/test-support/recordedPages.dom.test.ts',
   'ui/src/engine/armyRecorded.dom.test.ts',
   'ui/src/dashboard/prepareLane.dom.test.ts',
+  'ui/src/draw/pausedClock.dom.test.ts',
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
