@@ -643,13 +643,14 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
+        let scripted_content = Err("no scripted content in this test".into());
         let world = World::new(frame, assets.trigger_content.facts()).unwrap();
         run(&Context {
             assets,
             world: &world,
             loc: &loc,
             recorded_language: &loc.language,
-            scripted_content: &Err("no scripted content in this test".into()),
+            scripted_content: &scripted_content,
             ours: 2,
             nato: false,
             countries: content_reader_country_names::country_names::CountryNames::read(frame, &loc),
@@ -847,5 +848,115 @@ mod tests {
                 (Eval::False, vec![])
             );
         });
+    }
+
+    #[test]
+    fn scoped_launch_conditions_use_shared_traversal_without_changing_admission() {
+        content_reader_core::test_game::enter();
+        let mut assets = assets();
+        assets
+            .tooltip
+            .state_names
+            .insert(20, Ok("Target state".into()));
+        let frame = frame();
+        let loc: Localisation = [
+            ("GER", "Viewer country"),
+            ("ENG", "Source country"),
+            ("raid_tooltip_trigger_title", "$TITLE$"),
+            ("TRIGGER_FULLFILLED_PREFIX", "+"),
+            ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
+            ("TRIGGER_ALWAYS_FALSE", "never"),
+            ("TRIGGER_ALWAYS_TRUE", "always"),
+            ("TRIGGER_HAS_WAR", "at war"),
+            ("TRIGGER_HAS_WAR_WITH", "at war with $TAG$ ($COUNTRY$)"),
+            ("TRIGGER_OWNER", "Owner"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let scripted_content = Err("no scripted content in this test".into());
+        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
+        let context = Context {
+            assets: &assets,
+            world: &world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted_content,
+            ours: 2,
+            nato: false,
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        let scopes = Scopes {
+            from: Some(Scope::Country(1)),
+            target_state: Some(20),
+            ..Scopes::of(Scope::Country(2))
+        };
+        let mut kind = assets.catalog.types[0].clone();
+        kind.show_target = Vec::new();
+        kind.launchable = parse(
+            "FROM = { has_war = yes } var:target_state = { owner = { always = no } } FROM = { always = no has_war_with = ROOT }",
+        );
+        let (result, lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            lines,
+            vec![
+                ("raid_tooltip_trigger_title".into(), Ok("Viewer country".into())),
+                (
+                    "raid launchable: FROM".into(),
+                    Ok("-\u{11}YSource country\u{11}!: at war\n".into()),
+                ),
+                (
+                    "raid launchable: var:target_state".into(),
+                    Ok("-\u{11}YTarget state\u{11}!: Owner: never\n".into()),
+                ),
+                (
+                    "raid launchable: FROM".into(),
+                    Ok("-\u{11}YSource country\u{11}!:\n   never\n   at war with GER (Viewer country)\n".into()),
+                ),
+            ]
+        );
+        kind.launchable = parse("FROM = { always = yes }");
+        assert_eq!(
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None),
+            (Eval::True, vec![])
+        );
+        kind.launchable = parse("999 = { always = yes }");
+        let (result, missing) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[1].0, "raid launchable: 999");
+        assert!(
+            missing[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("resolves no target"),
+            "{missing:?}"
+        );
+        kind.launchable = parse("FROM = { always = no synthetic_unported_trigger = yes }");
+        let (result, partial) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            partial[1],
+            (
+                "raid launchable: FROM".into(),
+                Ok("-\u{11}YSource country\u{11}!:\n   never\n".into()),
+            )
+        );
+        assert_eq!(partial[2].0, "raid launchable: FROM");
+        assert!(
+            partial[2]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("synthetic_unported_trigger"),
+            "{partial:?}"
+        );
     }
 }

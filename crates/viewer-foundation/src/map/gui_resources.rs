@@ -278,6 +278,34 @@ pub fn observer_hit_rectangle(
             geometry: Some(geometry),
         });
     }
+    if let Some(container) = control.container() {
+        let mut combined: Option<HitRectangle> = None;
+        for background in &container.backgrounds {
+            let Some(hit) =
+                observer_hit_rectangle(background, layout, origin, resources, notes, mode)
+            else {
+                continue;
+            };
+            combined = Some(match combined {
+                None => hit,
+                Some(current) => {
+                    let left = current.rect[0].min(hit.rect[0]);
+                    let top = current.rect[1].min(hit.rect[1]);
+                    let right = (current.rect[0] + current.rect[2]).max(hit.rect[0] + hit.rect[2]);
+                    let bottom =
+                        (current.rect[1] + current.rect[3]).max(hit.rect[1] + hit.rect[3]);
+                    HitRectangle {
+                        rect: [left, top, right - left, bottom - top],
+                        order: current.order.max(hit.order),
+                        supported: current.supported && hit.supported,
+                        geometry: None,
+                        disabled: current.disabled && hit.disabled,
+                    }
+                }
+            });
+        }
+        return combined;
+    }
     let (order, part) = layout.parts.iter().enumerate().find(|(_, part)| {
         part.path == control.path && native_gui::part_rect(&part.kind).is_some()
     })?;

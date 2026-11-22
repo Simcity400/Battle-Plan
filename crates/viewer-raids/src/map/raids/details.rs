@@ -216,8 +216,6 @@ mod tests {
     use viewer_foundation::map::{native_resources::Context, test_support::gui};
 
     #[test]
-    // quarantine: #161 the drawn background does not contribute the panel's pointer hit
-    #[ignore]
     fn an_opened_details_window_draws_its_panel_rows_and_type_buttons() {
         content_reader_core::test_game::enter();
         let windows = gui::windows(
@@ -235,7 +233,7 @@ mod tests {
                     maxWidth = 180 maxHeight = 16 fixedsize = yes }
                 gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
                     size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
-                    add_horizontal = yes } }
+                    format = UPPER_LEFT add_horizontal = yes } }
             containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
                 buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
         );
@@ -273,6 +271,32 @@ mod tests {
         let (panel, through) = draw(&context, &details, [400, 300], &mut batch, &mut notes).expect("the opened window draws");
         assert_eq!(panel, None, "an always-transparent panel blocks nothing");
         assert!(!batch.quads.is_empty());
+        assert_eq!(through.iter().map(|button| (button.entry, button.kind, button.rect)).collect::<Vec<_>>(), [(0, 3, button)]);
+        let transparent_windows = gui::windows(
+            br#"guiTypes = {
+            containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
+                clipping = no orientation = center
+                containerWindowType = { name = raid_target_details position = { x = 20 y = -70 }
+                    size = { width = 200 height = 85 } orientation = center_left clipping = no
+                    background = { name = Background spriteType = GFX_even alwaystransparent = yes }
+                    instantTextboxType = { name = raid_targets_text font = Main_14 maxWidth = 200 }
+                    smoothListBoxType = { name = raid_target_entries position = { x = 0 y = 25 }
+                        size = { x = 240 y = 275 } } } }
+            containerWindowType = { name = raid_target_entries_item size = { width = 240 height = 62 }
+                instantTextboxType = { name = raid_target_text position = { x = 10 y = 0 } font = Main_14
+                    maxWidth = 180 maxHeight = 16 fixedsize = yes }
+                gridboxtype = { name = raid_type_icons_grid position = { x = 10 y = 20 }
+                    size = { width = 210 height = 38 } slotsize = { width = 38 height = 38 }
+                    format = UPPER_LEFT add_horizontal = yes } }
+            containerWindowType = { name = raid_type_icon_entry size = { width = 38 height = 38 }
+                buttonType = { name = raid_type_button spriteType = GFX_odd } } }"#,
+        );
+        resources.sprites.get_mut("GFX_even").expect("the fixture's background sprite").hit = native_gui::Hit::Frame;
+        let context = Context { resources: &resources, windows: &transparent_windows, viewport: [2048, 1152], time: Some(0.0) };
+        let mut batch = Batch::default();
+        let (panel, through) = draw(&context, &details, [400, 300], &mut batch, &mut notes).expect("the opened window draws");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(panel, None, "an always_transparent background passes the pointer through");
         assert_eq!(through.iter().map(|button| (button.entry, button.kind, button.rect)).collect::<Vec<_>>(), [(0, 3, button)]);
     }
 }

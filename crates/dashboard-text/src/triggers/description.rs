@@ -14,6 +14,77 @@ use crate::scripted_text::{EventScope, EventScopes, Link, ScriptedText};
 
 pub type TacticName<'a> = dyn Fn(&[u8]) -> Result<Vec<u8>, String> + 'a;
 
+pub trait Host<'a> {
+    fn country_name(&self, country: u32) -> Result<String, String>;
+    fn country_tag(&self, country: u32) -> Result<String, String>;
+    fn state_name(&self, state: u32) -> Result<String, String>;
+    fn scripted_text(&self) -> Result<&ScriptedText<'a>, String>;
+    fn expand(
+        &self,
+        text: &str,
+        scopes: Scopes,
+        evaluator: &Evaluator<'_, 'a>,
+    ) -> Result<String, String>;
+    fn project_name(&self, _name: &str, _country: u32) -> Result<String, String> {
+        Err("trigger is_special_project_completed description is not reproduced".into())
+    }
+    fn phases(&self) -> &[Vec<u8>] {
+        &[]
+    }
+    fn tactic_name(&self, _stored: &[u8]) -> Result<Vec<u8>, String> {
+        Err("trigger has_tactic description is not reproduced".into())
+    }
+}
+
+struct ScriptedHost<'r, 'a> {
+    text: &'r ScriptedText<'a>,
+    phases: &'r [Vec<u8>],
+    tactic_name: &'r TacticName<'r>,
+}
+
+impl<'a> Host<'a> for ScriptedHost<'_, 'a> {
+    fn country_name(&self, country: u32) -> Result<String, String> {
+        self.text.country_name(country, false)
+    }
+
+    fn country_tag(&self, country: u32) -> Result<String, String> {
+        self.text.country_tag(country).map(str::to_owned)
+    }
+
+    fn state_name(&self, state: u32) -> Result<String, String> {
+        self.text.state_name(state)
+    }
+
+    fn scripted_text(&self) -> Result<&ScriptedText<'a>, String> {
+        Ok(self.text)
+    }
+
+    fn expand(
+        &self,
+        text: &str,
+        scopes: Scopes,
+        evaluator: &Evaluator<'_, 'a>,
+    ) -> Result<String, String> {
+        if let Some(at) = scopes.cursor
+            && let Some(graph) = evaluator.event_graph.borrow().as_ref()
+        {
+            return self
+                .text
+                .expand_in_session(text, &graph.borrow(), at, evaluator);
+        }
+        let graph = default_graph(scopes)?;
+        self.text.expand_in_session(text, &graph, 0, evaluator)
+    }
+
+    fn phases(&self) -> &[Vec<u8>] {
+        self.phases
+    }
+
+    fn tactic_name(&self, stored: &[u8]) -> Result<Vec<u8>, String> {
+        (self.tactic_name)(stored)
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
@@ -47,13 +118,16 @@ pub fn describe_at<'a>(
     mode: u8,
     refusals: &mut BTreeMap<String, usize>,
 ) -> Result<String, String> {
+    let host = ScriptedHost {
+        text,
+        phases,
+        tactic_name,
+    };
     evaluator.begin_description_in(scopes);
     let result = Formatter {
         evaluator,
-        text,
+        host: &host,
         localisation,
-        phases,
-        tactic_name,
         refusals: RefCell::new(refusals),
     }
     .and(&evaluator.units(items), scopes, false, indent, mode);
@@ -65,12 +139,108 @@ pub fn describe_at<'a>(
     }
 }
 
+pub fn describe_lines<'a>(
+    items: &[Item],
+    evaluator: &Evaluator<'_, 'a>,
+    host: &dyn Host<'a>,
+    localisation: &Localisation,
+    scopes: Scopes,
+    indent: usize,
+    mode: u8,
+) -> Vec<(String, Result<String, String>)> {
+    evaluator.begin_description_in(scopes);
+    let units = evaluator.units(items);
+    let mut out = Vec::new();
+    for unit in &units {
+        let label = unit_key(unit);
+        let mut refusals = BTreeMap::new();
+        let mut text = String::new();
+        let result = {
+            let formatter = Formatter {
+                evaluator,
+                host,
+                localisation,
+                refusals: RefCell::new(&mut refusals),
+            };
+            formatter.describe_unit(unit, scopes, false, indent, mode, &mut text)
+        };
+        match result {
+            Ok(()) => {
+                if !text.is_empty() {
+                    out.push((label.clone(), Ok(text)));
+                }
+                for (why, count) in refusals {
+                    for _ in 0..count {
+                        out.push((label.clone(), Err(why.clone())));
+                    }
+                }
+            }
+            Err(why) => {
+                evaluator.taint_temps(
+                    crate::triggers::Failure::from(why.clone())
+                        .context(|why| format!("trigger tooltip session is uncertain: {why}")),
+                );
+                out.push((label, Err(why)));
+            }
+        }
+    }
+    if let Err(why) = evaluator.end_description(scopes) {
+        out.push(("trigger".into(), Err(why.to_string())));
+    }
+    out
+}
+
+fn unit_key(unit: &Unit<'_, '_>) -> String {
+    match unit {
+        Unit::One(item, _) => key_text(item),
+        Unit::Chain(_) => "if".into(),
+        Unit::Unknown(_) => "trigger".into(),
+    }
+}
+
+fn default_graph(scopes: Scopes) -> Result<EventScopes, String> {
+    let mut graph = EventScopes::new(vec![EventScope::of(
+        event_object(scopes.this).map_err(|why| why.to_string())?,
+    )]);
+    for (index, (value, unknown)) in [
+        (Some(scopes.root), scopes.unknown.root),
+        (scopes.from, scopes.unknown.from),
+        (scopes.prev, scopes.unknown.prev),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let link = if unknown {
+            Link::Unknown
+        } else if let Some(value) = value {
+            if value == scopes.this {
+                Link::Itself
+            } else {
+                let to = graph.scopes.len();
+                graph.scopes.push(EventScope::of(
+                    event_object(value).map_err(|why| why.to_string())?,
+                ));
+                Link::Scope(to)
+            }
+        } else {
+            Link::Unknown
+        };
+        match index {
+            0 => graph.scopes[0].root = link,
+            1 => graph.scopes[0].from = link,
+            _ => graph.scopes[0].prev = link,
+        }
+    }
+    graph.variables.target_state = scopes.target_state;
+    graph.variables.target_province = scopes.target_province;
+    graph.variables.target_leader = scopes.target_leader;
+    Ok(graph)
+}
+
 struct Formatter<'r, 'e, 'a> {
     evaluator: &'r Evaluator<'e, 'a>,
-    text: &'r ScriptedText<'a>,
+    host: &'r dyn Host<'a>,
     localisation: &'r Localisation,
-    phases: &'r [Vec<u8>],
-    tactic_name: &'r TacticName<'r>,
     refusals: RefCell<&'r mut BTreeMap<String, usize>>,
 }
 
@@ -91,55 +261,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         if !text.contains('[') {
             return Ok(text);
         }
-        if let Some(at) = scopes.cursor
-            && let Some(graph) = self.evaluator.event_graph.borrow().as_ref()
-        {
-            return self
-                .text
-                .expand_in_session(&text, &graph.borrow(), at, self.evaluator);
-        }
-        let graph = self.graph(scopes)?;
-        self.text
-            .expand_in_session(&text, &graph, 0, self.evaluator)
-    }
-
-    fn graph(&self, scopes: Scopes) -> Result<EventScopes, String> {
-        let mut graph = EventScopes::new(vec![EventScope::of(
-            event_object(scopes.this).map_err(|why| why.to_string())?,
-        )]);
-        for (index, (value, unknown)) in [
-            (Some(scopes.root), scopes.unknown.root),
-            (scopes.from, scopes.unknown.from),
-            (scopes.prev, scopes.unknown.prev),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let link = if unknown {
-                Link::Unknown
-            } else if let Some(value) = value {
-                if value == scopes.this {
-                    Link::Itself
-                } else {
-                    let to = graph.scopes.len();
-                    graph.scopes.push(EventScope::of(
-                        event_object(value).map_err(|why| why.to_string())?,
-                    ));
-                    Link::Scope(to)
-                }
-            } else {
-                Link::Unknown
-            };
-            match index {
-                0 => graph.scopes[0].root = link,
-                1 => graph.scopes[0].from = link,
-                _ => graph.scopes[0].prev = link,
-            }
-        }
-        graph.variables.target_state = scopes.target_state;
-        graph.variables.target_province = scopes.target_province;
-        graph.variables.target_leader = scopes.target_leader;
-        Ok(graph)
+        self.host.expand(&text, scopes, self.evaluator)
     }
 
     fn prefix(
@@ -208,126 +330,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         let mut text = String::new();
         for unit in units {
             let start = text.len();
-            let result = (|| -> Result<(), String> {
-                match unit {
-                    Unit::Unknown(why) => return Err(why.clone().to_string()),
-                    Unit::Chain(chain) => {
-                        for branch in chain {
-                            if let Some(why) = &branch.refused {
-                                return Err(why.clone().to_string());
-                            }
-                            let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
-                            if selected {
-                                text.push_str(&self.and(
-                                    &branch.body,
-                                    scopes,
-                                    inverted,
-                                    indent,
-                                    if mode == 2 { 2 } else { 0 },
-                                )?);
-                                break;
-                            }
-                        }
-                    }
-                    Unit::One(item, child) => {
-                        match child {
-                            Child::Keyless => {
-                                return Err("keyless trigger description is not reproduced".into());
-                            }
-                            Child::Scripted(template) => {
-                                let frame = content_reader_core::trigger_keys::frame(template);
-                                if let Some(why) = self.evaluator.enter_frame(frame) {
-                                    return Err(why);
-                                }
-                                let result =
-                                    template
-                                        .body
-                                        .as_ref()
-                                        .map_err(Clone::clone)
-                                        .and_then(|body| {
-                                            self.and(
-                                                &self.evaluator.units(body),
-                                                scopes,
-                                                inverted
-                                                    == trigger_boolean(item)
-                                                        .map_err(|why| why.to_string())?,
-                                                indent,
-                                                if mode == 2 { 2 } else { 0 },
-                                            )
-                                        });
-                                self.evaluator.leave_frame();
-                                text.push_str(&result?);
-                            }
-                            Child::Scope(parsed) => text.push_str(
-                                &self.scope(unit, item, parsed, scopes, inverted, indent, mode)?,
-                            ),
-                            Child::Coded(_, name) if name == "and" => text.push_str(&self.and(
-                                &self.evaluator.units(children(item)),
-                                scopes,
-                                inverted,
-                                indent,
-                                if mode == 2 { 2 } else { 0 },
-                            )?),
-                            Child::Coded(_, name) if name == "not" => text.push_str(&self.body(
-                                &self.evaluator.units(children(item)),
-                                scopes,
-                                !inverted,
-                                indent,
-                                if mode == 2 { 2 } else { 0 },
-                            )?),
-                            Child::Coded(_, name) if name == "or" => {
-                                text.push_str(&self.prefix(
-                                    unit,
-                                    scopes,
-                                    inverted,
-                                    indent,
-                                    if mode == 2 { 2 } else { 0 },
-                                )?);
-                                text.push_str(&self.localised(
-                                    if inverted {
-                                        b"TRIGGER_AND_STARTS"
-                                    } else {
-                                        b"TRIGGER_OR_STARTS"
-                                    },
-                                    &[],
-                                )?);
-                                text.push_str(":\n");
-                                text.push_str(&self.body(
-                                    &self.evaluator.units(children(item)),
-                                    scopes,
-                                    inverted,
-                                    indent + 1,
-                                    if mode == 2 { 2 } else { 0 },
-                                )?);
-                            }
-                            _ => {
-                                let own = self.own(item, child, scopes, inverted)?;
-                                if !own.is_empty() {
-                                    text.push_str(
-                                        &self.prefix(unit, scopes, inverted, indent, mode)?,
-                                    );
-                                    text.push_str(&own);
-                                    if !own.ends_with('\n') {
-                                        text.push('\n');
-                                    }
-                                }
-                                if !item.keyword_is("custom_trigger_tooltip")
-                                    && !item.keyword_is("custom_override_tooltip")
-                                {
-                                    text.push_str(&self.body(
-                                        &self.evaluator.units(children(item)),
-                                        scopes,
-                                        inverted,
-                                        indent,
-                                        if mode == 2 { 2 } else { 0 },
-                                    )?);
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            })();
+            let result = self.describe_unit(unit, scopes, inverted, indent, mode, &mut text);
             if let Err(why) = result {
                 text.truncate(start);
                 self.evaluator.taint_temps(
@@ -338,6 +341,136 @@ impl<'a> Formatter<'_, '_, 'a> {
             }
         }
         Ok(text)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Trigger unit formatting keeps independent inversion, indentation, display mode and output buffer"
+    )]
+    fn describe_unit(
+        &self,
+        unit: &Unit<'_, 'a>,
+        scopes: Scopes,
+        inverted: bool,
+        indent: usize,
+        mode: u8,
+        text: &mut String,
+    ) -> Result<(), String> {
+        match unit {
+            Unit::Unknown(why) => return Err(why.clone().to_string()),
+            Unit::Chain(chain) => {
+                for branch in chain {
+                    if let Some(why) = &branch.refused {
+                        return Err(why.clone().to_string());
+                    }
+                    let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
+                    if selected {
+                        text.push_str(&self.and(
+                            &branch.body,
+                            scopes,
+                            inverted,
+                            indent,
+                            if mode == 2 { 2 } else { 0 },
+                        )?);
+                        break;
+                    }
+                }
+            }
+            Unit::One(item, child) => match child {
+                Child::Keyless => {
+                    return Err("keyless trigger description is not reproduced".into());
+                }
+                Child::Scripted(template) => {
+                    let frame = content_reader_core::trigger_keys::frame(template);
+                    if let Some(why) = self.evaluator.enter_frame(frame) {
+                        return Err(why);
+                    }
+                    let result =
+                        template
+                            .body
+                            .as_ref()
+                            .map_err(Clone::clone)
+                            .and_then(|body| {
+                                self.and(
+                                    &self.evaluator.units(body),
+                                    scopes,
+                                    inverted
+                                        == trigger_boolean(item)
+                                            .map_err(|why| why.to_string())?,
+                                    indent,
+                                    if mode == 2 { 2 } else { 0 },
+                                )
+                            });
+                    self.evaluator.leave_frame();
+                    text.push_str(&result?);
+                }
+                Child::Scope(parsed) => text.push_str(
+                    &self.scope(unit, item, parsed, scopes, inverted, indent, mode)?,
+                ),
+                Child::Coded(_, name) if name == "hidden_trigger" => {}
+                Child::Coded(_, name) if name == "and" => text.push_str(&self.and(
+                    &self.evaluator.units(children(item)),
+                    scopes,
+                    inverted,
+                    indent,
+                    if mode == 2 { 2 } else { 0 },
+                )?),
+                Child::Coded(_, name) if name == "not" => text.push_str(&self.body(
+                    &self.evaluator.units(children(item)),
+                    scopes,
+                    !inverted,
+                    indent,
+                    if mode == 2 { 2 } else { 0 },
+                )?),
+                Child::Coded(_, name) if name == "or" => {
+                    text.push_str(&self.prefix(
+                        unit,
+                        scopes,
+                        inverted,
+                        indent,
+                        if mode == 2 { 2 } else { 0 },
+                    )?);
+                    text.push_str(&self.localised(
+                        if inverted {
+                            b"TRIGGER_AND_STARTS"
+                        } else {
+                            b"TRIGGER_OR_STARTS"
+                        },
+                        &[],
+                    )?);
+                    text.push_str(":\n");
+                    text.push_str(&self.body(
+                        &self.evaluator.units(children(item)),
+                        scopes,
+                        inverted,
+                        indent + 1,
+                        if mode == 2 { 2 } else { 0 },
+                    )?);
+                }
+                _ => {
+                    let own = self.own(item, child, scopes, inverted)?;
+                    if !own.is_empty() {
+                        text.push_str(&self.prefix(unit, scopes, inverted, indent, mode)?);
+                        text.push_str(&own);
+                        if !own.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    }
+                    if !item.keyword_is("custom_trigger_tooltip")
+                        && !item.keyword_is("custom_override_tooltip")
+                    {
+                        text.push_str(&self.body(
+                            &self.evaluator.units(children(item)),
+                            scopes,
+                            inverted,
+                            indent,
+                            if mode == 2 { 2 } else { 0 },
+                        )?);
+                    }
+                }
+            },
+        }
+        Ok(())
     }
 
     #[allow(
@@ -358,6 +491,7 @@ impl<'a> Formatter<'_, '_, 'a> {
             .evaluator
             .enter_scope(parsed, scopes)
             .map_err(|why| why.to_string())?
+            .filter(|entered| entered.this != Scope::State(super::NULL_STATE))
             .ok_or_else(|| format!("trigger scope {} resolves no target", key_text(item)))?;
         let heading = match parsed {
             Parsed::Keyword(
@@ -383,9 +517,9 @@ impl<'a> Formatter<'_, '_, 'a> {
             _ => {
                 let name = match entered.this {
                     Scope::Country(country) | Scope::CountryLeader { country, .. } => {
-                        self.text.country_name(country, false)?
+                        self.host.country_name(country)?
                     }
-                    Scope::State(state) => self.text.state_name(state)?,
+                    Scope::State(state) => self.host.state_name(state)?,
                     _ => {
                         return Err(format!(
                             "trigger scope {} name is not reproduced",
@@ -404,20 +538,27 @@ impl<'a> Formatter<'_, '_, 'a> {
             indent,
             if mode == 2 { 2 } else { 0 },
         )?;
-        text.push_str(&heading);
-        if units.len() < 2 {
-            text.push_str(": ");
-            text.push_str(&self.body(&units, entered, inverted, 0, 2)?);
+        let inner = if units.len() < 2 {
+            self.body(&units, entered, inverted, 0, 2)?
         } else {
-            text.push_str(":\n");
-            text.push_str(&self.body(
+            self.body(
                 &units,
                 entered,
                 inverted,
                 indent + 1,
                 if mode == 2 { 2 } else { 0 },
-            )?);
+            )?
+        };
+        if inner.is_empty() {
+            return Ok(String::new());
         }
+        text.push_str(&heading);
+        if units.len() < 2 {
+            text.push_str(": ");
+        } else {
+            text.push_str(":\n");
+        }
+        text.push_str(&inner);
         Ok(text)
     }
 
@@ -436,6 +577,20 @@ impl<'a> Formatter<'_, '_, 'a> {
         };
         let operand = content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default());
         let key = match name.as_str() {
+            "always" => Some(
+                if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
+                    b"TRIGGER_ALWAYS_TRUE".as_slice()
+                } else {
+                    b"TRIGGER_ALWAYS_FALSE"
+                },
+            ),
+            "has_war" => Some(
+                if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
+                    b"TRIGGER_HAS_WAR".as_slice()
+                } else {
+                    b"TRIGGER_HAS_NOT_WAR"
+                },
+            ),
             "is_attacker" => Some(
                 if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
                     b"IS_ATTACKER".as_slice()
@@ -463,12 +618,54 @@ impl<'a> Formatter<'_, '_, 'a> {
             return self.localised(key, &[]);
         }
         match name.as_str() {
+            "has_war_with" => {
+                if item.value.scalar_str().is_none() {
+                    return Err("has_war_with requires country".into());
+                }
+                let country = self
+                    .evaluator
+                    .country_operand(item, scopes)
+                    .map_err(|why| why.to_string())?
+                    .ok_or("has_war_with country does not resolve")?;
+                let tag = self.host.country_tag(country)?;
+                let name = self.host.country_name(country)?;
+                self.localised(
+                    if inverted {
+                        b"TRIGGER_HAS_NOT_WAR_WITH"
+                    } else {
+                        b"TRIGGER_HAS_WAR_WITH"
+                    },
+                    &[
+                        ("TAG", Argument::Text(&tag)),
+                        ("COUNTRY", Argument::Text(&name)),
+                    ],
+                )
+            }
+            "is_special_project_completed" => {
+                let name = item
+                    .value
+                    .scalar_str()
+                    .and_then(|value| value.strip_prefix("sp:"))
+                    .ok_or("special project tooltip requires an sp: project operand")?;
+                let Scope::Country(country) = scopes.this else {
+                    return Err("special project tooltip THIS is not a country".into());
+                };
+                let project = self.host.project_name(name, country)?;
+                self.localised(
+                    if inverted {
+                        b"TRIGGER_IS_NOT_SPECIAL_PROJECT_COMPLETED"
+                    } else {
+                        b"TRIGGER_IS_SPECIAL_PROJECT_COMPLETED"
+                    },
+                    &[("PROJECT", Argument::Text(&project))],
+                )
+            }
             "phase" => {
                 let id = content_reader_core::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
                 } else {
-                    self.phases.get(id as usize).ok_or_else(|| {
+                    self.host.phases().get(id as usize).ok_or_else(|| {
                         format!("phase ID {id} is outside the recorded-content tactic phases")
                     })?
                 };
@@ -558,7 +755,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .spellings()
                     .find(|known| known.eq_ignore_ascii_case(name))
                 {
-                    let tag = self.text.country_tag(self.text.viewing_country())?;
+                    let text = self.host.scripted_text()?;
+                    let tag = text.country_tag(text.viewing_country())?;
                     let prefixed = format!("{tag}_{spelling}");
                     self.localised(
                         if self.localisation.get(&prefixed).is_some() {
@@ -616,7 +814,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "is_fighting_in_terrain" => {
-                let terrain = self.text.content().environment()?.terrain()?;
+                let terrain = self.host.scripted_text()?.content().environment()?.terrain()?;
                 let index = terrain.category(operand).ok_or_else(|| {
                     format!(
                         "terrain {} is absent from recorded content",
@@ -675,7 +873,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .token(token)
                     .map_err(|why| why.to_string())?
                     .ok_or("tactic token has no lexical tokens literal")?;
-                let resolved = (self.tactic_name)(stored)?;
+                let resolved = self.host.tactic_name(stored)?;
                 let label = self.localised(&resolved, &[])?;
                 self.localised(
                     if inverted {
@@ -698,7 +896,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .country_operand(item, scopes)
                     .map_err(|why| why.to_string())?
                     .ok_or("tag description resolves null country")?;
-                let label = self.text.country_marked_name(country)?;
+                let label = self.host.scripted_text()?.country_marked_name(country)?;
                 self.scoped(
                     if inverted {
                         b"TRIGGER_COUNTRY_IS_NOT"
@@ -715,7 +913,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .country_operand(item, scopes)
                     .map_err(|why| format!("trigger has_volunteers: {why}"))?
                     .ok_or("trigger has_volunteers: the operand resolves no country; the description is not reproduced")?;
-                let label = self.text.country_marked_name(country)?;
+                let label = self.host.scripted_text()?.country_marked_name(country)?;
                 self.scoped(
                     if inverted {
                         b"TRIGGER_HAS_NO_VOLUNTEERS_IN_TARGET"
@@ -727,7 +925,9 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "custom_trigger_tooltip" | "custom_override_tooltip" => {
-                let fields = children(item);
+                let Some(fields) = item.value.items() else {
+                    return Err("custom trigger tooltip requires block".into());
+                };
                 let positive = field(fields, "tooltip");
                 let negative = field(fields, "not_tooltip");
                 let selected = if inverted {
