@@ -6,7 +6,7 @@ pub mod extended;
 pub mod sizing;
 
 #[cfg(any(test, feature = "test-support"))]
-#[path = "../../engine/tests/support/unit_world.rs"]
+#[path = "../../engine/tests/native/support/unit_world.rs"]
 pub mod unit_fixture;
 
 #[cfg(test)]

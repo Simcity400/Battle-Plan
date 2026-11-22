@@ -19,7 +19,7 @@ jobs:
   warm:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository)
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.head_repository.full_name == github.repository)
     name: cache ${{ matrix.job }}
     runs-on: windows-latest
     timeout-minutes: 300
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [rust-clippy, rust-test]
+        job: [rust-clippy, rust-test, fuzz-build]
     steps:
       - uses: actions/checkout@v7
         with:
