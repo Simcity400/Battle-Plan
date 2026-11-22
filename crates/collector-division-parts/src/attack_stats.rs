@@ -1342,6 +1342,14 @@ impl RowView<'_> {
                 })
             })
     }
+    pub fn panel_stat(&self, index: usize) -> Option<i64> {
+        let scalars = self.row?.scalars?;
+        match index {
+            22 => scalars.suppression,
+            index if index < 22 => scalars.panel[index + usize::from(index >= 11)],
+            _ => None,
+        }
+    }
     pub fn witness(&self, factor: Option<i64>) -> Option<DivisionAttackInputs> {
         self.captured.witness(self.division, factor)
     }

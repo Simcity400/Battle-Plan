@@ -66,6 +66,20 @@ const GROUP_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const GROUP_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&GROUP_FIELDS, logs::SIZE).expect("valid record layout");
+const GROUP_IDENTITY_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: logs::GROUP,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const GROUP_IDENTITY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&GROUP_IDENTITY_FIELDS, 16).expect("valid record layout");
 const KINDS: usize = logs::REASON_COUNT + 1;
 
 const ENTRY_BYTES: usize = loss::POOL + pool::ITEMS + 16;
@@ -762,20 +776,60 @@ pub fn deleted_logs(
         memo: None,
     };
     let mut resolver = crate::creference_registry::HeaderResolver::default();
-    for_each_group(memory, &vtables, groups, |_, _, bytes, reference| {
-        if resolver.resolve(memory, base, reference)?.is_some() {
-            return Ok(());
+    let mut pointer_bytes = [0_u8; BATCH * 8];
+    let mut pointers = [0_usize; BATCH];
+    let mut identities = [0_u8; BATCH * 16];
+    let mut group_bytes = [0_u8; logs::SIZE];
+    let mut first = 0;
+    while first < groups.count {
+        let count = ((groups.count - first) as usize).min(BATCH);
+        let span = groups
+            .slice(first, count as u32, 8)
+            .map_err(|_| "combat log group window invalid")?;
+        if !read_slice(memory, span.data, &mut pointer_bytes[..count * 8]) {
+            return Err("combat log group pointers unreadable");
         }
-        read_group(
-            memory,
-            &vtables,
-            country,
-            bytes,
-            reference,
-            Months::All,
-            &mut output,
-        )
-    })?;
+        for (pointer, bytes) in pointers.iter_mut().zip(pointer_bytes.chunks_exact(8)) {
+            *pointer = u64_at(bytes, 0) as usize;
+        }
+        if pointers[..count].contains(&0) {
+            return Err("combat log group pointer null");
+        }
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[..count]),
+            &GROUP_IDENTITY_LAYOUT,
+            &mut identities[..count * 16],
+        );
+        for index in 0..count {
+            if copied < index + 1 {
+                return Err("combat log group unreadable");
+            }
+            let identity = &identities[index * 16..(index + 1) * 16];
+            if u64_at(identity, 0) != vtables.group {
+                return Err("combat log group vtable mismatch");
+            }
+            let reference = u64_at(identity, 8);
+            if reference as u32 != corders_group::REFERENCE_TYPE {
+                return Err("combat log group reference is not an orders group");
+            }
+            if resolver.resolve(memory, base, reference)?.is_some() {
+                continue;
+            }
+            if !read_slice(memory, pointers[index], &mut group_bytes) {
+                return Err("combat log group unreadable");
+            }
+            read_group(
+                memory,
+                &vtables,
+                country,
+                &group_bytes,
+                reference,
+                Months::All,
+                &mut output,
+            )?;
+        }
+        first += count as u32;
+    }
     let outcome = if output.unread_rows == 0 {
         Outcome::Rows { len: output.len }
     } else {

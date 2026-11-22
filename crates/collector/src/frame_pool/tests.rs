@@ -151,3 +151,41 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
     pool.push_decode(1);
     assert_eq!((pool.pop_decode(), pool.pop_decode(), pool.pop_decode()), (Some(3), Some(1), None));
 }
+
+#[test]
+fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
+    let shared = Shared::new(0, 0, 1);
+    let pool = &shared.frames;
+    let mut taken: Vec<_> = (0..=STEADY)
+        .map(|_| shared.take_frame(&mut 0).unwrap())
+        .collect();
+    for _ in 0..STEADY {
+        pool.push(taken.pop().unwrap()).unwrap();
+    }
+    let extra = taken.pop().unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    assert_eq!(pool.len(), STEADY);
+    assert!(!pool.surplus_after(4));
+    assert!(!pool.surplus_after(4));
+    let popped = pool.pop().unwrap();
+    assert!(!pool.surplus_after(4));
+    pool.push(popped).unwrap();
+    for _ in 0..3 {
+        assert!(!pool.surplus_after(4));
+    }
+    assert!(pool.surplus_after(4));
+    assert!(!pool.surplus_after(4));
+    let mut all: Vec<_> = (0..STEADY).map(|_| pool.pop().unwrap()).collect();
+    all.push(extra);
+    for _ in 0..2 {
+        all.push(shared.take_frame(&mut 0).unwrap());
+    }
+    for _ in 0..STEADY {
+        pool.push(all.pop().unwrap()).unwrap();
+    }
+    assert_eq!(pool.live(), SURPLUS_CAP + 1);
+    assert!(pool.surplus_after(4));
+    for slot in all {
+        drop(pool.vacate(slot));
+    }
+}

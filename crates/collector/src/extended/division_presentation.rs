@@ -970,10 +970,24 @@ impl Captured {
         )
     }
 
-    fn published_panel(&self, division: u64) -> Option<[Option<i64>; 23]> {
-        let at = self.status_packet.status_index(division)?;
+    fn published_panel_speed(&self, position: usize, division: u64) -> Option<i64> {
+        let at = if self
+            .status
+            .rows
+            .get(position)
+            .is_some_and(|row| row.division == division)
+        {
+            position
+        } else {
+            self.status_packet.status_index(division)?
+        };
         (self.status.rows.get(at)?.division == division)
-            .then(|| self.attack.view_at(at, division).panel())
+            .then(|| {
+                self.attack
+                    .view_at(at, division)
+                    .panel_stat(DivisionPanelStatsRow::MAXIMUM_SPEED)
+            })
+            .flatten()
     }
 
     fn names_valid(&self, len: usize) -> bool {
@@ -1112,6 +1126,7 @@ impl Captured {
 
     fn order_transport(
         &self,
+        position: usize,
         division: u64,
     ) -> Option<replay_data::rows::DivisionOrderTransportInputs> {
         let rows = self.order_transport.rows();
@@ -1119,9 +1134,14 @@ impl Captured {
             return None;
         }
         let inputs = rows
-            .binary_search_by_key(&division, |row| row.division)
-            .ok()
-            .and_then(|index| rows[index].inputs)?;
+            .get(position)
+            .filter(|row| row.division == division)
+            .or_else(|| {
+                rows.binary_search_by_key(&division, |row| row.division)
+                    .ok()
+                    .map(|index| &rows[index])
+            })
+            .and_then(|row| row.inputs)?;
         Some(replay_data::rows::DivisionOrderTransportInputs {
             naval_weight: inputs.naval_weight,
             paradrop_eligible: inputs.paradrop_eligible,
@@ -2381,16 +2401,20 @@ impl Captured {
         );
         let panels = matches!(status_outcome, Outcome::Rows { .. })
             && self.status.rows.get(..status_outcome.len()).is_some_and(|rows| {
-                let mut keys = Vec::new();
-                unique(&mut keys, rows.iter().map(|row| row.division))
+                rows.windows(2)
+                    .all(|pair| pair[0].division < pair[1].division)
+                    || {
+                        let mut keys = Vec::new();
+                        unique(&mut keys, rows.iter().map(|row| row.division))
+                    }
             });
-        let own_base_speed = |r: &carmy::MovementRow| {
-            let words = panels
-                .then(|| self.published_panel(r.division))
-                .flatten()
-                .map_or([None; 22], |words| std::array::from_fn(|at| words[at]));
-            (DivisionMovementRow::panel_speed(r.path_total, words) != r.base_speed)
-                .then_some(r.base_speed)
+        let own_base_speed = |at: usize, r: &carmy::MovementRow| {
+            let panel = if (r.path_total as i32) <= 0 || !panels {
+                None
+            } else {
+                self.published_panel_speed(at, r.division)
+            };
+            (panel != r.base_speed).then_some(r.base_speed)
         };
         let history = self.history_input(projection.as_deref());
         let sources = match &self.attack.sources {
@@ -2446,7 +2470,7 @@ impl Captured {
                 movement,
                 &self.movement.rows,
                 |r| u128::from(r.division),
-                |_, r, record| {
+                |at, r, record| {
                     record.ids(span(r.path_start, r.path_len));
                     record.ids(span(r.alternate_start, r.alternate_len));
                     match self.movement_packet.combat_references(r) {
@@ -2467,44 +2491,47 @@ impl Captured {
                     };
                     Some((
                         row,
-                        self.order_transport(r.division),
+                        self.order_transport(at, r.division),
                         request.is_some(),
-                        own_base_speed(r),
+                        own_base_speed(at, r),
                     ))
                 },
-                |r| DivisionMovementRow {
-                    combat_references: Recorded::Value(
-                        super::unit_combat_references::project(
-                            request,
-                            self.movement_packet.combat_references(r),
-                            r.combat_count,
+                |r| {
+                    let at = position(&self.movement.rows, r);
+                    DivisionMovementRow {
+                        combat_references: Recorded::Value(
+                            super::unit_combat_references::project(
+                                request,
+                                self.movement_packet.combat_references(r),
+                                r.combat_count,
+                            ),
                         ),
-                    ),
-                    division: r.division,
-                    source: r.source,
-                    target: r.target,
-                    numerator: r.numerator,
-                    retreat: r.retreat,
-                    strategic_redeployment: r.strategic_redeployment,
-                    strategic_action: replay_data::rows::Recorded::Value(r.strategic_action),
-                    withdrawal: Recorded::Value(r.withdrawal),
-                    movement_priority: Recorded::Value(r.movement_priority),
-                    order_transport: Recorded::Value(self.order_transport(r.division)),
-                    naval_transfer: r.naval_transfer,
-                    combat_count: r.combat_count,
-                    path_total: r.path_total,
-                    path: owned_vec(copy_vec(span(r.path_start, r.path_len).unwrap())),
-                    combat_role: r.combat_role,
-                    combat_province: r.combat_province,
-                    map_entity: r.map_entity,
-                    alternate_total: r.alternate_total,
-                    alternate_path: owned_vec(copy_vec(
-                        span(r.alternate_start, r.alternate_len).unwrap(),
-                    )),
-                    fuel: Recorded::Value(r.fuel),
-                    transport_speed: Recorded::Value(r.transport_speed),
-                    own_base_speed: own_base_speed(r),
-                    queued_actions: Recorded::Value(r.queued_actions),
+                        division: r.division,
+                        source: r.source,
+                        target: r.target,
+                        numerator: r.numerator,
+                        retreat: r.retreat,
+                        strategic_redeployment: r.strategic_redeployment,
+                        strategic_action: replay_data::rows::Recorded::Value(r.strategic_action),
+                        withdrawal: Recorded::Value(r.withdrawal),
+                        movement_priority: Recorded::Value(r.movement_priority),
+                        order_transport: Recorded::Value(self.order_transport(at, r.division)),
+                        naval_transfer: r.naval_transfer,
+                        combat_count: r.combat_count,
+                        path_total: r.path_total,
+                        path: owned_vec(copy_vec(span(r.path_start, r.path_len).unwrap())),
+                        combat_role: r.combat_role,
+                        combat_province: r.combat_province,
+                        map_entity: r.map_entity,
+                        alternate_total: r.alternate_total,
+                        alternate_path: owned_vec(copy_vec(
+                            span(r.alternate_start, r.alternate_len).unwrap(),
+                        )),
+                        fuel: Recorded::Value(r.fuel),
+                        transport_speed: Recorded::Value(r.transport_speed),
+                        own_base_speed: own_base_speed(at, r),
+                        queued_actions: Recorded::Value(r.queued_actions),
+                    }
                 },
             ),
             status,

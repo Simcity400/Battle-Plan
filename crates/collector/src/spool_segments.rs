@@ -38,16 +38,30 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn encode(
     encoder: &FrameEncoder,
     source: &FrameInput,
+    target: (BranchId, Hour, bool),
+    helpers: crate::spool_helper::Helpers<'_>,
+) -> [Option<TableSegment>; TABLE_COUNT] {
+    encode_keeping(encoder, source, target, |_| true, helpers)
+}
+
+pub(crate) fn encode_keeping(
+    encoder: &FrameEncoder,
+    source: &FrameInput,
     (branch, hour, force): (BranchId, Hour, bool),
+    kept: impl Fn(TableId) -> bool,
     helpers: crate::spool_helper::Helpers<'_>,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
     let context = encoder.frame_context(branch, hour, force);
     let mut order = [(0_usize, 0_usize); TABLE_COUNT];
     let mut count = 0;
     for table in TableId::ALL {
+        if !kept(table) {
+            continue;
+        }
         let rows = weight(encoder, table, &source.tables[table.index()]);
         if rows >= SEGMENT_ROWS {
             order[count] = (rows, table.index());

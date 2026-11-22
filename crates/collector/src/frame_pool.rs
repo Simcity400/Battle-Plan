@@ -10,13 +10,22 @@ use std::{
     ptr,
     sync::{
         Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{
+            AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+        },
     },
 };
 
 pub(crate) const STEADY: usize = BUFFERS;
 
 pub(crate) const AHEAD: usize = 2;
+
+const SURPLUS_CAP: usize = STEADY + 2;
+
+#[cfg(not(test))]
+const SURPLUS_STREAK: u32 = 64;
+#[cfg(test)]
+const SURPLUS_STREAK: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
@@ -125,6 +134,7 @@ pub(crate) struct FramePool {
     built_ahead: AtomicU64,
     ahead_taken: AtomicU64,
     freed: AtomicU64,
+    surplus_streak: AtomicU32,
     spool_stalled: AtomicBool,
     dropped_stalled: AtomicU64,
     decode: Fifo,
@@ -168,6 +178,7 @@ impl FramePool {
             built_ahead: AtomicU64::new(0),
             ahead_taken: AtomicU64::new(0),
             freed: AtomicU64::new(0),
+            surplus_streak: AtomicU32::new(0),
             spool_stalled: AtomicBool::new(false),
             dropped_stalled: AtomicU64::new(0),
             decode: Fifo::new(DECODE),
@@ -212,9 +223,13 @@ impl FramePool {
     }
 
     pub fn pop(&self) -> Option<usize> {
-        self.free
+        let previous = self
+            .free
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| free.checked_sub(1))
             .ok()?;
+        if previous <= STEADY {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+        }
         loop {
             let newest = (0..self.made())
                 .filter(|&index| self.slot(index).state.load(Ordering::Acquire) == FREE)
@@ -371,7 +386,26 @@ impl FramePool {
     }
 
     pub(crate) fn surplus(&self) -> bool {
-        self.live() > STEADY && self.len() >= STEADY
+        self.surplus_after(SURPLUS_STREAK)
+    }
+
+    fn surplus_after(&self, threshold: u32) -> bool {
+        let live = self.live();
+        if live <= STEADY || self.len() < STEADY {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            return false;
+        }
+        if live > SURPLUS_CAP {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            return true;
+        }
+        let streak = self.surplus_streak.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= threshold {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn vacate(&self, index: usize) -> Box<Captured> {

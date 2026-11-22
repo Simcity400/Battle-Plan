@@ -606,7 +606,20 @@ impl Record<'_> {
 
     pub fn ids(&mut self, data: Option<&[u32]>) {
         self.run(data.map(<[u32]>::len), 4, |out| {
-            for value in data.unwrap_or_default() {
+            let values = data.unwrap_or_default();
+            #[cfg(target_endian = "little")]
+            {
+                // SAFETY: &[u32] is contiguous initialized memory with little-endian layout.
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        values.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(values),
+                    )
+                };
+                out.extend_from_slice(raw);
+            }
+            #[cfg(not(target_endian = "little"))]
+            for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         });
@@ -614,7 +627,20 @@ impl Record<'_> {
 
     pub fn words(&mut self, data: Option<&[i64]>) {
         self.run(data.map(<[i64]>::len), 8, |out| {
-            for value in data.unwrap_or_default() {
+            let values = data.unwrap_or_default();
+            #[cfg(target_endian = "little")]
+            {
+                // SAFETY: &[i64] is contiguous initialized memory with little-endian layout.
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        values.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(values),
+                    )
+                };
+                out.extend_from_slice(raw);
+            }
+            #[cfg(not(target_endian = "little"))]
+            for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         });
@@ -793,29 +819,47 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const DUPLICATE: &str = "walker produced duplicate engine ids";
     const ALLOCATION: &str = "collector allocation failed";
-    let mut seen = Vec::new();
-    engine_allocation::reserve(&mut seen, held.keys.len()).map_err(|_| ALLOCATION)?;
-    seen.resize(held.keys.len(), false);
+    let mut seen: Option<Vec<bool>> = None;
     let mut index: Option<std::collections::HashMap<u128, usize>> = None;
     let mut added = std::collections::HashSet::new();
     let mut edits: Vec<(u128, Option<usize>)> = Vec::new();
     let mut matched = 0;
     for (at, &key) in next.keys.iter().enumerate() {
-        let old = if held.keys.get(at) == Some(&key) {
-            Some(at)
-        } else {
-            if index.is_none() {
-                let mut held_at = std::collections::HashMap::new();
-                engine_allocation::reserve_map(&mut held_at, held.keys.len())
-                    .map_err(|_| ALLOCATION)?;
-                held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
-                index = Some(held_at);
+        let old = if seen.is_none() && held.keys.get(at) == Some(&key) {
+            matched += 1;
+            if next.fixed[at].is_some()
+                && next.fixed[at] == held.fixed[at]
+                && next.span(at) == held.span(at)
+            {
+                continue;
             }
-            index.as_ref().and_then(|index| index.get(&key).copied())
+            engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+            edits.push((key, Some(at)));
+            continue;
+        } else {
+            if seen.is_none() {
+                let mut marks = Vec::new();
+                engine_allocation::reserve(&mut marks, held.keys.len()).map_err(|_| ALLOCATION)?;
+                marks.resize(held.keys.len(), false);
+                marks[..at].fill(true);
+                seen = Some(marks);
+            }
+            if held.keys.get(at) == Some(&key) {
+                Some(at)
+            } else {
+                if index.is_none() {
+                    let mut held_at = std::collections::HashMap::new();
+                    engine_allocation::reserve_map(&mut held_at, held.keys.len())
+                        .map_err(|_| ALLOCATION)?;
+                    held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
+                    index = Some(held_at);
+                }
+                index.as_ref().and_then(|index| index.get(&key).copied())
+            }
         };
         match old {
             Some(old) => {
-                if std::mem::replace(&mut seen[old], true) {
+                if std::mem::replace(&mut seen.as_mut().unwrap()[old], true) {
                     return Err(DUPLICATE);
                 }
                 matched += 1;
@@ -837,9 +881,19 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
         edits.push((key, Some(at)));
     }
     if matched < held.keys.len() {
-        for (old, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
-            engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
-            edits.push((held.keys[old], None));
+        match &seen {
+            Some(seen) => {
+                for (old, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
+                    engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+                    edits.push((held.keys[old], None));
+                }
+            }
+            None => {
+                for &key in &held.keys[matched..] {
+                    engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+                    edits.push((key, None));
+                }
+            }
         }
     }
     if edits.is_empty() {

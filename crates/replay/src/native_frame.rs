@@ -24,6 +24,7 @@ use std::{
 };
 
 const DENSE_HOURS: i32 = 24;
+const INTERN_COOLDOWN_HOURS: i32 = 24;
 
 #[cfg(test)]
 mod tests;
@@ -81,6 +82,7 @@ pub struct FrameWriter {
     owners: Vec<Option<Owners>>,
     last: Option<(BranchId, i32)>,
     dense: Vec<AtomicI32>,
+    intern_until: Vec<i32>,
 }
 
 type Owners = Vec<(u32, Vec<u128>)>;
@@ -198,6 +200,7 @@ impl FrameWriter {
             dense: engine_allocation::collect_vec(
                 (0..TABLE_COUNT).map(|_| AtomicI32::new(i32::MIN)),
             )?,
+            intern_until: engine_allocation::filled(TABLE_COUNT, i32::MIN)?,
         })
     }
 
@@ -276,6 +279,7 @@ impl FrameWriter {
             retried,
             owners,
             dense,
+            intern_until,
             ..
         } = self;
         let part = Part {
@@ -298,6 +302,7 @@ impl FrameWriter {
             let lane_wall = if on_lane.is_some() { walls[index] } else { 0 };
             if matches!(on_lane, Some(Err(_))) {
                 retried[index] += 1;
+                intern_until[index] = input.hour.saturating_add(INTERN_COOLDOWN_HOURS);
             }
             let mut prepared = match on_lane {
                 Some(Ok(hour)) => hour,
@@ -351,12 +356,16 @@ impl FrameWriter {
                 _ => None,
             });
             slices.push(match table {
-                TableInput::SliceUpdate { update, .. } if owner_slice(update) => Some(Slice {
-                    owners: engine_allocation::copy_vec(update.owners())?,
-                    keys: engine_allocation::collect_vec(
-                        update.rows().iter().map(|row| row.key()),
-                    )?,
-                }),
+                TableInput::SliceUpdate { update, .. }
+                    if owner_slice(update) && previous.get(index).copied().flatten().is_none() =>
+                {
+                    Some(Slice {
+                        owners: engine_allocation::copy_vec(update.owners())?,
+                        keys: engine_allocation::collect_vec(
+                            update.rows().iter().map(|row| row.key()),
+                        )?,
+                    })
+                }
                 _ => None,
             });
             let wall = lane_wall + started.elapsed().as_nanos() as u64;
@@ -432,6 +441,7 @@ impl FrameWriter {
             shared: held,
             owners,
             dense,
+            intern_until,
             starting,
             prepared,
             walls,
@@ -461,7 +471,7 @@ impl FrameWriter {
         )?;
         let buffers = engine_allocation::collect_vec(buffers.iter_mut().map(Mutex::new))?;
         let (next, lane) = (AtomicUsize::new(0), AtomicUsize::new(0));
-        let (dictionary, order) = (&*dictionary, &**order);
+        let (dictionary, order, intern_until) = (&*dictionary, &**order, &**intern_until);
         let job = || {
             let Some(buffers) = buffers.get(lane.fetch_add(1, Ordering::Relaxed)) else {
                 return;
@@ -471,6 +481,9 @@ impl FrameWriter {
                 let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
                     break;
                 };
+                if input.hour < intern_until[index] {
+                    continue;
+                }
                 let mut turn = lock(&turns[index]);
                 let (writer, hour, wall) = &mut *turn;
                 let started = Instant::now();
@@ -710,6 +723,7 @@ impl Part<'_> {
         });
         if let TableInput::SliceUpdate { update, .. } = input
             && written.is_none()
+            && previous.is_none()
         {
             removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
         }
@@ -793,7 +807,10 @@ impl Part<'_> {
             },
             TableInput::SliceUpdate { update, .. } => match (previous, written) {
                 (Some(last), Some(written)) => Self::written(&update.rows, last, held, written),
-                _ => update.rows.visit(held.with(Form::Changes(&lane.removed))),
+                (Some(last), None) => {
+                    Self::slice_diff(id, update, last, held, &mut lane.pairs, &mut lane.removed)
+                }
+                (None, _) => update.rows.visit(held.with(Form::Changes(&lane.removed))),
             },
         }
     }
@@ -831,6 +848,27 @@ impl Part<'_> {
         match rows.visit_pair(last, diff) {
             Ok(hour) => hour,
             Err(Diff { held, .. }) => rows.visit(held.with(Form::Complete)),
+        }
+    }
+
+    fn slice_diff(
+        id: TableId,
+        update: &SliceUpdate,
+        last: &TableRows,
+        held: Visit<'_>,
+        pairs: &mut Vec<(u32, Option<u32>)>,
+        removed: &mut Vec<u128>,
+    ) -> io::Result<TableHour> {
+        let diff = SliceDiff {
+            id,
+            update,
+            held,
+            pairs,
+            removed,
+        };
+        match update.rows.visit_pair(last, diff) {
+            Ok(hour) => hour,
+            Err(_) => Err(invalid("slice update rows differ from baseline type")),
         }
     }
 }
@@ -1168,6 +1206,160 @@ impl RowsPairVisit for Written<'_> {
     fn rows<R: RowCodec>(self, rows: &[R], last: &[R]) -> io::Result<TableHour> {
         let Self { held, written } = self;
         held.paired(rows, last, &written.pairs, &written.removed)
+    }
+}
+
+fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
+    let mut low = 0;
+    let mut high = 1;
+    while high <= rows.len() && holds(&rows[high - 1]) {
+        low = high;
+        high = high.saturating_mul(2);
+    }
+    low + rows[low..high.min(rows.len())].partition_point(holds)
+}
+
+fn merge_slice_diff<R: RowCodec>(
+    rows: &[R],
+    new_span: std::ops::Range<usize>,
+    last: &[R],
+    old_span: std::ops::Range<usize>,
+    pairs: &mut Vec<(u32, Option<u32>)>,
+    removed: &mut Vec<u128>,
+) -> io::Result<()> {
+    let mut at = new_span.start;
+    let mut before = old_span.start;
+    while at < new_span.end && before < old_span.end {
+        match rows[at].key().cmp(&last[before].key()) {
+            std::cmp::Ordering::Equal => {
+                if rows[at] != last[before] {
+                    engine_allocation::reserve(pairs, 1)?;
+                    pairs.push((index(at)?, Some(index(before)?)));
+                }
+                at += 1;
+                before += 1;
+            }
+            std::cmp::Ordering::Less => {
+                engine_allocation::reserve(pairs, 1)?;
+                pairs.push((index(at)?, None));
+                at += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                engine_allocation::reserve(removed, 1)?;
+                removed.push(last[before].key());
+                before += 1;
+            }
+        }
+    }
+    while at < new_span.end {
+        engine_allocation::reserve(pairs, 1)?;
+        pairs.push((index(at)?, None));
+        at += 1;
+    }
+    while before < old_span.end {
+        engine_allocation::reserve(removed, 1)?;
+        removed.push(last[before].key());
+        before += 1;
+    }
+    Ok(())
+}
+
+struct SliceDiff<'a> {
+    id: TableId,
+    update: &'a SliceUpdate,
+    held: Visit<'a>,
+    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    removed: &'a mut Vec<u128>,
+}
+
+impl RowsPairVisit for SliceDiff<'_> {
+    type Output = io::Result<TableHour>;
+
+    fn rows<R: RowCodec>(self, rows: &[R], last: &[R]) -> io::Result<TableHour> {
+        let Self {
+            id,
+            update,
+            held,
+            pairs,
+            removed,
+        } = self;
+        pairs.clear();
+        removed.clear();
+        if !update.ranges.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for range in &update.ranges {
+                let old_start =
+                    old_cursor + gallop(&last[old_cursor..], |row| row.key() < range.start);
+                let old_end = old_start + gallop(&last[old_start..], |row| row.key() < range.end);
+                old_cursor = old_end;
+                let new_start =
+                    new_cursor + gallop(&rows[new_cursor..], |row| row.key() < range.start);
+                let new_end = new_start + gallop(&rows[new_start..], |row| row.key() < range.end);
+                new_cursor = new_end;
+                if rows[new_start..new_end] != last[old_start..old_end] {
+                    merge_slice_diff(
+                        rows,
+                        new_start..new_end,
+                        last,
+                        old_start..old_end,
+                        pairs,
+                        removed,
+                    )?;
+                }
+            }
+        } else if !update.keys.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for &key in &update.keys {
+                old_cursor += gallop(&last[old_cursor..], |row| row.key() < key);
+                let before =
+                    (old_cursor < last.len() && last[old_cursor].key() == key).then_some(old_cursor);
+                new_cursor += gallop(&rows[new_cursor..], |row| row.key() < key);
+                let at =
+                    (new_cursor < rows.len() && rows[new_cursor].key() == key).then_some(new_cursor);
+                match (at, before) {
+                    (Some(at), Some(before)) => {
+                        if rows[at] != last[before] {
+                            engine_allocation::reserve(pairs, 1)?;
+                            pairs.push((index(at)?, Some(index(before)?)));
+                        }
+                    }
+                    (Some(at), None) => {
+                        engine_allocation::reserve(pairs, 1)?;
+                        pairs.push((index(at)?, None));
+                    }
+                    (None, Some(_)) => {
+                        engine_allocation::reserve(removed, 1)?;
+                        removed.push(key);
+                    }
+                    (None, None) => {}
+                }
+            }
+        } else if !update.owners.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for &owner in &update.owners {
+                let old_start = old_cursor
+                    + gallop(&last[old_cursor..], |row| owner_of(id, row.key()) < owner);
+                let old_end = old_start
+                    + gallop(&last[old_start..], |row| owner_of(id, row.key()) <= owner);
+                old_cursor = old_end;
+                let new_start = new_cursor
+                    + gallop(&rows[new_cursor..], |row| owner_of(id, row.key()) < owner);
+                let new_end = new_start
+                    + gallop(&rows[new_start..], |row| owner_of(id, row.key()) <= owner);
+                new_cursor = new_end;
+                if rows[new_start..new_end] != last[old_start..old_end] {
+                    merge_slice_diff(
+                        rows,
+                        new_start..new_end,
+                        last,
+                        old_start..old_end,
+                        pairs,
+                        removed,
+                    )?;
+                }
+            }
+        }
+        held.paired(rows, last, pairs, removed)
     }
 }
 

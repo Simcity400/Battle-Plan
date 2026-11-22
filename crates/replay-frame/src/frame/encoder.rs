@@ -6,7 +6,7 @@ use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{invalid_static as invalid, put_bytes, put_string},
     format::FormatVersion,
-    rows::{ChangedRows, TableId, TableRows, TableSchema},
+    rows::{ChangedRows, Field, RowCodec, RowsPairVisit, RowsVisit, TableId, TableRows, TableSchema},
 };
 use engine_allocation as allocation;
 use std::{
@@ -44,6 +44,59 @@ fn row_encoding(error: io::Error) -> io::Error {
         Ok(_) => error,
         Err(error) => error,
     }
+}
+
+fn validate_recorded(rows: &TableRows) -> io::Result<()> {
+    struct Check;
+    impl RowsVisit for Check {
+        type Output = io::Result<()>;
+
+        fn rows<R: RowCodec>(self, rows: &[R]) -> io::Result<()> {
+            u32::try_from(rows.len()).map_err(|_| invalid("too many rows"))?;
+            for row in rows {
+                if row.not_recorded_fields() != 0 {
+                    row.visit_wire(&mut |_, field| {
+                        if matches!(field, Field::NotRecorded) {
+                            return Err(invalid("missing or not recorded row field"));
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+            Ok(())
+        }
+    }
+    rows.visit(Check)
+}
+
+fn validate_replacements(
+    rows: &TableRows,
+    previous: &TableRows,
+    indices: &[usize],
+) -> io::Result<()> {
+    struct Check<'a>(&'a [usize]);
+    impl RowsPairVisit for Check<'_> {
+        type Output = io::Result<()>;
+
+        fn rows<R: RowCodec>(self, rows: &[R], previous: &[R]) -> io::Result<()> {
+            let indices = self.0;
+            if rows.len() != indices.len()
+                || indices.windows(2).any(|pair| pair[0] >= pair[1])
+                || rows
+                    .iter()
+                    .zip(indices)
+                    .any(|(row, &index)| previous.get(index).is_none_or(|old| row.key() != old.key()))
+            {
+                return Err(invalid(
+                    "replacement rows must name unique ascending baseline positions with unchanged keys",
+                ));
+            }
+            u32::try_from(rows.len()).map_err(|_| invalid("too many replacement rows"))?;
+            Ok(())
+        }
+    }
+    rows.visit_pair(previous, Check(indices))
+        .map_err(|_| invalid("replacement rows have different types"))?
 }
 
 pub(super) enum BaselineRows {
@@ -507,9 +560,20 @@ impl FrameEncoder {
 
     pub fn prepare_contained(
         &mut self,
+        source: FrameInput,
+        force_keyframe: bool,
+        segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+    ) -> io::Result<PreparedFrame> {
+        self.prepare_contained_keeping(source, force_keyframe, segments, |_| true, refuse)
+    }
+
+    pub fn prepare_contained_keeping(
+        &mut self,
         mut source: FrameInput,
         force_keyframe: bool,
         segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        kept: impl Fn(TableId) -> bool,
         mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
     ) -> io::Result<PreparedFrame> {
         source.round_to_display();
@@ -549,15 +613,52 @@ impl FrameEncoder {
             }
             let mut changed = None;
             let table_start = output.len();
+            let keep = kept(table);
             unchanged[table.index()] = match segments[table.index()].take() {
                 Some(segment) => {
                     if segment.context != context || segment.table != table {
                         return Err(invalid("table segment was encoded for another frame"));
                     }
-                    allocation::reserve(&mut output, segment.bytes.len())?;
-                    output.extend_from_slice(&segment.bytes);
+                    if keep {
+                        allocation::reserve(&mut output, segment.bytes.len())?;
+                        output.extend_from_slice(&segment.bytes);
+                    } else {
+                        allocation::reserve(&mut output, 1)?;
+                        output.push(5);
+                    }
                     changed = segment.changed;
                     segment.unchanged
+                }
+                None if !keep => {
+                    let result = self.validate_unencoded_table(
+                        &context,
+                        table,
+                        &source.tables[table.index()],
+                    );
+                    let is_unchanged = match result {
+                        Err(error)
+                            if table != TableId::Clock
+                                && error
+                                    .get_ref()
+                                    .is_some_and(|inner| inner.is::<RowValidationError>()) =>
+                        {
+                            let error =
+                                crate::codec::error_context(error, format_args!("{table:?}"));
+                            let reason = refuse(table, error)?;
+                            source.tables[table.index()] = TableView::Unavailable { reason }.into();
+                            self.validate_unencoded_table(
+                                &context,
+                                table,
+                                &source.tables[table.index()],
+                            )?
+                        }
+                        result => result.map_err(|error| {
+                            crate::codec::error_context(error, format_args!("{table:?}"))
+                        })?,
+                    };
+                    allocation::reserve(&mut output, 1)?;
+                    output.push(5);
+                    is_unchanged
                 }
                 None => {
                     allocation::reserve(&mut output, 9)?;
@@ -622,6 +723,99 @@ impl FrameEncoder {
             encoder: self.identity,
             previous_revision: self.revision,
             keyframe,
+        })
+    }
+
+    fn validate_unencoded_table(
+        &self,
+        context: &FrameContext,
+        table: TableId,
+        view: &TableInput,
+    ) -> io::Result<bool> {
+        let FrameContext {
+            branch,
+            hour,
+            force,
+            keyframe,
+            new_branch,
+            ..
+        } = *context;
+        Ok(match view {
+            TableInput::SharedComplete(values) => {
+                if !keyframe
+                    && !new_branch
+                    && let Some((_, BaselineRows::Shared(previous))) =
+                        self.state.tables[table.index()].as_ref()
+                    && Arc::ptr_eq(values, previous)
+                {
+                    validate_singleton(table, values, hour).map_err(row_validation)?;
+                    true
+                } else {
+                    validate_complete(table, values, hour).map_err(row_validation)?;
+                    validate_recorded(values).map_err(row_encoding)?;
+                    false
+                }
+            }
+            TableInput::ComparedEqual(token) => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                true
+            }
+            TableInput::ComparedChanges {
+                token,
+                indices,
+                rows,
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Owned(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("row replacements require an owned baseline"));
+                };
+                if !token.allows_row_updates() {
+                    return Err(invalid("table does not allow row replacements"));
+                }
+                validate_rows(table, rows).map_err(row_validation)?;
+                validate_replacements(rows, previous, indices)?;
+                validate_recorded(rows).map_err(row_encoding)?;
+                indices.is_empty()
+            }
+            TableInput::SliceUpdate { token, update } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Shared(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("a slice update requires a shared baseline"));
+                };
+                if !update.fits(previous) {
+                    return Err(invalid("slice update does not fit its baseline"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                validate_recorded(update.rows()).map_err(row_encoding)?;
+                update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty()
+            }
+            TableInput::Sampled(TableView::Complete(values)) => {
+                validate_complete(table, values, hour).map_err(row_validation)?;
+                validate_recorded(values).map_err(row_encoding)?;
+                false
+            }
+            TableInput::Sampled(TableView::Truncated { rows, missing }) => {
+                validate_rows(table, rows).map_err(row_validation)?;
+                if *missing == 0 {
+                    return Err(invalid("truncated table has no missing rows"));
+                }
+                if !keyframe {
+                    validate_recorded(rows).map_err(row_encoding)?;
+                }
+                false
+            }
+            TableInput::Sampled(TableView::NotRecorded { .. }) => false,
+            TableInput::Sampled(TableView::Unavailable { reason }) => {
+                if reason.is_empty() {
+                    return Err(invalid("unavailable table needs a reason"));
+                }
+                reason == crate::cadence::SKIPPED_REASON
+                    && self.can_carry(table, branch, hour, force)
+            }
         })
     }
 

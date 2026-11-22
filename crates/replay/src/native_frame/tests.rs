@@ -1385,3 +1385,160 @@ fn a_complete_table_emptied_and_refilled_writes_its_complete_bytes() {
         );
     }
 }
+
+#[test]
+fn slice_updates_without_row_changes_match_recorded_changes() {
+    let mut encoder = FrameEncoder::new();
+    let mut expected_writer = FrameWriter::new().unwrap();
+    let mut diff_writer = FrameWriter::new().unwrap();
+    let research = |entries: &[(u32, u32, i64)]| {
+        TableRows::ResearchInputs(
+            entries
+                .iter()
+                .map(|&(country, index, progress_raw)| ResearchInputRow {
+                    country,
+                    index,
+                    progress_raw,
+                    ..Default::default()
+                })
+                .collect(),
+        )
+    };
+    let initial = frame(
+        1,
+        [
+            (countries(vec![country(1, 10)]), true),
+            (
+                TableInput::SharedComplete(Arc::new(TableRows::Divisions(vec![
+                    division(1, 1_000_000),
+                    division(2, 1_000_000),
+                    division(3, 1_000_000),
+                ]))),
+                true,
+            ),
+            (
+                TableInput::SharedComplete(Arc::new(research(&[
+                    (1, 0, 10),
+                    (1, 1, 20),
+                    (2, 0, 30),
+                ]))),
+                true,
+            ),
+        ],
+    );
+    let mut prepared = encoder.prepare_bytes(initial.clone(), true).unwrap();
+    let row_full = Some(RowFrame {
+        baselines: Some(&encoder),
+        keyframe: true,
+        changed: prepared.changed_rows(),
+    });
+    let row_empty = Some(RowFrame {
+        baselines: Some(&encoder),
+        keyframe: true,
+        changed: &[],
+    });
+    let expected = expected_writer
+        .hour_on(&initial, &[], row_full, &OneThread)
+        .unwrap();
+    let actual = diff_writer
+        .hour_on(&initial, &[], row_empty, &OneThread)
+        .unwrap();
+    assert_eq!(actual.manifest, expected.manifest);
+    assert!(actual.sections().eq(expected.sections()));
+    expected_writer.commit(expected).unwrap();
+    diff_writer.commit(actual).unwrap();
+    let _ = prepared.take_frame();
+    encoder.commit(prepared).unwrap();
+
+    for hour in 2..=4 {
+        let (div_token, _) = encoder
+            .slice_baseline(TableId::Divisions, 1, hour, false)
+            .unwrap();
+        let (res_token, res_prev) = encoder
+            .slice_baseline(TableId::ResearchInputs, 1, hour, false)
+            .unwrap();
+        let div_update = match hour {
+            2 => SliceUpdate::keyed(
+                vec![1, 2, 4],
+                TableRows::Divisions(vec![division(1, 2_000_000), division(4, 500_000)]),
+            ),
+            3 => SliceUpdate {
+                ranges: vec![1..3, 4..5],
+                owners: Vec::new(),
+                keys: Vec::new(),
+                rows: TableRows::Divisions(vec![division(1, 2_000_000), division(2, 3_000_000)]),
+            },
+            _ => SliceUpdate::keyed(
+                vec![1],
+                TableRows::Divisions(vec![division(1, 2_000_000)]),
+            ),
+        };
+        let res_update = match hour {
+            2 => SliceUpdate::new(
+                res_prev,
+                research(&[(1, 0, 15), (1, 2, 25)]),
+                |owner| owner == 1,
+                |_| true,
+            )
+            .unwrap(),
+            3 => SliceUpdate::new(
+                res_prev,
+                research(&[(1, 0, 15), (1, 2, 25)]),
+                |owner| owner == 1,
+                |_| true,
+            )
+            .unwrap(),
+            _ => SliceUpdate::new(
+                res_prev,
+                research(&[(3, 0, 40)]),
+                |owner| owner == 2 || owner == 3,
+                |owner| owner != 2,
+            )
+            .unwrap(),
+        };
+        let input = frame(
+            hour,
+            [
+                (countries(vec![country(1, 10)]), true),
+                (
+                    TableInput::SliceUpdate {
+                        token: div_token,
+                        update: Arc::new(div_update),
+                    },
+                    true,
+                ),
+                (
+                    TableInput::SliceUpdate {
+                        token: res_token,
+                        update: Arc::new(res_update),
+                    },
+                    true,
+                ),
+            ],
+        );
+        let mut prepared = encoder.prepare_bytes(input.clone(), false).unwrap();
+        let row_full = Some(RowFrame {
+            baselines: Some(&encoder),
+            keyframe: false,
+            changed: prepared.changed_rows(),
+        });
+        let row_empty = Some(RowFrame {
+            baselines: Some(&encoder),
+            keyframe: false,
+            changed: &[],
+        });
+        let expected = expected_writer
+            .hour_on(&input, &[], row_full, &OneThread)
+            .unwrap();
+        let actual = diff_writer
+            .hour_on(&input, &[], row_empty, &OneThread)
+            .unwrap();
+        assert_eq!(actual.manifest, expected.manifest, "hour {hour}");
+        assert!(actual.sections().eq(expected.sections()), "hour {hour}");
+        expected_writer.commit(expected).unwrap();
+        diff_writer.commit(actual).unwrap();
+        let _ = prepared.take_frame();
+        encoder.commit(prepared).unwrap();
+    }
+    same_restarts(&mut [&mut expected_writer, &mut diff_writer]);
+}

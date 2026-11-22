@@ -1254,16 +1254,21 @@ impl<B: SegmentBackend> Campaign<B> {
         let frame = {
             let _phase = crate::allocation::enter(crate::allocation::Phase::Encode);
             let mut segments = match helpers {
-                Some(helpers) => crate::spool_segments::encode(
+                Some(helpers) => crate::spool_segments::encode_keeping(
                     &self.encoder,
                     &source,
                     (branch, hour, restarting),
+                    spooled,
                     helpers,
                 ),
                 None => std::array::from_fn(|_| None),
             };
-            self.encoder
-                .prepare_contained(source, restarting, &mut segments, |table, error| {
+            self.encoder.prepare_contained_keeping(
+                source,
+                restarting,
+                &mut segments,
+                spooled,
+                |table, error| {
                     let reason = validation_refusal(
                         &mut self
                             .validation_refusals
