@@ -7,7 +7,7 @@ use dashboard_declare::{Carry, Column, Key};
 use replay_columnar::summary::Cells;
 use replay_data::rows::TableId;
 
-fn resources_line<'q>(query: &'q Query<'static>, measure: &str) -> Line<'q, 'static> {
+fn resources_line<'q, 'r>(query: &'q Query<'r>, measure: &str) -> Line<'q, 'r> {
     let series = dashboard_declare::series("country-resources").unwrap();
     Line::new(query, series, series.measure(measure).unwrap()).unwrap()
 }
@@ -24,7 +24,8 @@ const HOURS: [i32; 9] = [FIRST, FIRST + 1_999, FIRST + 2_000, FIRST + 4_321, FIR
 
 #[test]
 fn a_state_of_one_part_is_the_parts_row_at_the_hour() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Resources);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     let mut reads = Vec::new();
     for hour in HOURS.into_iter().chain([FIRST + FIRST_HOURS + 5]) {
@@ -55,7 +56,8 @@ fn a_state_of_one_part_is_the_parts_row_at_the_hour() {
 
 #[test]
 fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Resources);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     for hour in HOURS {
         for id in [9001, 9002] {
@@ -83,7 +85,8 @@ fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
 
 #[test]
 fn tiles_of_two_parts_hold_each_parts_values() {
-    let query = query();
+    let fixture = Fixture::new(Data::Resources, FIRST..=FIRST + FIRST_HOURS - 1);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     let asks = vec![Ask { country: "GER".into(), part: 4 }, Ask { country: "ITA".into(), part: 2 }];
     let ids = [(9001, 4), (9002, 2)];
@@ -135,7 +138,8 @@ fn tiles_of_two_parts_hold_each_parts_values() {
 
 #[test]
 fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_available() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Resources);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     let rowless = |first: i32, last: i32| MissingSpan { first_hour: first, last_hour: last, reason: "GER's produced was not recorded here".into() };
     let gap = MissingSpan { first_hour: FIRST + FIRST_HOURS, last_hour: SECOND - 1, reason: GAP_REASON.into() };
@@ -170,7 +174,8 @@ fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_availa
 
 #[test]
 fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
-    let query = query();
+    let fixture = Fixture::new(Data::Resources, FIRST..=FIRST + FIRST_HOURS - 1);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     let measure = line.series().measure("produced").unwrap();
     let bounds = (FIRST, FIRST + FIRST_HOURS - 1);
@@ -232,29 +237,38 @@ fn a_pair_listed_under_other_raw_ids_of_its_countries_is_its_line() {
     assert_eq!(pair_rows(&[(&first[..], &[(0, 99)][..]), (&second[..], &[(0, 99)][..])]), [(0, 9, Some(1)), (10, 14, Some(2))], "two rows never overlap");
 }
 
+fn tension_fixture() -> Fixture {
+    let end = FIRST + UNIT_HOURS;
+    Fixture::with_gap(Data::Tension, FIRST..=end + GAP + 24, end + 1..=end + GAP)
+}
+
 #[test]
 fn the_next_read_of_a_table_is_the_next_hour_it_was_read_across_a_gap_and_never_the_origin() {
-    let query = query();
+    let fixture = tension_fixture();
+    let query = fixture.query();
+    let end = query.timeline.stretches[0].last;
+    let second = query.timeline.stretches[1].first;
+    let last = query.timeline.last;
     let tension = TableId::WorldTension;
-    let step = |origin: Option<i32>, key| next_read(&query, tension, origin, key, (FIRST, LAST)).unwrap();
+    let step = |origin: Option<i32>, key| next_read(&query, tension, origin, key, (FIRST, last)).unwrap();
     let still = (FIRST + 30..).find(|hour| fixture::tension(*hour) == fixture::tension(hour + 1)).unwrap();
     assert_eq!(step(Some(still), NavigationKey::ArrowRight), Some(still + 1), "read again though the tension holds");
     assert_eq!(step(Some(still + 1), NavigationKey::ArrowLeft), Some(still));
-    let end = FIRST + FIRST_HOURS - 1;
-    assert_eq!(step(Some(end), NavigationKey::ArrowRight), Some(SECOND), "the hours another history holds are no read");
-    assert_eq!(step(Some(SECOND), NavigationKey::ArrowLeft), Some(end));
+    assert_eq!(step(Some(end), NavigationKey::ArrowRight), Some(second), "the hours another history holds are no read");
+    assert_eq!(step(Some(second), NavigationKey::ArrowLeft), Some(end));
     assert_eq!(step(Some(FIRST), NavigationKey::ArrowLeft), None, "nothing before the first read");
-    assert_eq!(step(Some(LAST), NavigationKey::ArrowRight), None);
+    assert_eq!(step(Some(last), NavigationKey::ArrowRight), None);
     assert_eq!(step(None, NavigationKey::Home), Some(FIRST));
-    assert_eq!(step(Some(FIRST + 9), NavigationKey::End), Some(LAST));
+    assert_eq!(step(Some(FIRST + 9), NavigationKey::End), Some(last));
     assert_eq!(step(Some(FIRST + 100), NavigationKey::ArrowRight), Some(FIRST + 101), "an origin far from either edge");
     assert_eq!(next_read(&query, tension, Some(FIRST + 10), NavigationKey::ArrowRight, (FIRST + 50, FIRST + 60)).unwrap(), Some(FIRST + 50), "an origin before the bounds steps into them");
-    assert!(next_read(&query, TableId::NavalSupremacy, Some(FIRST), NavigationKey::ArrowRight, (FIRST, LAST)).unwrap().is_none(), "a table never available is never read");
+    assert!(next_read(&query, TableId::NavalSupremacy, Some(FIRST), NavigationKey::ArrowRight, (FIRST, last)).unwrap().is_none(), "a table never available is never read");
 }
 
 #[test]
 fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Resources);
+    let query = fixture.query();
     let line = resources_line(&query, "produced");
     let tags = ["GER".to_owned(), "ITA".to_owned()];
     for (from, to) in [(FIRST, LAST), (FIRST + 3_000, FIRST + 4_000), (FIRST + 5_500, SECOND + 100)] {
@@ -314,7 +328,8 @@ static SURPLUS: Series = Series {
 fn a_computed_part_state_is_its_formula_over_the_row() {
     assert_eq!(dashboard_declare::field(TableId::CountryResources, "special_total").unwrap(), SPECIAL_TOTAL);
     assert_eq!(dashboard_declare::field(TableId::CountryResources, "production_demand").unwrap(), PRODUCTION_DEMAND);
-    let query = query();
+    let fixture = Fixture::campaign(Data::Resources);
+    let query = fixture.query();
     let line = Line::new(&query, &SURPLUS, &SURPLUS.measures[0]).unwrap();
     for hour in HOURS {
         let states = line.states(&[read("GER", hour, Some(2))], None).unwrap();
@@ -352,7 +367,8 @@ static NEGATED: Series = Series {
 fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
     assert_eq!(dashboard_declare::field(TableId::Countries, "political_power_raw").unwrap(), POWER);
     assert_eq!(dashboard_declare::field(TableId::Countries, "command_power_raw").unwrap(), COMMAND);
-    let query = query();
+    let fixture = Fixture::with_gap(Data::Power, FIRST..=SECOND + 3, FIRST + FIRST_HOURS..=SECOND - 1);
+    let query = fixture.query();
     let line = Line::new(&query, &NEGATED, &NEGATED.measures[0]).unwrap();
     let mut both = 0;
     for hour in (FIRST..FIRST + FIRST_HOURS).step_by(37).chain([ITA_FROM + 40 - ITA_FROM.rem_euclid(97) + 97, SECOND + 3]) {
@@ -370,7 +386,8 @@ fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
 
 #[test]
 fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key() {
-    let query = query();
+    let fixture = Fixture::campaign(Data::Power);
+    let query = fixture.query();
     let ask = |product: &str, extra: serde_json::Value| {
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -441,7 +458,9 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
 
 #[test]
 fn a_request_naming_1500_countries_is_answered() {
-    let query = query();
+    let (first, last) = (ITA_FROM - UNIT_HOURS, ITA_FROM + UNIT_HOURS);
+    let fixture = Fixture::new(Data::Power, first..=last);
+    let query = fixture.query();
     let ask = |product: &str, extra: serde_json::Value| {
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -454,15 +473,15 @@ fn a_request_naming_1500_countries_is_answered() {
     assert_eq!(states.states.len(), 1_500);
     assert!(states.states[..2].iter().all(|state| state.run.is_some()), "GER and ITA read at {hour}");
     assert!(states.states[2..].iter().all(|state| state.run.is_none() && state.missing.is_some()), "a tag no country holds is missing");
-    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1_500, "from": FIRST, "to": LAST, "width": 64 }))).unwrap();
+    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1_500, "from": first, "to": last, "width": 7 }))).unwrap();
     assert_eq!(chart.lines.iter().map(|line| line.tag.as_str()).collect::<std::collections::BTreeSet<_>>(), TAGS.into_iter().collect());
     let next: SeriesKeyReply =
-        serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": FIRST, "lastHour": LAST }))).unwrap();
+        serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert!(next.hour.is_some_and(|next| next > f64::from(hour)));
-    ask("events-page", serde_json::json!({ "countries": tags, "from": FIRST, "to": LAST, "pageSize": 16 }));
+    ask("events-page", serde_json::json!({ "countries": tags, "from": first, "to": last, "pageSize": 16 }));
 }
 
-fn line_of<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
+fn line_of<'q, 'r>(query: &'q Query<'r>) -> Line<'q, 'r> {
     let series = dashboard_declare::series("country-measure").unwrap();
     Line::new(query, series, series.measure("politicalPower").unwrap()).unwrap()
 }
@@ -470,9 +489,10 @@ fn line_of<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
 #[test]
 fn a_ranked_view_of_stretches_shorter_than_a_bucket_reads_each_exactly() {
     use crate::timeline::{Join, Stretch, Timeline};
-    let mut query = query();
     let first = ITA_FROM.div_euclid(6) * 6 + 600;
     let last = first + 9;
+    let fixture = Fixture::new(Data::Power, first..=last);
+    let mut query = fixture.query();
     query.timeline = Arc::new(Timeline {
         id: 1,
         first,
@@ -501,9 +521,10 @@ fn a_ranked_view_of_stretches_shorter_than_a_bucket_reads_each_exactly() {
 fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
     use crate::identity::{Holder, HolderRun, Holders};
     use crate::timeline::{Join, Stretch, Timeline};
-    let mut query = query();
     let first = ITA_FROM.div_euclid(6) * 6 + 600;
     let last = first + 9;
+    let fixture = Fixture::new(Data::Power, first..=last);
+    let mut query = fixture.query();
     let from = first + 3;
     query.timeline = Arc::new(Timeline {
         id: 1,
@@ -533,11 +554,13 @@ fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
 
 #[test]
 fn a_factions_line_is_its_row_and_its_bins_hold_its_members_exact_sums() {
-    let query = query();
+    let (from, to) = (ITA_FROM - UNIT_HOURS, ITA_FROM + UNIT_HOURS);
+    let fixture = Fixture::new(Data::Faction, from..=to);
+    let query = fixture.query();
     let totals = dashboard_declare::series("faction-totals").unwrap();
     let line = Line::new(&query, totals, totals.measure("controlledStates").unwrap()).unwrap();
-    let (from, to) = (FIRST, FIRST + FIRST_HOURS - 1);
-    let charts = line.summaries(&[FACTION.to_string()], from, to, 64).unwrap();
+    let width = 7;
+    let charts = line.summaries(&[FACTION.to_string()], from, to, width).unwrap();
     let mut checked = 0;
     for bucket in charts[0].0.buckets.iter().flatten() {
         let sums: Vec<i64> = (bucket.first_hour..=bucket.last_hour).filter_map(faction_sum).collect();
@@ -546,7 +569,7 @@ fn a_factions_line_is_its_row_and_its_bins_hold_its_members_exact_sums() {
         checked += 1;
     }
     assert!(checked > 1, "the view's bins hold the faction's values");
-    assert!(line.summaries(&["GER".to_owned()], from, to, 64).unwrap()[0].0.buckets.iter().all(Option::is_none), "a faction is named by its id");
+    assert!(line.summaries(&["GER".to_owned()], from, to, width).unwrap()[0].0.buckets.iter().all(Option::is_none), "a faction is named by its id");
     assert!(line.rank_at(from, 1).is_err(), "factions are not ranked as countries are");
 }
 
@@ -562,19 +585,22 @@ static WORLD: Series = Series {
 
 #[test]
 fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_is_never_ranked() {
-    let query = query();
+    let fixture = tension_fixture();
+    let query = fixture.query();
+    let last = query.timeline.last;
+    let gap_end = query.timeline.stretches[1].first - 1;
     let line = Line::new(&query, &WORLD, &WORLD.measures[0]).unwrap();
-    let wanted: Vec<(u32, i32, i32, u128)> = query.timeline.within(FIRST, LAST).map(|stretch| (stretch.run, stretch.first, stretch.last, 0)).collect();
+    let wanted: Vec<(u32, i32, i32, u128)> = query.timeline.within(FIRST, last).map(|stretch| (stretch.run, stretch.first, stretch.last, 0)).collect();
     for name in ["GER", "no such tag"] {
-        let held: Vec<(u32, i32, i32, u128)> = line.held(&Ask::whole(name), FIRST, LAST).iter().map(|part| (part.run, part.first, part.last, part.key)).collect();
+        let held: Vec<(u32, i32, i32, u128)> = line.held(&Ask::whole(name), FIRST, last).iter().map(|part| (part.run, part.first, part.last, part.key)).collect();
         assert_eq!(held, wanted, "{name}");
     }
-    let states = line.states(&[read("no such tag", FIRST + 3, None), read("no such tag", SECOND - 1, None)], None).unwrap();
+    let states = line.states(&[read("no such tag", FIRST + 3, None), read("no such tag", gap_end, None)], None).unwrap();
     assert_eq!(states[0].missing, None, "a held hour is never refused for its name");
     assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.clone()), Some(fixture::tension(FIRST + 3).to_string()), "the one row's value");
-    assert_eq!(states[1].missing.as_deref(), Some(query.timeline.reason(SECOND - 1).as_str()));
+    assert_eq!(states[1].missing.as_deref(), Some(query.timeline.reason(gap_end).as_str()));
     assert!(line.rank_at(FIRST, 2).is_err());
-    assert!(line.ranked(FIRST, LAST, 64, 2).is_err());
+    assert!(line.ranked(FIRST, last, 64, 2).is_err());
     let hour = FIRST + 3;
     let reply = crate::tile::tile(&line, "1", &[Ask::whole("World")], None, 1, i64::from(hour).div_euclid(BINS as i64), false).expect("the world's line is a tile");
     let runs = crate::tile::decode_runs(&unbase64(&reply.bins), 1, reply.first_hour, line.scale(), reply.raw_values).unwrap();
@@ -584,7 +610,8 @@ fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_
 
 #[test]
 fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
-    let query = query();
+    let fixture = Fixture::with_gap(Data::Power, FIRST..=SECOND + 3, FIRST + FIRST_HOURS..=SECOND - 1);
+    let query = fixture.query();
     let ask = |hour: i32, top: u32| serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "hour": hour, "top": top });
     let mut ranked_both = 0;
     for hour in [FIRST, ITA_FROM + 40, FIRST + FIRST_HOURS - 1, SECOND + 3] {
