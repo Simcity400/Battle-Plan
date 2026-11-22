@@ -11,7 +11,7 @@ use playhead::{changes::Changes, lane::Lane, pages::Pages};
 use replay_columnar::{state::Cell, store::Store};
 use replay_data::rows::TableId;
 use std::sync::Arc;
-use viewer_world::map::strike_effects::{Effect, Impacts};
+use viewer_models::strike_effects::{Effect, Impacts};
 
 fn place() -> Place {
     Arc::new(|province| match province {

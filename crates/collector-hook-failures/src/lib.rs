@@ -1,10 +1,16 @@
-pub mod hook_inventory;
-
 use collector_primitives::build_gate::{self, Piece};
 use engine_executable::availability::{Verified, Withheld};
 use replay_data::rows::TableId;
 use replay_frame::{frame::FrameInput, frame::TableView};
 use serde::Serialize;
+#[derive(Clone, Debug)]
+pub struct Patch {
+    pub family: &'static str,
+    pub name: String,
+    pub rva: engine_sites::Rva,
+    pub len: Option<usize>,
+}
+
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
@@ -589,7 +595,12 @@ pub fn log(directory: &Path, message: std::fmt::Arguments<'_>) -> io::Result<()>
 pub fn failed(family: Family) -> bool {
     FAILED[family as usize].load(Ordering::Acquire)
 }
-pub fn refuse(family: Family, stage: &'static str, cause: &str) -> Result<(), &'static str> {
+pub fn refuse(
+    patches: fn() -> Vec<Patch>,
+    family: Family,
+    stage: &'static str,
+    cause: &str,
+) -> Result<(), &'static str> {
     if failed(family) {
         return if family.essential().is_some() {
             Err("essential hook family not installed")
@@ -597,9 +608,10 @@ pub fn refuse(family: Family, stage: &'static str, cause: &str) -> Result<(), &'
             Ok(())
         };
     }
-    refuse_at(family, None, stage, cause)
+    refuse_at(patches, family, None, stage, cause)
 }
 pub fn admit(
+    patches: fn() -> Vec<Patch>,
     family: Family,
     installation_message: fn(String) -> &'static str,
 ) -> Result<bool, &'static str> {
@@ -608,24 +620,26 @@ pub fn admit(
     };
     build_gate::report(&withheld).map_err(|_| "withheld piece could not be recorded")?;
     let cause = withheld.to_string();
-    match refuse(family, "build", &cause) {
+    match refuse(patches, family, "build", &cause) {
         Ok(()) => Ok(false),
         Err(_) if family.essential().is_some() => Err(installation_message(cause)),
         Err(error) => Err(error),
     }
 }
 pub fn admit_essential(
+    patches: fn() -> Vec<Patch>,
     installation_message: fn(String) -> &'static str,
 ) -> Result<(), &'static str> {
     for family in Family::ALL
         .into_iter()
         .filter(|family| family.essential().is_some())
     {
-        admit(family, installation_message)?;
+        admit(patches, family, installation_message)?;
     }
     Ok(())
 }
 fn refuse_at(
+    patches: fn() -> Vec<Patch>,
     family: Family,
     exact_site: Option<&str>,
     stage: &'static str,
@@ -639,7 +653,7 @@ fn refuse_at(
         };
     }
     let result = (|| -> io::Result<()> {
-        let site = crate::hook_inventory::patches()
+        let site = patches()
             .into_iter()
             .filter(|patch| family.owns_patch_family(patch.family))
             .map(|patch| patch.name)
@@ -682,7 +696,7 @@ fn refuse_at(
     for dependent in Family::ALL {
         if dependent.depends_on(family) && !failed(dependent) {
             let cause = format!("forwarder {} not installed: {cause}", family.name());
-            refuse(dependent, "forwarder", &cause)?;
+            refuse(patches, dependent, "forwarder", &cause)?;
         }
     }
     Ok(())
@@ -742,6 +756,7 @@ pub fn fatal_installation_error() -> Option<&'static str> {
 }
 
 pub fn shared_rollback_failed(
+    patches: fn() -> Vec<Patch>,
     name: Option<&str>,
     failure: &collector_hooks::hook::installation::Failure,
     installation_message: fn(String) -> &'static str,
@@ -751,6 +766,7 @@ pub fn shared_rollback_failed(
         .find(|family| Some(family.name()) == name)
         .ok_or("shared rollback has no registered runtime family")?;
     let diagnostic = audit_report(
+        patches,
         family,
         0,
         collector_hooks::hook::installation::Report {
@@ -762,15 +778,16 @@ pub fn shared_rollback_failed(
         },
     )?
     .ok_or("shared rollback has no failure diagnostic")?;
-    refuse_diagnostic(family, diagnostic, installation_message)
+    refuse_diagnostic(patches, family, diagnostic, installation_message)
 }
 pub fn audit_report(
+    patches: fn() -> Vec<Patch>,
     family: Family,
     base: usize,
     mut report: collector_hooks::hook::installation::Report,
 ) -> Result<Option<Diagnostic>, &'static str> {
     use collector_hooks::hook::installation::{Failure as ObservedFailure, Kind};
-    let patches = crate::hook_inventory::patches();
+    let patches = patches();
     let declared: Vec<_> = patches
         .iter()
         .filter(|patch| family.owns_patch_family(patch.family))
@@ -841,12 +858,14 @@ pub fn remember_failure(
     }
 }
 pub fn refuse_diagnostic(
+    patches: fn() -> Vec<Patch>,
     family: Family,
     diagnostic: Diagnostic,
     installation_message: fn(String) -> &'static str,
 ) -> Result<(), &'static str> {
     remember_failure(family, diagnostic.clone(), installation_message);
     refuse_at(
+        patches,
         family,
         Some(&diagnostic.site),
         diagnostic.kind.name(),
@@ -858,13 +877,14 @@ pub fn refuse_diagnostic(
     Ok(())
 }
 pub fn install_failed(
+    patches: fn() -> Vec<Patch>,
     family: Family,
     cause: &'static str,
     installation_message: fn(String) -> &'static str,
 ) -> Result<(), &'static str> {
     let diagnostic = PENDING.lock().unwrap_or_else(PoisonError::into_inner)[family as usize].take();
     if let Some(diagnostic) = diagnostic {
-        return refuse_diagnostic(family, diagnostic, installation_message);
+        return refuse_diagnostic(patches, family, diagnostic, installation_message);
     }
     if let Some(error) = fatal_installation_error() {
         return Err(error);
@@ -872,7 +892,7 @@ pub fn install_failed(
     if failed(family) {
         return Err(cause);
     }
-    refuse(family, "publication", cause)
+    refuse(patches, family, "publication", cause)
 }
 
 #[cfg(test)]

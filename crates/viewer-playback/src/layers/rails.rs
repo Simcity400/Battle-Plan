@@ -14,7 +14,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use viewer_world::map::railways::{Bridge, PreparedRailGeometry, RailNetwork, RailRun};
+use viewer_rail::railways::{Bridge, PreparedRailGeometry, RailNetwork, RailRun};
 
 const VERTEX: u64 = std::mem::size_of::<[f32; 6]>() as u64;
 

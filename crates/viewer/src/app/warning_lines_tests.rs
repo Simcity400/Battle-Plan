@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use viewer_world::map::strike_effects;
+use viewer_models::strike_effects;
 
 #[test]
 fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {

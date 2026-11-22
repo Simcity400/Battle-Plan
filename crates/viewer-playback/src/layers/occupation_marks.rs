@@ -19,7 +19,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_world::map::occupation_icons::{self as icons, HourMarks, Mark, Marks};
+use viewer_map_icons::occupation_icons::{self as icons, HourMarks, Mark, Marks};
 
 const TABLES: [TableId; 4] = [TableId::States, TableId::CountryLinks, TableId::Countries, TableId::StateResistance];
 
@@ -185,7 +185,7 @@ impl Layer for OccupationMarks {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let mode = matches!(view.map_mode, viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Resistance | viewer_world::map::map_mode::Stock::Compliance));
+        let mode = matches!(view.map_mode, viewer_map_modes::map_mode::MapMode::Stock(viewer_map_modes::map_mode::Stock::Resistance | viewer_map_modes::map_mode::Stock::Compliance));
         let hidden = if !mode {
             Some(NOT_DRAWN)
         } else if self.content.occupation().is_none() {

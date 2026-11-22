@@ -153,14 +153,14 @@ impl CounterOwners {
 #[derive(Debug, Default)]
 pub struct Views {
     pub naval: naval_windows::Windows,
-    pub labels: viewer_world::map::labels::LabelView,
+    pub labels: viewer_map_icons::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
     pub intel: viewer_raids::map::intel_icons::IntelView,
     pub bases: viewer_counters::map::counters::BaseView,
     pub land_combats: viewer_counters::map::counters::land_windows::View,
-    pub resources: viewer_world::map::resource_icons::ResourceIconView,
-    pub occupation: viewer_world::map::occupation_icons::OccupationIconView,
+    pub resources: viewer_map_icons::resource_icons::ResourceIconView,
+    pub occupation: viewer_map_icons::occupation_icons::OccupationIconView,
     pub adjacency_rules: PoolView,
 }
 
@@ -302,7 +302,7 @@ pub struct CounterView {
     pub pressed: Option<Unit>,
     pub plate_hovered: Option<Unit>,
     pub operatives: bool,
-    pub occupation: Option<viewer_world::map::occupation_icons::Mode>,
+    pub occupation: Option<viewer_map_icons::occupation_icons::Mode>,
     pub presentation: Arc<Presentation>,
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
     pub raid_details: Option<(u32, Arc<viewer_raids::map::raids::tooltips::Details>)>,
@@ -310,12 +310,10 @@ pub struct CounterView {
 }
 
 impl CounterView {
-    pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
-        use viewer_world::map::{
-            map_mode::{MapMode, Stock},
-            occupation_icons::Mode,
-        };
-        self.visibility = viewer_world::map::map_mode::visibility::of(mode);
+    pub fn set_mode(&mut self, mode: &viewer_map_modes::map_mode::MapMode) {
+        use viewer_map_modes::map_mode::{MapMode, Stock};
+        use viewer_map_icons::occupation_icons::Mode;
+        self.visibility = viewer_map_modes::map_mode::visibility::of(mode);
         self.operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
         self.occupation = match mode {
             MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
@@ -408,10 +406,8 @@ mod tests {
 
     #[test]
     fn occupation_mode_changes_invalidate_shared_visibility_and_clear_locally() {
-        use viewer_world::map::{
-            map_mode::{MapMode, Stock},
-            occupation_icons::Mode,
-        };
+        use viewer_map_modes::map_mode::{MapMode, Stock};
+        use viewer_map_icons::occupation_icons::Mode;
         let mut resistance = CounterView::default();
         resistance.set_mode(&MapMode::Stock(Stock::Resistance));
         let mut compliance = resistance.clone();

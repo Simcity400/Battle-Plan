@@ -3,7 +3,7 @@ use super::OccupationMarks;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::json;
 use std::{io, sync::Arc};
-use viewer_world::map::occupation_icons::{Marks, hour_marks};
+use viewer_map_icons::occupation_icons::{Marks, hour_marks};
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(OccupationMarks::new(Arc::clone(&document.content) as Arc<dyn super::Source>))

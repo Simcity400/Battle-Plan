@@ -14,8 +14,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use viewer_world::map::{
-    gradient::Attributes,
+use map_display_data::landscape::Attributes;
+use viewer_map_modes::{
     map_mode::{MapMode, Stock},
     naval_dominance::{Content, Fact, Relations, Sides, Supremacy},
 };
@@ -262,7 +262,7 @@ fn another_map_mode_declares_nothing_and_the_default_composes_again() {
 
 fn political_content() -> Arc<crate::layers::political::Content> {
     use content_reader_core::map::{MapData, ProvinceDefinition, ProvinceKind};
-    use viewer_world::map::borders::{BorderClass, BorderMesh, BorderMeshes};
+    use viewer_borders::borders::{BorderClass, BorderMesh, BorderMeshes};
     let definition = |id, kind| (id, ProvinceDefinition { id, rgb: [0; 3], kind, continent: 0 });
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
     let empty = |class| BorderMesh { class, chunks: vec![], coarse_chunks: vec![], draws: vec![] };

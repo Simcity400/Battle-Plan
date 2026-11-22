@@ -60,7 +60,7 @@ use viewer_foundation::{
     engagement_history::History,
     map::{camera::MapSize, perspective, province_admission::Admission},
 };
-use viewer_world::map::map_mode::MapMode;
+use viewer_map_modes::map_mode::MapMode;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
@@ -111,7 +111,7 @@ impl Default for View {
 pub struct Gpu<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
-    pub scene: &'a mut viewer_world::map::scene::Scene,
+    pub scene: &'a mut viewer_world::scene::Scene,
     pub content: &'a crate::document::Content,
     pub whole: bool,
 }

@@ -7,7 +7,8 @@ use crate::{
 };
 use serde_json::json;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_world::map::{gradient::Attributes, map_mode::MapMode};
+use map_display_data::landscape::Attributes;
+use viewer_map_modes::map_mode::MapMode;
 
 const WARNING: &str = "Naval dominance FX withheld";
 
