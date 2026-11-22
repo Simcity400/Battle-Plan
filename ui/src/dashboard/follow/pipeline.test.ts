@@ -129,7 +129,6 @@ test('review 4 finding 14: under audit each lane records the frames it served, a
     await settle(() => pipeline.status(sub).status === 'followed');
     send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
     assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
-    await new Promise(resolve => setTimeout(resolve, 50));
     const records = await capturePictures(false) as { t: string; lane?: number; seek?: number; head?: number; widget?: string; hour?: number | null }[];
     const frames = records.filter(record => record.t === 'workerFrame');
     assert.ok(frames.some(frame => frame.lane === 0 && frame.seek === clock.getSnapshot().seekSequence && frame.head === 10), JSON.stringify(frames.slice(-3)));
