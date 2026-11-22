@@ -14,4 +14,4 @@ Workers run above normal priority when the game is held. When the capture runs b
 
 Tests use observed worker entry, active-settlement watches and controlled releases to check the relevant concurrent state. Hang guards may rescue a deliberately lost wake so the fixture fails by assertion. The allocation accounting fixture includes alignment padding, Arc headers, reserved vector space and zero-sized closures. The optional submission benchmark measures submission wall costs and wake policies under a held burst and busy workers.
 
-[Acquisition executor](../../crates/collector/src/acquisition.rs) · [Readiness tests](../../crates/collector/src/acquisition/readiness_tests.rs)
+[Acquisition executor](../../crates/collector-workers/src/acquisition.rs) · [Readiness tests](../../crates/collector-workers/src/acquisition/readiness_tests.rs)

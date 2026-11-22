@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::with_allocations_denied;
-use std::{hint::black_box, sync::mpsc};
+use std::{cell::Cell, hint::black_box, sync::mpsc, thread::JoinHandle};
 use windows_sys::Win32::Foundation::{
     STATUS_ACCESS_DENIED, STATUS_ALERTED, STATUS_INVALID_HANDLE, STATUS_TIMEOUT,
 };
@@ -191,6 +191,7 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
         thread::yield_now();
     }
     let control = Arc::new(Control {
+        on_panic: record_stop_panic,
         stop: Arc::new(AtomicBool::new(false)),
         active: Arc::new(AtomicBool::new(false)),
         thread: Mutex::new(Some(panicked)),
@@ -259,8 +260,8 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         }
     });
     let job_barrier = Arc::clone(&barrier);
-    let pool = crate::acquisition::Pool::start(1, 1, move |_: &mut ()| {
-        let _job = job(crate::acquisition_jobs::Role::World);
+    let pool = collector_workers::acquisition::Pool::start(1, 1, move |_: &mut ()| {
+        let _job = job(collector_workers::roles::Role::World);
         let _ = entered_tx.send(());
         let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
         job_barrier.wait();
@@ -312,7 +313,7 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     assert_eq!(record.role, 7);
     assert_eq!(record.slot, 19);
     assert_eq!(record.worker, 0);
-    assert_eq!(record.job, crate::acquisition_jobs::Role::World as u16 + 1);
+    assert_eq!(record.job, collector_workers::roles::Role::World as u16 + 1);
     assert!(
         record.cycles > 0,
         "worker dispatch/job did not advance cycles"
@@ -320,7 +321,7 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     assert_ne!(record.pc, 0, "sample record has no captured instruction");
     assert_eq!(
         observed_job,
-        crate::acquisition_jobs::Role::World as u16 + 1
+        collector_workers::roles::Role::World as u16 + 1
     );
     assert_eq!(observed_identity, Some((7, 19, Some(0), id.unwrap())));
     assert!(completion.is_some());

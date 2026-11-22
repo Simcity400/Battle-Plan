@@ -21,7 +21,7 @@ pub(crate) enum Work {
         part: projects::ProjectPart,
         game_state: usize,
     },
-    TemplateWalk(crate::extended::division_templates::WalkPart),
+    TemplateWalk(collector_division_templates::extended::division_templates::WalkPart),
     ProjectsRest(Box<projects::Rest>),
     Buildings(Box<super::BuildingsPart>),
 }
@@ -47,15 +47,15 @@ impl Work {
             Self::Setup(part) => part.capture(),
             Self::Snapshots(part) => part.capture(),
             Self::Storage { part, workers } => {
-                part.capture(&mut |parts| {
-                    workers.setup(parts, memory, base)
-                });
+                part.capture(&mut |parts| workers.setup(parts, memory, base));
             }
             Self::Technology(part) => part.capture(memory, base),
             Self::Projects { part, game_state } => part.capture(memory, base, *game_state),
-            Self::TemplateWalk(part) => {
-                part.capture(memory, base, &crate::template_changes::Observer)
-            }
+            Self::TemplateWalk(part) => part.capture(
+                memory,
+                base,
+                &collector_division_templates::template_changes::Observer,
+            ),
             Self::ProjectsRest(rest) => rest.capture(memory, base),
             Self::Buildings(part) => part.capture(memory),
         }
@@ -63,7 +63,7 @@ impl Work {
 }
 #[derive(Default)]
 pub(crate) struct Dispatch {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Option<Arc<SharedCalibration>>,
     workers: usize,
     priority: u8,
@@ -123,10 +123,7 @@ impl Dispatch {
                 calibration: self.calibration.as_deref().unwrap(),
                 tickets,
             };
-            let mut request = Some(Job::VariantPart(Request {
-                base,
-                part: work,
-            }));
+            let mut request = Some(Job::VariantPart(Request { base, part: work }));
             // SAFETY: this parent drains the storage child before returning its live lease.
             match unsafe { executor.submit_with_priority(&mut request, 2, true, true) } {
                 Ok(ticket) => {
@@ -155,7 +152,7 @@ impl Dispatch {
         mut work: Work,
         memory: &impl engine_native::Memory,
         base: usize,
-        wait: crate::hour_stages::Part,
+        wait: collector_workers::hour_stages::Part,
         run: &mut dyn FnMut(),
     ) -> Option<Work> {
         let executor = self.executor.upgrade().filter(|_| self.workers > 1);
@@ -184,7 +181,7 @@ impl Dispatch {
                     executor.run_unclaimed_child(ticket);
                     let mut completed = None;
                     executor.finish_worker_into(pending.tickets[0].take().unwrap(), &mut completed);
-                    crate::hour_stages::record_part(wait, waited, sampling::qpc());
+                    collector_workers::hour_stages::record_part(wait, waited, sampling::qpc());
                     let completed = completed?;
                     account_completion(pending.calibration, &completed);
                     return match (completed.report, completed.request) {
@@ -290,10 +287,13 @@ impl Dispatch {
     }
     pub(crate) fn template_walk(
         &self,
-        parts: Vec<crate::extended::division_templates::WalkPart>,
+        parts: Vec<collector_division_templates::extended::division_templates::WalkPart>,
         memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Result<Vec<crate::extended::division_templates::WalkPart>, &'static str> {
+    ) -> Result<
+        Vec<collector_division_templates::extended::division_templates::WalkPart>,
+        &'static str,
+    > {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::TemplateWalk))
             .map_err(|_| "template walk worker allocation failed")?;
         let parts = self.acquire_work(parts, memory, base)?;
@@ -376,10 +376,7 @@ impl Dispatch {
         let mut failure = None;
         for part in parts {
             let role = part.role();
-            let mut request = Some(Job::VariantPart(Request {
-                base,
-                part,
-            }));
+            let mut request = Some(Job::VariantPart(Request { base, part }));
             // SAFETY: the worker parent drains every child before returning its live lease.
             let submitted =
                 unsafe { executor.submit_with_priority(&mut request, self.priority, true, true) };
@@ -445,7 +442,7 @@ impl Drop for Fanout<'_> {
     }
 }
 struct Children<'a> {
-    executor: &'a acquisition::Pool<Job, Report>,
+    executor: &'a collector_workers::acquisition::Pool<Job, Report>,
     calibration: &'a SharedCalibration,
     tickets: Vec<Option<Ticket>>,
 }
@@ -468,7 +465,7 @@ mod fanout_tests {
     use super::*;
     #[test]
     fn nonblocking_parent_admission_always_leaves_a_worker_for_children_and_releases_on_unwind() {
-        for workers in [1, 2, 3, 4, acquisition::MAX_WORKERS] {
+        for workers in [1, 2, 3, 4, collector_workers::acquisition::MAX_WORKERS] {
             let active = std::sync::atomic::AtomicUsize::new(0);
             let mut parents: Vec<_> = (0..workers.saturating_sub(1))
                 .map(|_| Fanout::enter(&active, workers).unwrap())
@@ -519,7 +516,7 @@ mod overlap_tests {
                 release
                     .lock()
                     .unwrap()
-                    .recv_timeout(crate::TEST_HANG_GUARD)
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap();
                 calls.fetch_add(1, Ordering::Release);
                 Report::VariantPart
@@ -529,7 +526,9 @@ mod overlap_tests {
             let calls = Arc::new(AtomicUsize::new(0));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 dispatch.during(Work::Probe(Arc::clone(&calls)), &NoReads, 0, &mut || {
-                    start.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                    start
+                        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                        .unwrap();
                     assert_eq!(calls.load(Ordering::Acquire), 0);
                     released.send(()).unwrap();
                     assert!(!unwind, "synthetic context unwind");
@@ -558,7 +557,7 @@ mod overlap_tests {
             release
                 .lock()
                 .unwrap()
-                .recv_timeout(crate::TEST_HANG_GUARD)
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                 .unwrap();
             calls.fetch_add(1, Ordering::Release);
             Report::VariantPart
@@ -571,9 +570,11 @@ mod overlap_tests {
             Work::Probe(Arc::clone(&calls)),
             &NoReads,
             0,
-            crate::hour_stages::Part::ProjectsRestWait,
+            collector_workers::hour_stages::Part::ProjectsRestWait,
             &mut || {
-                start.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                start
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
                 assert_eq!(calls.load(Ordering::Acquire), 0);
                 parent += 1;
                 released.send(()).unwrap();
@@ -591,7 +592,7 @@ mod overlap_tests {
             Work::Probe(Arc::clone(&calls)),
             &NoReads,
             0,
-            crate::hour_stages::Part::ProjectsRestWait,
+            collector_workers::hour_stages::Part::ProjectsRestWait,
             &mut || assert_eq!(calls.load(Ordering::Acquire), 1),
         );
         assert!(matches!(returned, Some(Work::Probe(_))));
@@ -610,6 +611,9 @@ mod overlap_tests {
         });
         assert_eq!(pool.calibration().executor.uncollected, 0);
         assert_eq!(pool.calibration.cold_parents.load(Ordering::Acquire), 0);
-        assert_eq!(Role::Variants.jobs_per_hour(), 2 * acquisition::MAX_WORKERS);
+        assert_eq!(
+            super::jobs_per_hour(Role::Variants),
+            2 * collector_workers::acquisition::MAX_WORKERS
+        );
     }
 }

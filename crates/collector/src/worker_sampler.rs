@@ -1,12 +1,13 @@
-
 mod format;
 #[cfg(test)]
 mod tests;
 
 use crate::status::status;
+use collector_workers::worker_sampler::{
+    Control, EARLY_EXIT, EMERGENCY_EXIT, JOB_SLOT, JOBS, SAMPLER_CONTROL, creation,
+};
 use serde::{Serialize, Serializer};
 use std::{
-    cell::Cell,
     io,
     path::{Path, PathBuf},
     ptr,
@@ -14,20 +15,20 @@ use std::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
-    thread::{self, JoinHandle},
+    thread,
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, FILETIME, HANDLE, STATUS_WAIT_0, WAIT_TIMEOUT},
+    Foundation::{CloseHandle, HANDLE, STATUS_WAIT_0, WAIT_TIMEOUT},
     System::{
         Diagnostics::Debug::{CONTEXT, CONTEXT_CONTROL_AMD64, GetThreadContext},
         Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
         Threading::{
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentThread,
-            GetCurrentThreadId, GetThreadTimes, OpenThread, ResumeThread, SetThreadPriority,
-            SetWaitableTimer, Sleep, SuspendThread, SwitchToThread, THREAD_GET_CONTEXT,
-            THREAD_PRIORITY_HIGHEST, THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
-            THREAD_SYNCHRONIZE, TIMER_ALL_ACCESS, WaitForSingleObject,
+            GetCurrentThreadId, OpenThread, ResumeThread, SetThreadPriority, SetWaitableTimer,
+            Sleep, SuspendThread, SwitchToThread, THREAD_GET_CONTEXT, THREAD_PRIORITY_HIGHEST,
+            THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME, THREAD_SYNCHRONIZE, TIMER_ALL_ACCESS,
+            WaitForSingleObject,
         },
     },
 };
@@ -64,41 +65,11 @@ static GAME_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_CREATION: AtomicU64 = AtomicU64::new(0);
 static GAME_JOB: AtomicU16 = AtomicU16::new(0);
 static GAME_GATE: GameGate = GameGate::new();
-static JOBS: Mutex<Vec<(u32, u64, Weak<AtomicU16>)>> = Mutex::new(Vec::new());
-static SAMPLER_CONTROL: Mutex<Weak<Control>> = Mutex::new(Weak::new());
-static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
-static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
-thread_local! { static JOB_SLOT: Cell<*const AtomicU16> = const { Cell::new(ptr::null()) }; }
-
-pub(crate) struct WorkerRegistration {
-    id: u32,
-    slot: Arc<AtomicU16>,
-}
-pub(crate) fn register_worker() -> WorkerRegistration {
-    let id = unsafe { GetCurrentThreadId() };
-    let slot = Arc::new(AtomicU16::new(0));
-    JOB_SLOT.set(Arc::as_ptr(&slot));
-    let created = creation(unsafe { GetCurrentThread() }).unwrap_or(0);
-    JOBS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((id, created, Arc::downgrade(&slot)));
-    WorkerRegistration { id, slot }
-}
-impl Drop for WorkerRegistration {
-    fn drop(&mut self) {
-        stop_before_thread_exit();
-        JOB_SLOT.set(ptr::null());
-        self.slot.store(0, Ordering::Release);
-        JOBS.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|(id, _, _)| *id != self.id);
-    }
-}
 pub(crate) struct JobGuard {
     slot: *const AtomicU16,
     previous: u16,
 }
-pub(crate) fn job(role: crate::acquisition_jobs::Role) -> JobGuard {
+pub(crate) fn job(role: collector_workers::roles::Role) -> JobGuard {
     job_id(role as u16 + 1)
 }
 fn job_id(role: u16) -> JobGuard {
@@ -365,37 +336,9 @@ impl Serialize for Status {
     }
 }
 
-struct Control {
-    stop: Arc<AtomicBool>,
-    active: Arc<AtomicBool>,
-    thread: Mutex<Option<JoinHandle<()>>>,
-    ready: AtomicBool,
-    join_complete: AtomicBool,
-    #[cfg(test)]
-    follower_waits: std::sync::atomic::AtomicUsize,
-}
-impl Control {
-    fn stop_join(&self) {
-        self.stop.store(true, Ordering::Release);
-        while !self.ready.load(Ordering::Acquire) {
-            thread::yield_now();
-        }
-        let thread = { self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() };
-        if let Some(thread) = thread {
-            let panicked = thread.join().is_err();
-            if panicked {
-                META.lock().unwrap_or_else(|e| e.into_inner()).stop_error =
-                    Some("worker_sampler thread panicked".into());
-            }
-            self.join_complete.store(true, Ordering::Release);
-        } else {
-            while !self.join_complete.load(Ordering::Acquire) {
-                #[cfg(test)]
-                self.follower_waits.fetch_add(1, Ordering::Release);
-                thread::yield_now();
-            }
-        }
-    }
+fn record_stop_panic() {
+    META.lock().unwrap_or_else(|e| e.into_inner()).stop_error =
+        Some("worker_sampler thread panicked".into());
 }
 pub(crate) struct Sampler {
     control: Arc<Control>,
@@ -409,21 +352,6 @@ pub(crate) fn release() {
     let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
     drop(jobs);
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
-}
-pub(crate) fn stop_before_thread_exit() {
-    EARLY_EXIT.store(true, Ordering::Release);
-    let control = {
-        SAMPLER_CONTROL
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .upgrade()
-    };
-    if let Some(control) = control {
-        if !control.stop.swap(true, Ordering::AcqRel) {
-            EMERGENCY_EXIT.store(true, Ordering::Release);
-        }
-        control.stop_join();
-    }
 }
 pub(crate) fn thread_id() -> u32 {
     SAMPLER_ID.load(Ordering::Acquire)
@@ -440,15 +368,12 @@ pub(crate) fn start(
     }
     let stop = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicBool::new(false));
-    let control = Arc::new(Control {
-        stop: Arc::clone(&stop),
-        active: Arc::clone(&active),
-        thread: Mutex::new(None),
-        ready: AtomicBool::new(!settings.enabled),
-        join_complete: AtomicBool::new(!settings.enabled),
-        #[cfg(test)]
-        follower_waits: std::sync::atomic::AtomicUsize::new(0),
-    });
+    let control = Arc::new(Control::new(
+        Arc::clone(&stop),
+        Arc::clone(&active),
+        settings.enabled,
+        record_stop_panic,
+    ));
     if !settings.enabled {
         return Ok(Sampler { control });
     }
@@ -526,16 +451,6 @@ impl Drop for Handle {
             CloseHandle(self.0);
         }
     }
-}
-fn creation(handle: HANDLE) -> Option<u64> {
-    let [mut created, mut exited, mut kernel, mut user] = [FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    }; 4];
-    if unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
-        return None;
-    }
-    Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 struct Target {
     handle: Handle,
@@ -915,7 +830,7 @@ fn run(
         error = Some(e.to_string());
     }
     if error.is_none() {
-        let job_roles = crate::acquisition_jobs::ROLES
+        let job_roles = collector_workers::roles::ROLES
             .iter()
             .map(|role| {
                 serde_json::to_value(role).and_then(|v| {

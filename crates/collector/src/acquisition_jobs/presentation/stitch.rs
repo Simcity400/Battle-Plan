@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) struct PresentationFanIn {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     state: Mutex<State>,
 }
@@ -19,7 +19,7 @@ struct State {
 }
 impl PresentationFanIn {
     pub(in crate::acquisition_jobs) fn new(
-        executor: &Arc<acquisition::Pool<Job, Report>>,
+        executor: &Arc<collector_workers::acquisition::Pool<Job, Report>>,
         calibration: &Arc<SharedCalibration>,
     ) -> Self {
         Self {
@@ -143,7 +143,7 @@ impl PresentationFanIn {
         state.parent = None;
     }
 }
-impl acquisition::Publication for PresentationFanIn {
+impl collector_workers::acquisition::Publication for PresentationFanIn {
     fn failed(&self) {
         let mut state = lock_unpoisoned(&self.state);
         state.admission_open = false;
@@ -175,11 +175,7 @@ impl acquisition::Publication for PresentationFanIn {
         } else {
             Job::PresentationSettle(request)
         };
-        let pending = submit(
-            &executor,
-            &self.calibration,
-            job,
-        );
+        let pending = submit(&executor, &self.calibration, job);
         let wake = !pending.parked;
         state.pending = Some(pending);
         drop(state);

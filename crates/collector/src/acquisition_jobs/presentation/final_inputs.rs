@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) struct FinalInputsDispatch {
-    executor: Weak<acquisition::Pool<Job, Report>>,
+    executor: Weak<collector_workers::acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     state: Mutex<State>,
 }
@@ -17,7 +17,7 @@ struct State {
 }
 impl FinalInputsDispatch {
     pub(in crate::acquisition_jobs) fn new(
-        executor: &Arc<acquisition::Pool<Job, Report>>,
+        executor: &Arc<collector_workers::acquisition::Pool<Job, Report>>,
         calibration: &Arc<SharedCalibration>,
     ) -> Self {
         Self {
@@ -42,11 +42,7 @@ impl FinalInputsDispatch {
         state.seen |= 1 << part;
         state.failed |= !matches!(report, Ok(Report::Characters(report)) if report.raw_ok && !report.plan_failed);
     }
-    pub(crate) fn arm(
-        &self,
-        request: crate::extended::FinalInputsRequest,
-        required: usize,
-    ) {
+    pub(crate) fn arm(&self, request: crate::extended::FinalInputsRequest, required: usize) {
         let mut state = lock_unpoisoned(&self.state);
         assert!(!state.closed && state.request.is_none() && state.pending.is_none());
         state.request = Some(request);
@@ -57,7 +53,10 @@ impl FinalInputsDispatch {
             executor.wake_workers(1);
         }
     }
-    fn dispatch(&self, state: &mut State) -> Option<Arc<acquisition::Pool<Job, Report>>> {
+    fn dispatch(
+        &self,
+        state: &mut State,
+    ) -> Option<Arc<collector_workers::acquisition::Pool<Job, Report>>> {
         if state.closed
             || state.failed
             || state.request.is_none()
@@ -69,18 +68,17 @@ impl FinalInputsDispatch {
         }
         let executor = self.executor.upgrade()?;
         let request = state.request.take().unwrap();
-        let pending = submit(
-            &executor,
-            &self.calibration,
-            Job::FinalInputs(request),
-        );
+        let pending = submit(&executor, &self.calibration, Job::FinalInputs(request));
         let wake = !pending.parked;
         state.pending = Some(pending);
         wake.then_some(executor)
     }
     pub(crate) fn take(
         &self,
-    ) -> (Option<RangeTicket>, Option<crate::extended::FinalInputsRequest>) {
+    ) -> (
+        Option<RangeTicket>,
+        Option<crate::extended::FinalInputsRequest>,
+    ) {
         let mut state = lock_unpoisoned(&self.state);
         state.closed = true;
         (state.pending.take(), state.request.take())
@@ -97,7 +95,7 @@ impl FinalInputsDispatch {
         };
     }
 }
-impl acquisition::Publication for FinalInputsDispatch {
+impl collector_workers::acquisition::Publication for FinalInputsDispatch {
     fn failed(&self) {
         let mut state = lock_unpoisoned(&self.state);
         state.failed = true;

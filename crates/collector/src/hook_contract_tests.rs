@@ -472,7 +472,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
 
 #[test]
 fn every_constructor_site_has_its_actual_family_registration() {
-    let patches = crate::hook_inventory::patches();
+    let patches = collector_hook_failures::hook_inventory::patches();
     let mut failures = Vec::new();
     for family in Family::ALL {
         let mut expected = constructor_sites(family);
@@ -503,8 +503,7 @@ fn registered_types_are_exactly_the_runtime_constructor_inventory() {
     let declared: BTreeSet<_> = Family::ALL
         .into_iter()
         .map(|family| {
-            family
-                .runtime_type()
+            super::runtime_type(family)
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect::<String>()
@@ -514,7 +513,7 @@ fn registered_types_are_exactly_the_runtime_constructor_inventory() {
         actual, declared,
         "runtime families and restoration/refusal registration differ"
     );
-    let patches = crate::hook_inventory::patches();
+    let patches = collector_hook_failures::hook_inventory::patches();
     for family in Family::ALL {
         assert!(
             patches
@@ -574,13 +573,7 @@ pub(crate) fn isolated(test: &str) -> bool {
 }
 pub(crate) fn reset_session() {
     collector_primitives::build_gate::record(true, None);
-    for flag in &FAILED {
-        flag.store(false, Ordering::Release);
-    }
-    ANY.store(false, Ordering::Release);
-    FAILURES.lock().unwrap().clear();
-    *PENDING.lock().unwrap() = std::array::from_fn(|_| None);
-    *TERMINAL.lock().unwrap() = None;
+    reset_failures_for_test();
 }
 struct Unreadable;
 impl engine_native::Memory for Unreadable {
@@ -600,7 +593,7 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
     let directory =
         std::env::temp_dir().join(format!("hoi4-real-hook-refusal-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    configure(&directory, 1, 1000);
+    configure(&directory, 1, 1000, crate::status_file::write_status_bytes);
     let status_path = directory.join("status.json");
     std::fs::write(&status_path, b"{}").unwrap();
     let reader = {
@@ -611,10 +604,19 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
             .open(&status_path)
             .unwrap()
     };
-    let equipment = FamilyHooks::<crate::equipment_destruction::Hooks>::construct(0, || {
-        Ok::<_, &'static str>(unsafe { crate::equipment_destruction::Hooks::new(&Unreadable, 0) })
-    })
-    .unwrap();
+    let equipment =
+        FamilyHooks::<collector_equipment_destruction::equipment_destruction::Hooks>::construct(
+            0,
+            || {
+                Ok::<_, &'static str>(unsafe {
+                    collector_equipment_destruction::equipment_destruction::Hooks::new(
+                        &Unreadable,
+                        0,
+                    )
+                })
+            },
+        )
+        .unwrap();
     drop(reader);
     assert!(
         std::fs::read_to_string(directory.join("recorder.log"))
@@ -678,19 +680,22 @@ fn template_rollback_failure_stays_fatal_with_fresh_read_fallback() {
         return;
     }
     reset_session();
-    let result = FamilyHooks::<crate::template_changes::Hooks>::construct(0, || {
-        crate::hook::installation::refused(
-            crate::hook::installation::Kind::Rollback,
-            None,
-            "synthetic unsafe template rollback",
-        );
-        Err("synthetic template construction failure")
-    });
+    let result =
+        FamilyHooks::<collector_division_templates::template_changes::Hooks>::construct(0, || {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Rollback,
+                None,
+                "synthetic unsafe template rollback",
+            );
+            Err("synthetic template construction failure")
+        });
     assert!(result.is_err());
     assert!(fatal_installation_error().is_some());
-    assert!(!crate::template_changes::Changes::fresh_only(
-        &crate::template_changes::Observer
-    ));
+    assert!(
+        !collector_division_templates::template_changes::Changes::fresh_only(
+            &collector_division_templates::template_changes::Observer
+        )
+    );
     let mut input = FrameInput {
         branch: 1,
         hour: 1,
@@ -715,7 +720,7 @@ fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
     let directory =
         std::env::temp_dir().join(format!("hoi4-initial-rollback-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    configure(&directory, 1, 1000);
+    configure(&directory, 1, 1000, crate::status_file::write_status_bytes);
     let progress = crate::progress::Progress::open(&directory);
     let stage = crate::progress::Stage::new(&progress, Family::Construction.name());
     let mut later_installed = false;
@@ -747,7 +752,7 @@ fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
         !failed(Family::Construction),
         "the initial failure preceded central family refusal"
     );
-    let first = install_failed(Family::Construction, error).unwrap_err();
+    let first = install_failed(Family::Construction, error, installation_message).unwrap_err();
     assert!(first.contains("initial rollback failed"));
     assert!(failed(Family::Construction));
     let persisted: serde_json::Value =
@@ -765,7 +770,7 @@ fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
         Some(first),
         "later disable erased the first rollback failure"
     );
-    assert!(install_failed(Family::Portrait, "later error").is_err());
+    assert!(install_failed(Family::Portrait, "later error", installation_message).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -800,7 +805,7 @@ fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
     let directory =
         std::env::temp_dir().join(format!("hoi4-later-shared-rollback-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    configure(&directory, 1, 1000);
+    configure(&directory, 1, 1000, crate::status_file::write_status_bytes);
     let progress = crate::progress::Progress::open(&directory);
     let stage = crate::progress::Stage::new(&progress, Family::AirLosses.name());
     shared::fail_reopens(3, 1);
@@ -927,74 +932,74 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     let mut covered = BTreeSet::new();
     let mut unclassified = Vec::new();
     macro_rules! producer {
-        ($module:ident; [$($independent:ident),*]) => {{
-            let actual: BTreeSet<_> = crate::extended::$module::TABLES.iter().map(|t| t.index()).collect();
+        ($($module:ident)::+; [$($independent:ident),*]) => {{
+            let actual: BTreeSet<_> = $($module)::+::TABLES.iter().map(|t| t.index()).collect();
             let independent: BTreeSet<usize> = [$($independent.index()),*].into_iter().collect();
-            assert!(independent.is_subset(&actual), "{} removed an independently captured table", stringify!($module));
-            assert!(independent.is_disjoint(&dependent), "{} independently captured table was refused", stringify!($module));
+            assert!(independent.is_subset(&actual), "{} removed an independently captured table", stringify!($($module)::+));
+            assert!(independent.is_disjoint(&dependent), "{} independently captured table was refused", stringify!($($module)::+));
             let classified: BTreeSet<_> = actual.intersection(&dependent).copied().chain(independent).collect();
-            if classified != actual { unclassified.push(format!("{} missing {:?}", stringify!($module), actual.difference(&classified).map(|i|TableId::ALL[*i]).collect::<Vec<_>>())); }
+            if classified != actual { unclassified.push(format!("{} missing {:?}", stringify!($($module)::+), actual.difference(&classified).map(|i|TableId::ALL[*i]).collect::<Vec<_>>())); }
             covered.extend(actual.intersection(&dependent).copied());
         }};
     }
-    producer!(air; [WingCumulative,AirAces,AirStatistics,AirReferenceWitnesses,AirMissionInputs,AirSortieBaseCountries,AirSortieModifiers,AirSortieSpecialBases,AirSortieModifierMetadata,AirNavalPatrolCombats]);
-    producer!(air_histories; []);
-    producer!(air_records; []);
-    producer!(air_relations; []);
-    producer!(air_losses; []);
-    producer!(building_bombing; []);
-    producer!(character_inputs; []);
-    producer!(character_portraits; []);
-    producer!(characters; []);
-    producer!(combat_log; [LendLeaseEquipment]);
-    producer!(combat_progress; [LandCombatProgress,CombatLogObservers]);
-    producer!(construction; [StateBaseResources,BuildingConstruction,RailwayConstruction,OccupationSettings,StateOccupationLaws,StateGarrisons,StateAssignedManpower,CountryOccupationReserveManpower,CountryCollaboration]);
-    producer!(country_appearance; [ReservedCountryNaming]);
-    producer!(country_counters; [CountryCivilWars]);
-    producer!(construction_ic; []);
-    producer!(country_stability; []);
-    producer!(division_presentation; [DivisionMovement,MovementStateTerms,CoreSupplyAccess,RiverRelations,DivisionTransportSpeeds]);
-    producer!(division_templates; []);
-    producer!(economy; [CountryExperience,ProvinceSupply,HubMotorization,DisruptedSupply,ForeignHomebases,ResourceDefinitions,CountryResources,ResourceExchanges,PurchaseContracts,CountryFuelConsumers,FuelDemandParts]);
-    producer!(equipment_destruction; []);
-    producer!(experience_gains; []);
-    producer!(event_feed; []);
-    producer!(fog; [VolunteerHosts,TheatreAreas,StationedUnits,UnitIntel,SentVolunteers]);
-    producer!(governance; [ResearchSlots,DecisionCounts,Decisions,PreferredTactics,TechSharingGroups,TechSharingMembers,PowerBalances,PowerBalanceMembers,PowerBalanceRanges,PowerBalanceOverrides,PowerBalanceModifierBreakdowns,TimedIdeas,DecisionRandomItems]);
-    producer!(hired_advisors; []);
-    producer!(intel; [IntelNetworkSummaries,Capitulation,Subjects,Autonomy,IntelligenceAgencies,OperativeMemberships,Cryptology,IntelNetworks,Operations,OperationAssignments,OperationTokens,IncomingDiplomaticActions,CountryIntel,CapturedOperativeReferences,AgencyUpgradeLevels,OperativeMissions,StrategicOperatives,AgencyOperationBuffers]);
-    producer!(land_events; []);
-    producer!(leader_paths; []);
-    producer!(leader_portraits; []);
-    producer!(model_inputs; [CountryUnitBonuses]);
-    producer!(naval_details; [NavalCombatDetails,NavalCombatShips,NavalCombatAirBaseWingHandles]);
-    producer!(group_counters; []);
-    producer!(naval_counters; [TaskForceCounterInputs,TaskForceMapMotion,TaskForceMissions]);
-    producer!(naval_combat_sources; [NavalCombatTransfers,NavalTransferUnits]);
-    producer!(line_output; []);
-    producer!(map_names; []);
-    producer!(logistics; []);
-    producer!(naval_history; [NavalSupremacy,SunkConvoys,LandTheatres,LandTheatreGroups,LandTheatreMembers,AirTheatres,AirTheatreGroups,AirTheatreMembers,NavalResults,NavalResultMembers,NavalResultCountries,SunkShips,OrdersGroups,OrdersGroupMembers,ArmyGroupMembers]);
-    producer!(naval_mission_inputs; [NavalMissionTaskForces,NavalMissionLedgers,NavalPatrolMissionInputs,NavalDominanceTaskForceRanges]);
-    producer!(naval_result_sources; []);
-    producer!(nuclear_strikes; []);
-    producer!(map_events; []);
-    producer!(operation_outcomes; []);
-    producer!(peace_bids; [PeaceBids]);
-    producer!(peace_settlements; []);
-    producer!(politics; []);
-    producer!(production; [ProductionLines,Stockpiles,DivisionEquipment,ArmyUpgradeGroups,ArmyUpgradeRequests,ArmyUpgradeDeliveries,ArmyUpgradeProduced,ProductionLicenses,DeploymentConveyors,DeploymentLines,DeploymentManpower,DeploymentEquipment,ProductionLicenseRecords]);
-    producer!(projects; [ProjectBreakthroughs,Nukes,RaidCountries,PeaceConferences,RaidTargets,RaidCooldowns,RaidPathDistances,RaidPlayerAllowedTypes,RaidEquipment,RaidFacilities,RaidIntelInputs,RaidTooltipOperands]);
-    producer!(province_unit_order; []);
-    producer!(session; []);
-    producer!(ship_models; []);
-    producer!(industrial_organisations; []);
+    producer!(collector_air::extended::air; [WingCumulative,AirAces,AirStatistics,AirReferenceWitnesses,AirMissionInputs,AirSortieBaseCountries,AirSortieModifiers,AirSortieSpecialBases,AirSortieModifierMetadata,AirNavalPatrolCombats]);
+    producer!(collector_air_histories::air_histories; []);
+    producer!(collector_air_records::air_records; []);
+    producer!(collector_air_relations::air_relations; []);
+    producer!(collector_ledger_tables::air_losses; []);
+    producer!(collector_ledger_tables::building_bombing; []);
+    producer!(collector_characters::extended::character_inputs; []);
+    producer!(collector_characters::extended::character_portraits; []);
+    producer!(collector_characters::extended::characters; []);
+    producer!(collector_combat_log::combat_log; [LendLeaseEquipment]);
+    producer!(collector_land_events::extended::combat_progress; [LandCombatProgress,CombatLogObservers]);
+    producer!(collector_construction::construction; [StateBaseResources,BuildingConstruction,RailwayConstruction,OccupationSettings,StateOccupationLaws,StateGarrisons,StateAssignedManpower,CountryOccupationReserveManpower,CountryCollaboration]);
+    producer!(collector_country_counters::country_appearance; [ReservedCountryNaming]);
+    producer!(collector_country_counters::country_counters; [CountryCivilWars]);
+    producer!(collector_output::construction_tables; []);
+    producer!(collector_stability::country_stability; []);
+    producer!(collector_divisions::extended::division_presentation; [DivisionMovement,MovementStateTerms,CoreSupplyAccess,RiverRelations,DivisionTransportSpeeds]);
+    producer!(collector_division_templates::extended::division_templates; []);
+    producer!(collector_economy::economy; [CountryExperience,ProvinceSupply,HubMotorization,DisruptedSupply,ForeignHomebases,ResourceDefinitions,CountryResources,ResourceExchanges,PurchaseContracts,CountryFuelConsumers,FuelDemandParts]);
+    producer!(collector_equipment_destruction::extended::equipment_destruction; []);
+    producer!(collector_experience_gains::tables; []);
+    producer!(collector_ledger_tables::event_feed; []);
+    producer!(collector_air::extended::fog; [VolunteerHosts,TheatreAreas,StationedUnits,UnitIntel,SentVolunteers]);
+    producer!(collector_governance::governance; [ResearchSlots,DecisionCounts,Decisions,PreferredTactics,TechSharingGroups,TechSharingMembers,PowerBalances,PowerBalanceMembers,PowerBalanceRanges,PowerBalanceOverrides,PowerBalanceModifierBreakdowns,TimedIdeas,DecisionRandomItems]);
+    producer!(collector_advisors::hired_advisors; []);
+    producer!(collector_intel::intel; [IntelNetworkSummaries,Capitulation,Subjects,Autonomy,IntelligenceAgencies,OperativeMemberships,Cryptology,IntelNetworks,Operations,OperationAssignments,OperationTokens,IncomingDiplomaticActions,CountryIntel,CapturedOperativeReferences,AgencyUpgradeLevels,OperativeMissions,StrategicOperatives,AgencyOperationBuffers]);
+    producer!(collector_land_events::extended::land_events; []);
+    producer!(collector_leaders::leader_paths; []);
+    producer!(collector_leaders::leader_portraits; []);
+    producer!(collector_model_inputs::model_inputs; [CountryUnitBonuses]);
+    producer!(collector_naval_details::naval_details; [NavalCombatDetails,NavalCombatShips,NavalCombatAirBaseWingHandles]);
+    producer!(collector_division_templates::extended::group_counters; []);
+    producer!(collector_naval_counters::naval_counters; [TaskForceCounterInputs,TaskForceMapMotion,TaskForceMissions]);
+    producer!(collector_naval_details::naval_combat_sources; [NavalCombatTransfers,NavalTransferUnits]);
+    producer!(collector_output::line_tables; []);
+    producer!(collector_session::map_names; []);
+    producer!(collector_slow_tables::logistics; []);
+    producer!(collector_naval_history::extended::naval_history; [NavalSupremacy,SunkConvoys,LandTheatres,LandTheatreGroups,LandTheatreMembers,AirTheatres,AirTheatreGroups,AirTheatreMembers,NavalResults,NavalResultMembers,NavalResultCountries,SunkShips,OrdersGroups,OrdersGroupMembers,ArmyGroupMembers]);
+    producer!(collector_naval_missions::extended::naval_mission_inputs; [NavalMissionTaskForces,NavalMissionLedgers,NavalPatrolMissionInputs,NavalDominanceTaskForceRanges]);
+    producer!(collector_naval_results::extended::naval_result_sources; []);
+    producer!(collector_ledger_tables::nuclear_strikes; []);
+    producer!(crate::extended::map_events; []);
+    producer!(collector_operation_outcomes::extended::operation_outcomes; []);
+    producer!(collector_peace::peace_bids; [PeaceBids]);
+    producer!(collector_peace::tables; []);
+    producer!(collector_politics::politics; []);
+    producer!(collector_production::production; [ProductionLines,Stockpiles,DivisionEquipment,ArmyUpgradeGroups,ArmyUpgradeRequests,ArmyUpgradeDeliveries,ArmyUpgradeProduced,ProductionLicenses,DeploymentConveyors,DeploymentLines,DeploymentManpower,DeploymentEquipment,ProductionLicenseRecords]);
+    producer!(collector_projects::projects; [ProjectBreakthroughs,Nukes,RaidCountries,PeaceConferences,RaidTargets,RaidCooldowns,RaidPathDistances,RaidPlayerAllowedTypes,RaidEquipment,RaidFacilities,RaidIntelInputs,RaidTooltipOperands]);
+    producer!(collector_divisions::extended::province_unit_order; []);
+    producer!(collector_session::session; []);
+    producer!(collector_ship_models::ship_models; []);
+    producer!(collector_production_daily::industrial_organisations; []);
     {
         let actual = collector_slow_tables::doctrines::TABLES;
         assert!(actual.iter().all(|t| dependent.contains(&t.index())));
         covered.extend(actual.map(|t| t.index()));
     }
-    producer!(market; []);
+    producer!(collector_ledger_tables::market; []);
     for table in collector_naval_management::forces::TABLES
         .into_iter()
         .chain(collector_naval_management::bases::TABLES)
@@ -1003,11 +1008,11 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
         covered.insert(table.index());
     }
 
-    producer!(visibility; [SimulationFeatures,StateVisibility,CountryWars,LocalPlayer,LandUnitOrder]);
-    producer!(war_overview; []);
-    for table in crate::faction_companions::TABLES
+    producer!(collector_visibility::visibility; [SimulationFeatures,StateVisibility,CountryWars,LocalPlayer,LandUnitOrder]);
+    producer!(collector_war_overview::war_overview; []);
+    for table in collector_factions::faction_companions::TABLES
         .into_iter()
-        .chain(crate::faction_goals::TABLES)
+        .chain(collector_factions::faction_goals::TABLES)
     {
         assert!(dependent.contains(&table.index()));
         covered.insert(table.index());
@@ -1040,9 +1045,10 @@ fn map_exclusive_intel_hooks_install_nothing_without_reads_or_failure_counters()
     let mode = replay_data::scope::CaptureMode::Map;
     macro_rules! omitted {
         ($module:ident, $family:ident) => {{
-            let capture = crate::extended::records_any(mode, Family::$family.tables());
+            let capture =
+                collector_extended_support::outcomes::records_any(mode, Family::$family.tables());
             assert!(!capture);
-            assert!(crate::extended::records_any(
+            assert!(collector_extended_support::outcomes::records_any(
                 replay_data::scope::CaptureMode::Full,
                 Family::$family.tables()
             ));
