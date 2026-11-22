@@ -40,6 +40,17 @@ fn the_pinned_dll_beside_the_program_reports_the_pinned_version() {
     Compiler::discover().unwrap();
 }
 
+#[test]
+fn shader_module_labels_avoid_dxc_path_and_flag_characters() {
+    assert_eq!(gpu::shader_module_label("named.shader:Water"), "named.shader_Water");
+    assert_eq!(
+        gpu::shader_module_label("gfx/FX/river.shader:Water"),
+        "gfx_FX_river.shader_Water"
+    );
+    assert_eq!(gpu::shader_module_label("-flag.shader:Up"), "_-flag.shader_Up");
+    assert_eq!(gpu::shader_module_label(""), "_");
+}
+
 mod arena;
 mod dimensions;
 mod numeric;
