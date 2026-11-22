@@ -100,6 +100,15 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     if let Some(hours) = snapshot.behind.filter(|_| snapshot.phase == Phase::Recording) {
         text = format!("{text} · falling behind by {hours} hours");
     }
+    if let Some(prompt) = snapshot.prompt {
+        let question = match (prompt.quitting, prompt.discarding) {
+            (true, true) => "Discard and quit?",
+            (false, true) => "Discard this session?",
+            (true, false) => "Quit BattlePlan Recorder?",
+            (false, false) => "Stop recording?",
+        };
+        text = format!("{text}\n{question} Click to answer.");
+    }
     if let Some(problem) = &snapshot.problem {
         text = format!("{text}\n{}", problem.text);
     }
@@ -292,6 +301,12 @@ mod tests {
         assert_eq!(
             tooltip(&snapshot),
             "BattlePlan Recorder\nRecording · Germany 1936–1943\n2 hours couldn’t be recorded."
+        );
+        snapshot.prompt = Some(crate::panel::Prompt { id: 3, quitting: false, discarding: true, session_key: 1 });
+        assert_eq!(
+            tooltip(&snapshot),
+            "BattlePlan Recorder\nRecording · Germany 1936–1943\nDiscard this session? Click to answer.\n2 hours couldn’t be recorded.",
+            "a prompt dismissed with its panel waits in the tray"
         );
     }
 

@@ -70,9 +70,10 @@ pub fn panel_opened(
     window: WebviewWindow,
     recorder: State<'_, Arc<Recorder>>,
     panel: String,
-) -> PanelOpened {
+) -> Result<PanelOpened, String> {
+    let compact = panel::opening(&app, &window, &panel)?;
     recorder.panel_opened(&app);
-    PanelOpened { compact: panel::opening(&app, &window, &panel) }
+    Ok(PanelOpened { compact })
 }
 
 #[tauri::command]
@@ -82,15 +83,17 @@ pub fn panel_fit(app: AppHandle, window: WebviewWindow, height: f64) -> Result<(
 
 #[tauri::command]
 pub async fn close_panel(
+    app: AppHandle,
     window: WebviewWindow,
     recorder: State<'_, Arc<Recorder>>,
     revision: u64,
 ) -> Result<bool, String> {
-    if !recorder.dismiss(revision) {
+    let instance = panel::instance_of(&app, &window).ok_or(panel::CLOSED)?;
+    if !recorder.dismiss(instance, revision) {
         return Ok(false);
     }
     window.destroy().map_err(|error| {
-        recorder.dismissal_failed();
+        recorder.dismissal_failed(instance);
         error.to_string()
     })?;
     Ok(true)
@@ -98,6 +101,7 @@ pub async fn close_panel(
 
 #[tauri::command]
 pub fn prompt_seen(
+    app: AppHandle,
     window: WebviewWindow,
     recorder: State<'_, Arc<Recorder>>,
     prompt: u64,
@@ -105,7 +109,8 @@ pub fn prompt_seen(
     if window.label() != panel::LABEL {
         return Err("Only the recorder panel shows its prompts.".into());
     }
-    recorder.prompt_seen(prompt);
+    let instance = panel::instance_of(&app, &window).ok_or(panel::CLOSED)?;
+    recorder.prompt_seen(instance, prompt);
     Ok(())
 }
 

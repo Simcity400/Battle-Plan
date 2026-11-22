@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
@@ -67,6 +67,17 @@ test('a recording is named by its file, or the name its file will get, or a plac
   assert.equal(promptTitle(true, false), 'Quit BattlePlan Recorder?');
   assert.equal(promptTitle(false, true), 'Discard this session?');
   assert.equal(promptTitle(true, true), 'Discard and quit?');
+});
+
+test('Escape never seems to cancel a Save or Discard already sent', () => {
+  const screen = { updateAsked: false, confirmingWaiting: false, prompting: true, discarding: true, promptBusy: false, up: false };
+  assert.equal(escapeStep(screen), 'discard', 'Escape steps back from the Discard confirmation');
+  assert.equal(escapeStep({ ...screen, promptBusy: true }), 'none', 'not once the Discard is on its way');
+  assert.equal(escapeStep({ ...screen, discarding: false, promptBusy: true }), 'none');
+  assert.equal(escapeStep({ ...screen, discarding: false }), 'prompt');
+  assert.equal(escapeStep({ ...screen, prompting: false, promptBusy: true, up: true }), 'up');
+  assert.equal(escapeStep({ ...screen, prompting: false }), 'close');
+  assert.equal(escapeStep({ ...screen, updateAsked: true, promptBusy: true }), 'update');
 });
 
 test('sizes say whether they are this session\'s or saved, and the spool total never counts the unknown as nothing', () => {

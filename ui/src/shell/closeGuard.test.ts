@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuard, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNJUDGED, UNKEPT } from './closeGuard.ts';
+import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuard, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNJUDGED, UNKEPT, UNRECHECKED } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import { unsavedDrafts } from '../dashboard/layoutDrafts.ts';
 import { loadLayouts } from '../dashboard/storage.ts';
@@ -21,6 +21,8 @@ function desktop(judge?: () => boolean) {
     leaveFails: false,
     refreshFails: false,
     refreshes: 0,
+    holdRefreshes: false,
+    heldRefreshes: [] as ((seq: number) => void)[],
     subscriptions: [] as ((batch: CloseBatch) => boolean)[],
     seq: 0,
     waiting: new Map<number, CloseAbout>(),
@@ -46,6 +48,7 @@ function desktop(judge?: () => boolean) {
         refresh: async () => {
           host.refreshes++;
           if (host.refreshFails) throw lost;
+          if (host.holdRefreshes) return new Promise<number>(resolve => { host.heldRefreshes.push(resolve); });
           return host.seq + 1;
         },
       };
@@ -451,6 +454,58 @@ test('Try again resends only on the batch its own request brought, and only whil
   assert.deepEqual([host.answers.length, shown(), locked()], [1, [], 'update'], 'the host took the answer whose reply was lost, so nothing is sent again and nothing stays to retry');
 });
 
+test('a second Try again while the first is still asking does nothing, so an answer the host took is never sent again', async () => {
+  const { host, start, send, ask, hold, shown, locked } = desktop();
+  start();
+  await flush();
+  host.answerFails = true;
+  ask(4, 'leave');
+  await flush();
+  host.holdRefreshes = true;
+  shown()[0]!.retry();
+  shown()[0]!.retry();
+  assert.equal(host.refreshes, 1, 'one request for what stands per failure');
+  send();
+  const seq = host.seq;
+  host.heldRefreshes.shift()!(seq);
+  await flush();
+  assert.equal(host.answers.length, 2, 'the answer is sent again once');
+  hold(4, 'leave');
+  await flush();
+  assert.equal(shown().length, 1, 'its reply was lost too, so it fails again');
+  for (const reply of host.heldRefreshes.splice(0)) reply(seq);
+  await flush();
+  assert.deepEqual([host.answers.length, locked()], [2, 'update'], 'nothing an earlier failure asked for resends it');
+  shown()[0]!.retry();
+  host.heldRefreshes.shift()!(seq + 1);
+  send();
+  await flush();
+  assert.deepEqual([host.answers.length, shown()], [2, []], 'the batch says the host holds it, so the failure goes and nothing is sent');
+});
+
+test('an install that couldn’t start asks the host what stands, so a lost stay never leaves Restarting… up with nothing to try', async () => {
+  const { host, start, send, ask, hold, retire, shown, locked } = desktop();
+  const guard = start();
+  await flush();
+  ask(1, 'install');
+  hold(1, 'install');
+  send();
+  assert.equal(locked(), 'update');
+  retire(1);
+  host.refreshFails = true;
+  guard.recheck();
+  await flush();
+  assert.deepEqual([host.refreshes, shown().map(({ message }) => message), locked()], [1, [UNRECHECKED], 'update'], 'the modal shows that it couldn’t ask, with Try again');
+  host.refreshFails = false;
+  shown()[0]!.retry();
+  await flush();
+  assert.equal(host.refreshes, 2);
+  send();
+  assert.deepEqual([locked(), shown()], [null, []], 'the batch the request brought unlocks the page');
+  guard.recheck();
+  assert.equal(host.refreshes, 2, 'a page that holds nothing has nothing to ask');
+});
+
 test('an answer that fails says which way it failed', async () => {
   const { host, start, ask, shown } = desktop();
   start();
@@ -470,7 +525,7 @@ async function replay(seed: number, trace: Traced[]) {
   interface Entry {
     guard?: CloseGuard; onBatch?: (batch: CloseBatch) => boolean; watches: { resolve(): void; reject(cause: unknown): void }[];
     answers: { id: number; resolve(heard: boolean): void; reject(cause: unknown): void }[]; failures: readonly CloseGuardFailure[]; locked: LeavingFor | null; prompts: number;
-    refreshes: number; refreshing: { resolve(seq: number): void; reject(cause: unknown): void }[];
+    refreshes: number; refreshing: Map<number, { resolve(seq: number): void; reject(cause: unknown): void }>;
   }
   const guards: Entry[] = [];
   let emitted: [number, boolean, number[]][] = [];
@@ -480,14 +535,14 @@ async function replay(seed: number, trace: Traced[]) {
     const [kind, index] = event as [string, number];
     emitted = [];
     if (kind === 'm') {
-      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0, refreshes: 0, refreshing: [] };
+      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0, refreshes: 0, refreshing: new Map() };
       guards[index] = entry;
       entry.guard = closeGuard({
         requests: onBatch => {
           entry.onBatch = onBatch;
           return {
             watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }),
-            refresh: () => { entry.refreshes++; return new Promise<number>((resolve, reject) => { entry.refreshing.push({ resolve, reject }); }); },
+            refresh: () => { const ordinal = entry.refreshes++; return new Promise<number>((resolve, reject) => { entry.refreshing.set(ordinal, { resolve, reject }); }); },
           };
         },
         answer: (id, stays, basis) => {
@@ -525,14 +580,17 @@ async function replay(seed: number, trace: Traced[]) {
       await flush();
       out = expected;
     } else if (kind === 'f') {
-      const [, , seq, expected] = event as [string, number, number | null, Out];
-      const pending = entry.refreshing.shift();
+      const [, , ordinal, seq, expected] = event as [string, number, number, number | null, Out];
+      const pending = entry.refreshing.get(ordinal);
       assert.ok(pending, `${where}: the guard asked again what stands`);
+      entry.refreshing.delete(ordinal);
       if (seq === null) pending.reject(lost); else pending.resolve(seq);
       await flush();
       out = expected;
+    } else if (kind === 'k') {
+      entry.guard!.recheck();
+      out =(event as [string, number, Out])[2];
     } else if (kind === 't') {
-
       const [, , dirty, confirmed, key, expected] = event as [string, number, boolean | null, boolean, string, Out];
       Object.assign(facts, { dirty, confirmed });
       const failure = entry.failures.find(shown => shown.key === key);

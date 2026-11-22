@@ -16,7 +16,8 @@ const OPENING_HEIGHT: f64 = 120.0;
 const MARGIN: f64 = 12.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 const REPLAY_IDENTIFIER: &str = "local.battleplan.replay";
-const CLOSED: &str = "This recorder panel has closed.";
+pub const CLOSED: &str = "This recorder panel has closed.";
+const OPENING: &str = "This recorder panel is still opening.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +82,7 @@ struct State {
     shown: bool,
     fitted: bool,
     unseen: bool,
-    declined: bool,
+    dismissed: bool,
     opening: bool,
     instance: u64,
     live: Option<(u64, isize)>,
@@ -108,6 +109,31 @@ impl State {
 
     fn opening_height(&self, instance: u64) -> Option<f64> {
         (self.live(instance) && !self.fitted).then_some(OPENING_HEIGHT)
+    }
+
+    fn instance_at(&self, hwnd: Option<isize>) -> Option<u64> {
+        self.live.filter(|&(_, live)| Some(live) == hwnd).map(|(instance, _)| instance)
+    }
+
+    fn focus_lost(&mut self, instance: u64) -> bool {
+        let live = self.live(instance);
+        let close = live && closes_on_focus_loss(self.shown, self.focused, self.dialog);
+        self.focused &= !live;
+        self.dismissed |= close;
+        close
+    }
+
+    fn dismiss(&mut self, instance: Option<u64>) {
+        self.dismissed |= instance.is_some_and(|instance| self.live(instance));
+    }
+
+    fn register(&mut self, hwnd: Option<isize>, panel: &str) -> Result<(bool, Option<String>, bool), &'static str> {
+        if self.instance_at(hwnd).is_none() {
+            return Err(if self.opening && self.live.is_none() { OPENING } else { CLOSED });
+        }
+        let registered = self.closed_at.is_none() && self.recordings_panel.as_deref() != Some(panel);
+        let previous = if registered { self.recordings_panel.replace(panel.to_owned()) } else { None };
+        Ok((self.compact, previous, registered))
     }
 }
 
@@ -189,6 +215,8 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     match click(window.is_some(), opening, closed_recently) {
         Click::Close => {
             if let Some(window) = window {
+                let instance = instance_of(app, &window);
+                state(app).dismiss(instance);
                 let _ = window.destroy();
             }
         }
@@ -313,20 +341,13 @@ fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
             }
         }
         WindowEvent::Focused(false) => {
-            let close = {
-                let mut state = state(&handle);
-                let live = state.live(instance);
-                let close = live && closes_on_focus_loss(state.shown, state.focused, state.dialog);
-                state.focused &= !live;
-                close
-            };
+            let close = state(&handle).focus_lost(instance);
             if close && let Some(window) = handle.get_webview_window(LABEL) {
                 let _ = window.destroy();
             }
-
         }
         WindowEvent::Destroyed => {
-            let (panel, declined) = {
+            let (panel, dismissed) = {
                 let mut state = state(&handle);
                 if !state.retire(instance) {
                     return;
@@ -334,12 +355,12 @@ fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
-                (state.recordings_panel.take(), std::mem::take(&mut state.declined))
+                (state.recordings_panel.take(), std::mem::take(&mut state.dismissed))
             };
             if let Some(panel) = panel {
                 handle.state::<crate::recordings::Library>().close(&panel);
             }
-            handle.state::<Arc<Recorder>>().panel_closed(&handle, declined);
+            handle.state::<Arc<Recorder>>().panel_closed(&handle, instance, dismissed);
         }
         _ => {}
     });
@@ -357,19 +378,16 @@ fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
     Ok(())
 }
 
-fn instance_of(app: &AppHandle, window: &WebviewWindow) -> Option<u64> {
-    let hwnd = window.hwnd().ok()?.0 as isize;
-    state(app).live.filter(|&(_, live)| live == hwnd).map(|(instance, _)| instance)
+fn hwnd_of(window: &WebviewWindow) -> Option<isize> {
+    window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
 }
 
-pub fn opening(app: &AppHandle, window: &WebviewWindow, panel: &str) -> bool {
-    let live = instance_of(app, window).is_some();
-    let (compact, registered, previous) = {
-        let mut state = state(app);
-        let registered = live && state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel);
-        let previous = if registered { state.recordings_panel.replace(panel.to_owned()) } else { None };
-        (state.compact, registered, previous)
-    };
+pub fn instance_of(app: &AppHandle, window: &WebviewWindow) -> Option<u64> {
+    state(app).instance_at(hwnd_of(window))
+}
+
+pub fn opening(app: &AppHandle, window: &WebviewWindow, panel: &str) -> Result<bool, &'static str> {
+    let (compact, previous, registered) = state(app).register(hwnd_of(window), panel)?;
     let library = app.state::<crate::recordings::Library>();
     if let Some(previous) = previous {
         library.close(&previous);
@@ -377,7 +395,7 @@ pub fn opening(app: &AppHandle, window: &WebviewWindow, panel: &str) -> bool {
     if registered {
         library.register_panel(panel);
     }
-    compact
+    Ok(compact)
 }
 
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> Result<(), String> {
@@ -429,7 +447,7 @@ fn unseen(app: &AppHandle, window: &WebviewWindow, instance: u64, error: &tauri:
             let answer = answered(state.live(instance), retry);
             if answer != Unseen::Gone {
                 state.unseen = false;
-                state.declined = answer == Unseen::Close;
+                state.dismissed |= answer == Unseen::Close;
             }
             answer
         };
@@ -943,5 +961,31 @@ mod tests {
         assert!(closes_on_focus_loss(true, true, false));
         assert!(!closes_on_focus_loss(true, true, true));
         assert!(!closes_on_focus_loss(true, false, false));
+    }
+
+    #[test]
+    fn a_click_away_or_the_tray_icon_dismisses_the_panel_so_its_prompt_waits_without_taking_focus_back() {
+        let mut state = State { instance: 1, live: Some((1, 10)), shown: true, focused: true, ..State::default() };
+        assert!(state.focus_lost(1), "a click away closes the panel");
+        assert!(state.dismissed, "and counts as the user dismissing it, so its prompt doesn’t reopen another panel");
+
+        let mut state = State { instance: 2, live: Some((2, 20)), ..State::default() };
+        state.dismiss(Some(1));
+        assert!(!state.dismissed, "a retired panel’s dismissal says nothing of this one");
+        state.dismiss(Some(2));
+        assert!(state.dismissed, "the tray icon closing the panel dismisses it too");
+    }
+
+    #[test]
+    fn a_page_that_asks_for_its_opening_state_before_its_window_is_registered_hears_to_try_again() {
+        let mut state = State { instance: 1, opening: true, compact: true, ..State::default() };
+        assert_eq!(state.register(Some(10), "a"), Err(OPENING), "no opening succeeds without registering its panel");
+        state.live = Some((1, 10));
+        assert_eq!(state.register(Some(10), "a"), Ok((true, None, true)));
+        assert_eq!(state.register(Some(10), "a"), Ok((true, None, false)), "a second read registers nothing again");
+        assert_eq!(state.register(Some(11), "b"), Err(CLOSED), "another window isn’t this panel");
+        state.opening = false;
+        state.retire(1);
+        assert_eq!(state.register(Some(10), "a"), Err(CLOSED));
     }
 }

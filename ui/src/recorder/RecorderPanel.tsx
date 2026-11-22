@@ -13,7 +13,7 @@ import { AUTO_COMPRESS_HIGH } from '../shell/RecordingCompressionSetting';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName,
+import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName,
   recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion,
   whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PromptFailure, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
@@ -579,6 +579,7 @@ export default function RecorderPanel() {
     });
   };
   const cancelPrompt = () => {
+    if (promptAction) return;
     clearError();
     if (!hostPrompt) {
       setOpened(null);
@@ -592,6 +593,7 @@ export default function RecorderPanel() {
     cancel();
   };
   const cancelDiscard = () => {
+    if (promptAction) return;
     if (asked === null || stepped !== asked.sessionKey) { cancelPrompt(); return; }
     setStepped(null);
     setPromptFailure(null);
@@ -611,12 +613,13 @@ export default function RecorderPanel() {
       if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('.select-menu:popover-open')) return;
       event.preventDefault();
       const up = PARENT_VIEW[view];
-      if (updateAsked) dismissUpdate();
-      else if (confirmingWaiting) askDiscardWaiting(null);
-      else if (prompting && discarding) cancelDiscard();
-      else if (prompting) cancelPrompt();
-      else if (up) navigate(up);
-      else closeSelf(snapshot?.revision ?? 0);
+      const step = escapeStep({ updateAsked, confirmingWaiting: !!confirmingWaiting, prompting, discarding, promptBusy: promptAction, up: !!up });
+      if (step === 'update') dismissUpdate();
+      else if (step === 'waiting') askDiscardWaiting(null);
+      else if (step === 'discard') cancelDiscard();
+      else if (step === 'prompt') cancelPrompt();
+      else if (step === 'up' && up) navigate(up);
+      else if (step === 'close') closeSelf(snapshot?.revision ?? 0);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);

@@ -240,6 +240,15 @@ export function promptTitle(quitting: boolean, discarding: boolean): string {
   return quitting ? 'Quit BattlePlan Recorder?' : 'Stop recording?';
 }
 
+export type EscapeStep = 'update' | 'waiting' | 'discard' | 'prompt' | 'up' | 'close' | 'none';
+
+export function escapeStep(screen: { updateAsked: boolean; confirmingWaiting: boolean; prompting: boolean; discarding: boolean; promptBusy: boolean; up: boolean }): EscapeStep {
+  if (screen.updateAsked) return 'update';
+  if (screen.confirmingWaiting) return 'waiting';
+  if (screen.prompting) return screen.promptBusy ? 'none' : screen.discarding ? 'discard' : 'prompt';
+  return screen.up ? 'up' : 'close';
+}
+
 export function stopQuestion(name: string | null, startedAt: number | null, now: number): string {
   return `Save this session${name ? ` of ${name}` : ''} (${sessionLength(startedAt, now)})?`;
 }

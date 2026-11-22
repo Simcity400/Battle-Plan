@@ -468,6 +468,7 @@ impl Leaving {
                 return false;
             }
             state.page = Page::Gone;
+            state.navigations.clear();
             state.hung = false;
             state.sent.clear();
             let closing = state.questions.iter().any(|question| question.about == About::Close);
@@ -1276,6 +1277,16 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Through, "the next close goes through");
     }
 
+    #[test]
+    fn a_page_process_that_ends_during_a_reload_takes_its_reload_with_it() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        assert!(leaving.navigation_starting(3));
+        assert!(!leaving.page_gone());
+        assert_eq!(leaving.close_for_update(), Ok(()), "setup hears that nothing a dead page held can be saved, not that it reloaded");
+    }
+
     mod interleavings {
         use super::super::{About, Answered, Ask, Batch, Closing, Leaving, Page as Shown, Posed, Reach, Verdict};
         use serde_json::{Value, json};
@@ -1300,6 +1311,7 @@ mod tests {
         enum Failure {
             Watch,
             Judge,
+            Recheck,
             Answer(About, bool, Vec<u64>),
         }
 
@@ -1313,12 +1325,34 @@ mod tests {
             by_choice: bool,
             applied: Option<u64>,
             document: Option<u64>,
-            resend: Vec<(u64, u64)>,
+            resend: Vec<(u64, u64, u64)>,
             committed: BTreeMap<u64, (bool, bool)>,
             judged: BTreeSet<u64>,
             waiting: Vec<Ask>,
-            failures: BTreeMap<String, Failure>,
+            failures: BTreeMap<String, (u64, Failure)>,
+            failed: u64,
+            refreshing: BTreeSet<u64>,
+            refreshes: usize,
             shown: Option<Option<bool>>,
+        }
+
+        impl Guard {
+            fn fail(&mut self, key: String, failure: Failure) {
+                self.failed += 1;
+                self.failures.insert(key, (self.failed, failure));
+            }
+
+            fn bound(&self, key: &str) -> Option<u64> {
+                self.failures.get(key).map(|&(failure, _)| failure)
+            }
+        }
+
+        struct Asking {
+            doc: usize,
+            guard: usize,
+            key: String,
+            bound: Option<u64>,
+            ordinal: usize,
         }
 
         #[derive(Default)]
@@ -1332,8 +1366,14 @@ mod tests {
             locked: bool,
         }
 
+        #[derive(Clone, Copy)]
+        struct Restart {
+            doc: usize,
+            confirmed: bool,
+        }
+
         enum Pending {
-            Install(Option<usize>),
+            Install(Restart),
             Pipe,
             Query,
         }
@@ -1456,14 +1496,15 @@ mod tests {
             live: usize,
             wire: Arc<Mutex<Wire>>,
             registrations: VecDeque<(usize, usize, Option<u64>)>,
-            refreshes: VecDeque<(usize, usize, Option<u64>)>,
-            refreshed_with: VecDeque<(usize, usize, Option<u64>, Option<u64>)>,
+            refreshes: Vec<Asking>,
+            refreshed_with: Vec<(Asking, Option<u64>)>,
             answers: VecDeque<(usize, usize, u64, bool, Vec<u64>, About)>,
             replies: VecDeque<(usize, usize, u64, Option<bool>, (About, bool, Vec<u64>))>,
             posed: Vec<(Pending, Posed)>,
-            launching: Vec<(Option<usize>, Option<u64>)>,
-            restarts: VecDeque<usize>,
+            launching: Vec<(Restart, Option<u64>)>,
+            restarts: VecDeque<Restart>,
             navigations: Vec<u64>,
+            gone: bool,
             next_navigation: u64,
             disabled: bool,
             choosing: bool,
@@ -1495,8 +1536,8 @@ mod tests {
                 "r" => (format!("{} {}", event[2], event[5]), &event[6]),
                 "t" => (format!("{} {}", event[2], event[4].as_str().is_some_and(|key| key.starts_with("answer:"))), &event[5]),
                 "w" => (event[2].to_string(), &event[3]),
-                "f" => (event[2].is_null().to_string(), &event[3]),
-                "l" => (String::new(), &event[2]),
+                "f" => (event[3].is_null().to_string(), &event[4]),
+                "l" | "k" => (String::new(), &event[2]),
                 _ => return kind.to_owned(),
             };
             let answers = out[0].as_array().map_or(&[][..], Vec::as_slice);
@@ -1527,14 +1568,15 @@ mod tests {
                     live: 0,
                     wire: Arc::default(),
                     registrations: VecDeque::new(),
-                    refreshes: VecDeque::new(),
-                    refreshed_with: VecDeque::new(),
+                    refreshes: Vec::new(),
+                    refreshed_with: Vec::new(),
                     answers: VecDeque::new(),
                     replies: VecDeque::new(),
                     posed: Vec::new(),
                     launching: Vec::new(),
                     restarts: VecDeque::new(),
                     navigations: Vec::new(),
+                    gone: false,
                     next_navigation: 1,
                     disabled: false,
                     choosing: false,
@@ -1691,8 +1733,7 @@ mod tests {
                     }
                     if std::mem::take(&mut self.docs[doc].unreadable) {
                         self.log.push(format!("  doc {doc} guard {guard} can’t read its drafts while judging {}", ask.id));
-                        let state = &mut self.docs[doc].guards[guard];
-                        state.failures.insert("judge".into(), Failure::Judge);
+                        self.docs[doc].guards[guard].fail("judge".into(), Failure::Judge);
                         return false;
                     }
                     let state = &mut self.docs[doc].guards[guard];
@@ -1761,7 +1802,7 @@ mod tests {
                 state.committed.retain(|id, _| live.contains(id));
                 state.judged.retain(|id| live.contains(id));
                 let asked: BTreeSet<u64> = batch.waiting.iter().map(|ask| ask.id).collect();
-                state.failures.retain(|key, _| key.strip_prefix("answer:").is_none_or(|id| asked.contains(&id.parse().unwrap())));
+                state.failures.retain(|key, _| key != "recheck" && key.strip_prefix("answer:").is_none_or(|id| asked.contains(&id.parse().unwrap())));
                 for hold in &batch.holds {
                     state.committed.entry(hold.id).and_modify(|(_, accepted)| *accepted = true).or_insert((hold.about != About::Close, true));
                 }
@@ -1774,13 +1815,13 @@ mod tests {
             fn resend_due(&mut self, doc: usize, guard: usize) {
                 let state = &mut self.docs[doc].guards[guard];
                 let applied = state.applied;
-                let (due, later): (Vec<(u64, u64)>, Vec<(u64, u64)>) =
-                    std::mem::take(&mut state.resend).into_iter().partition(|&(_, after)| applied.is_some_and(|applied| applied >= after));
+                let (due, later): (Vec<(u64, u64, u64)>, Vec<(u64, u64, u64)>) =
+                    std::mem::take(&mut state.resend).into_iter().partition(|&(_, after, _)| applied.is_some_and(|applied| applied >= after));
                 state.resend = later;
-                for (id, _) in due {
+                for (id, _, bound) in due {
                     let state = &self.docs[doc].guards[guard];
-                    let Some(Failure::Answer(about, stays, basis)) = state.failures.get(&format!("answer:{id}")).cloned() else { continue };
-                    if !state.waiting.iter().any(|ask| ask.id == id) {
+                    let Some((failure, Failure::Answer(about, stays, basis))) = state.failures.get(&format!("answer:{id}")).cloned() else { continue };
+                    if failure != bound || !state.waiting.iter().any(|ask| ask.id == id) {
                         continue;
                     }
                     assert!(!self.leaving.lock().held(id), "{}", self.fail(&format!("Try again resent {id}, which the host already took")));
@@ -1788,17 +1829,57 @@ mod tests {
                 }
             }
 
-            fn refreshed(&mut self, doc: usize, guard: usize, id: Option<u64>, seq: Option<u64>) {
+            fn ask_again(&mut self, doc: usize, guard: usize, key: String) {
                 let state = &mut self.docs[doc].guards[guard];
+                let bound = state.bound(&key);
+                if bound.is_some_and(|bound| state.refreshing.contains(&bound)) {
+                    return;
+                }
+                state.refreshing.extend(bound);
+                let ordinal = state.refreshes;
+                state.refreshes += 1;
+                self.refreshed += 1;
+                self.refreshes.push(Asking { doc, guard, key, bound, ordinal });
+            }
+
+            fn recheck(&mut self, doc: usize, guard: usize) {
+                self.begin();
+                let state = &self.docs[doc].guards[guard];
+                if !state.ended && !state.committed.is_empty() {
+                    self.ask_again(doc, guard, "recheck".into());
+                }
+                let trace = self.docs[doc].guards[guard].trace;
+                let out = self.out(doc, guard);
+                self.record(json!(["k", trace, out]));
+            }
+
+            fn refreshed(&mut self, asking: &Asking, seq: Option<u64>) {
+                let state = &mut self.docs[asking.doc].guards[asking.guard];
                 if state.ended {
                     return;
                 }
-                if let (Some(id), Some(after)) = (id, seq) {
-                    match state.resend.iter_mut().find(|(resent, _)| *resent == id) {
-                        Some(entry) => entry.1 = after,
-                        None => state.resend.push((id, after)),
+                if let Some(bound) = asking.bound {
+                    state.refreshing.remove(&bound);
+                }
+                let current = state.failures.get(&asking.key).cloned();
+                if current.as_ref().map(|&(failure, _)| failure) != asking.bound {
+                    return;
+                }
+                let Some(after) = seq else {
+                    if asking.key != "recheck" || !state.committed.is_empty() {
+                        state.fail(asking.key.clone(), current.map_or(Failure::Recheck, |(_, failure)| failure));
                     }
-                    self.resend_due(doc, guard);
+                    return;
+                };
+                if asking.key == "recheck" {
+                    state.failures.remove("recheck");
+                }
+                if let (Some(id), Some(bound)) = (asking.key.strip_prefix("answer:").and_then(|id| id.parse().ok()), asking.bound) {
+                    match state.resend.iter_mut().find(|(resent, _, _)| *resent == id) {
+                        Some(entry) => (entry.1, entry.2) = (after, bound),
+                        None => state.resend.push((id, after, bound)),
+                    }
+                    self.resend_due(asking.doc, asking.guard);
                 }
             }
 
@@ -1809,7 +1890,7 @@ mod tests {
                 }
                 let Some(heard) = reply else {
                     if state.waiting.iter().any(|ask| ask.id == id) {
-                        state.failures.insert(format!("answer:{id}"), Failure::Answer(sent.0, sent.1, sent.2));
+                        state.fail(format!("answer:{id}"), Failure::Answer(sent.0, sent.1, sent.2));
                     }
                     return;
                 };
@@ -1861,9 +1942,14 @@ mod tests {
                 match self.leaving.pose(about) {
                     Ok(posed) => self.posed.push((pending, posed)),
                     Err(verdict) => {
-                        if let Pending::Install(confirmed) = pending {
+                        assert!(
+                            !(self.gone && verdict == Verdict::Reloaded),
+                            "{}",
+                            self.fail("setup heard that a page whose process ended had reloaded")
+                        );
+                        if let Pending::Install(restart) = pending {
                             assert_ne!(verdict, Verdict::Leaving, "{}", self.fail("an install went ahead without its page"));
-                            self.restarts.extend(confirmed);
+                            self.restarts.push_back(restart);
                         }
                     }
                 }
@@ -1897,9 +1983,9 @@ mod tests {
                     Step::Edit if self.editable() => self.docs[live].dirty = true,
                     Step::Save if self.editable() => self.docs[live].dirty = false,
                     Step::Restart if alive && !self.docs[live].locked && !self.docs[live].confirmed && !self.installing() => {
-                        let confirmed = self.docs[live].dirty.then_some(live);
-                        self.docs[live].confirmed = confirmed.is_some();
-                        self.pose(Pending::Install(confirmed), About::Install);
+                        let confirmed = self.docs[live].dirty;
+                        self.docs[live].confirmed = confirmed;
+                        self.pose(Pending::Install(Restart { doc: live, confirmed }), About::Install);
                     }
                     Step::CancelRestart if self.docs[live].confirmed && !self.docs[live].locked => self.docs[live].confirmed = false,
                     Step::DiscardAndClose if self.editable() && self.docs[live].dirty => {
@@ -1968,29 +2054,33 @@ mod tests {
                     }
                     Step::Retry => {
                         let Some(guard) = self.active() else { return false };
-                        let Some((key, failure)) = self.docs[live].guards[guard].failures.iter().next().map(|(key, failure)| (key.clone(), failure.clone())) else {
+                        let state = &self.docs[live].guards[guard];
+                        let open: Vec<(String, Failure)> = state
+                            .failures
+                            .iter()
+                            .filter(|(_, (failure, _))| !self.draining || !state.refreshing.contains(failure))
+                            .map(|(key, (_, failure))| (key.clone(), failure.clone()))
+                            .collect();
+                        if open.is_empty() {
                             return false;
-                        };
+                        }
+                        let (key, failure) = open[self.rng.below(open.len())].clone();
                         self.begin();
                         let (dirty, confirmed) = self.facts(live);
                         match failure {
                             Failure::Watch => self.watch(live, guard),
-                            Failure::Judge => {
-                                self.refreshed += 1;
-                                self.refreshes.push_back((live, guard, None));
-                            }
-                            Failure::Answer(..) => {
-                                let id = key.strip_prefix("answer:").and_then(|id| id.parse().ok()).expect("an answer failure names its id");
-                                self.refreshed += 1;
-                                self.refreshes.push_back((live, guard, Some(id)));
-                            }
+                            Failure::Judge | Failure::Recheck | Failure::Answer(..) => self.ask_again(live, guard, key.clone()),
                         }
                         let trace = self.docs[live].guards[guard].trace;
                         let out = self.out(live, guard);
                         self.record(json!(["t", trace, dirty, confirmed, key, out]));
                     }
                     Step::Refresh | Step::RefreshLost => {
-                        let Some((doc, guard, id)) = self.refreshes.pop_front() else { return false };
+                        if self.refreshes.is_empty() {
+                            return false;
+                        }
+                        let asking = self.refreshes.remove(self.rng.below(self.refreshes.len()));
+                        let (doc, guard) = (asking.doc, asking.guard);
                         if !self.docs[doc].alive {
                             return true;
                         }
@@ -2002,22 +2092,26 @@ mod tests {
                                 if let Ok(sent) = refreshed {
                                     assert!(self.wire.lock().unwrap().dispatched.contains(&sent), "{}", self.fail("a refresh said it sent a batch it never dispatched"));
                                 }
-                                refreshed.ok()
+                                let lost = self.chance(4);
+                                refreshed.ok().filter(|_| !lost)
                             }
                             _ => None,
                         };
-                        self.refreshed_with.push_back((doc, guard, id, answered));
+                        self.refreshed_with.push((asking, answered));
                     }
                     Step::RefreshReply => {
-                        let Some((doc, guard, id, answered)) = self.refreshed_with.pop_front() else { return false };
-                        if !self.docs[doc].alive {
+                        if self.refreshed_with.is_empty() {
+                            return false;
+                        }
+                        let (asking, answered) = self.refreshed_with.remove(self.rng.below(self.refreshed_with.len()));
+                        if !self.docs[asking.doc].alive {
                             return true;
                         }
                         self.begin();
-                        self.refreshed(doc, guard, id, answered);
-                        let trace = self.docs[doc].guards[guard].trace;
-                        let out = self.out(doc, guard);
-                        self.record(json!(["f", trace, answered, out]));
+                        self.refreshed(&asking, answered);
+                        let trace = self.docs[asking.doc].guards[asking.guard].trace;
+                        let out = self.out(asking.doc, asking.guard);
+                        self.record(json!(["f", trace, asking.ordinal, answered, out]));
                     }
                     Step::Remount if alive => self.mount(),
                     Step::Register | Step::RegistrationLost => {
@@ -2046,7 +2140,7 @@ mod tests {
                             state.watched = true;
                             state.failures.remove("watch");
                         } else if !state.ended {
-                            state.failures.insert("watch".into(), Failure::Watch);
+                            state.fail("watch".into(), Failure::Watch);
                         }
                         let trace = state.trace;
                         let out = self.out(doc, guard);
@@ -2057,6 +2151,7 @@ mod tests {
                         self.next_navigation += 1;
                         if self.leaving.navigation_starting(navigation) {
                             self.navigations.push(navigation);
+                            self.gone = false;
                         } else {
                             self.leaving.navigation_completed(navigation);
                         }
@@ -2093,6 +2188,8 @@ mod tests {
 
                     Step::PageExits if alive => {
                         self.docs[live].alive = false;
+                        self.navigations.clear();
+                        self.gone = true;
                         if self.leaving.page_gone() {
                             self.exit(false, "the page ended while closing");
                         }
@@ -2109,8 +2206,8 @@ mod tests {
                             self.log.push(format!("  settled {verdict:?} {id:?}"));
                             settled = true;
                             match self.posed.remove(at).0 {
-                                Pending::Install(confirmed) if verdict == Verdict::Leaving => self.launching.push((confirmed, id)),
-                                Pending::Install(confirmed) => self.restarts.extend(confirmed),
+                                Pending::Install(restart) if verdict == Verdict::Leaving => self.launching.push((restart, id)),
+                                Pending::Install(restart) => self.restarts.push_back(restart),
                                 Pending::Pipe if verdict == Verdict::Leaving => {
                                     self.leaving.exit();
                                     self.exit(false, "setup closed it");
@@ -2121,7 +2218,7 @@ mod tests {
                         return settled;
                     }
                     Step::Launch => {
-                        let Some((confirmed, id)) = self.launching.pop() else { return false };
+                        let Some((restart, id)) = self.launching.pop() else { return false };
                         if self.chance(3) {
                             self.leaving.exit();
                             self.exit(false, "the installer started");
@@ -2129,12 +2226,19 @@ mod tests {
                             if let Some(id) = id {
                                 self.leaving.stay(id);
                             }
-                            self.restarts.extend(confirmed);
+                            self.restarts.push_back(restart);
                         }
                     }
                     Step::RestartReply => {
-                        let Some(doc) = self.restarts.pop_front() else { return false };
-                        self.docs[doc].confirmed = false;
+                        let Some(Restart { doc, confirmed }) = self.restarts.pop_front() else { return false };
+                        if confirmed {
+                            self.docs[doc].confirmed = false;
+                        }
+                        if self.docs[doc].alive
+                            && let Some(guard) = self.docs[doc].guards.len().checked_sub(1)
+                        {
+                            self.recheck(doc, guard);
+                        }
                     }
                     Step::Choose if self.choosing => {
                         self.choosing = false;
@@ -2257,13 +2361,52 @@ mod tests {
                     "{}",
                     self.fail("the host waits on an answer no page will send")
                 );
-                if self.stuck() {
+                let inherited = self.active().is_some_and(|guard| self.docs[self.live].guards[guard].shown.flatten().is_none());
+                if self.stuck() && inherited {
                     self.run(Step::CloseWindow);
                     self.settled(true);
                     if self.exited {
                         return self.after_exit();
                     }
-                    assert!(!self.stuck(), "{}", self.fail("the page stays locked though nothing stands, even after a close"));
+                    assert!(!self.stuck(), "{}", self.fail("a page left locked by the guard it replaced stays locked though nothing stands, even after a close"));
+                }
+                if self.stuck() {
+                    let guards: Vec<String> = self.docs[self.live]
+                        .guards
+                        .iter()
+                        .map(|guard| {
+                            format!(
+                                "ended {} watching {} watched {} applied {:?} committed {:?} failures {:?} refreshing {:?} shown {:?}",
+                                guard.ended,
+                                guard.watching,
+                                guard.watched,
+                                guard.applied,
+                                guard.committed,
+                                guard.failures.keys().collect::<Vec<_>>(),
+                                guard.refreshing,
+                                guard.shown
+                            )
+                        })
+                        .collect();
+                    let host = {
+                        let state = self.leaving.lock();
+                        let page = match state.page {
+                            Shown::Gone => "gone".to_owned(),
+                            Shown::Loading => "loading".to_owned(),
+                            Shown::Watched { seq, .. } => format!("watched {seq}"),
+                        };
+                        format!("{page}, navigations {:?}", state.navigations)
+                    };
+                    panic!(
+                        "{}",
+                        self.fail(&format!(
+                            "the page stays locked though nothing stands, with nothing for the user to retry\nguards:\n{}\nhost: {host}; batches {}, refreshes {}, replies {}",
+                            guards.join("\n"),
+                            self.wire.lock().unwrap().batches.len(),
+                            self.refreshes.len(),
+                            self.refreshed_with.len()
+                        ))
+                    );
                 }
                 self.probe();
             }

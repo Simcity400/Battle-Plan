@@ -27,6 +27,7 @@ export interface CloseGuardFailure { key: string; message: string; detail: strin
 
 export interface CloseGuard {
   leave(): void;
+  recheck(): void;
   end(): void;
 }
 
@@ -36,6 +37,7 @@ export const UNKEPT = 'Couldn’t tell BattlePlan to stay open for your unsaved 
 export const UNANSWERED_SAVED = 'Couldn’t tell BattlePlan your changes are saved, so its update waits.';
 export const UNANSWERED_UNSAVED = 'Couldn’t tell BattlePlan you have unsaved changes, so its update waits.';
 export const UNJUDGED = 'Couldn’t check for unsaved changes, so BattlePlan’s close and update questions wait.';
+export const UNRECHECKED = 'The update didn’t start, and BattlePlan couldn’t say whether anything still holds this window, so it stays locked.';
 
 const unanswered = (about: CloseAbout, stays: boolean) =>
   about === 'close' ? stays ? UNKEPT : UNCLOSED : stays ? UNANSWERED_UNSAVED : UNANSWERED_SAVED;
@@ -46,9 +48,10 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
   const judged = new Set<number>();
-  const resend = new Map<number, { after: number; again: () => void }>();
+  const resend = new Map<number, { after: number; failure: CloseGuardFailure | undefined; again: () => void }>();
   let waiting: readonly CloseAsk[] = [];
   const failures = new Map<string, CloseGuardFailure>();
+  const refreshing = new Set<CloseGuardFailure>();
   const asked = (id: number) => waiting.some(ask => ask.id === id);
   const publish = () => { if (!ended) report([...failures.values()]); };
   const clear = (key: string) => { if (failures.delete(key)) publish(); };
@@ -58,17 +61,22 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     publish();
   };
 
-  const refresh = (key: string, message: string, again: () => void, fresh?: (seq: number) => void) => {
-    requests.refresh().then(seq => { if (!ended) fresh?.(seq); }, cause => { if (!ended && failures.has(key)) fail(key, message, cause, again); });
+  const refresh = (key: string, message: string, again: () => void, fresh?: (seq: number, failure: CloseGuardFailure | undefined) => void, keep = () => true) => {
+    const failure = failures.get(key);
+    if (failure && refreshing.has(failure)) return;
+    if (failure) refreshing.add(failure);
+    const current = () => { if (failure) refreshing.delete(failure); return !ended && failures.get(key) === failure; };
+    requests.refresh().then(seq => { if (current()) fresh?.(seq, failure); }, cause => { if (current() && keep()) fail(key, message, cause, again); });
   };
   const resendDue = () => {
-    for (const [id, { after, again }] of [...resend]) {
+    for (const [id, { after, failure, again }] of [...resend]) {
       if (after > applied) continue;
       resend.delete(id);
-      if (failures.has(`answer:${id}`) && asked(id)) again();
+      if (failures.get(`answer:${id}`) === failure && asked(id)) again();
     }
   };
   const rejudge = () => refresh('judge', UNJUDGED, rejudge);
+  const recheck = () => refresh('recheck', UNRECHECKED, recheck, () => clear('recheck'), () => committed.size > 0);
 
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
@@ -94,8 +102,8 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }, cause => {
       if (ended || !asked(id)) return;
       const message = unanswered(about, stays);
-      const again = () => refresh(key, message, again, after => {
-        resend.set(id, { after, again: () => send(id, about, stays, basis) });
+      const again = () => refresh(key, message, again, (after, failure) => {
+        resend.set(id, { after, failure, again: () => send(id, about, stays, basis) });
         resendDue();
       });
       fail(key, message, cause, again);
@@ -154,7 +162,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     const live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
     for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
-    const settled = [...failures.keys()].filter(key => key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length))));
+    const settled = [...failures.keys()].filter(key => key === 'recheck' || (key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length)))));
     for (const key of settled) failures.delete(key);
     if (settled.length) publish();
     for (const hold of batch.holds) {
@@ -179,5 +187,5 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     });
   };
   watch();
-  return { leave, end() { ended = true; } };
+  return { leave, recheck() { if (!ended && committed.size > 0) recheck(); }, end() { ended = true; } };
 }

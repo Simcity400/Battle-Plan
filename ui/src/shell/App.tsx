@@ -416,7 +416,7 @@ export default function App() {
     return () => { created.end(); if (guard.current === created) guard.current = null; };
   }, [unsavedNow]);
   const guardRestart = useCallback<RestartGuard>((restart, opener) => {
-    if (!unsavedNow()) { void restart(); return; }
+    if (!unsavedNow()) { void restart().then(restarted => { if (!restarted) guard.current?.recheck(); }); return; }
     setLeaving({ kind: 'update', opener, restart });
   }, [unsavedNow]);
   const stayHere = () => {
@@ -432,6 +432,7 @@ export default function App() {
     restartConfirmed.current = true;
     setLeaving(previous => previous && { ...previous, confirmed: true });
     void restart().then(restarted => {
+      if (!restarted) guard.current?.recheck();
       if (restarted || !restartConfirmed.current) return;
       restartConfirmed.current = false;
       setLeaving(null);

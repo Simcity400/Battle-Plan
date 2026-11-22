@@ -651,6 +651,19 @@ fn main() {
     });
 }
 
+const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("shutdown".into())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .ok()?;
+    finished.recv_timeout(limit).ok()
+}
+
 fn exit_after_maps(app: &tauri::AppHandle) -> bool {
     static EXIT: ExitOrder = ExitOrder::new();
     EXIT.begin(
@@ -659,12 +672,19 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
             std::thread::Builder::new()
                 .name("ordered exit".into())
                 .spawn(move || {
-                    let ended = shutdown(&handle);
-                    perf::finish(&handle);
+                    let ordered = handle.clone();
+                    let ended = within(EXIT_BOUND, move || {
+                        let ended = shutdown(&ordered);
+                        perf::finish(&ordered);
+                        ended
+                    });
                     EXIT.done();
-                    if ended {
+                    if ended == Some(true) {
                         handle.exit(0);
                     } else {
+                        if ended.is_none() {
+                            eprintln!("BattlePlan’s shutdown didn’t finish within {} seconds, so it ends now.", EXIT_BOUND.as_secs());
+                        }
                         std::process::exit(0);
                     }
                 })
@@ -718,8 +738,17 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, Shut, shut};
+    use super::{ExitOrder, Shut, shut, within};
     use std::cell::Cell;
+    use std::time::Duration;
+
+    #[test]
+    fn a_shutdown_that_stalls_after_battleplan_commits_to_exit_ends_the_process_instead_of_leaving_it_running_unseen() {
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        let ended = within(Duration::ZERO, move || stalled.recv().is_ok());
+        assert_eq!(ended, None, "a dashboard worker stuck reading an unresponsive share doesn’t hold the exit");
+        assert_eq!(within(Duration::MAX, || true), Some(true), "a shutdown that finishes ends in order");
+    }
 
     struct Window {
         enabled: Cell<bool>,
