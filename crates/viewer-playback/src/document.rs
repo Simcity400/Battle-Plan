@@ -441,6 +441,52 @@ impl OverlayHits {
     }
 }
 
+enum OverlayCounters {
+    Prepared(counters::PreparedCounters),
+    #[cfg(test)]
+    Empty,
+}
+
+impl std::ops::Deref for OverlayCounters {
+    type Target = counters::PreparedCounters;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Prepared(icons) => icons,
+            #[cfg(test)]
+            Self::Empty => unreachable!("test overlay has no counter layout"),
+        }
+    }
+}
+
+impl std::ops::DerefMut for OverlayCounters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Prepared(icons) => icons,
+            #[cfg(test)]
+            Self::Empty => unreachable!("test overlay has no counter layout"),
+        }
+    }
+}
+
+impl OverlayCounters {
+    fn keep_drawn(&mut self, previous: &mut Self) {
+        match (self, previous) {
+            (Self::Prepared(now), Self::Prepared(old)) => now.keep_drawn(old),
+            #[cfg(test)]
+            _ => {}
+        }
+    }
+
+    fn keep_drawn_by_value(&mut self, previous: &mut Self) {
+        match (self, previous) {
+            (Self::Prepared(now), Self::Prepared(old)) => now.keep_drawn_by_value(old),
+            #[cfg(test)]
+            _ => {}
+        }
+    }
+}
+
 pub struct PreparedOverlay {
     pub radar: Arc<viewer_world::map::radar_symbols::Field>,
     pub air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
@@ -451,7 +497,7 @@ pub struct PreparedOverlay {
     labels: labels::PreparedLabels,
     raids: Batch,
     native_raids: raids::PreparedRaids,
-    icons: counters::PreparedCounters,
+    icons: OverlayCounters,
     label_report: LabelReport,
     raid_report: raids::RaidReport,
     native_intel: intel_icons::PreparedIntel,
@@ -5009,7 +5055,7 @@ impl<'a> Hour<'a> {
                 labels: std::mem::take(&mut still.labels),
                 native_raids,
                 raids: Batch::default(),
-                icons,
+                icons: OverlayCounters::Prepared(icons),
                 label_report,
                 raid_report,
                 native_intel,
@@ -6067,21 +6113,56 @@ mod tests {
         let placed = Placement::map([1000.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
         let outside_pad =
             Placement::map([1020.0, 500.0], 110.0).on(MapSize::TEST, MapDefines::test());
-        let mut icons = LaidIcons::default();
-        assert!(lay_ins.lay_icons(&mut icons, &counter_view, &host, placed, [1600, 900], 1.0, 1));
-        assert_eq!(icons.resource_icons_by(), MadeBy::Layer(7));
-        let before_resources = icons.resource_icons.placed_positions();
+        let bare = |view: CounterView| PreparedOverlay {
+            radar: Arc::default(),
+            air_ranges: Arc::default(),
+            air_assignment: Default::default(),
+            occupation_stripes: Default::default(),
+            naval_selection: Default::default(),
+            air_orders: Arc::default(),
+            labels: Default::default(),
+            raids: Batch::default(),
+            native_raids: Default::default(),
+            icons: OverlayCounters::Empty,
+            label_report: Default::default(),
+            raid_report: Default::default(),
+            native_intel: Default::default(),
+            intel: Batch::default(),
+            intel_report: Default::default(),
+            lazy_version: 0,
+            engaged_covered: false,
+            layers: [0; 6],
+            counter_view: view,
+            laid_icons: LaidIcons::default(),
+            adjacency_icons: Default::default(),
+            adjacency_priority: 0,
+            mode_icons: Batch::default(),
+            mode_icon_refused: BTreeMap::new(),
+            tables: 0,
+        };
+        let mut overlay = bare(counter_view.clone());
+        assert!(lay_ins.lay(&mut overlay, &host, placed, [1600, 900], 1.0, 1));
+        assert_eq!(overlay.laid_icons.resource_icons_by(), MadeBy::Layer(7));
+        let before_resources = overlay.laid_icons.resource_icons.placed_positions();
         assert_eq!(before_resources.len(), 1);
-        assert_eq!(icons.occupation_icons_by(), MadeBy::Layer(9));
-        let before_occupation = icons.occupation_icons.placed_positions();
+        assert_eq!(overlay.laid_icons.occupation_icons_by(), MadeBy::Layer(9));
+        let before_occupation = overlay.laid_icons.occupation_icons.placed_positions();
         assert_eq!(before_occupation.len(), 1);
 
-        let mut reprojected = LaidIcons::default();
-        assert_eq!(reprojected.resource_icons_by(), MadeBy::Left);
-        assert_eq!(reprojected.occupation_icons_by(), MadeBy::Left);
-        assert!(lay_ins.lay_icons(&mut reprojected, &counter_view, &host, outside_pad, [1600, 900], 1.0, 1));
-        assert_eq!(reprojected.resource_icons_by(), MadeBy::Layer(7));
-        let after_resources = reprojected.resource_icons.placed_positions();
+        let reprojected = bare(counter_view);
+        assert_eq!(reprojected.laid_icons.resource_icons_by(), MadeBy::Left);
+        assert_eq!(reprojected.laid_icons.occupation_icons_by(), MadeBy::Left);
+        overlay.finish_project(
+            reprojected,
+            &host,
+            outside_pad,
+            [1600, 900],
+            1.0,
+            1,
+            Some(&lay_ins),
+        );
+        assert_eq!(overlay.laid_icons.resource_icons_by(), MadeBy::Layer(7));
+        let after_resources = overlay.laid_icons.resource_icons.placed_positions();
         assert_eq!(
             after_resources.len(),
             1,
@@ -6093,8 +6174,8 @@ mod tests {
             before_resources[0],
             after_resources[0]
         );
-        assert_eq!(reprojected.occupation_icons_by(), MadeBy::Layer(9));
-        let after_occupation = reprojected.occupation_icons.placed_positions();
+        assert_eq!(overlay.laid_icons.occupation_icons_by(), MadeBy::Layer(9));
+        let after_occupation = overlay.laid_icons.occupation_icons.placed_positions();
         assert_eq!(
             after_occupation.len(),
             1,

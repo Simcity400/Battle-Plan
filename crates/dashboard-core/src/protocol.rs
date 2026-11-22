@@ -33,6 +33,8 @@ pub enum NativeCommand {
         playback: Option<MapPlayback>,
     },
     MapViews {
+        #[serde(default)]
+        clock_id: Option<String>,
         views: Vec<DashboardMapView>,
     },
     Gamepad {
@@ -498,6 +500,13 @@ pub struct MapPlayback {
     pub clock_id: String,
 }
 
+pub fn validate_clock_id(clock_id: &str) -> Result<(), &'static str> {
+    if clock_id.is_empty() || clock_id.len() > 128 || clock_id.contains('\0') {
+        return Err("Map clock identity is missing or exceeds its control budget");
+    }
+    Ok(())
+}
+
 impl MapPlayback {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
@@ -506,9 +515,7 @@ impl MapPlayback {
         if !self.composed_at.is_finite() || self.composed_at < 0.0 {
             return Err("Map anchor compose time must be finite and not negative");
         }
-        if self.clock_id.is_empty() || self.clock_id.len() > 128 || self.clock_id.contains('\0') {
-            return Err("Map clock identity is missing or exceeds its control budget");
-        }
+        validate_clock_id(&self.clock_id)?;
         if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
             return Err("Map playback speed must be finite and positive");
         }
@@ -555,9 +562,7 @@ impl DashboardMapView {
                 return Err("Map identity is missing or exceeds its control budget");
             }
         }
-        if self.clock_id.is_empty() || self.clock_id.len() > 128 || self.clock_id.contains('\0') {
-            return Err("Map clock identity is missing or exceeds its control budget");
-        }
+        validate_clock_id(&self.clock_id)?;
         if self.path.is_empty() || self.path.len() > 32_000 || self.path.contains('\0') {
             return Err("Map recording path is invalid");
         }
@@ -605,13 +610,17 @@ impl DashboardMapView {
     }
 }
 
-pub fn validate_map_views(views: &[DashboardMapView]) -> Result<(), &'static str> {
+pub fn validate_map_views(clock_id: &str, views: &[DashboardMapView]) -> Result<(), &'static str> {
+    validate_clock_id(clock_id)?;
     if views.len() > 128 {
         return Err("Too many native map views");
     }
     let mut ids = std::collections::BTreeSet::new();
     for view in views {
         view.validate()?;
+        if view.clock_id != clock_id {
+            return Err("Map view clock identity does not match snapshot clock identity");
+        }
         if !ids.insert(&view.id) {
             return Err("Native map view ids must be unique");
         }
@@ -623,6 +632,8 @@ pub fn validate_map_views(views: &[DashboardMapView]) -> Result<(), &'static str
 #[serde(rename_all = "camelCase")]
 pub struct DashboardMapState {
     pub id: String,
+    #[serde(default)]
+    pub clock_id: String,
     pub source_id: Option<String>,
     pub revision: Option<String>,
     pub branch_id: Option<String>,
@@ -807,6 +818,10 @@ mod tests {
         });
         let view: super::DashboardMapView = serde_json::from_value(input.clone()).unwrap();
         view.validate().unwrap();
+        super::validate_map_views("page-origin-1", &[view.clone()]).unwrap();
+        super::validate_map_views("page-origin-1", &[]).unwrap();
+        assert!(super::validate_map_views("", &[]).is_err());
+        assert!(super::validate_map_views("page-origin-2", &[view.clone()]).is_err());
         assert_eq!(view.seek_sequence, Some(2));
         assert_eq!(view.hours_per_second, 0.25);
         assert_eq!(view.clock_id, "page-origin-1");
@@ -929,12 +944,14 @@ b"
     fn a_map_state_names_the_mode_and_time_of_the_frame_drawn() {
         let state = super::DashboardMapState {
             id: "m".into(),
+            clock_id: "page-origin-1".into(),
             hour: Some(7),
             map_mode: Some("terrain".into()),
             drawn_at: Some(1.5),
             ..Default::default()
         };
         let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["clockId"], "page-origin-1");
         assert_eq!(json["mapMode"], "terrain");
         assert_eq!(json["drawnAt"], 1.5);
     }

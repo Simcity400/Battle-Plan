@@ -392,6 +392,18 @@ pub struct Scripts {
     pub clock: Clock,
     epoch: u64,
     stats: Stats,
+    #[cfg(test)]
+    block_catch_up: bool,
+}
+
+#[cfg(test)]
+fn blocking_catch_up(scripts: &Scripts) -> bool {
+    scripts.block_catch_up
+}
+
+#[cfg(not(test))]
+fn blocking_catch_up(_scripts: &Scripts) -> bool {
+    false
 }
 
 impl Scripts {
@@ -402,7 +414,22 @@ impl Scripts {
     pub fn with(content: Held, mut needs: Vec<Need>) -> Self {
         joined(&mut needs, CORE.iter().map(|&table| (table, 0)));
         joined(&mut needs, [(TableId::Clock, u64::MAX)]);
-        Self { content, views: None, shown: (false, false), choice: perspective::Choice::default(), needs, open: None, product: None, applied: None, asked_at: None, clock: Clock::default(), epoch: 0, stats: Stats::default() }
+        Self {
+            content,
+            views: None,
+            shown: (false, false),
+            choice: perspective::Choice::default(),
+            needs,
+            open: None,
+            product: None,
+            applied: None,
+            asked_at: None,
+            clock: Clock::default(),
+            epoch: 0,
+            stats: Stats::default(),
+            #[cfg(test)]
+            block_catch_up: false,
+        }
     }
 
     pub fn product(&self) -> Option<&Product> {
@@ -501,47 +528,6 @@ impl Scripts {
         false
     }
 
-    #[cfg(test)]
-    fn wait_whole(&mut self) -> io::Result<()> {
-        let Some(hour) = self.applied else { return Ok(()) };
-        if self.shown == (false, false) {
-            return Ok(());
-        }
-        let music = self.shown.1;
-        loop {
-            let whole = self.product.as_ref().is_some_and(|product| {
-                product.hour == hour && product.complete && (!music || product.music.as_ref().is_some_and(|(at, _)| *at == hour))
-            });
-            if whole && !self.open.as_ref().is_some_and(|open| open.busy) {
-                return Ok(());
-            }
-            let Some(open) = &mut self.open else { return Ok(()) };
-            if open.busy {
-                let done = open.done.recv().map_err(|_| {
-                    open.busy = false;
-                    open.evaluating = None;
-                    io::Error::other(format!("The {NAME} layer's worker stopped before answering for hour {hour}"))
-                })?;
-                if self.take(done) {
-                    return Ok(());
-                }
-                continue;
-            }
-            let Some(frame) = open.reader.frame() else {
-                self.ask_rows();
-                return Ok(());
-            };
-            if frame.hour != hour {
-                self.ask_rows();
-                return Ok(());
-            }
-            self.offer(true);
-            if !self.open.as_ref().is_some_and(|open| open.busy) {
-                return Ok(());
-            }
-        }
-    }
-
     fn ask_rows(&mut self) {
         if let Some(open) = &self.open {
             open.reader.ready();
@@ -591,7 +577,8 @@ impl Scripts {
             return Ok(());
         }
         self.stats.waited += 1;
-        let until = Instant::now() + settling.waiting(CATCH_UP);
+        let blocking = blocking_catch_up(self);
+        let until = (!blocking).then(|| Instant::now() + settling.waiting(CATCH_UP));
         let ran_out = |why: String, stats: &mut Stats| {
             stats.ran_out += 1;
             if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) }
@@ -605,26 +592,38 @@ impl Scripts {
                 return Ok(());
             }
             let Some(open) = &mut self.open else { return Ok(()) };
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            let left = until.map(|until| until.saturating_duration_since(Instant::now()));
+            if left.is_some_and(|left| left.is_zero()) {
                 return ran_out(format!("The {NAME} layer did not reach hour {hour} in {CATCH_UP:?}"), &mut self.stats);
             }
             if open.busy {
-                let done = match open.done.recv_timeout(left) {
-                    Ok(done) => done,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        open.busy = false;
-                        open.evaluating = None;
-                        return Err(io::Error::other(format!(
-                            "The {NAME} layer's worker stopped before answering for hour {hour}"
-                        )));
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        return ran_out(
-                            format!("The {NAME} layer's worker did not answer for hour {hour}"),
-                            &mut self.stats,
-                        );
-                    }
+                let done = match left {
+                    None => match open.done.recv() {
+                        Ok(done) => done,
+                        Err(_) => {
+                            open.busy = false;
+                            open.evaluating = None;
+                            return Err(io::Error::other(format!(
+                                "The {NAME} layer's worker stopped before answering for hour {hour}"
+                            )));
+                        }
+                    },
+                    Some(left) => match open.done.recv_timeout(left) {
+                        Ok(done) => done,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            open.busy = false;
+                            open.evaluating = None;
+                            return Err(io::Error::other(format!(
+                                "The {NAME} layer's worker stopped before answering for hour {hour}"
+                            )));
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            return ran_out(
+                                format!("The {NAME} layer's worker did not answer for hour {hour}"),
+                                &mut self.stats,
+                            );
+                        }
+                    },
                 };
                 if self.take(done) {
                     return Ok(());

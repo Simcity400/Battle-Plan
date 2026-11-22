@@ -64,8 +64,8 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
   return Object.assign(stop, { resend: () => { last = null; update(true); } });
 }
 
-export function viewsKey(views: { composedAt: number }[]): string {
-  return JSON.stringify(views.map(({ composedAt: _composedAt, ...view }) => view));
+export function viewsKey(clockId: string, views: { composedAt: number }[]): string {
+  return JSON.stringify([clockId, views.map(({ composedAt: _composedAt, ...view }) => view)]);
 }
 
 export function mapCommands(report: (operation: string, error: string | null) => void) {

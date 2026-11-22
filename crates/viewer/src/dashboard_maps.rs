@@ -105,6 +105,7 @@ impl MapView {
         }
         DashboardMapState {
             id: self.target.id.clone(),
+            clock_id: self.target.clock_id.clone(),
             source_id: Some(self.target.source_id.clone()),
             revision: Some(self.target.revision.clone()),
             requested_sequence: self.target.sequence,
@@ -445,12 +446,13 @@ impl DashboardMaps {
                 || key.visual_mods != settings.visual_mods
         });
         if changed {
+            let clock_id = self.clock_origins.active().map(str::to_owned);
             let targets = self
                 .order
                 .iter()
                 .filter_map(|id| self.views.get(id).map(|view| view.target.clone()))
                 .collect();
-            self.set_views(targets, frame, ctx);
+            self.set_views(clock_id.as_deref(), targets, frame, ctx);
         }
         for view in self.views.values_mut() {
             let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) else {
@@ -494,13 +496,18 @@ impl DashboardMaps {
 
     pub fn set_views(
         &mut self,
+        clock_id: Option<&str>,
         views: Vec<DashboardMapView>,
         frame: &eframe::Frame,
         ctx: &egui::Context,
     ) {
-        let origin_status = self
-            .clock_origins
-            .admit_all(views.iter().map(|view| view.clock_id.as_str()));
+        let origin_status = match clock_id {
+            Some(clock_id) => self.clock_origins.admit(clock_id),
+            None if self.clock_origins.active().is_some() => {
+                crate::page_clock::OriginStatus::Retired
+            }
+            None => crate::page_clock::OriginStatus::Current,
+        };
         if origin_status == crate::page_clock::OriginStatus::Retired {
             return;
         }
@@ -1410,7 +1417,7 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let frame = eframe::Frame::_new_kittest();
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         settle(&mut maps, &ctx, &target.id, |view| view.error.is_some());
         let failed = maps.views[&target.id].error.clone();
         std::fs::rename(&away, &path).unwrap();
@@ -1419,7 +1426,7 @@ mod tests {
         for visible in [false, true] {
             target.visible = visible;
             target.sequence += 1;
-            maps.set_views(vec![target.clone()], &frame, &ctx);
+            maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         }
         settle(&mut maps, &ctx, &target.id, |view| {
             view.source.is_some() || view.error.is_some()
@@ -1464,15 +1471,15 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         let export = dashboard::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
         maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
-        maps.set_views(Vec::new(), &frame, &ctx);
+        maps.set_views(Some("page-1"), Vec::new(), &frame, &ctx);
         assert!(maps.views.is_empty());
         assert_eq!(maps.take_export_results(), [(5, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(maps.take_export_results().is_empty(), "answered once");
 
-        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
         maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
         maps.not_drawn();
         assert_eq!(maps.take_export_results(), [(6, Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned()))]);
@@ -1591,6 +1598,7 @@ mod tests {
         let ctx = egui::Context::default();
         let frame = eframe::Frame::_new_kittest();
         maps.set_views(
+            Some("page-A"),
             vec![
                 make("playing-widget", "page-A", 80, 100, true),
                 make("paused-widget", "page-A", 80, 100, false),
@@ -1602,6 +1610,7 @@ mod tests {
         assert_eq!(maps.views["paused-widget"].target.sequence, 80);
 
         maps.set_views(
+            Some("page-B"),
             vec![
                 make("playing-widget", "page-B", 0, 250, true),
                 make("paused-widget", "page-B", 0, 260, false),
@@ -1617,8 +1626,13 @@ mod tests {
         assert_eq!(maps.views["paused-widget"].target.sequence, 0);
         assert_eq!(maps.views["paused-widget"].target.hour, 260);
         assert!(maps.views.contains_key("new-widget"));
+        assert!(
+            maps.states().iter().all(|state| state.clock_id == "page-B"),
+            "map-state replies must echo the accepted target's clock_id"
+        );
 
         maps.set_views(
+            Some("page-A"),
             vec![make("playing-widget", "page-A", 81, 999, true)],
             &frame,
             &ctx,
@@ -1630,5 +1644,26 @@ mod tests {
         assert_eq!(maps.views["paused-widget"].target.clock_id, "page-B");
         assert_eq!(maps.views["paused-widget"].target.hour, 260);
         assert!(maps.views.contains_key("new-widget"));
+
+        maps.set_views(Some("page-A"), Vec::new(), &frame, &ctx);
+        assert_eq!(
+            maps.views.len(),
+            3,
+            "a late empty clear from retired page A must not wipe page B's widgets"
+        );
+
+        maps.set_views(Some("page-B"), Vec::new(), &frame, &ctx);
+        assert!(maps.views.is_empty(), "a legitimate empty clear from active page B clears widgets");
+
+        maps.set_views(
+            Some("page-A"),
+            vec![make("playing-widget", "page-A", 82, 1000, true)],
+            &frame,
+            &ctx,
+        );
+        assert!(
+            maps.views.is_empty(),
+            "a late populated snapshot from retired page A after page B's clear must be ignored"
+        );
     }
 }

@@ -25,7 +25,7 @@ impl Viewer {
             self.last_step = Instant::now();
             self.last_frame = Instant::now();
         }
-        if let Some(views) = pending.map_views {
+        if let Some((clock_id, views)) = pending.map_views {
             self.dashboard_active = true;
             self.playing = false;
             if self.dashboard.is_none() {
@@ -63,7 +63,7 @@ impl Viewer {
             }
             if let Some(dashboard) = &mut self.dashboard {
                 dashboard.update_config(&self.config, frame, ctx);
-                dashboard.set_views(views, frame, ctx);
+                dashboard.set_views(clock_id.as_deref(), views, frame, ctx);
             }
         }
         let service = self

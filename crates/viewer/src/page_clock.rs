@@ -18,6 +18,10 @@ pub struct OriginGate {
 }
 
 impl OriginGate {
+    pub fn active(&self) -> Option<&str> {
+        self.origin.as_deref()
+    }
+
     pub fn is_retired(&self, origin: &str) -> bool {
         self.retired.contains(origin)
     }

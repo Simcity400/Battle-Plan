@@ -462,3 +462,102 @@ fn retired_clock_origin_seeks_cannot_overwrite_pending_seek_or_reopen_previous_r
         "origin retirement is scoped per NativeHost"
     );
 }
+
+#[test]
+fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_origin_before_sequence() {
+    use dashboard::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+
+    let bounds = ViewBounds {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    };
+    let make_view = |id: &str, clock_id: &str, sequence: u64, hour: i32, playing: bool| {
+        DashboardMapView {
+            options: Default::default(),
+            id: id.into(),
+            source_id: "source".into(),
+            path: "campaign.battleplan".into(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        }
+    };
+    let make_state = |id: &str, clock_id: &str, sequence: u64, hour: i32| DashboardMapState {
+        id: id.into(),
+        clock_id: clock_id.into(),
+        source_id: Some("source".into()),
+        revision: Some("rev-1".into()),
+        branch_id: Some("1".into()),
+        hour: Some(hour),
+        fraction: Some(0.0),
+        sequence,
+        requested_sequence: sequence,
+        loading: false,
+        ..Default::default()
+    };
+
+    let mut inner = Inner {
+        active_dashboard: true,
+        ..Default::default()
+    };
+    let view_a = make_view("map-1", "page-A", 80, 100, true);
+    let view_b = make_view("map-1", "page-B", 0, 260, false);
+
+    assert!(inner.apply_dashboard_views("page-A", &[view_a.clone()]).unwrap());
+    assert!(inner.apply_dashboard_views("page-B", &[view_b.clone()]).unwrap());
+    assert!(!inner.apply_dashboard_views("page-A", &[]).unwrap());
+    assert!(inner.status.visible, "late empty clear from A must not hide B's widgets");
+    let kept = inner.dashboard_views.as_ref().expect("B's snapshot survives");
+    assert_eq!(kept.clock_id.as_deref(), Some("page-B"));
+    assert_eq!(kept.views.len(), 1);
+    assert_eq!(kept.views[0].hour, 260);
+    assert_eq!(
+        inner.pending.maps.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 1))
+    );
+
+    let reply_a = make_state("map-1", "page-A", 80, 100);
+    let reply_b = make_state("map-1", "page-B", 0, 260);
+    assert!(
+        inner.filter_map_states(vec![reply_a.clone()]).is_empty(),
+        "A/80 arriving before B/0 must be filtered out before sequence comparison"
+    );
+    let kept_b = inner.filter_map_states(vec![reply_b.clone()]);
+    assert_eq!(kept_b.len(), 1);
+    assert_eq!(kept_b[0].clock_id, "page-B");
+    assert_eq!(kept_b[0].hour, Some(260));
+    assert!(!kept_b[0].loading);
+    assert!(
+        inner.filter_map_states(vec![reply_a]).is_empty(),
+        "A/80 arriving after B/0 must be filtered out before sequence comparison"
+    );
+
+    assert!(inner.apply_dashboard_views("page-B", &[]).unwrap());
+    assert!(!inner.status.visible);
+    assert_eq!(
+        inner.dashboard_views.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0))
+    );
+    assert!(!inner.apply_dashboard_views("page-A", &[view_a]).unwrap());
+    assert_eq!(
+        inner.dashboard_views.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0)),
+        "late populated snapshot from A after B's legitimate empty clear must be ignored"
+    );
+    assert_eq!(
+        inner.pending.maps.as_ref().map(|snap| (snap.clock_id.as_deref(), snap.views.len())),
+        Some((Some("page-B"), 0))
+    );
+}

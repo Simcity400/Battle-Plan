@@ -180,6 +180,7 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     applied_held(&mut side, &gate, 8, true);
     let mut viewer = viewer(8, side);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(state.loading, "the head is hour 8, but the held layer shows hour 2: {state:?}");
     assert_eq!(state.hour, Some(2), "the hour on screen is the layer's");
     viewer.playhead_map.as_mut().unwrap().driven(|side| side.frame(8)).unwrap();
@@ -189,8 +190,13 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     assert!(viewer.map_state(&target(8, false)).loading, "the layers show hour 8, the overlay nothing");
     viewer.overlay_hour = Some(8);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(!state.loading, "the frame every part shows hour 8 stops the loading: {state:?}");
     assert_eq!(state.hour, Some(8));
+    viewer.error = Some("synthetic map error".into());
+    let failed = viewer.map_state(&target(8, false));
+    assert_eq!(failed.clock_id, "page-1");
+    assert_eq!(failed.error.as_deref(), Some("synthetic map error"));
 }
 
 #[test]

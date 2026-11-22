@@ -73,7 +73,7 @@ pub struct Pending {
     pub seek: Option<Seek>,
     pub close: bool,
     pub error: Option<String>,
-    pub map_views: Option<Vec<DashboardMapView>>,
+    pub map_views: Option<(Option<String>, Vec<DashboardMapView>)>,
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
@@ -131,16 +131,28 @@ impl Pending {
                 self.campaign_map = true;
                 self.map_views = None;
             }
-            NativeCommand::MapViews { views } => {
-                validate_map_views(&views)?;
-                if self
-                    .clock_origins
-                    .admit_all(views.iter().map(|view| view.clock_id.as_str()))
-                    == crate::page_clock::OriginStatus::Retired
-                {
-                    return Ok(());
+            NativeCommand::MapViews { clock_id, views } => {
+                match clock_id.as_deref() {
+                    Some(clock_id) => {
+                        validate_map_views(clock_id, &views)?;
+                        if self.clock_origins.admit(clock_id)
+                            == crate::page_clock::OriginStatus::Retired
+                        {
+                            return Ok(());
+                        }
+                    }
+                    None if !views.is_empty() => {
+                        return Err(
+                            "Map clock identity is missing or exceeds its control budget".into(),
+                        );
+                    }
+                    None => {
+                        if self.clock_origins.active().is_some() {
+                            return Ok(());
+                        }
+                    }
                 }
-                self.map_views = Some(views);
+                self.map_views = Some((clock_id, views));
                 self.campaign_map = false;
                 self.open = None;
                 self.seek = None;
@@ -731,7 +743,7 @@ impl Controller {
                 if let Some(visible) = pending.visibility {
                     self.window.visibility(visible);
                 }
-                if let Some(views) = &pending.map_views {
+                if let Some((_, views)) = &pending.map_views {
                     self.window.map_views(views)?;
                 }
                 Ok::<_, io::Error>(())
@@ -1708,5 +1720,94 @@ mod tests {
         );
         pending.push(seek("old.battleplan", 400, "page-A")).unwrap();
         assert!(pending.take().seek.is_none(), "origin retirement persists across drains");
+    }
+
+    #[test]
+    fn map_views_envelope_gates_empty_clears_and_state_dedup_distinguishes_clock_origin() {
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let make = |clock_id: &str, sequence: u64, hour: i32| DashboardMapView {
+            options: Default::default(),
+            id: "map-1".into(),
+            source_id: "source".into(),
+            path: "campaign.battleplan".into(),
+            revision: "rev-1".into(),
+            branch_id: "1".into(),
+            playing: false,
+            hours_per_second: 24.0,
+            hour,
+            fraction: 0.0,
+            sequence,
+            seek_sequence: Some(sequence),
+            composed_at: 1000.0,
+            clock_id: clock_id.into(),
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+
+        let mut pending = Pending::default();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 80, 100)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: vec![make("page-B", 0, 260)],
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        let (clock_id, views) = pending.take().map_views.expect("B's widgets survive late A clear");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].hour, 260);
+
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-B".into()),
+                views: Vec::new(),
+            })
+            .unwrap();
+        pending
+            .push(NativeCommand::MapViews {
+                clock_id: Some("page-A".into()),
+                views: vec![make("page-A", 81, 101)],
+            })
+            .unwrap();
+        let (clock_id, views) = pending
+            .take()
+            .map_views
+            .expect("B's legitimate empty clear survives late A snapshot");
+        assert_eq!(clock_id.as_deref(), Some("page-B"));
+        assert!(views.is_empty());
+
+        let state_a = DashboardMapState {
+            id: "map-1".into(),
+            clock_id: "page-A".into(),
+            source_id: Some("source".into()),
+            revision: Some("rev-1".into()),
+            hour: Some(260),
+            sequence: 0,
+            requested_sequence: 0,
+            ..Default::default()
+        };
+        let state_b = DashboardMapState {
+            clock_id: "page-B".into(),
+            ..state_a.clone()
+        };
+        assert!(!same_ack(&state_a, &state_b));
+        assert!(!clock_only(&state_a, &state_b));
     }
 }

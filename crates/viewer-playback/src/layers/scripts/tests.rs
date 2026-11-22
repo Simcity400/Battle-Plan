@@ -255,6 +255,7 @@ impl Fixture {
         scripts.shown = (true, true);
         scripts.applied = Some(self.hour);
         scripts.clock = super::Clock::Stepped(Duration::ZERO);
+        scripts.block_catch_up = true;
         scripts
     }
 
@@ -317,17 +318,6 @@ fn asked(scripts: &mut Scripts, settling: Settling) -> io::Result<()> {
     Layer::join(scripts, &mirrors, &upstream, settling)
 }
 
-fn step_whole(fixture: &mut Fixture, scripts: &mut Scripts) -> io::Result<()> {
-    scripts.ensure_open();
-    fixture.step();
-    scripts.applied = Some(fixture.hour);
-    let mirrors = crate::playhead_host::mirror::Mirrors::default();
-    let upstream = crate::layers::Upstream::new(&[]);
-    assert!(Layer::ask(scripts, &mirrors, &upstream)?, "the scripts join a maker of their own");
-    scripts.wait_whole()?;
-    Layer::join(scripts, &mirrors, &upstream, Settling::Whole)
-}
-
 fn step(fixture: &mut Fixture, scripts: &mut Scripts, settling: Settling) -> io::Result<()> {
     scripts.ensure_open();
     fixture.step();
@@ -353,7 +343,7 @@ fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with
     let reached = loop {
         let tables: Vec<TableId> = scripts.needs().iter().map(|need| need.table).collect();
         assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours before the scripts evaluated: {tables:?}");
-        step_whole(&mut fixture, &mut scripts).unwrap();
+        step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
         assert_eq!(scripts.stats().ran_out, 0, "deterministic catch-up must never run out");
         if let Some(reached) = published(&scripts, ours, fixture.hour) {
             break reached;
@@ -392,7 +382,7 @@ fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
     let mut stopped = 0;
     while stopped < 3 {
         assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours");
-        step_whole(&mut fixture, &mut scripts).unwrap();
+        step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
         assert_eq!(scripts.stats().ran_out, 0, "deterministic catch-up must never run out");
         let Some(reached) = published(&scripts, ours, fixture.hour) else { continue };
         assert_eq!(reached, today(&fixture, fixture.hour, ours), "hour {}: the stopped picture is today's evaluation of its own hour", fixture.hour);
@@ -402,11 +392,7 @@ fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
     let evaluations: u64 = scripts.stats().evaluations.values().sum();
     for _ in 0..8 {
         let behind = (fixture.hour + 1 - scripts.product().expect("published above").hour) as u32;
-        if behind >= crate::layers::BOUND {
-            step_whole(&mut fixture, &mut scripts).unwrap();
-        } else {
-            step(&mut fixture, &mut scripts, Settling::step().behind_bound(behind, crate::layers::BOUND)).unwrap();
-        }
+        step(&mut fixture, &mut scripts, Settling::step().behind_bound(behind, crate::layers::BOUND)).unwrap();
         let behind = fixture.hour - scripts.product().expect("published above").hour;
         assert!((0..crate::layers::BOUND as Hour).contains(&behind), "{behind} hours behind at hour {}", fixture.hour);
     }
@@ -418,11 +404,10 @@ fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
     scripts.clock.step(super::MUSIC_RATE.interval());
     assert!(scripts.music_due(false), "its interval elapsed, the chances are read again");
     assert_eq!(scripts.stats().rated, withheld + 1, "and nothing more is withheld");
-    step_whole(&mut fixture, &mut scripts).unwrap();
+    step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
     let stopped_at = fixture.hour;
     scripts.applied = Some(stopped_at);
     fixture.posted();
-    scripts.wait_whole().unwrap();
     asked(&mut scripts, Settling::Whole).unwrap();
     assert_eq!(scripts.stats().ran_out, 0);
     assert_eq!(published(&scripts, ours, stopped_at), Some(today(&fixture, stopped_at, ours)), "the picture the hours stopped on is its own hour's");

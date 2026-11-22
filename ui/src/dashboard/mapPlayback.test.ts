@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'vite';
 import { createPageClockId, followMapPlayback, mapCommands, viewsKey } from './mapPlayback.ts';
 import type { BoundTrack } from './model.ts';
+import type { DashboardClient, DashboardMapState, DashboardMapView } from './client.ts';
 
 const track = { source: { path: 'campaign.battleplan', revision: 'revision-a' }, branch: { id: '7', firstHour: 100, lastHour: 200 }, axisOffset: 100 } as BoundTrack;
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -161,10 +163,11 @@ test('each anchor carries when the page composed it, and a new reading alone sen
 
 test('a dashboard target read at a new time is not a new target, but a new hour or clock origin is', () => {
   const view = (hour: number, composedAt: number, clockId = 'page-clock-1') => ({ id: 'map', hour, playing: true, composedAt, clockId });
-  assert.equal(viewsKey([view(100, 1_000)]), viewsKey([view(100, 9_999)]));
-  assert.notEqual(viewsKey([view(100, 1_000, 'page-clock-1')]), viewsKey([view(100, 1_000, 'page-clock-2')]));
-  assert.notEqual(viewsKey([view(100, 1_000)]), viewsKey([view(101, 1_000)]));
-  assert.notEqual(viewsKey([view(100, 1_000)]), viewsKey([]));
+  assert.equal(viewsKey('page-clock-1', [view(100, 1_000)]), viewsKey('page-clock-1', [view(100, 9_999)]));
+  assert.notEqual(viewsKey('page-clock-1', [view(100, 1_000, 'page-clock-1')]), viewsKey('page-clock-2', [view(100, 1_000, 'page-clock-2')]));
+  assert.notEqual(viewsKey('page-clock-1', []), viewsKey('page-clock-2', []));
+  assert.notEqual(viewsKey('page-clock-1', [view(100, 1_000)]), viewsKey('page-clock-1', [view(101, 1_000)]));
+  assert.notEqual(viewsKey('page-clock-1', [view(100, 1_000)]), viewsKey('page-clock-1', []));
   const first = createPageClockId();
   const second = createPageClockId();
   assert.ok(first.length > 0 && first.length <= 128);
@@ -187,4 +190,140 @@ test('fraction-only and speed-only clock updates reach both native map clocks', 
     [100, { playing: false, seekSequence: 0, fraction: 0.75, hoursPerSecond: 1440, composedAt: 0, clockId: 'page-clock-1' }],
   ]);
   stop();
+});
+
+test('MapViewsStore stamps clockId on populated and teardown snapshots and filters map states by clockId before sequence', async () => {
+  const saved = {
+    window: globalThis.window,
+    document: globalThis.document,
+    ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  };
+  const rafs = new Map<number, FrameRequestCallback>();
+  let nextRaf = 1;
+  const flushFrames = () => {
+    const queued = [...rafs.entries()];
+    rafs.clear();
+    for (const [, callback] of queued) callback(0);
+  };
+  const rect = () => ({ left: 0, top: 0, right: 200, bottom: 200 });
+  const element = { getBoundingClientRect: rect } as unknown as HTMLElement;
+  class FakeResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.assign(globalThis, {
+    window: {
+      devicePixelRatio: 1,
+      matchMedia: () => ({ addEventListener() {}, removeEventListener() {} }),
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    document: {
+      hidden: false,
+      documentElement: { clientWidth: 1000, clientHeight: 1000 },
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    ResizeObserver: FakeResizeObserver,
+    requestAnimationFrame: (callback: FrameRequestCallback) => {
+      const id = nextRaf++;
+      rafs.set(id, callback);
+      return id;
+    },
+    cancelAnimationFrame: (id: number) => { rafs.delete(id); },
+  });
+  const vite = await createServer({
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+  });
+  try {
+    const { MapViewsStore } = await vite.ssrLoadModule('/ui/src/dashboard/geometry.ts');
+    const runScenario = async (order: 'stale-before' | 'stale-after') => {
+      const sent: { clockId: string; views: DashboardMapView[] }[] = [];
+      let emitStates!: (states: DashboardMapState[]) => void;
+      const client = {
+        available: true,
+        async setMapViews(clockId: string, views: DashboardMapView[]) { sent.push({ clockId, views }); },
+        async onMapStates(callback: (states: DashboardMapState[]) => void) { emitStates = callback; return () => {}; },
+      } as unknown as DashboardClient;
+      const playback = clock('page-B');
+      const store = new MapViewsStore(client, playback);
+      const unregister = store.register('map-1', element, () => ({
+        sourceId: 'source',
+        path: 'campaign.battleplan',
+        revision: 'rev-1',
+        branchId: '1',
+        playing: false,
+        hoursPerSecond: 24,
+        hour: 260,
+        fraction: 0,
+        sequence: 0,
+        seekSequence: 0,
+      }));
+      const stop = store.start(element);
+      flushFrames();
+      await tick();
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].clockId, 'page-B');
+      assert.equal(sent[0].views.length, 1);
+      assert.equal(sent[0].views[0].clockId, 'page-B');
+
+      const staleA: DashboardMapState = {
+        id: 'map-1',
+        clockId: 'page-A',
+        sourceId: 'source',
+        revision: 'rev-1',
+        branchId: '1',
+        hour: 100,
+        fraction: 0,
+        sequence: 80,
+        requestedSequence: 80,
+        loading: false,
+        error: null,
+      };
+      const pausedB: DashboardMapState = {
+        id: 'map-1',
+        clockId: 'page-B',
+        sourceId: 'source',
+        revision: 'rev-1',
+        branchId: '1',
+        hour: 260,
+        fraction: 0,
+        sequence: 0,
+        requestedSequence: 0,
+        loading: false,
+        error: null,
+      };
+      if (order === 'stale-before') {
+        emitStates([staleA]);
+        assert.equal(store.getState('map-1'), null, 'stale A/80 arriving before B/0 must be ignored');
+        emitStates([pausedB]);
+      } else {
+        emitStates([pausedB]);
+        emitStates([staleA]);
+      }
+      const shown = store.getState('map-1');
+      assert.ok(shown, `${order}: page B paused state must be displayed`);
+      assert.equal(shown.clockId, 'page-B');
+      assert.equal(shown.hour, 260);
+      assert.equal(shown.sequence, 0);
+      assert.equal(shown.loading, false);
+
+      stop();
+      unregister();
+      await tick();
+      assert.equal(sent.length, 2, 'teardown must send an empty clear snapshot');
+      assert.equal(sent[1].clockId, 'page-B');
+      assert.deepEqual(sent[1].views, []);
+    };
+    await runScenario('stale-before');
+    await runScenario('stale-after');
+  } finally {
+    await vite.close();
+    Object.assign(globalThis, saved);
+  }
 });

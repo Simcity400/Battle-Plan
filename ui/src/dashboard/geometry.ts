@@ -49,7 +49,7 @@ export class MapViewsStore {
   private observer: ResizeObserver | null = null;
   private frame: (() => void) | null = null;
   private layoutDirty = true;
-  private pending: DashboardMapView[] | null = null;
+  private pending: { clockId: string; views: DashboardMapView[] } | null = null;
   private busy = false;
   private applied = '';
   private active = false;
@@ -138,6 +138,7 @@ export class MapViewsStore {
       perfLog?.mapStates(states, this.expectation);
       let errorChanged = false;
       for (const state of states) {
+        if (state.clockId !== this.clock.clockId) continue;
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
@@ -173,7 +174,7 @@ export class MapViewsStore {
       window.visualViewport?.removeEventListener('scroll', this.schedule);
       document.removeEventListener('visibilitychange', this.schedule);
       resolution?.removeEventListener('change', changedResolution);
-      this.pending = [];
+      this.pending = { clockId: this.clock.clockId, views: [] };
       perfLog?.mapViews([]);
       void this.drain();
     };
@@ -274,7 +275,7 @@ export class MapViewsStore {
     for (const id of this.surfaces.keys()) {
       const old = this.states.get(id);
       changed ||= old?.error !== error;
-      this.states.set(id, old ? { ...old, error } : { id, sourceId: null, revision: null, branchId: null, hour: null,
+      this.states.set(id, old ? { ...old, error } : { id, clockId: this.clock.clockId, sourceId: null, revision: null, branchId: null, hour: null,
         fraction: null, sequence: 0, requestedSequence: 0, loading: false, error });
       this.present(id);
     }
@@ -311,7 +312,7 @@ export class MapViewsStore {
       this.lastViews.set(id, view);
     }
     perfLog?.mapViews(views);
-    this.pending = views;
+    this.pending = { clockId, views };
     void this.drain();
   }
 
@@ -320,11 +321,11 @@ export class MapViewsStore {
     this.busy = true;
     try {
       while (this.pending) {
-        const views = this.pending;
+        const snapshot = this.pending;
         this.pending = null;
-        const key = viewsKey(views);
+        const key = viewsKey(snapshot.clockId, snapshot.views);
         if (key === this.applied) continue;
-        try { await this.client.setMapViews(views); this.applied = key; }
+        try { await this.client.setMapViews(snapshot.clockId, snapshot.views); this.applied = key; }
         catch (cause) { this.applied = ''; this.fail(errorMessage(cause)); }
       }
     } finally { this.busy = false; }

@@ -2537,6 +2537,7 @@ impl Viewer {
         };
         dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
+            clock_id: target.clock_id.clone(),
             source_id: Some(target.source_id.clone()),
             revision: Some(target.revision.clone()),
             branch_id: self.rendered.map(|shown| shown.branch.to_string()),
