@@ -549,14 +549,10 @@ impl Descriptors {
 pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     settled_state_carriers(&document, path)?;
+    let (object_items, _) = read_object_items(bytes, path)?;
+    let (entity_items, _) = read_entity_items(bytes, path)?;
     let mut out = Descriptors::default();
-    let _ = collect(
-        &document,
-        &read_object_items(bytes),
-        &read_entity_items(bytes),
-        path,
-        &mut out,
-    );
+    let _ = collect(&document, &object_items, &entity_items, path, &mut out);
     Ok(out)
 }
 
@@ -603,6 +599,21 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     Ok(())
 }
 
+fn check_native_read(
+    read: parser::native::Read,
+    path: &str,
+) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("{path}: {cause}; descriptor file refused")));
+    }
+    let misreads = read
+        .misreads
+        .into_iter()
+        .map(|misread| format!("{path}: {misread}"))
+        .collect();
+    Ok((read.items, misreads))
+}
+
 #[derive(Clone, Copy)]
 enum ObjectNode {
     Top,
@@ -610,57 +621,65 @@ enum ObjectNode {
     Mesh,
     MeshSettings,
     MeshAnimation,
+    MeshVariant,
     NamedObject,
 }
 
-fn read_object_items(bytes: &[u8]) -> Vec<parser::Item> {
+fn read_object_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
     use parser::native::{Mode, Shape, Top};
-    parser::native::read(
-        bytes,
-        Mode::SkipMark,
-        Top::File(ObjectNode::Top),
-        None,
-        &mut |node, field| match node {
-            ObjectNode::Top => match field.keyword().as_deref() {
-                Some(b"objecttypes") => Shape::Object(ObjectNode::ObjectTypes),
-                _ => Shape::Skip,
+    check_native_read(
+        parser::native::read(
+            bytes,
+            Mode::SkipMark,
+            Top::File(ObjectNode::Top),
+            None,
+            &mut |node, field| match node {
+                ObjectNode::Top => match field.keyword().as_deref() {
+                    Some(b"objecttypes") => Shape::Object(ObjectNode::ObjectTypes),
+                    _ => Shape::Skip,
+                },
+                ObjectNode::ObjectTypes => match field.keyword().as_deref() {
+                    Some(b"pdxmesh") => Shape::Object(ObjectNode::Mesh),
+                    Some(b"arrowtype" | b"animatedmaptext" | b"pdxparticle") => {
+                        Shape::Object(ObjectNode::NamedObject)
+                    }
+                    _ => Shape::Skip,
+                },
+                ObjectNode::Mesh => match field.keyword().as_deref() {
+                    Some(b"meshsettings") => Shape::Object(ObjectNode::MeshSettings),
+                    Some(b"animation") => Shape::Object(ObjectNode::MeshAnimation),
+                    Some(b"variant") => Shape::Object(ObjectNode::MeshVariant),
+                    Some(b"name" | b"file" | b"scale" | b"cull_distance") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                ObjectNode::MeshSettings => match field.keyword().as_deref() {
+                    Some(
+                        b"name"
+                        | b"index"
+                        | b"texture_diffuse"
+                        | b"texture_normal"
+                        | b"texture_specular"
+                        | b"shader"
+                        | b"shader_file",
+                    ) => Shape::One,
+                    _ => Shape::Skip,
+                },
+                ObjectNode::MeshAnimation => match field.keyword().as_deref() {
+                    Some(b"id" | b"type") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                ObjectNode::MeshVariant => match field.keyword().as_deref() {
+                    Some(b"weight" | b"pdxmesh") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                ObjectNode::NamedObject => match field.keyword().as_deref() {
+                    Some(b"name") => Shape::One,
+                    _ => Shape::Skip,
+                },
             },
-            ObjectNode::ObjectTypes => match field.keyword().as_deref() {
-                Some(b"pdxmesh") => Shape::Object(ObjectNode::Mesh),
-                Some(b"arrowtype" | b"animatedmaptext" | b"pdxparticle") => {
-                    Shape::Object(ObjectNode::NamedObject)
-                }
-                _ => Shape::Skip,
-            },
-            ObjectNode::Mesh => match field.keyword().as_deref() {
-                Some(b"meshsettings") => Shape::Object(ObjectNode::MeshSettings),
-                Some(b"animation") => Shape::Object(ObjectNode::MeshAnimation),
-                Some(b"name" | b"file" | b"scale" | b"cull_distance") => Shape::One,
-                _ => Shape::Skip,
-            },
-            ObjectNode::MeshSettings => match field.keyword().as_deref() {
-                Some(
-                    b"name"
-                    | b"index"
-                    | b"texture_diffuse"
-                    | b"texture_normal"
-                    | b"texture_specular"
-                    | b"shader"
-                    | b"shader_file",
-                ) => Shape::One,
-                _ => Shape::Skip,
-            },
-            ObjectNode::MeshAnimation => match field.keyword().as_deref() {
-                Some(b"id" | b"type") => Shape::One,
-                _ => Shape::Skip,
-            },
-            ObjectNode::NamedObject => match field.keyword().as_deref() {
-                Some(b"name") => Shape::One,
-                _ => Shape::Skip,
-            },
-        },
+        ),
+        path,
     )
-    .items
 }
 
 #[derive(Clone, Copy)]
@@ -678,97 +697,99 @@ enum EntityNode {
     EntityGameData,
 }
 
-fn read_entity_items(bytes: &[u8]) -> Vec<parser::Item> {
+fn read_entity_items(bytes: &[u8], path: &str) -> io::Result<(Vec<parser::Item>, Vec<String>)> {
     use parser::native::{Mode, Shape, Top};
-    parser::native::read(
-        bytes,
-        Mode::SkipMark,
-        Top::File(EntityNode::Top),
-        None,
-        &mut |node, field| match node {
-            EntityNode::Top => match field.keyword().as_deref() {
-                Some(b"entity") => Shape::Object(EntityNode::Entity),
-                _ => Shape::Skip,
-            },
-            EntityNode::Entity => match field.keyword().as_deref() {
-                Some(b"state") => Shape::Object(EntityNode::State),
-                Some(b"attach") => Shape::Object(EntityNode::Attach),
-                Some(b"locator") => Shape::Object(EntityNode::Locator),
-                Some(b"game_data") => Shape::Object(EntityNode::EntityGameData),
-                Some(
-                    b"name"
-                    | b"pdxmesh"
-                    | b"clone"
-                    | b"scale"
-                    | b"cull_radius"
-                    | b"default_state"
-                    | b"get_state_from_parent"
-                    | b"version",
-                ) => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::State => match field.keyword().as_deref() {
-                Some(b"event") => Shape::Object(EntityNode::StateEvent),
-                Some(b"propagate_state") => Shape::Object(EntityNode::StatePropagate),
-                Some(b"game_data") => Shape::Object(EntityNode::StateGameData),
-                Some(
-                    b"name"
-                    | b"animation"
-                    | b"looping"
-                    | b"next_state"
-                    | b"chance"
-                    | b"animation_blend_time"
-                    | b"animation_speed"
-                    | b"animation_start_time"
-                    | b"animation_random_start_time",
-                ) => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::StateEvent => match field.keyword().as_deref() {
-                Some(b"sound") => Shape::Object(EntityNode::StateEventSound),
-                Some(
-                    b"id"
-                    | b"time"
-                    | b"node"
-                    | b"light"
-                    | b"particle"
-                    | b"keep_particle"
-                    | b"trigger_once",
-                ) => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::StateEventSound => match field.keyword().as_deref() {
-                Some(b"soundeffect") => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::StatePropagate | EntityNode::Attach => {
-                if field.opens() {
-                    Shape::Skip
-                } else {
-                    Shape::One
+    check_native_read(
+        parser::native::read(
+            bytes,
+            Mode::SkipMark,
+            Top::File(EntityNode::Top),
+            None,
+            &mut |node, field| match node {
+                EntityNode::Top => match field.keyword().as_deref() {
+                    Some(b"entity") => Shape::Object(EntityNode::Entity),
+                    _ => Shape::Skip,
+                },
+                EntityNode::Entity => match field.keyword().as_deref() {
+                    Some(b"state") => Shape::Object(EntityNode::State),
+                    Some(b"attach") => Shape::Object(EntityNode::Attach),
+                    Some(b"locator") => Shape::Object(EntityNode::Locator),
+                    Some(b"game_data") => Shape::Object(EntityNode::EntityGameData),
+                    Some(
+                        b"name"
+                        | b"pdxmesh"
+                        | b"clone"
+                        | b"scale"
+                        | b"cull_radius"
+                        | b"default_state"
+                        | b"get_state_from_parent"
+                        | b"version",
+                    ) => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::State => match field.keyword().as_deref() {
+                    Some(b"event") => Shape::Object(EntityNode::StateEvent),
+                    Some(b"propagate_state") => Shape::Object(EntityNode::StatePropagate),
+                    Some(b"game_data") => Shape::Object(EntityNode::StateGameData),
+                    Some(
+                        b"name"
+                        | b"animation"
+                        | b"looping"
+                        | b"next_state"
+                        | b"chance"
+                        | b"animation_blend_time"
+                        | b"animation_speed"
+                        | b"animation_start_time"
+                        | b"animation_random_start_time",
+                    ) => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::StateEvent => match field.keyword().as_deref() {
+                    Some(b"sound") => Shape::Object(EntityNode::StateEventSound),
+                    Some(
+                        b"id"
+                        | b"time"
+                        | b"node"
+                        | b"light"
+                        | b"particle"
+                        | b"keep_particle"
+                        | b"trigger_once",
+                    ) => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::StateEventSound => match field.keyword().as_deref() {
+                    Some(b"soundeffect") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::StatePropagate | EntityNode::Attach => {
+                    if field.opens() {
+                        Shape::Skip
+                    } else {
+                        Shape::One
+                    }
                 }
-            }
-            EntityNode::StateGameData => match field.keyword().as_deref() {
-                Some(b"hitmiss_effect") => Shape::Object(EntityNode::HitMissEffect),
-                _ => Shape::Skip,
+                EntityNode::StateGameData => match field.keyword().as_deref() {
+                    Some(b"hitmiss_effect") => Shape::Object(EntityNode::HitMissEffect),
+                    _ => Shape::Skip,
+                },
+                EntityNode::HitMissEffect => match field.keyword().as_deref() {
+                    Some(b"time" | b"type") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::Locator => match field.keyword().as_deref() {
+                    Some(b"position" | b"rotation") => Shape::ByKey,
+                    Some(b"name" | b"parent_joint" | b"scale") => Shape::One,
+                    _ => Shape::Skip,
+                },
+                EntityNode::EntityGameData => match field.keyword().as_deref() {
+                    Some(b"atlas_size") => Shape::ByKey,
+                    Some(b"texture_anim_speed") => Shape::One,
+                    _ => Shape::Skip,
+                },
             },
-            EntityNode::HitMissEffect => match field.keyword().as_deref() {
-                Some(b"time" | b"type") => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::Locator => match field.keyword().as_deref() {
-                Some(b"position" | b"rotation") => Shape::ByKey,
-                Some(b"name" | b"parent_joint" | b"scale") => Shape::One,
-                _ => Shape::Skip,
-            },
-            EntityNode::EntityGameData => match field.keyword().as_deref() {
-                Some(b"atlas_size") => Shape::ByKey,
-                Some(b"texture_anim_speed") => Shape::One,
-                _ => Shape::Skip,
-            },
-        },
+        ),
+        path,
     )
-    .items
 }
 
 fn collect(
@@ -871,8 +892,8 @@ impl Roster {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         let mut objects = BTreeMap::new();
         for path in crate::particles::object_file_order(&interface, &gfx) {
-            if let Some((_, bytes)) = roster.parse(layers, &path, &OBJECTS)? {
-                add_objects(&read_object_items(&bytes), &mut objects);
+            if let Some((_, items)) = roster.parse(layers, &path, &OBJECTS, read_object_items)? {
+                add_objects(&items, &mut objects);
             }
         }
         roster.descriptors.meshes = objects
@@ -882,8 +903,12 @@ impl Roster {
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
         for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
-            let Some((document, bytes)) =
-                roster.parse(layers, &file, &["entity", "animation", "light"])?
+            let Some((document, entity_items)) = roster.parse(
+                layers,
+                &file,
+                &["entity", "animation", "light"],
+                read_entity_items,
+            )?
             else {
                 continue;
             };
@@ -924,7 +949,7 @@ impl Roster {
                     roster.lights.insert(name, fields.to_vec());
                 }
             }
-            for item in read_entity_items(&bytes) {
+            for item in entity_items {
                 if item.keyword_is("entity") {
                     entities.declare(&item.value, &file, &mut roster)?;
                 }
@@ -947,7 +972,8 @@ impl Roster {
         layers: &ResolvedLayers,
         file: &ScriptPath,
         words: &[&str],
-    ) -> io::Result<Option<(parser::Document, content_reader_image::Bytes)>> {
+        native: fn(&[u8], &str) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
+    ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
         let text = file.text();
         let path: &str = &text;
         let bytes = match file.read_uncovered(layers) {
@@ -964,21 +990,23 @@ impl Roster {
         }) {
             return Ok(None);
         }
-        let read = |bytes: &[u8]| {
-            parser::parse(bytes)
-                .or_else(|_| parser::parse(&balanced_blocks(bytes)))
-                .and_then(|document| {
-                    settled_state_carriers(&document, path)?;
-                    Ok(document)
-                })
+        let read = |bytes: &[u8]| -> io::Result<_> {
+            let document = parser::parse(bytes)
+                .or_else(|_| parser::parse(&balanced_blocks(bytes)))?;
+            settled_state_carriers(&document, path)?;
+            let (items, misreads) = native(bytes, path)?;
+            Ok((document, items, misreads))
         };
         match read(&bytes) {
-            Ok(document) => Ok(Some((document, bytes))),
+            Ok((document, items, misreads)) => {
+                self.logged.extend(misreads);
+                Ok(Some((document, items)))
+            }
             Err(error) => {
                 if layers.supplied_by_visual_mod(file)
                     && let Some(recorded) = layers.without_overlays()
                     && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
-                    && let Ok(document) = read(&recorded_bytes)
+                    && let Ok((document, items, misreads)) = read(&recorded_bytes)
                 {
                     layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
                     let declared = lexical_names(&recorded_bytes);
@@ -989,7 +1017,8 @@ impl Roster {
                                 .or_insert_with(|| path.to_owned());
                         }
                     }
-                    return Ok(Some((document, recorded_bytes)));
+                    self.logged.extend(misreads);
+                    return Ok(Some((document, items)));
                 }
                 for name in lexical_names(&bytes) {
                     self.unreadable_names

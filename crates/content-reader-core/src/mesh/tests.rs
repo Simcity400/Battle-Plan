@@ -2172,6 +2172,15 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
                     @late_mesh = 4.0"#,
             ),
             (
+                "gfx/models/variants.gfx",
+                br#"objectTypes = {
+                        pdxmesh = { name = choices file = choices.mesh
+                            variant = { @factor = 3 weight = 1 pdxmesh = alternate }
+                        }
+                        pdxmesh = { name = target file = target.mesh scale = @factor }
+                    }"#,
+            ),
+            (
                 "gfx/entities/scales.asset",
                 br#"@base_scale = 0.4
                     @override_scale = 1.6
@@ -2230,4 +2239,106 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
     assert!((resolve("skipped_unknown") - 5.0).abs() < 1e-6);
     assert!((resolve("after_animation") - 5.0).abs() < 1e-6);
     assert!((resolve("hash_collide") - 7.5).abs() < 1e-6);
+    assert!((resolve("target") - 3.0).abs() < 1e-6);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
+    use crate::content::{ResolveOptions, visual};
+    use std::sync::atomic::AtomicBool;
+
+    let unsettled = br#"
+        entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
+        entity = { name = "second" pdxmesh = "m" scale = 9.0 }
+        entity = { name = "overlay_only" pdxmesh = "m" }
+    "#;
+    assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
+
+    let root = std::env::temp_dir().join(format!(
+        "content-reader-unsettled-overlay-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    };
+    let game_dir = root.join("game");
+    let user_dir = root.join("user");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("mod")).unwrap();
+    write(
+        "base/gfx/models/m.gfx",
+        b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+    );
+    write(
+        "base/gfx/entities/a.asset",
+        br#"
+            entity = { name = "first" pdxmesh = "m" scale = 2.0 }
+            entity = { name = "second" pdxmesh = "m" scale = 4.0 }
+        "#,
+    );
+    write(
+        "base/gfx/entities/broken.asset",
+        br#"
+            entity = { name = "broken_first" pdxmesh = "m" locator = { name = "point" position = { @x = 2 0 0 } } }
+            entity = { name = "broken_second" pdxmesh = "m" }
+        "#,
+    );
+    let overlay_dir = root.join("overlay");
+    write("overlay/gfx/entities/a.asset", unsettled);
+    let descriptor = format!(
+        "name=\"VisualOverride\"\npath=\"{}\"\n",
+        overlay_dir.display().to_string().replace('\\', "/")
+    );
+    write("user/mod/visual_override.mod", descriptor.as_bytes());
+    let base = root.join("base");
+    let mut layers = crate::ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: root.join("cache"),
+    };
+    let plan = visual::apply(
+        &mut layers,
+        &options,
+        &[visual::Choice {
+            id: "mod/visual_override.mod".into(),
+            name: "VisualOverride".into(),
+        }],
+        &[],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(plan.order.len(), 1, "{:?}", plan.warnings);
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let roster = Roster::read(layers.presentation()).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(roster.descriptors.resolve("first").unwrap().scale, 2.0);
+    assert_eq!(roster.descriptors.resolve("second").unwrap().scale, 4.0);
+    assert_eq!(
+        roster.unreadable_names.get("overlay_only").map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert!(!roster.descriptors.entities.contains_key("broken_first"));
+    assert!(!roster.descriptors.entities.contains_key("broken_second"));
+    assert_eq!(
+        roster.unreadable_names.get("broken_first").map(String::as_str),
+        Some("gfx/entities/broken.asset")
+    );
+    assert_eq!(
+        roster.unreadable_names.get("broken_second").map(String::as_str),
+        Some("gfx/entities/broken.asset")
+    );
+    assert!(
+        roster
+            .unreadable
+            .iter()
+            .any(|entry| entry.contains("gfx/entities/broken.asset")),
+        "{:?}",
+        roster.unreadable
+    );
 }
