@@ -171,8 +171,8 @@ class MainCi(unittest.TestCase):
         return json.dumps({"workflow_runs": [dict(zip(keys, run)) for run in found]})
 
     def test_main_is_green_once_the_latest_run_of_each_workflow_its_push_started_settled_green(self):
-        settled = self.runs((1, "Release candidate", 3, 1, "completed", "failure"),
-                            (1, "Release candidate", 3, 2, "completed", "success"),
+        settled = self.runs((1, "CI", 3, 1, "completed", "failure"),
+                            (1, "CI", 3, 2, "completed", "success"),
                             (2, "Comments", 8, 1, "completed", "skipped"))
         with mock.patch.object(release, "run", answers(settled)):
             self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
@@ -180,8 +180,8 @@ class MainCi(unittest.TestCase):
             self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
         with mock.patch.object(release, "run", answers(self.runs((2, "Comments", 8, 1, "in_progress", None)))):
             self.assertIn("Comments run is still going", release.ci_state("owner/repo", "b" * 40))
-        with mock.patch.object(release, "run", answers(self.runs((1, "Release candidate", 4, 1, "completed", "failure")))):
-            self.assertIn("Release candidate run ended failure", release.ci_state("owner/repo", "b" * 40))
+        with mock.patch.object(release, "run", answers(self.runs((1, "CI", 4, 1, "completed", "failure")))):
+            self.assertIn("CI run ended failure", release.ci_state("owner/repo", "b" * 40))
 
     def test_the_newest_kept_candidate_mains_ci_built_is_taken_and_an_unusable_newer_one_passed_by(self):
         def artifact(expired, created, run):
@@ -191,13 +191,13 @@ class MainCi(unittest.TestCase):
                                             artifact(True, "2026-11-19", 5)]})
         verdicts = {9: "the run that built it ended failure", 7: None}
         with mock.patch.multiple(release, run=answers(listing),
-                                 produced=mock.Mock(side_effect=lambda repo, found, channel: verdicts[found["workflow_run"]["id"]])):
-            self.assertEqual(release.find_candidate("owner/repo", "candidate-nightly-b", "nightly"), (7, None))
+                                 produced=mock.Mock(side_effect=lambda repo, found: verdicts[found["workflow_run"]["id"]])):
+            self.assertEqual(release.find_candidate("owner/repo", "candidate-nightly-b"), (7, None))
         expired = json.dumps({"artifacts": [artifact(True, "2026-11-19", 5)]})
         with mock.patch.object(release, "run", answers(expired)):
-            self.assertIn("has expired", release.find_candidate("owner/repo", "candidate-nightly-b", "nightly")[1])
+            self.assertIn("has expired", release.find_candidate("owner/repo", "candidate-nightly-b")[1])
         with mock.patch.object(release, "run", answers(json.dumps({"artifacts": []}))):
-            self.assertIn("no candidate", release.find_candidate("owner/repo", "candidate-nightly-b", "nightly")[1])
+            self.assertIn("no candidate", release.find_candidate("owner/repo", "candidate-nightly-b")[1])
 
     def test_only_mains_candidate_workflow_or_the_release_build_job_produces_a_candidate(self):
         def artifact(branch="main", head=1):
@@ -206,19 +206,22 @@ class MainCi(unittest.TestCase):
         def state(path, event, conclusion="success"):
             return json.dumps({"path": f".github/workflows/{path}", "event": event, "status": "completed", "conclusion": conclusion})
 
-        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(branch="feature"), "nightly"))
-        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(head=2), "nightly"))
-        with mock.patch.object(release, "run", answers(state("release-candidate.yml", "push"))):
-            self.assertIsNone(release.produced("owner/repo", artifact(), "nightly"))
-        with mock.patch.object(release, "run", answers(state("release-candidate.yml", "pull_request"))):
-            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
+        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(branch="feature")))
+        self.assertIn("not built from this repository's main", release.produced("owner/repo", artifact(head=2)))
+        with mock.patch.object(release, "run", answers(state("release-candidate.yml", "workflow_dispatch"))):
+            self.assertIsNone(release.produced("owner/repo", artifact()))
+        for event in ("push", "pull_request"):
+            with mock.patch.object(release, "run", answers(state("release-candidate.yml", event))):
+                self.assertIn("does not build release candidates", release.produced("owner/repo", artifact()))
         with mock.patch.object(release, "run", answers(state("comments.yml", "push"))):
-            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
+            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact()))
         built = "Build / Windows x64 installer\tsuccess\nPublish\tfailure"
-        with mock.patch.object(release, "run", answers(state("release.yml", "workflow_dispatch", "failure"), built)):
-            self.assertIsNone(release.produced("owner/repo", artifact(), "stable"))
-        with mock.patch.object(release, "run", answers(state("release.yml", "workflow_dispatch"))):
-            self.assertIn("does not build release candidates", release.produced("owner/repo", artifact(), "nightly"))
+        for event in ("schedule", "workflow_dispatch"):
+            with mock.patch.object(release, "run", answers(state("release.yml", event, "failure"), built)):
+                self.assertIsNone(release.produced("owner/repo", artifact()))
+        skipped = "Resolve the release\tsuccess\nBuild / Windows x64 installer\tskipped"
+        with mock.patch.object(release, "run", answers(state("release.yml", "schedule"), skipped)):
+            self.assertIn("its build job did not succeed", release.produced("owner/repo", artifact()))
 
 
 class Resolve(unittest.TestCase):
@@ -229,28 +232,45 @@ class Resolve(unittest.TestCase):
                         on_main=mock.Mock(return_value="b" * 40),
                         read_feed=mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20261121.900"}),
                         run=mock.Mock(return_value=mock.Mock(returncode=1)),
-                        ci_state=mock.Mock(return_value=None),
-                        find_candidate=mock.Mock(return_value=(None, "the run that builds it is still going")),
+                        ci_state=mock.Mock(return_value=None), nightly_going=mock.Mock(return_value=None),
+                        find_candidate=mock.Mock(return_value=(None, "no candidate candidate-nightly-b was built")),
                         outputs=mock.Mock())
         settings.update(changes)
         with mock.patch.multiple(release, **settings):
             release.resolve(args)
             return release.outputs.call_args[0][0]
 
-    def test_a_scheduled_nightly_is_due_only_when_main_moved_its_ci_is_green_and_its_candidate_is_kept(self):
-        built = mock.Mock(return_value=(9, None))
-        self.assertEqual(self.resolve()["due"], "false")
-        self.assertEqual(self.resolve(ci_state=mock.Mock(return_value="its Comments run is still going"),
-                                      find_candidate=built)["due"], "false")
+    def test_a_scheduled_nightly_is_due_when_main_moved_and_its_ci_is_green_and_builds_unless_its_candidate_is_kept(self):
+        due = self.resolve()
+        self.assertEqual((due["due"], due["commit"], due["artifact"], due["candidate_run"], due["build"], due["publish"]),
+                         ("true", "b" * 40, "candidate-nightly-" + "b" * 40, "", "true", "true"))
+        kept = self.resolve(find_candidate=mock.Mock(return_value=(9, None)))
+        self.assertEqual((kept["due"], kept["candidate_run"], kept["build"], kept["publish"]), ("true", "9", "false", "true"))
+        self.assertEqual(self.resolve(ci_state=mock.Mock(return_value="its Comments run is still going"))["due"], "false")
         unchanged = mock.Mock(return_value=mock.Mock(returncode=0))
-        self.assertEqual(self.resolve(run=unchanged, find_candidate=built)["due"], "false")
-        self.assertEqual(self.resolve(draft=True, run=unchanged, find_candidate=built)["due"], "true")
+        self.assertEqual(self.resolve(run=unchanged)["due"], "false")
+        self.assertEqual(self.resolve(draft=True, run=unchanged)["due"], "true")
         with mock.patch.dict(os.environ, {"PAUSE_NIGHTLY": "true"}):
-            self.assertEqual(self.resolve(find_candidate=built)["due"], "false")
-        due = self.resolve(find_candidate=built)
-        self.assertEqual((due["due"], due["commit"], due["artifact"], due["candidate_run"], due["build"]),
-                         ("true", "b" * 40, "candidate-nightly-" + "b" * 40, "9", "false"))
+            self.assertEqual(self.resolve()["due"], "false")
 
+    def test_a_nightly_yields_to_an_earlier_nightly_run_still_going_and_a_dry_run_does_not(self):
+        going = mock.Mock(return_value=41)
+        self.assertEqual(self.resolve(nightly_going=going)["due"], "false")
+        self.assertEqual(self.resolve(draft=True, nightly_going=going)["due"], "true")
+
+    def test_only_an_earlier_nightly_release_run_still_going_counts(self):
+        def found(number, status, title="Release nightly"):
+            return {"run_number": number, "status": status, "display_title": title}
+
+        runs = json.dumps({"workflow_runs": [found(44, "in_progress"), found(43, "queued", "Release nightly (dry run)"),
+                                             found(42, "in_progress", "Release stable"), found(41, "completed"),
+                                             found(40, "in_progress"), found(39, "waiting")]})
+        with mock.patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "44"}):
+            with mock.patch.object(release, "run", answers(runs)):
+                self.assertEqual(release.nightly_going("owner/repo"), 39)
+        with mock.patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "39"}):
+            with mock.patch.object(release, "run", answers(runs)):
+                self.assertIsNone(release.nightly_going("owner/repo"))
 
     def test_a_commit_whose_workflows_differ_from_mains_is_refused_before_anything_is_built(self):
         with mock.patch.object(release, "git", return_value=".github/workflows/release.yml"):
