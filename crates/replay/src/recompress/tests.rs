@@ -258,16 +258,14 @@ impl Queue {
             return;
         }
         let mut state = self.lock();
-        state.held = Some((seq, BTreeSet::new()));
         let held = loop {
-            let units = state.held.as_ref().map_or(0, |(_, later)| later.len());
+            let units = state.units.range(seq + 1..).count();
             let stalled = state.tasks.is_empty() && state.given.is_empty() && state.waiting && state.idle + 1 == self.workers;
             if units >= hold.units || stalled || state.closed {
                 break Held { units, stalled };
             }
             state = self.given.wait(state).unwrap_or_else(PoisonError::into_inner);
         };
-        state.held = None;
         drop(state);
         *hold.seen.lock().unwrap() = Some(held);
     }
@@ -310,11 +308,9 @@ impl Queue {
 }
 
 impl State {
-    pub(super) fn later(&mut self, message: &Message) {
-        if let (Some((at, later)), Message::Done { seq, slot: Some(_), unit: true, .. }) = (&mut self.held, message) {
-            if *seq > *at {
-                later.insert(*seq);
-            }
+    pub(super) fn gave(&mut self, message: &Message) {
+        if let Message::Done { seq, slot: Some(_), unit: true, .. } = message {
+            self.units.insert(*seq);
         }
     }
 }
@@ -353,7 +349,7 @@ fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
     };
     let held = paced("held.tmp", Pace { workers: 4, window: 2 * units[large].1, hold: Some(Arc::clone(&hold)), parts: None });
     let seen = hold.seen.lock().unwrap().expect("a frame of the large unit was held");
-    assert!(seen.units >= later, "{} of {later} later units compressed while the large one's frame was held (the others left without work: {})", seen.units, seen.stalled);
+    assert!(seen.units >= later, "{} of {later} later units compressed before the large one's held frame (the others left without work: {})", seen.units, seen.stalled);
     assert_eq!(held, paced("one.tmp", Pace { workers: 1, window: 0, hold: None, parts: None }));
     assert_eq!(held, paced("here.tmp", Pace::here()));
     assert_reads_alike(&path, &folder.0.join("held.tmp"));
