@@ -7664,3 +7664,74 @@ fn a_clip_the_code_sets_bounds_a_windows_children() {
     .unwrap();
     assert_eq!(layout.parts[0].clip, Some([2, 3, 20, 30]));
 }
+
+#[test]
+fn adjacency_rule_pool_admits_64_icons_before_first_growth() {
+    content_reader_core::test_game::enter();
+    let resources = fixture();
+    let gui = gui("size = { width = 10 height = 10 }");
+    let window = gui.template("w").unwrap();
+    assert_eq!(MapIconPool::AdjacencyRule.initial(), 64);
+    for build in [
+        engine_executable::build::PINNED_BUILD.version,
+        "1.19.4.2",
+        "1.19.4.1",
+        "Countenance v1.19.5.0.c184",
+    ] {
+        assert_eq!(
+            MapIconPool::AdjacencyRule.initial_for_build(Some(build)),
+            Ok(64),
+            "verified build {build}"
+        );
+    }
+    let mut pool = Pool::new_for_build(
+        window,
+        [800, 600],
+        MapIconPool::AdjacencyRule,
+        Some(engine_executable::build::PINNED_BUILD.version),
+        Box::new(|_, _| Ok(())),
+        &resources,
+    )
+    .unwrap();
+    for owner in 0..64u32 {
+        assert!(
+            pool.request(owner).is_some(),
+            "owner {owner} should fit in the initial 64 slots"
+        );
+    }
+    assert_eq!(pool.live().count(), 64);
+    assert_eq!(pool.growths(), 0);
+    assert!(!pool.requests_pending());
+    assert!(pool.request(64).is_none());
+    assert!(pool.requests_pending());
+    pool.tick(window, &resources, dt(0.0)).unwrap();
+    assert_eq!(pool.growths(), 1);
+    assert!(pool.request(64).is_some());
+}
+
+#[test]
+fn unknown_build_refuses_map_icon_pool_capacity_by_name() {
+    content_reader_core::test_game::enter();
+    let resources = fixture();
+    let gui = gui("size = { width = 10 height = 10 }");
+    let window = gui.template("w").unwrap();
+    for build in [None, Some(""), Some("   "), Some("1.99.0.0"), Some("1.19.5.00"), Some("1.19.5.0.1.2")] {
+        let error = MapIconPool::AdjacencyRule
+            .initial_for_build(build)
+            .expect_err("unverified build must not fall back to a guessed capacity");
+        assert!(error.contains("adjacency rule"), "{error}");
+        if let Some(build) = build.map(str::trim).filter(|b| !b.is_empty()) {
+            assert!(error.contains(build), "{error}");
+        }
+        let pool_error = Pool::<u32>::new_for_build(
+            window,
+            [800, 600],
+            MapIconPool::AdjacencyRule,
+            build,
+            Box::new(|_, _| Ok(())),
+            &resources,
+        )
+        .expect_err("pool construction must refuse unknown build capacity");
+        assert_eq!(pool_error, error);
+    }
+}

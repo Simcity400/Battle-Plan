@@ -18,7 +18,7 @@ use viewer_foundation::engagement_history::kept_frames;
 use viewer_foundation::map::building_facts::{self, SiteSlots, SlotAdmission};
 use viewer_foundation::map::counter_anchors::stack_anchor;
 use viewer_foundation::map::counter_hovers::land::{CounterControl, CounterHover};
-use viewer_foundation::map::country_index::FlagTags;
+use viewer_foundation::map::country_index::{CountryIndex, FlagTags};
 use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
@@ -2476,10 +2476,17 @@ pub struct HourTables {
     engaged: Arc<CombatFlags>,
 }
 
+impl HourTables {
+    pub fn country_index(&self) -> &Arc<CountryIndex> {
+        &self.base.country_index
+    }
+}
+
 pub struct HourBase {
     frame: Arc<DecodedFrame>,
     engagement_content: EngagementContent,
     relations: Result<Relations, &'static str>,
+    country_index: Arc<CountryIndex>,
     links: BTreeMap<u32, u32>,
     vision: Arc<Vision>,
     countries: Arc<Countries>,
@@ -2744,58 +2751,61 @@ pub fn hour_tables(
     )
 }
 
-#[derive(Default)]
 pub struct Carry {
+    country_index: viewer_foundation::map::memo::Settled<CountryIndex>,
     countries: carry::Carried<CountryInputs, u32>,
     pins: carry::Carried<HourPins, u32>,
     abilities: carry::Carried<AbilityInputs, ()>,
     native_relations: carry::Carried<allegiance::NativeRelations, ()>,
 }
 
+impl Default for Carry {
+    fn default() -> Self {
+        Self {
+            country_index: CountryIndex::memo(),
+            countries: Default::default(),
+            pins: Default::default(),
+            abilities: Default::default(),
+            native_relations: Default::default(),
+        }
+    }
+}
+
 struct CountryInputs {
-    links: BTreeMap<u32, u32>,
-    country_ids: BTreeMap<u32, u32>,
+    index: Arc<CountryIndex>,
     relations: Result<Relations, &'static str>,
     countries: Arc<Countries>,
     peace_conference: bool,
 }
 
-fn country_inputs(frame: &DecodedFrame, map: &MapData, ours: u32) -> io::Result<CountryInputs> {
-    let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect();
+fn country_inputs(
+    frame: &DecodedFrame,
+    map: &MapData,
+    ours: u32,
+    index_memo: Option<&viewer_foundation::map::memo::Settled<CountryIndex>>,
+) -> io::Result<CountryInputs> {
+    let index = match index_memo {
+        Some(memo) => CountryIndex::settled(memo, frame)?,
+        None => Arc::new(CountryIndex::read(frame)?),
+    };
     let country_source = core::<tables::Countries>(frame)?;
     let country_rows: BTreeMap<_, _> = country_source
         .iter()
         .map(|country| (country.canonical_slot, country))
         .collect();
-    let tags: BTreeMap<u32, String> = country_source
-        .iter()
-        .map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned()))
-        .collect();
-    let country_ids = country_source
-        .iter()
-        .map(|country| (country.canonical_slot, country.id))
-        .collect();
-    let appearances: BTreeMap<_, _> = rows::<tables::CountryAppearance>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.country, row))
-        .collect();
-    let relations = Relations::read(frame, &links);
+    let relations = Relations::read(frame, index.links());
     let countries = Countries {
-        tags,
-        flag_tags: initial_flags::flag_tags(&country_rows, &appearances),
+        tags: index.tags().clone(),
+        flag_tags: index.flag_tags().clone(),
         sides: match &relations {
-            Ok(relations) => allegiance::counter_table(relations, &links, ours),
+            Ok(relations) => allegiance::counter_table(relations, index.links(), ours),
             Err(_) => BTreeMap::from([(ours, Allegiance::Ours)]),
         },
         groups: ideology_groups(frame, &country_rows)?,
-        ui_colors: UiColors::read(map, frame, &links)?,
+        ui_colors: UiColors::read(map, frame, index.links())?,
     };
     let peace_conference = peace_conference_hides_units(country_source, ours);
-    Ok(CountryInputs { links, country_ids, relations, countries: Arc::new(countries), peace_conference })
+    Ok(CountryInputs { index, relations, countries: Arc::new(countries), peace_conference })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2915,7 +2925,7 @@ pub fn naval_dominance_sources(
     if frame.complete::<tables::NavalMissionLedgers>().is_ok_and(|rows| rows.is_empty()) {
         return Ok(BTreeMap::new());
     }
-    let CountryInputs { links, country_ids, .. } = country_inputs(frame, map, ours).map_err(|error| error.to_string())?;
+    let CountryInputs { index, .. } = country_inputs(frame, map, ours, None).map_err(|error| error.to_string())?;
     let native = NativeInputs::read(frame).map_err(|error| error.to_string())?;
     let forces = table_access_rows::<tables::TaskForces>(frame)
         .map_err(|error| error.to_string())?
@@ -2929,7 +2939,7 @@ pub fn naval_dominance_sources(
         .as_ref()
         .map(|world| viewer_foundation::map::movement_reads::Moves::new(world, reads, &cells))
         .map_err(Clone::clone);
-    naval_mission_inputs::Hour::read(frame, content, &native, (&links, &country_ids), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
+    naval_mission_inputs::Hour::read(frame, content, &native, (index.links(), index.ids()), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
 }
 
 pub fn hour_tables_profiled(
@@ -2965,17 +2975,21 @@ pub fn hour_tables_profiled(
     let divisions = !left_out.has(Kinds::LAND) && need.shown.units;
     let shared = Arc::new(frame.clone());
     let lookups = Lookups::default();
-    let CountryInputs { links, country_ids, relations, countries, peace_conference } =
+    let CountryInputs { index: country_index, relations, countries, peace_conference } =
         spans.measure("overlay.tables.counters.country_inputs", |_| match carry {
-            Some(carry) => carry.countries.get_or_build(frame, &[], ours, || country_inputs(frame, map, ours)).map(|inputs| CountryInputs {
-                links: inputs.links.clone(),
-                country_ids: inputs.country_ids.clone(),
-                relations: inputs.relations.clone(),
-                countries: Arc::clone(&inputs.countries),
-                peace_conference: inputs.peace_conference,
-            }),
-            None => country_inputs(frame, map, ours),
+            Some(carry) => carry
+                .countries
+                .get_or_build(frame, &[], ours, || country_inputs(frame, map, ours, Some(&carry.country_index)))
+                .map(|inputs| CountryInputs {
+                    index: Arc::clone(&inputs.index),
+                    relations: inputs.relations.clone(),
+                    countries: Arc::clone(&inputs.countries),
+                    peace_conference: inputs.peace_conference,
+                }),
+            None => country_inputs(frame, map, ours, None),
         })?;
+    let links = country_index.links().clone();
+    let country_ids = country_index.ids().clone();
     let geography = spans.measure("overlay.tables.counters.geography", |_| {
         geography::read(frame, content)
     })?;
@@ -3217,6 +3231,7 @@ pub fn hour_tables_profiled(
                     None => allegiance::NativeRelations::read(frame, &links).map(Arc::new),
                 },
             )?,
+            country_index,
             links,
             vision,
             countries,

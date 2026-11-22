@@ -282,7 +282,13 @@ impl Columns {
     }
 
     pub fn failed_make(&mut self, table: usize, payload: &(dyn std::any::Any + Send)) -> SharedView {
-        let view = SharedView::from(TableView::Unavailable { reason: format!("{:?}'s rows at the head could not be made ({})", TableId::ALL[table], panicked(payload)) });
+        let view = SharedView::from(TableView::Unavailable {
+            reason: view::HeadFailure {
+                table: TableId::ALL[table],
+                kind: view::HeadFailureKind::Panicked(panicked(payload)),
+            }
+            .format(),
+        });
         (self.touched, self.untold) = (Err(Whole::First), false);
         self.spares.clear();
         self.built = Some((self.stamp, view.clone()));
