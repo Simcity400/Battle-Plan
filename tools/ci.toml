@@ -137,7 +137,7 @@ command = ["{python}", "tools/test-python.py"]
 
 [[job]]
 name = "smoke-tests"
-group = "tools"
+group = "windows"
 tier = "check"
 toolchain = "python"
 inputs = ["tools/smoke.ps1", "tools/smoke.tests.ps1", "tools/game-clock.ps1"]
