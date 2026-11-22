@@ -3803,11 +3803,28 @@ fn step_summary(directory: &Path, from: &str, to: &str) -> Option<String> {
         to,
     )
 }
+#[derive(Default)]
+struct ProgressClock {
+    #[cfg(test)]
+    fixed: Option<std::rc::Rc<dyn Fn() -> Instant>>,
+}
+
+impl ProgressClock {
+    #[inline]
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.fixed {
+            return clock();
+        }
+        Instant::now()
+    }
+}
+
 struct FinalizationProgress<'a> {
     directory: &'a Path,
     observe: &'a dyn Fn(u64),
     records: Cell<u64>,
-    clock: &'a dyn Fn() -> Instant,
+    clock: ProgressClock,
     last_write: Cell<Instant>,
     warned: Cell<bool>,
     work_warned: Cell<bool>,
@@ -3818,7 +3835,7 @@ impl<'a> FinalizationProgress<'a> {
             directory,
             observe,
             records: Cell::new(0),
-            clock: &Instant::now,
+            clock: ProgressClock::default(),
             last_write: Cell::new(Instant::now()),
             warned: Cell::new(false),
             work_warned: Cell::new(false),
@@ -3828,8 +3845,8 @@ impl<'a> FinalizationProgress<'a> {
     }
     fn advance(&self) {
         self.records.set(self.records.get().saturating_add(1));
-        let now = (self.clock)();
-        if now.saturating_duration_since(self.last_write.get()) >= Duration::from_secs(1) {
+        let now = self.clock.now();
+        if now.duration_since(self.last_write.get()) >= Duration::from_secs(1) {
             self.last_write.set(now);
             self.publish();
             (self.observe)(self.records.get());
@@ -5948,10 +5965,12 @@ mod tests {
         write_campaign_journal(&session, &allocation_records());
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
-        let (base, ahead) = (Instant::now(), Cell::new(Duration::ZERO));
-        let tick = || base + ahead.get();
+        let (base, ahead) = (Instant::now(), std::rc::Rc::new(Cell::new(Duration::ZERO)));
         let mut progress = FinalizationProgress::new(&session, &observe);
-        progress.clock = &tick;
+        progress.clock.fixed = Some({
+            let ahead = std::rc::Rc::clone(&ahead);
+            std::rc::Rc::new(move || base + ahead.get())
+        });
         progress.last_write.set(base);
         let path = session.join("finalization-progress.json");
         let reader = fs::OpenOptions::new()
@@ -5992,10 +6011,12 @@ mod tests {
         fs::write(&session, b"not a directory").unwrap();
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
-        let (base, ahead) = (Instant::now(), Cell::new(Duration::ZERO));
-        let tick = || base + ahead.get();
+        let (base, ahead) = (Instant::now(), std::rc::Rc::new(Cell::new(Duration::ZERO)));
         let mut progress = FinalizationProgress::new(&session, &observe);
-        progress.clock = &tick;
+        progress.clock.fixed = Some({
+            let ahead = std::rc::Rc::clone(&ahead);
+            std::rc::Rc::new(move || base + ahead.get())
+        });
         progress.last_write.set(base);
         ahead.set(Duration::from_secs(1) - Duration::from_nanos(1));
         progress.advance();

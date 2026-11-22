@@ -78,7 +78,7 @@ fn worker_sampler_callback_exit_bounds_spins_and_yields_until_release() {
     let (done_tx, done_rx) = mpsc::channel();
     let watchdog_gate = Arc::clone(&gate);
     let watchdog = thread::spawn(move || {
-        if done_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+        if done_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD).is_err() {
             watchdog_gate.touching.store(false, Ordering::SeqCst);
         }
     });
@@ -255,7 +255,7 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     let release_barrier = Arc::clone(&barrier);
     let releaser = thread::spawn(move || {
         if entered_rx.recv().is_ok() {
-            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            let _ = release_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD);
             release_barrier.wait();
         }
     });
@@ -291,7 +291,7 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         assert!(released.is_ok());
         panic!("synthetic worker job admission failed");
     };
-    let id = ready_rx.recv_timeout(Duration::from_secs(5));
+    let id = ready_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD);
     let record = target
         .as_mut()
         .and_then(|target| sample(target, &mut scratch));
@@ -369,7 +369,7 @@ fn worker_sampler_no_deadlock_allocating_mutex_threads_make_progress() {
     drop(ids_tx);
     let mut targets = Vec::new();
     for slot in 0..WORKERS {
-        if let Ok((index, id)) = ids_rx.recv_timeout(Duration::from_secs(5))
+        if let Ok((index, id)) = ids_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD)
             && let Some(target) = Target::open(id, 7, index as u8, slot as u16)
         {
             targets.push(target);
@@ -491,21 +491,24 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
             }
         }
     }));
-    let id = id_rx.recv_timeout(Duration::from_secs(5));
+    let id = id_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD);
     let mut target = id.ok().and_then(|id| Target::open(id, 7, 0, 0));
     if let Some(target) = &mut target {
         target.job = Some(SampledJob::fixture(Arc::clone(&region)));
     }
     let mut scratch = Scratch::default();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let guard = Instant::now() + collector_test_support::TEST_HANG_GUARD;
+    let waited = |what: &str| assert!(Instant::now() < guard, "{what} within the hang guard");
     let mut forced_claim = None;
-    while Instant::now() < deadline && forced_claim.is_none() {
+    while forced_claim.is_none() {
         forced_claim = LocalClaim::take(&gate);
+        waited("the fake game entered no callback to claim");
         thread::yield_now();
     }
     let claimed_first = forced_claim.is_some();
     leave_first.store(true, Ordering::Release);
-    while gate.in_callback.load(Ordering::SeqCst) && Instant::now() < deadline {
+    while gate.in_callback.load(Ordering::SeqCst) {
+        waited("the claimed callback never cleared");
         thread::yield_now();
     }
     let forced_clear = claimed_first && !gate.in_callback.load(Ordering::SeqCst);
@@ -516,7 +519,8 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
     let forced_region = scratch.job;
     let exits_before_release = exits.load(Ordering::Acquire);
     drop(forced_claim);
-    while exits.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+    while exits.load(Ordering::Acquire) == 0 {
+        waited("the callback did not exit after release");
         thread::yield_now();
     }
     let first_exit_completed = exits.load(Ordering::Acquire) != 0;
@@ -525,7 +529,8 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
     let mut invalid_region = 0;
     let mut discarded = u64::from(forced_capture);
     if let Some(target) = &target {
-        while Instant::now() < deadline && captures < 256 {
+        while captures < 256 {
+            waited("the sampler did not make 256 handshake captures");
             if let Some(claim) = LocalClaim::take(&gate) {
                 if capture_window(target, &mut scratch) {
                     captures += 1;

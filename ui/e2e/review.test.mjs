@@ -134,7 +134,7 @@ test('disposable adapter refuses debug input and its teardown removes it', async
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('fresh owned Edge contexts preserve exact pixels and 5,000 rows; a stall expires', () => {
+test('fresh owned Edge contexts preserve exact pixels and 5,000 rows, captured once loading clears', () => {
   const baseURL = new URL('./', import.meta.url).href;
   const program = `import assert from 'node:assert/strict';
     import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
@@ -169,12 +169,21 @@ async function rasterProof() {
           <article class="dash-widget"><header class="dash-widget-header"><h2>Synthetic</h2></header><div class="dash-widget-scaled"><img src="${source}"><span role="status" data-parity-loading>Loading widget?</span></div></article>`);
         await page.locator('img').evaluate(img => img.decode());
         const lists = [{ complete: true, total: 5000, rows: Array.from({ length: 5000 }, (_, index) => ({ index, key: String(index), value: index * 2 })) }];
-        await page.evaluate(() => setTimeout(() => {
-          const fallback = document.querySelector('[data-parity-loading]');
-          fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
-        }, 900));
         const real = app.createApp(page, {});
-        const driver = { ...real, prepare: async () => {}, install: async () => {}, widget: () => page.locator('.dash-widget'), prepareFullRows: async () => {}, fullRows: async () => lists };
+        const settle = async locator => {
+          await page.evaluate(() => {
+            const fallback = document.querySelector('[data-parity-loading]');
+            if (!fallback) return;
+            let frames = 0;
+            const step = () => {
+              if (++frames < 2) { requestAnimationFrame(step); return; }
+              fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
+            };
+            requestAnimationFrame(step);
+          });
+          await real.settle(locator);
+        };
+        const driver = { ...real, settle, prepare: async () => {}, install: async () => {}, widget: () => page.locator('.dash-widget'), prepareFullRows: async () => {}, fullRows: async () => lists };
         const item = await captureWidget({ page, app: driver, kind: 'synthetic', directory });
         assert.equal(item.status, 'captured'); assert.equal(item.model.lists[0].rows.length, 5000);
         assert.match(item.model.text, /Rows/); assert.doesNotMatch(item.model.text, /Loading widget/);

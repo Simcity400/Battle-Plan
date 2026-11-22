@@ -150,7 +150,8 @@ test('a landing tile past the off-thread size is parsed and decoded by the reply
   const { fromBase64 } = native, { atob } = globalThis;
   const global = globalThis as unknown as { self?: unknown; Worker?: unknown };
   const scope = { onmessage: null as null | ((event: { data: unknown }) => void), postMessage: (_message: unknown, _options: { transfer: ArrayBuffer[] }) => {} };
-  const sent: ArrayBuffer[] = [], returned: { buffer: ArrayBuffer; bins: unknown }[] = [];
+  const sent: ArrayBuffer[] = [], returned: { buffer: ArrayBuffer; bins: unknown }[] = [], decoded: ArrayBuffer[] = [];
+  let inWorker = false, workerParses = 0, pageParses = 0;
   class InProcessWorker {
     onmessage: ((event: { data: unknown }) => void) | null = null;
     onerror: unknown = null;
@@ -164,13 +165,22 @@ test('a landing tile past the off-thread size is parsed and decoded by the reply
     }
     postMessage(message: { bytes: ArrayBuffer }, transfer: ArrayBuffer[]) {
       sent.push(message.bytes);
-      scope.onmessage!({ data: structuredClone(message, { transfer }) });
+      const arrived = structuredClone(message, { transfer });
+      inWorker = true;
+      try { scope.onmessage!({ data: arrived }); } finally { inWorker = false; }
     }
     terminate() {}
   }
   let decodes = 0;
-  if (fromBase64) native.fromBase64 = text => { decodes++; return fromBase64(text); };
+  native.fromBase64 = text => {
+    decodes++;
+    const out = fromBase64 ? fromBase64(text) : Uint8Array.from(atob(text), letter => letter.charCodeAt(0));
+    decoded.push(out.buffer as ArrayBuffer);
+    return out;
+  };
   globalThis.atob = text => { decodes++; return atob(text); };
+  const { parse } = JSON;
+  JSON.parse = (...args: Parameters<typeof JSON.parse>) => { if (inWorker) workerParses++; else pageParses++; return parse(...args); };
   global.self = scope;
   global.Worker = InProcessWorker;
   try {
@@ -181,7 +191,7 @@ test('a landing tile past the off-thread size is parsed and decoded by the reply
       const bytes = new Uint8Array(count * (1 + 16 + 5));
       for (let at = 0; at < keys; at++) {
         for (let bin = 0; bin < TILE_BINS; bin++) {
-          const pattern = (at * 7 + bin) % 16;
+          const pattern = bin < 8 ? ((at >> bin) & 1) * 15 : (at * 7 + bin) % 16;
           bytes[at * TILE_BINS + bin] = PRESENT | (pattern & 1 ? FIRST_BREAK : 0) | (pattern & 2 ? HAS_BREAK : 0) | (pattern & 4 ? RUN : 0) | (pattern & 8 ? SEAM : 0);
         }
         bytes.fill(at + 1, count + at * TILE_BINS * 16, count + (at + 1) * TILE_BINS * 16);
@@ -191,14 +201,18 @@ test('a landing tile past the off-thread size is parsed and decoded by the reply
       const request = new TextEncoder().encode(JSON.stringify({ product: 'series-tiles', data: reply }));
       assert.ok(request.byteLength > 64 * 1024, `${request.byteLength} bytes go to the worker`);
       decodes = 0;
+      workerParses = 0;
+      pageParses = 0;
       sent.length = 0;
       returned.length = 0;
+      decoded.length = 0;
       const parsed = await parseReplyBytes(request) as { data: TileReply };
       assert.equal(sent.length, 1, 'the reply went to the worker');
+      assert.deepEqual([workerParses, pageParses], [1, 0], 'the worker parses the reply and the page parses nothing');
       assert.equal(request.byteLength, 0, 'its bytes were handed to the worker, not copied');
       assert.equal(decodes, 1, 'the worker decodes the base64 once');
       const [{ buffer, bins }] = returned;
-      assert.ok(bins instanceof Uint8Array && bins.buffer === buffer, 'the worker hands over the buffer its decoded bins live in');
+      assert.ok(bins instanceof Uint8Array && bins.buffer === buffer && buffer === decoded[0], 'the worker hands over the buffer the decoder made, not a copy');
       assert.equal(buffer.byteLength, 0, 'and keeps no copy of it');
       assert.ok(parsed.data.bins instanceof Uint8Array && parsed.data.bins.byteLength === bytes.length && parsed.data.bins.buffer.byteLength === bytes.length,
         'the page holds the one buffer of the bins');
@@ -212,8 +226,9 @@ test('a landing tile past the off-thread size is parsed and decoded by the reply
       });
     }
   } finally {
-    if (fromBase64) native.fromBase64 = fromBase64;
+    if (fromBase64) native.fromBase64 = fromBase64; else delete native.fromBase64;
     globalThis.atob = atob;
+    JSON.parse = parse;
     delete global.self;
     delete global.Worker;
   }

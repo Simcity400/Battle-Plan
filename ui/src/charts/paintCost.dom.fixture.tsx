@@ -14,7 +14,7 @@ import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
 import LogList from './log/LogList';
-import { ENTRY_MS } from './log/entryLayer.ts';
+import { ENTRY_MS, entryTime } from './log/entryLayer.ts';
 import { VirtualList } from '../components/VirtualList';
 import { useRef } from 'react';
 import type { LogRow } from './log/logData';
@@ -193,7 +193,9 @@ const api = {
       [data-widget="glide"] .moving-row:is(.is-entering, [data-reveal='in'])::after { content: none; }`;
     const root = place('glide', 400, 320);
     let time = 0;
-    root.render(<LogList rows={feedRows} label="Glide" density="comfortable" months animate playhead={clock.read()} reveal={reveal} entryClock={() => time}
+    const realTime = entryTime.now;
+    entryTime.now = () => time;
+    root.render(<LogList rows={feedRows} label="Glide" density="comfortable" months animate playhead={clock.read()} reveal={reveal}
       columns="minmax(0, 1fr)" renderRow={row => <span>{row.item}</span>} describe={row => row.item} />);
     const host = document.querySelector<HTMLElement>('[data-widget="glide"]')!;
     let listening = false;
@@ -225,6 +227,7 @@ const api = {
     const animated = host.getAnimations({ subtree: true }).filter(animation => animation.playState === 'running').length;
     const scroll = { height: scroller.scrollHeight, list: body.offsetHeight, view: scroller.clientHeight };
     root.unmount();
+    entryTime.now = realTime;
     host.remove();
     still?.remove();
     return { frames, revealed, started, scroll, entering, layer, animated };

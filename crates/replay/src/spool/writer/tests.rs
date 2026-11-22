@@ -7,10 +7,10 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Mutex};
 
 fn controlled_clock<B: SegmentBackend>(spool: &mut SegmentedSpool<B>) -> Arc<Mutex<Instant>> {
     let now = Arc::new(Mutex::new(Instant::now()));
-    spool.clock = {
+    spool.clock.fixed = Some({
         let now = Arc::clone(&now);
         Arc::new(move || *now.lock().unwrap())
-    };
+    });
     spool.last_sync = *now.lock().unwrap();
     now
 }
