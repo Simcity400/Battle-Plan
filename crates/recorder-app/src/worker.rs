@@ -46,6 +46,8 @@ struct Inner {
     prompts: panel::Prompts,
     prompt_revision: u64,
     shown_prompt: Option<u64>,
+    drawn_prompt: Option<u64>,
+    panel_visible: bool,
     closing_itself: Option<u64>,
     sessions: u64,
     stopped: Option<(u64, bool)>,
@@ -154,12 +156,27 @@ impl Inner {
         dismissible
     }
 
-    fn prompt_shown(&mut self, prompt: u64) {
-        self.shown_prompt = Some(self.shown_prompt.map_or(prompt, |shown| shown.max(prompt)));
+    fn prompt_shown(&mut self, prompt: u64, visible: bool) {
+        self.drawn_prompt = Some(self.drawn_prompt.map_or(prompt, |drawn| drawn.max(prompt)));
+        self.panel_visible |= visible;
+        self.seen_drawn();
+    }
+
+    fn panel_visible(&mut self) {
+        self.panel_visible = true;
+        self.seen_drawn();
+    }
+
+    fn seen_drawn(&mut self) {
+        if let Some(drawn) = self.drawn_prompt.filter(|_| self.panel_visible) {
+            self.shown_prompt = Some(self.shown_prompt.map_or(drawn, |shown| shown.max(drawn)));
+        }
     }
 
     fn panel_gone(&mut self, stopping: bool, declined: bool) -> bool {
         self.panel_open = false;
+        self.drawn_prompt = None;
+        self.panel_visible = false;
         let issued = self.closing_itself.take();
         let shown = self.shown_prompt.take();
         let through = match issued {
@@ -665,8 +682,12 @@ impl Recorder {
         self.update(app, |inner| inner.panel_open = true);
     }
 
-    pub fn prompt_shown(&self, prompt: u64) {
-        self.lock().prompt_shown(prompt);
+    pub fn prompt_shown(&self, prompt: u64, visible: bool) {
+        self.lock().prompt_shown(prompt, visible);
+    }
+
+    pub fn panel_visible(&self) {
+        self.lock().panel_visible();
     }
 
     pub fn dismiss(&self, revision: u64) -> bool {
@@ -1817,7 +1838,7 @@ mod tests {
         );
         assert!(inner.dismiss(asked.revision));
 
-        inner.prompt_shown(discard.id);
+        inner.prompt_shown(discard.id, true);
         let quit = inner.ask(session, true);
         let before = inner.snapshot.clone();
         inner.publish(&before);
@@ -1825,9 +1846,28 @@ mod tests {
         assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
         assert_eq!(inner.quit_after_stop, Some(quit.id), "closing the panel doesn’t cancel a Quit it never showed");
 
-        inner.prompt_shown(quit.id);
+        inner.prompt_shown(quit.id, true);
         assert!(!inner.panel_gone(false, false));
         assert_eq!(inner.prompts.pending(Some(session)), None, "closing a panel cancels what it showed");
+        assert_eq!(inner.quit_after_stop, None);
+    }
+
+    #[test]
+    fn a_prompt_drawn_before_its_window_appeared_counts_as_seen_once_the_window_is_visible() {
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+        let quit = inner.ask(session, true);
+        inner.prompt_shown(quit.id, false);
+        assert!(inner.panel_gone(false, false), "a prompt drawn in a window that never appeared wasn’t seen, so it asks again");
+        inner.prompt_shown(quit.id, false);
+        inner.panel_visible();
+        assert!(!inner.panel_gone(false, false), "the window appeared with the prompt on it, however its sizing went, so clicking away answers it");
+        assert_eq!(inner.prompts.pending(Some(session)), None);
         assert_eq!(inner.quit_after_stop, None);
     }
 
@@ -1861,7 +1901,7 @@ mod tests {
         let quit = inner.ask(session, true);
         let before = inner.snapshot.clone();
         inner.publish(&before);
-        inner.prompt_shown(quit.id);
+        inner.prompt_shown(quit.id, true);
         assert!(inner.panel_gone(false, false), "the Quit that arrived before the window went asks again");
         assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
         assert_eq!(inner.quit_after_stop, Some(quit.id));
@@ -1876,7 +1916,7 @@ mod tests {
         inner.snapshot.phase = Phase::Recording;
         inner.new_session();
         let quit = inner.ask(inner.snapshot.session_key.unwrap(), true);
-        inner.prompt_shown(quit.id);
+        inner.prompt_shown(quit.id, true);
         inner.new_session();
         let session = inner.snapshot.session_key.unwrap();
         let carried = inner.prompts.pending(Some(session)).expect("the Quit asks about the new session");

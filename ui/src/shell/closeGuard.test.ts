@@ -19,6 +19,8 @@ function desktop(judge?: () => boolean) {
     watchFails: false,
     answerFails: false,
     leaveFails: false,
+    refreshFails: false,
+    refreshes: 0,
     subscriptions: [] as ((batch: CloseBatch) => boolean)[],
     seq: 0,
     waiting: new Map<number, CloseAbout>(),
@@ -40,6 +42,10 @@ function desktop(judge?: () => boolean) {
           watcher.set(0, onRequest);
           host.watched.push(subscription);
           if (host.watchFails) throw lost;
+        },
+        refresh: async () => {
+          host.refreshes++;
+          if (host.refreshFails) throw lost;
         },
       };
     },
@@ -181,7 +187,7 @@ test('a close judged while an install stood is retired with it, so the close ask
 });
 
 test('a leave that would rest on an answer the host hasn’t taken waits for it, so a lost answer never becomes consent', async () => {
-  const { host, start, ask, hold, stay, shown, locked } = desktop();
+  const { host, start, send, ask, hold, stay, shown, locked } = desktop();
   start();
   await flush();
   host.unsaved = true;
@@ -201,6 +207,7 @@ test('a leave that would rest on an answer the host hasn’t taken waits for it,
   host.answerFails = false;
   host.heard = false;
   shown()[0]!.retry();
+  send();
   await flush();
   assert.deepEqual([host.answers.slice(-2), locked()], [[[2, false], [3, true]], null],
     'the host refuses the close, which rested on the failed restart, and setup’s close is judged afresh');
@@ -218,9 +225,9 @@ test('a batch older than one the page has applied changes nothing, so a crossing
   assert.deepEqual([host.answers.length, locked()], [2, 'close']);
 });
 
-test('a batch the page couldn’t finish judging is reported unhandled, and an older batch carrying its question judges it instead of passing over', async () => {
+test('a batch the page couldn’t finish judging is reported unhandled, Try again asks the host what stands, and an older batch judges only what it carries', async () => {
   let readable = false;
-  const { host, start, batch, deliver, shown } = desktop(() => { if (!readable) throw new Error('the drafts couldn’t be read'); return false; });
+  const { host, start, batch, deliver, send, shown } = desktop(() => { if (!readable) throw new Error('the drafts couldn’t be read'); return false; });
   start();
   await flush();
   const older = batch({ id: 9, about: 'install' });
@@ -230,14 +237,40 @@ test('a batch the page couldn’t finish judging is reported unhandled, and an o
   assert.deepEqual([host.answers, shown().map(({ message }) => message)], [[], [UNJUDGED]], 'the failure is shown by name');
   readable = true;
   shown()[0]!.retry();
-  assert.deepEqual([host.answers, shown()], [[[9, false]], []], 'Try again judges the question');
+  assert.deepEqual([host.answers, host.refreshes, shown().map(({ message }) => message)], [[], 1, [UNJUDGED]],
+    'Try again judges nothing from what the page last heard, which the host may have retired since');
+  assert.equal(send(), true, 'the batch the host sends judges what stands now');
+  assert.deepEqual([host.answers, shown()], [[[9, false]], []]);
   assert.equal(deliver(older), true, 'a batch the page has now judged in full is covered');
   readable = false;
-  const later = batch({ id: 10, about: 'query' });
+  const carrying = batch({ id: 10, about: 'query' });
+  const later = batch({ id: 11, about: 'query' });
   assert.equal(deliver(later), false);
   readable = true;
-  assert.equal(deliver(older), true, 'an older batch arriving once the drafts read judges what the newer one couldn’t');
-  assert.deepEqual([host.answers.at(-1), shown()], [[10, false], []]);
+  assert.equal(deliver(older), true, 'an older batch answers nothing it doesn’t carry');
+  assert.equal(host.answers.length, 1);
+  assert.equal(deliver(carrying), true, 'an older batch carrying a question the newer one still lists judges it');
+  assert.deepEqual([host.answers.slice(1), shown().map(({ message }) => message)], [[[10, false]], [UNJUDGED]], 'the question it doesn’t carry waits for Try again');
+});
+
+test('Try again after a batch the page couldn’t judge never answers a close the host retired meanwhile', async () => {
+  let readable = false;
+  const { host, start, ask, send, retire, shown } = desktop(() => { if (!readable) throw new Error('the drafts couldn’t be read'); return false; });
+  start();
+  await flush();
+  assert.equal(ask(1, 'close'), false, 'the only batch carrying the close couldn’t be judged');
+  retire(1);
+  readable = true;
+  host.refreshFails = true;
+  shown()[0]!.retry();
+  await flush();
+  assert.deepEqual([host.answers, host.refreshes, shown().map(({ message, detail }) => [message, detail])], [[], 1, [[UNJUDGED, lost]]],
+    'the close the host no longer waits on isn’t answered, and a lost request keeps the failure with its Try again');
+  host.refreshFails = false;
+  shown()[0]!.retry();
+  assert.equal(host.refreshes, 2);
+  send({ id: 2, about: 'close' });
+  assert.deepEqual([host.answers, shown()], [[[2, false]], []], 'the close asked again with a fresh id is judged and answered');
 });
 
 test('a page that loads while BattlePlan holds a leave is locked by the first batch it hears', async () => {
@@ -251,7 +284,7 @@ test('a page that loads while BattlePlan holds a leave is locked by the first ba
 });
 
 test('a leave whose answer was lost stays locked until the host says stay, and the stay clears that answer’s Try again', async () => {
-  const { host, start, ask, hold, stay, shown, locked } = desktop();
+  const { host, start, send, ask, hold, stay, shown, locked } = desktop();
   start();
   await flush();
   host.answerFails = true;
@@ -260,8 +293,10 @@ test('a leave whose answer was lost stays locked until the host says stay, and t
   assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNANSWERED_SAVED], 'update'], 'the host may have heard it, so editing stays locked');
   host.answerFails = false;
   shown()[0]!.retry();
+  assert.equal(host.answers.length, 1, 'Try again first asks the host whether the question still stands');
+  send();
   await flush();
-  assert.deepEqual([host.answers.at(-1), locked(), shown()], [[4, false], 'update', []], 'the same leave is sent again, and the host still holds it');
+  assert.deepEqual([host.answers.at(-1), locked(), shown()], [[4, false], 'update', []], 'it does, so the same leave is sent again, and the host still holds it');
   hold(4, 'leave');
   host.answerFails = true;
   ask(5, 'leave');
@@ -335,7 +370,7 @@ test('a guard that has ended reports that it handled nothing, so the host never 
 });
 
 test('each failure is shown by name with its own retry, and no retry replays another failure’s work', async () => {
-  const { host, start, ask, shown } = desktop();
+  const { host, start, send, ask, shown } = desktop();
   const guard = start();
   await flush();
   host.answerFails = true;
@@ -347,6 +382,7 @@ test('each failure is shown by name with its own retry, and no retry replays ano
   const [unanswered, unclosed] = shown();
   host.answerFails = false;
   unanswered!.retry();
+  send();
   await flush();
   assert.deepEqual(host.answers, [[7, false], [7, false]], 'the same answer is sent again');
   assert.equal(host.leaves, 1, 'retrying the answer doesn’t close BattlePlan');
@@ -360,7 +396,7 @@ test('each failure is shown by name with its own retry, and no retry replays ano
 });
 
 test('Try again sends the answer the page gave, not a new judgment made while it was leaving', async () => {
-  const { host, start, ask, hold, shown } = desktop();
+  const { host, start, send, ask, hold, shown } = desktop();
   start();
   await flush();
   host.unsaved = true;
@@ -373,9 +409,25 @@ test('Try again sends the answer the page gave, not a new judgment made while it
   host.answerFails = false;
   host.confirmed = false;
   shown()[0]!.retry();
+  send();
   await flush();
   assert.deepEqual([host.answers.slice(-2), host.bases.slice(-2)], [[[2, false], [2, false]], [[1], [1]]],
     'the retry rests on the restart, as the answer did, and never on the close’s own lock');
+});
+
+test('Try again never resends an answer whose question the host has retired since', async () => {
+  const { host, start, ask, send, retire, shown } = desktop();
+  start();
+  await flush();
+  host.answerFails = true;
+  ask(4, 'leave');
+  await flush();
+  host.answerFails = false;
+  shown()[0]!.retry();
+  retire(4);
+  send();
+  await flush();
+  assert.deepEqual([host.answers, shown()], [[[4, false]], []], 'the batch shows the question gone, so its answer and its failure go with it');
 });
 
 test('an answer that fails says which way it failed', async () => {
@@ -390,13 +442,14 @@ test('an answer that fails says which way it failed', async () => {
 });
 
 type Traced = [string, ...unknown[]];
-type Out = [[number, boolean, number[]][], 0 | 1 | 2, number, string[] | null];
+type Out = [[number, boolean, number[]][], 0 | 1 | 2, number, string[] | null, number];
 
 async function replay(seed: number, trace: Traced[]) {
   const facts: { dirty: boolean | null; confirmed: boolean } = { dirty: false, confirmed: false };
   interface Entry {
     guard?: CloseGuard; onBatch?: (batch: CloseBatch) => boolean; watches: { resolve(): void; reject(cause: unknown): void }[];
     answers: { id: number; resolve(heard: boolean): void; reject(cause: unknown): void }[]; failures: readonly CloseGuardFailure[]; locked: LeavingFor | null; prompts: number;
+    refreshes: number;
   }
   const guards: Entry[] = [];
   let emitted: [number, boolean, number[]][] = [];
@@ -406,10 +459,13 @@ async function replay(seed: number, trace: Traced[]) {
     const [kind, index] = event as [string, number];
     emitted = [];
     if (kind === 'm') {
-      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0 };
+      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0, refreshes: 0 };
       guards[index] = entry;
       entry.guard = closeGuard({
-        requests: onBatch => { entry.onBatch = onBatch; return { watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }) }; },
+        requests: onBatch => {
+          entry.onBatch = onBatch;
+          return { watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }), refresh: () => { entry.refreshes++; return Promise.resolve(); } };
+        },
         answer: (id, stays, basis) => {
           emitted.push([id, stays, [...basis].sort((a, b) => a - b)]);
           return new Promise<boolean>((resolve, reject) => { entry.answers.push({ id, resolve, reject }); });
@@ -422,6 +478,7 @@ async function replay(seed: number, trace: Traced[]) {
     const entry = guards[index]!;
     if (kind === 'e') { entry.guard!.end(); continue; }
     const prompts = entry.prompts;
+    const refreshes = entry.refreshes;
     let out: Out;
     if (kind === 'w') {
       const [, , watched, expected] = event as [string, number, boolean, Out];
@@ -455,10 +512,11 @@ async function replay(seed: number, trace: Traced[]) {
       entry.guard!.leave();
       out = (event as [string, number, Out])[2];
     }
-    const [answers, locked, prompted, failures] = out;
+    const [answers, locked, prompted, failures, refreshed] = out;
     assert.deepEqual(emitted, answers, `${where}: the answers sent`);
     assert.equal(entry.locked, [null, 'close', 'update'][locked], `${where}: whether editing is locked`);
     assert.equal(entry.prompts - prompts, prompted, `${where}: the prompts shown`);
+    assert.equal(entry.refreshes - refreshes, refreshed, `${where}: the fresh batches asked for`);
     if (failures !== null) assert.deepEqual(entry.failures.map(({ key }) => key).sort(), failures, `${where}: the failures shown`);
   }
 }

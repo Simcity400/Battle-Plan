@@ -7,7 +7,7 @@ use std::{
 };
 use tauri::{
     AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Rect, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder, WindowEvent, webview::PageLoadEvent,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 pub const LABEL: &str = "panel";
@@ -81,6 +81,7 @@ struct State {
     unseen: bool,
     declined: bool,
     opening: bool,
+    instance: u64,
     recordings_panel: Option<String>,
 }
 
@@ -112,6 +113,38 @@ fn click(exists: bool, opening: bool, closed_recently: bool) -> Click {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Reopen {
+    Focus,
+    Show,
+    Build,
+}
+
+fn reopen(exists: bool, visible: bool) -> Reopen {
+    match (exists, visible) {
+        (true, true) => Reopen::Focus,
+        (true, false) => Reopen::Show,
+        (false, _) => Reopen::Build,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Unseen {
+    Gone,
+    Show,
+    Close,
+}
+
+fn answered(asked: u64, current: u64, retry: bool) -> Unseen {
+    if asked != current {
+        Unseen::Gone
+    } else if retry {
+        Unseen::Show
+    } else {
+        Unseen::Close
+    }
+}
+
 fn closes_on_focus_loss(shown: bool, focused: bool, dialog: bool) -> bool {
     shown && focused && !dialog
 }
@@ -139,9 +172,20 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 }
 
 pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.set_focus();
-        return;
+    let window = app.get_webview_window(LABEL);
+    let visible = window.as_ref().is_some_and(|window| window.is_visible().unwrap_or(false));
+    match (reopen(window.is_some(), visible), window) {
+        (Reopen::Focus, Some(window)) => {
+            let _ = window.set_focus();
+            return;
+        }
+        (Reopen::Show, Some(window)) => {
+            if let Err(error) = show(app, &window) {
+                eprintln!("The recorder panel still couldn’t be shown: {error}");
+            }
+            return;
+        }
+        _ => {}
     }
     let anchor = anchor.or_else(|| {
         app.tray_by_id(TRAY_ID)
@@ -157,6 +201,7 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
             compact: prompted,
             moved: state.moved,
             opening: true,
+            instance: state.instance + 1,
             ..State::default()
         };
     }
@@ -197,14 +242,7 @@ fn builder(
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
-        .focused(true)
-        .on_page_load(|window, payload| {
-            if payload.event() == PageLoadEvent::Finished
-                && let Err(error) = loaded(window.app_handle(), &window)
-            {
-                eprintln!("The recorder panel couldn’t be placed once its page loaded: {error}");
-            }
-        });
+        .focused(true);
     match shared {
         Some(directory) => builder.data_directory(directory),
         None => builder,
@@ -254,6 +292,10 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
         }
         _ => {}
     });
+    let shown = state(app).shown;
+    if !shown && let Err(error) = reveal(false, || place(app, &window, OPENING_HEIGHT), || show(app, &window)) {
+        eprintln!("The recorder panel couldn’t be placed as it opened: {error}");
+    }
     Ok(())
 }
 
@@ -279,15 +321,6 @@ pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Resul
     reveal(shown, || place(app, window, height), || show(app, window))
 }
 
-fn loaded(app: &AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
-    let shown = state(app).shown;
-    uncover(shown, || place(app, window, OPENING_HEIGHT), || show(app, window))
-}
-
-fn uncover<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
-    if shown { Ok(()) } else { reveal(false, place, show) }
-}
-
 fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
     let placed = place();
     if !shown {
@@ -298,33 +331,51 @@ fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOn
 
 fn show(app: &AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
     if let Err(error) = window.show() {
-        unseen(app, &error);
+        unseen(app, window, &error);
         return Err(error);
     }
     state(app).shown = true;
+    app.state::<Arc<Recorder>>().panel_visible();
     window.set_focus()
 }
 
-fn unseen(app: &AppHandle, error: &tauri::Error) {
+fn unseen(app: &AppHandle, window: &WebviewWindow, error: &tauri::Error) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDRETRY, MB_ICONWARNING, MB_RETRYCANCEL, MessageBoxW};
-    if std::mem::replace(&mut state(app).unseen, true) {
-        return;
-    }
+    let instance = {
+        let mut state = state(app);
+        if std::mem::replace(&mut state.unseen, true) {
+            return;
+        }
+        state.instance
+    };
     let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let text = wide(&format!(
         "BattlePlan Recorder couldn’t show its panel: {error}\n\nChoose Retry to show it again, or Cancel to close it. The tray icon opens it again."
     ));
     let handle = app.clone();
+    let window = window.clone();
     let asked = std::thread::Builder::new().name("recorder-panel-unseen".into()).spawn(move || {
         let caption = wide("BattlePlan Recorder");
         let retry = unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_RETRYCANCEL | MB_ICONWARNING) } == IDRETRY;
-        state(&handle).unseen = false;
-        let Some(window) = handle.get_webview_window(LABEL) else { return };
-        if !retry {
-            state(&handle).declined = true;
-            let _ = window.destroy();
-        } else if show(&handle, &window).is_err() {
-            eprintln!("The recorder panel still couldn’t be shown.");
+        let answer = {
+            let mut state = state(&handle);
+            let answer = answered(instance, state.instance, retry);
+            if answer != Unseen::Gone {
+                state.unseen = false;
+                state.declined = answer == Unseen::Close;
+            }
+            answer
+        };
+        match answer {
+            Unseen::Gone => {}
+            Unseen::Close => {
+                let _ = window.destroy();
+            }
+            Unseen::Show => {
+                if show(&handle, &window).is_err() {
+                    eprintln!("The recorder panel still couldn’t be shown.");
+                }
+            }
         }
     });
     if let Err(spawned) = asked {
@@ -367,10 +418,6 @@ fn place(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<
         None => window.set_size(tauri::LogicalSize::new(WIDTH, height))?,
     }
     Ok(())
-}
-
-pub fn shown(app: &AppHandle) -> bool {
-    state(app).shown
 }
 
 fn screen(monitor: &Monitor) -> Screen {
@@ -767,14 +814,18 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_is_shown_once_its_page_loads_whether_or_not_the_page_reaches_the_recorder() {
-        let mut shown = Vec::new();
-        assert_eq!(uncover(false, || Err("no size"), || { shown.push("show"); Ok(()) }), Err("no size"));
-        assert_eq!(shown, ["show"], "a page whose fit request never arrives is still seen, with its failure");
-        assert_eq!(
-            uncover(true, || -> Result<(), &str> { unreachable!("a panel its page already fitted isn’t resized to its opening height") }, || unreachable!()),
-            Ok(())
-        );
+    fn opening_a_panel_whose_window_is_still_hidden_shows_it_without_waiting_for_its_page() {
+        assert_eq!(reopen(true, false), Reopen::Show, "a second Quit shows the hidden window, whatever its page has done");
+        assert_eq!(reopen(true, true), Reopen::Focus);
+        assert_eq!(reopen(false, false), Reopen::Build);
+    }
+
+    #[test]
+    fn the_answer_to_a_panel_that_couldnt_be_shown_acts_only_on_that_panel() {
+        assert_eq!(answered(3, 4, false), Unseen::Gone, "Cancel doesn’t close the panel the tray opened in its place");
+        assert_eq!(answered(3, 4, true), Unseen::Gone, "nor does Retry show it");
+        assert_eq!(answered(3, 3, false), Unseen::Close);
+        assert_eq!(answered(3, 3, true), Unseen::Show);
     }
 
     #[test]

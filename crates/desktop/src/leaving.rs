@@ -63,6 +63,7 @@ impl Verdict {
 }
 
 pub const REPLACED: &str = "This page was replaced before it could watch for BattlePlan closing.";
+pub const UNWATCHED: &str = "This page no longer watches for BattlePlan closing, so it can’t ask again what stands.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unanswered {
@@ -88,10 +89,12 @@ pub enum Answered {
 
 pub type Reach = Arc<dyn Fn(Batch) + Send + Sync>;
 pub type Stop = Arc<dyn Fn() + Send + Sync>;
+pub type Lock = Arc<dyn Fn() + Send + Sync>;
 
 enum Out {
     Batch(Reach, Batch),
     Stop(Stop),
+    Lock(Lock),
 }
 
 pub struct Posed(u64);
@@ -124,6 +127,7 @@ struct State {
     offering: bool,
     hung: bool,
     stop: Option<Stop>,
+    lock: Option<Lock>,
 }
 
 impl State {
@@ -139,6 +143,17 @@ impl State {
 
     fn exiting(&self) -> bool {
         self.holds.iter().any(|hold| hold.about == About::Close)
+    }
+
+    fn hold(&mut self, ask: Ask) {
+        let exiting = self.exiting();
+        self.holds.push(ask);
+        if ask.about == About::Close
+            && !exiting
+            && let Some(lock) = &self.lock
+        {
+            self.outbox.push(Out::Lock(Arc::clone(lock)));
+        }
     }
 
     fn askable(&self) -> bool {
@@ -182,7 +197,7 @@ impl State {
             return;
         }
         let id = self.fresh();
-        self.holds.push(Ask { id, about: About::Close });
+        self.hold(Ask { id, about: About::Close });
         if !self.navigations.is_empty()
             && let Some(stop) = &self.stop
         {
@@ -195,7 +210,7 @@ impl State {
         let about = self.questions[at].about;
         if about != About::Query {
             let id = self.fresh();
-            self.holds.push(Ask { id, about });
+            self.hold(Ask { id, about });
             self.questions[at].asked = Some(id);
         }
         self.questions[at].verdict = Some(Verdict::Leaving);
@@ -231,6 +246,7 @@ impl Default for Leaving {
                 offering: false,
                 hung: false,
                 stop: None,
+                lock: None,
             }),
             answered: Condvar::new(),
         }
@@ -253,6 +269,7 @@ impl Leaving {
             match out {
                 Out::Batch(reach, batch) => reach(batch),
                 Out::Stop(stop) => stop(),
+                Out::Lock(lock) => lock(),
             }
         }
         value
@@ -280,8 +297,10 @@ impl Leaving {
         });
     }
 
-    pub fn follow(&self, stop: Stop) {
-        self.lock().stop = Some(stop);
+    pub fn follow(&self, stop: Stop, lock: Lock) {
+        let mut state = self.lock();
+        state.stop = Some(stop);
+        state.lock = Some(lock);
     }
 
     pub fn watch(&self, document: u64, seq: u64, reach: impl FnOnce() -> Reach) -> Result<(), &'static str> {
@@ -307,6 +326,22 @@ impl Leaving {
             state.sent.clear();
             state.send();
             Ok(())
+        })
+    }
+
+    pub fn refresh(&self, document: u64, seq: u64) -> Result<(), &'static str> {
+        self.act(|state| {
+            if state.blind {
+                return Err(Verdict::BLIND);
+            }
+            match state.page {
+                Page::Watched { seq: current, .. } if current == seq && document == state.document => {
+                    state.hung = false;
+                    state.send();
+                    Ok(())
+                }
+                _ => Err(UNWATCHED),
+            }
         })
     }
 
@@ -353,7 +388,7 @@ impl Leaving {
                 return Answered::Unknown;
             }
             if leaves {
-                state.holds.push(Ask { id, about });
+                state.hold(Ask { id, about });
             }
             if about == About::Close {
                 state.questions.remove(at);
@@ -558,7 +593,7 @@ impl Leaving {
 
 #[cfg(test)]
 mod tests {
-    use super::{About, Answered, Ask, Batch, Closing, Leaving, REPLACED, Reach, Unanswered, Verdict};
+    use super::{About, Answered, Ask, Batch, Closing, Leaving, REPLACED, Reach, UNWATCHED, Unanswered, Verdict};
     use std::sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender, channel},
@@ -1030,7 +1065,7 @@ mod tests {
         let leaving = Leaving::default();
         let stops = Arc::new(Mutex::new(0));
         let stopped = Arc::clone(&stops);
-        leaving.follow(Arc::new(move || *stopped.lock().unwrap() += 1));
+        leaving.follow(Arc::new(move || *stopped.lock().unwrap() += 1), Arc::new(|| {}));
         watched(&leaving, &page, 7);
         assert!(leaving.navigation_starting(1), "a slow reload starts while nothing stands");
         assert_eq!(leaving.close_requested(), Closing::Held);
@@ -1045,7 +1080,7 @@ mod tests {
         assert_eq!(leaving.close_requested(), Closing::Through);
 
         let leaving = Leaving::default();
-        leaving.follow(Arc::new(|| {}));
+        leaving.follow(Arc::new(|| {}), Arc::new(|| {}));
         watched(&leaving, &page, 7);
         assert!(leaving.navigation_starting(2));
         leaving.exit();
@@ -1054,6 +1089,64 @@ mod tests {
         leaving.navigation_completed(2);
         assert!(page.quiet(), "the stopped document never subscribed, so it is told nothing");
         assert_eq!(leaving.close_requested(), Closing::Through);
+    }
+
+    #[test]
+    fn committing_to_exit_takes_the_window_out_of_input_at_once_however_the_page_hears_of_it() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        let locks = Arc::new(Mutex::new(0));
+        let locked = Arc::clone(&locks);
+        leaving.follow(Arc::new(|| {}), Arc::new(move || *locked.lock().unwrap() += 1));
+        watched(&leaving, &page, 7);
+        assert!(leaving.navigation_starting(1), "a slow reload starts while nothing stands");
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close));
+        leaving.chosen();
+        leaving.exit();
+        assert_eq!(*locks.lock().unwrap(), 1, "the user’s Yes stops input before the page could hear anything");
+        assert!(page.quiet(), "nothing is sent while the reload is pending");
+        leaving.exit();
+        assert_eq!(leaving.close_requested(), Closing::Through);
+        assert_eq!(*locks.lock().unwrap(), 1, "once");
+
+        let leaving = Leaving::default();
+        let locks = Arc::new(Mutex::new(0));
+        let locked = Arc::clone(&locks);
+        leaving.follow(Arc::new(|| {}), Arc::new(move || *locked.lock().unwrap() += 1));
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Install);
+        let (_, install, _) = heard(&leaving, &page);
+        assert_eq!(leaving.answer(install, false, &[]), Answered::Heard);
+        assert_eq!(leaving.wait(asking).0, Verdict::Leaving);
+        assert_eq!(*locks.lock().unwrap(), 0, "a restart the page agreed to locks the page itself, and BattlePlan isn’t leaving until its installer starts");
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (_, batch) = page.hears(&leaving);
+        assert_eq!(leaving.answer(waiting(&batch, About::Close), false, &[install]), Answered::Leave);
+        assert_eq!(*locks.lock().unwrap(), 1, "the page’s own leave answer commits BattlePlan to exit, so input stops then too");
+    }
+
+    #[test]
+    fn a_page_asking_again_hears_what_stands_now_so_a_close_its_receipt_retired_is_asked_with_a_fresh_id() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let document = leaving.document();
+        assert_eq!(leaving.close_requested(), Closing::Held);
+        let (batch, offer) = page.misses(&leaving);
+        assert_eq!(offer, Some(Unanswered::Unreached));
+        let (retired, _) = asked(&batch);
+        leaving.chosen();
+        assert_eq!(leaving.refresh(document, 0), Err(UNWATCHED), "a subscription that was replaced can’t ask");
+        assert_eq!(leaving.refresh(document + 1, 1), Err(UNWATCHED));
+        assert!(page.quiet());
+        assert_eq!(leaving.refresh(document, 1), Ok(()));
+        let (callback, batch) = page.hears(&leaving);
+        let (again, about) = asked(&batch);
+        assert_eq!((callback, about), (7, About::Close));
+        assert_ne!(again, retired, "the close the native choice kept waiting is asked again, with a fresh id");
+        assert_eq!(leaving.answer(retired, false, &[]), Answered::Unknown);
+        assert_eq!(leaving.answer(again, false, &[]), Answered::Leave);
     }
 
     #[test]
@@ -1202,7 +1295,8 @@ mod tests {
             watched: bool,
             by_choice: bool,
             applied: Option<u64>,
-            complete: bool,
+            document: Option<u64>,
+            resend: Vec<u64>,
             committed: BTreeMap<u64, (bool, bool)>,
             judged: BTreeSet<u64>,
             waiting: Vec<Ask>,
@@ -1244,6 +1338,8 @@ mod tests {
             AnswerLost,
             Reply,
             Retry,
+            Refresh,
+            RefreshLost,
             Remount,
             Register,
             RegistrationLost,
@@ -1259,7 +1355,7 @@ mod tests {
             Choose,
         }
 
-        const STEPS: [(Step, usize); 27] = [
+        const STEPS: [(Step, usize); 29] = [
             (Step::Edit, 18),
             (Step::Save, 6),
             (Step::Restart, 9),
@@ -1274,6 +1370,8 @@ mod tests {
             (Step::AnswerLost, 3),
             (Step::Reply, 24),
             (Step::Retry, 9),
+            (Step::Refresh, 9),
+            (Step::RefreshLost, 2),
             (Step::Remount, 6),
             (Step::Register, 18),
             (Step::RegistrationLost, 3),
@@ -1289,7 +1387,7 @@ mod tests {
             (Step::Choose, 3),
         ];
 
-        const AFTER_EXIT: [Step; 13] = [
+        const AFTER_EXIT: [Step; 14] = [
             Step::Edit,
             Step::CloseWindow,
             Step::RunBatch,
@@ -1297,6 +1395,7 @@ mod tests {
             Step::Answer,
             Step::Reply,
             Step::Retry,
+            Step::Refresh,
             Step::Remount,
             Step::Register,
             Step::Reload,
@@ -1305,9 +1404,9 @@ mod tests {
             Step::PageExits,
         ];
 
-        const DRAIN: [Step; 10] = [
+        const DRAIN: [Step; 11] = [
             Step::Register,
-            Step::Retry,
+            Step::Refresh,
             Step::RunBatch,
             Step::Answer,
             Step::Reply,
@@ -1316,6 +1415,7 @@ mod tests {
             Step::Launch,
             Step::RestartReply,
             Step::Choose,
+            Step::Retry,
         ];
 
         #[derive(Default)]
@@ -1323,8 +1423,7 @@ mod tests {
             batches: Vec<(usize, usize, Batch)>,
             refused: Vec<bool>,
             last: Option<(usize, usize)>,
-            missed: BTreeSet<(usize, usize)>,
-            stops: usize,
+            locks: usize,
         }
 
         struct World {
@@ -1336,14 +1435,15 @@ mod tests {
             live: usize,
             wire: Arc<Mutex<Wire>>,
             registrations: VecDeque<(usize, usize, Option<u64>)>,
+            refreshes: VecDeque<(usize, usize)>,
             answers: VecDeque<(usize, usize, u64, bool, Vec<u64>, About)>,
             replies: VecDeque<(usize, usize, u64, Option<bool>, (About, bool, Vec<u64>))>,
             posed: Vec<(Pending, Posed)>,
             launching: Vec<(Option<usize>, Option<u64>)>,
             restarts: VecDeque<usize>,
             navigations: Vec<u64>,
-            stopped: BTreeSet<u64>,
             next_navigation: u64,
+            disabled: bool,
             choosing: bool,
             closing: bool,
             consents: BTreeSet<u64>,
@@ -1354,6 +1454,7 @@ mod tests {
             guards: usize,
             emitted: Vec<Value>,
             prompted: usize,
+            refreshed: usize,
         }
 
         fn about(about: About) -> &'static str {
@@ -1379,7 +1480,13 @@ mod tests {
             let leaves = answers.iter().any(|answer| answer[1] == false);
             let based = answers.iter().any(|answer| answer[2].as_array().is_some_and(|basis| !basis.is_empty()));
             let failing = out[3].as_array().map(|failures| !failures.is_empty());
-            format!("{kind} {facts} | {} {leaves} {based} {} {} {failing:?}", answers.len().min(3), out[1], out[2].as_u64().is_some_and(|prompts| prompts > 0))
+            format!(
+                "{kind} {facts} | {} {leaves} {based} {} {} {failing:?} {}",
+                answers.len().min(3),
+                out[1],
+                out[2].as_u64().is_some_and(|prompts| prompts > 0),
+                out[4].as_u64().is_some_and(|refreshes| refreshes > 0)
+            )
         }
 
         fn asks(asks: &[Ask]) -> Value {
@@ -1397,14 +1504,15 @@ mod tests {
                     live: 0,
                     wire: Arc::default(),
                     registrations: VecDeque::new(),
+                    refreshes: VecDeque::new(),
                     answers: VecDeque::new(),
                     replies: VecDeque::new(),
                     posed: Vec::new(),
                     launching: Vec::new(),
                     restarts: VecDeque::new(),
                     navigations: Vec::new(),
-                    stopped: BTreeSet::new(),
                     next_navigation: 1,
+                    disabled: false,
                     choosing: false,
                     closing: false,
                     consents: BTreeSet::new(),
@@ -1415,9 +1523,10 @@ mod tests {
                     guards: 0,
                     emitted: Vec::new(),
                     prompted: 0,
+                    refreshed: 0,
                 };
                 let wire = Arc::clone(&world.wire);
-                world.leaving.follow(Arc::new(move || wire.lock().unwrap().stops += 1));
+                world.leaving.follow(Arc::new(|| {}), Arc::new(move || wire.lock().unwrap().locks += 1));
                 world.load();
                 world
             }
@@ -1434,6 +1543,7 @@ mod tests {
             fn begin(&mut self) {
                 self.emitted.clear();
                 self.prompted = 0;
+                self.refreshed = 0;
             }
 
             fn out(&mut self, doc: usize, guard: usize) -> Value {
@@ -1444,7 +1554,7 @@ mod tests {
                     Some(true) => 2,
                 };
                 let failures = if state.ended { Value::Null } else { json!(state.failures.keys().collect::<Vec<_>>()) };
-                json!([std::mem::take(&mut self.emitted), locked, self.prompted, failures])
+                json!([std::mem::take(&mut self.emitted), locked, self.prompted, failures, self.refreshed])
             }
 
             fn facts(&self, doc: usize) -> (Value, bool) {
@@ -1495,9 +1605,6 @@ mod tests {
                             wire.lock().unwrap().batches.push((doc, guard, batch));
                             return;
                         }
-                        if !batch.holds.is_empty() {
-                            wire.lock().unwrap().missed.insert((doc, guard));
-                        }
                         let leaving = leaving.upgrade().expect("the broker outlives its dispatches");
                         assert!(
                             leaving.state.try_lock().is_ok(),
@@ -1516,7 +1623,7 @@ mod tests {
 
             fn editable(&self) -> bool {
                 let doc = &self.docs[self.live];
-                doc.alive && !doc.locked && !doc.confirmed
+                doc.alive && !doc.locked && !doc.confirmed && !self.disabled
             }
 
             fn show(&mut self, doc: usize, guard: usize) {
@@ -1547,12 +1654,11 @@ mod tests {
                 self.answers.push_back((doc, guard, id, stays, basis, about));
             }
 
-            fn judge(&mut self, doc: usize, guard: usize) -> bool {
+            fn judge(&mut self, doc: usize, guard: usize, asks: Vec<Ask>, whole: bool) -> bool {
                 let (dirty, confirmed) = (self.docs[doc].dirty, self.docs[doc].confirmed);
-                for ask in self.docs[doc].guards[guard].waiting.clone() {
+                for ask in asks {
                     let state = &mut self.docs[doc].guards[guard];
                     if state.ended {
-                        state.complete = false;
                         return false;
                     }
                     if state.judged.contains(&ask.id) {
@@ -1561,7 +1667,6 @@ mod tests {
                     if std::mem::take(&mut self.docs[doc].unreadable) {
                         self.log.push(format!("  doc {doc} guard {guard} can’t read its drafts while judging {}", ask.id));
                         let state = &mut self.docs[doc].guards[guard];
-                        state.complete = false;
                         state.failures.insert("judge".into(), Failure::Judge);
                         return false;
                     }
@@ -1595,8 +1700,9 @@ mod tests {
                     self.send(doc, guard, ask.id, ask.about, false, basis);
                 }
                 let state = &mut self.docs[doc].guards[guard];
-                state.complete = true;
-                state.failures.remove("judge");
+                if whole || state.waiting.iter().all(|ask| state.judged.contains(&ask.id)) {
+                    state.failures.remove("judge");
+                }
                 true
             }
 
@@ -1619,8 +1725,9 @@ mod tests {
                     return false;
                 }
                 if state.applied.is_some_and(|applied| applied >= batch.seq) {
-                    self.log.push(format!("  doc {doc} guard {guard} passes over {}", batch.seq));
-                    return state.complete || self.judge(doc, guard);
+                    self.log.push(format!("  doc {doc} guard {guard} judges what older {} carries", batch.seq));
+                    let carried = batch.waiting.iter().filter(|ask| state.waiting.iter().any(|standing| standing.id == ask.id)).copied().collect();
+                    return self.judge(doc, guard, carried, false);
                 }
                 self.log.push(format!("  doc {doc} guard {guard} hears {batch:?}"));
                 state.applied = Some(batch.seq);
@@ -1634,7 +1741,18 @@ mod tests {
                 }
                 state.waiting.clone_from(&batch.waiting);
                 self.show(doc, guard);
-                self.judge(doc, guard)
+                let state = &mut self.docs[doc].guards[guard];
+                let resent: Vec<(u64, Failure)> = std::mem::take(&mut state.resend)
+                    .into_iter()
+                    .filter_map(|id| Some((id, state.failures.get(&format!("answer:{id}"))?.clone())))
+                    .collect();
+                for (id, failure) in resent {
+                    if let Failure::Answer(about, stays, basis) = failure {
+                        self.send(doc, guard, id, about, stays, basis);
+                    }
+                }
+                let waiting = self.docs[doc].guards[guard].waiting.clone();
+                self.judge(doc, guard, waiting, true)
             }
 
             fn reply(&mut self, doc: usize, guard: usize, id: u64, reply: Option<bool>, sent: (About, bool, Vec<u64>)) {
@@ -1656,7 +1774,11 @@ mod tests {
                     state.committed.remove(&id);
                 }
                 self.show(doc, guard);
-                self.judge(doc, guard);
+                let state = &self.docs[doc].guards[guard];
+                if !state.failures.contains_key("judge") {
+                    let waiting = state.waiting.clone();
+                    self.judge(doc, guard, waiting, true);
+                }
             }
 
             fn exit(&mut self, consented: bool, how: &str) {
@@ -1710,16 +1832,14 @@ mod tests {
 
             fn run(&mut self, step: Step) -> bool {
                 let ran = self.act(step);
-                let (refused, stops) = {
+                let (refused, locks) = {
                     let mut wire = self.wire.lock().unwrap();
-                    (std::mem::take(&mut wire.refused), std::mem::take(&mut wire.stops))
+                    (std::mem::take(&mut wire.refused), std::mem::take(&mut wire.locks))
                 };
                 for offer in refused {
                     self.offered(offer);
                 }
-                if stops > 0 {
-                    self.stopped.extend(self.navigations.iter().copied());
-                }
+                self.disabled |= locks > 0;
                 ran
             }
 
@@ -1761,9 +1881,6 @@ mod tests {
                         };
                         let Some(count) = picked else { return false };
                         let (doc, guard, batch) = self.wire.lock().unwrap().batches.remove(self.rng.below(count));
-                        if !batch.holds.is_empty() && matches!(step, Step::DropBatch) {
-                            self.wire.lock().unwrap().missed.insert((doc, guard));
-                        }
                         let reaches = self.navigations.is_empty();
                         let ran = matches!(step, Step::RunBatch) && reaches && self.hear(doc, guard, &batch);
                         let offer = self.leaving.delivered(batch.seq, ran).is_some();
@@ -1812,16 +1929,33 @@ mod tests {
                         match failure {
                             Failure::Watch => self.watch(live, guard),
                             Failure::Judge => {
-                                self.judge(live, guard);
+                                self.refreshed += 1;
+                                self.refreshes.push_back((live, guard));
                             }
-                            Failure::Answer(about, stays, basis) => {
+                            Failure::Answer(..) => {
                                 let id = key.strip_prefix("answer:").and_then(|id| id.parse().ok()).expect("an answer failure names its id");
-                                self.send(live, guard, id, about, stays, basis);
+                                let state = &mut self.docs[live].guards[guard];
+                                if !state.resend.contains(&id) {
+                                    state.resend.push(id);
+                                }
+                                self.refreshed += 1;
+                                self.refreshes.push_back((live, guard));
                             }
                         }
                         let trace = self.docs[live].guards[guard].trace;
                         let out = self.out(live, guard);
                         self.record(json!(["t", trace, dirty, confirmed, key, out]));
+                    }
+                    Step::Refresh | Step::RefreshLost => {
+                        let Some((doc, guard)) = self.refreshes.pop_front() else { return false };
+                        let (document, seq) = (self.docs[doc].guards[guard].document, self.docs[doc].guards[guard].seq);
+                        if matches!(step, Step::Refresh)
+                            && self.docs[doc].alive
+                            && let Some(document) = document
+                        {
+                            let refreshed = self.leaving.refresh(document, seq);
+                            self.log.push(format!("  doc {doc} guard {guard} asks again what stands: {refreshed:?}"));
+                        }
                     }
                     Step::Remount if alive => self.mount(),
                     Step::Register | Step::RegistrationLost => {
@@ -1832,7 +1966,9 @@ mod tests {
                         let lost = matches!(step, Step::RegistrationLost);
                         let watched = match document {
                             None if !lost => {
-                                self.registrations.push_back((doc, guard, Some(self.leaving.document())));
+                                let document = self.leaving.document();
+                                self.docs[doc].guards[guard].document = Some(document);
+                                self.registrations.push_back((doc, guard, Some(document)));
                                 return true;
                             }
                             Some(document) if !lost => {
@@ -2008,26 +2144,13 @@ mod tests {
                 assert_eq!(asked, Some((self.live, guard)), "{}", self.fail("the live page isn’t the one asked"));
             }
 
-            fn hears_soon(&self) -> bool {
-                if !self.navigations.is_empty() {
-                    return self.navigations.iter().all(|navigation| self.stopped.contains(navigation));
-                }
-                let Some(guard) = self.active() else { return true };
-                let state = &self.docs[self.live].guards[guard];
-                let wire = self.wire.lock().unwrap();
-                !state.watched
-                    || wire.missed.contains(&(self.live, guard))
-                    || wire.batches.iter().any(|(doc, to, batch)| {
-                        (*doc, *to) == (self.live, guard) && !batch.holds.is_empty() && state.applied.is_none_or(|applied| batch.seq > applied)
-                    })
-            }
-
             fn check(&self) {
                 let doc = &self.docs[self.live];
-                if !doc.alive || doc.locked || self.leaving.lock().holds.is_empty() {
-                    return;
-                }
-                assert!(self.exited && self.hears_soon(), "{}", self.fail("the page can be edited while BattlePlan holds a leave"));
+                assert!(
+                    !doc.alive || doc.locked || self.disabled || self.leaving.lock().holds.is_empty(),
+                    "{}",
+                    self.fail("the page can be edited while BattlePlan holds a leave")
+                );
             }
 
             fn after_exit(&mut self) {

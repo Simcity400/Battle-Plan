@@ -7,6 +7,7 @@ export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
   watch(): Promise<void>;
+  refresh(): Promise<void>;
 }
 
 export interface CloseGuardHost {
@@ -41,10 +42,11 @@ const unanswered = (about: CloseAbout, stays: boolean) =>
 const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1, complete = false;
+  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1;
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
   const judged = new Set<number>();
+  const resend = new Map<number, () => void>();
   let waiting: readonly CloseAsk[] = [];
   const failures = new Map<string, CloseGuardFailure>();
   let live = new Set<number>();
@@ -55,6 +57,11 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     failures.set(key, failure);
     publish();
   };
+
+  const refresh = (key: string, message: string, again: () => void) => {
+    requests.refresh().catch(cause => { if (!ended && failures.has(key)) fail(key, message, cause, again); });
+  };
+  const rejudge = () => refresh('judge', UNJUDGED, rejudge);
 
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
@@ -76,13 +83,20 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       if (heard) commitment.accepted = true;
       else committed.delete(id);
       show();
-      judge();
-    }, cause => { if (!ended && live.has(id)) fail(key, unanswered(about, stays), cause, () => send(id, about, stays, basis)); });
+      if (!failures.has('judge')) judge(waiting, true);
+    }, cause => {
+      if (ended || !live.has(id)) return;
+      const message = unanswered(about, stays);
+      const again = () => {
+        resend.set(id, () => send(id, about, stays, basis));
+        refresh(key, message, again);
+      };
+      fail(key, message, cause, again);
+    });
   };
 
-  const judge = (): boolean => {
-    complete = false;
-    for (const { id, about } of waiting) {
+  const judge = (asks: readonly CloseAsk[], whole: boolean): boolean => {
+    for (const { id, about } of asks) {
       if (ended) return false;
       if (judged.has(id)) continue;
       let unsaved: boolean, confirmed: boolean;
@@ -90,7 +104,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
         unsaved = page.unsaved();
         confirmed = about === 'install' && page.confirmed();
       } catch (cause) {
-        fail('judge', UNJUDGED, cause, judge);
+        fail('judge', UNJUDGED, cause, rejudge);
         return false;
       }
       const now = leaving();
@@ -113,8 +127,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       show();
       send(id, about, false, basis);
     }
-    complete = true;
-    clear('judge');
+    if (whole || waiting.every(({ id }) => judged.has(id))) clear('judge');
     return true;
   };
 
@@ -128,7 +141,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
 
   const requests = host.requests(batch => {
     if (ended) return false;
-    if (batch.seq <= applied) return complete || judge();
+    if (batch.seq <= applied) return judge(batch.waiting.filter(ask => waiting.some(({ id }) => id === ask.id)), false);
     applied = batch.seq;
     live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
@@ -143,7 +156,10 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }
     waiting = batch.waiting;
     show();
-    return judge();
+    const resent = [...resend].filter(([id]) => failures.has(`answer:${id}`));
+    resend.clear();
+    for (const [, again] of resent) again();
+    return judge(waiting, true);
   });
   const watch = () => {
     if (ended || watching || watched) return;

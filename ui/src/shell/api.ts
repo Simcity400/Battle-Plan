@@ -87,13 +87,19 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
 let closeWatches = 0;
 
 export function closeRequests(onBatch: (batch: CloseBatch) => boolean): CloseRequests {
-  if (!desktopAvailable) return { watch: () => Promise.resolve() };
+  if (!desktopAvailable) return { watch: () => Promise.resolve(), refresh: () => Promise.resolve() };
   const seq = ++closeWatches;
   const callback = transformCallback<CloseBatch>(batch => onBatch(batch) === true);
+  let watched: number | null = null;
   return {
     watch: async () => {
       const document = await invoke<number>('close_watch_document');
+      watched = document;
       await invoke<void>('watch_close_requests', { document, seq, callback });
+    },
+    refresh: async () => {
+      if (watched === null) throw 'This page hasn’t watched for BattlePlan closing yet, so it can’t ask again what stands.';
+      await invoke<void>('refresh_close_requests', { document: watched, seq });
     },
   };
 }

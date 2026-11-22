@@ -16,7 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
+use leaving::{Answered, Batch, Closing, Leaving, Lock, Reach, Stop, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -276,6 +276,12 @@ fn watch_close_requests(
 }
 
 #[tauri::command]
+fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64) -> Result<(), String> {
+    main_page(&webview)?;
+    leaving.refresh(document, seq).map_err(str::to_owned)
+}
+
+#[tauri::command]
 fn answer_close_question(
     webview: tauri::Webview,
     leaving: State<'_, Leaving>,
@@ -348,9 +354,23 @@ fn stop_page(window: WebviewWindow) -> Stop {
     })
 }
 
+fn lock_page(app: tauri::AppHandle, hwnd: isize) -> Lock {
+    Arc::new(move || {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+        unsafe { EnableWindow(hwnd as *mut std::ffi::c_void, 0) };
+        let unfocused = app.run_on_main_thread(|| {
+            unsafe { SetFocus(std::ptr::null_mut()) };
+        });
+        if let Err(error) = unfocused {
+            eprintln!("BattlePlan couldn’t take keyboard focus from its page while it leaves: {error}");
+        }
+    })
+}
+
 fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
-    app.state::<Leaving>().follow(stop_page(window.clone()));
+    let hwnd = window.hwnd()?.0 as isize;
+    app.state::<Leaving>().follow(stop_page(window.clone()), lock_page(app.clone(), hwnd));
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -536,6 +556,7 @@ fn main() {
             playback_pressure_merges,
             close_watch_document,
             watch_close_requests,
+            refresh_close_requests,
             answer_close_question,
             leave_app,
             set_map_view,

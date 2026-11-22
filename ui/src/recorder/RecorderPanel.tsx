@@ -13,7 +13,7 @@ import { AUTO_COMPRESS_HIGH } from '../shell/RecordingCompressionSetting';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptTitle, recordingName,
+import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, recordingName,
   recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion,
   whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PromptFailure, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
@@ -463,13 +463,12 @@ export default function RecorderPanel() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null);
   const [recordings, setRecordings] = useState<Recordings | null>(null);
   const [view, setView] = useState<View>('main');
-  const [opened, setOpened] = useState(false);
-  const [stepped, setStepped] = useState(false);
+  const [opened, setOpened] = useState<number | null>(null);
+  const [stepped, setStepped] = useState<number | null>(null);
   const [promptAction, setPromptAction] = useState(false);
   const [promptFailure, setPromptFailure] = useState<PromptFailure | null>(null);
   const [confirmingWaiting, setConfirmingWaiting] = useState<string | null>(null);
   const [compact, setCompact] = useState<boolean | null>(null);
-  const [visible, setVisible] = useState(false);
   const [fitFailure, setFitFailure] = useState<PromptFailure | null>(null);
   const [closeFailure, setCloseFailure] = useState<PromptFailure | null>(null);
   const [failure, setFailure] = useState<{ text: string; detail?: string; caveat?: boolean } | null>(null);
@@ -541,9 +540,7 @@ export default function RecorderPanel() {
     let active = true;
     const fit = () => {
       void api.panelFit(Math.ceil(element.getBoundingClientRect().height)).then(() => {
-        if (!active) return;
-        setVisible(true);
-        setFitFailure(null);
+        if (active) setFitFailure(null);
       }, cause => { if (active) setFitFailure({ ...actionFailure(PANEL_UNSHOWN, errorMessage(cause)), retry: fit }); });
     };
     fit();
@@ -559,7 +556,7 @@ export default function RecorderPanel() {
   const asked = askedPrompt(snapshot, opened);
   const prompting = asked !== null;
   const quitting = asked?.quitting ?? false;
-  const discarding = stepped || (asked?.discarding ?? false);
+  const discarding = promptDiscards(asked, stepped);
   const hostPrompt = snapshot?.prompt ?? null;
   useEffect(() => { if (hostPrompt) setView('main'); }, [hostPrompt?.id]);
   const refocus = useRef<string | null>(null);
@@ -578,8 +575,8 @@ export default function RecorderPanel() {
     setPromptFailure(null);
     void work().then(() => {
       setPromptAction(false);
-      setOpened(false);
-      setStepped(false);
+      setOpened(null);
+      setStepped(null);
       refocus.current = '[data-focus="stop"]';
     }, cause => {
       setPromptAction(false);
@@ -589,8 +586,8 @@ export default function RecorderPanel() {
   const cancelPrompt = () => {
     clearError();
     if (!hostPrompt) {
-      setOpened(false);
-      setStepped(false);
+      setOpened(null);
+      setStepped(null);
       setPromptFailure(null);
       refocus.current = '[data-focus="stop"]';
       return;
@@ -600,8 +597,8 @@ export default function RecorderPanel() {
     cancel();
   };
   const cancelDiscard = () => {
-    if (!stepped) { cancelPrompt(); return; }
-    setStepped(false);
+    if (asked === null || stepped !== asked.sessionKey) { cancelPrompt(); return; }
+    setStepped(null);
     refocus.current = '[data-focus="discard"]';
   };
   const askDiscardWaiting = (recording: UnsavedRecording | null) => {
@@ -643,15 +640,11 @@ export default function RecorderPanel() {
   const sessionKey = snapshot?.sessionKey ?? null;
   const askedSession = useRef(sessionKey);
   useEffect(() => {
-    if (askedSession.current !== sessionKey) {
-      setOpened(false);
-      setStepped(false);
-      setPromptFailure(null);
-    }
+    if (askedSession.current !== sessionKey) setPromptFailure(null);
     askedSession.current = sessionKey;
   }, [sessionKey]);
 
-  const shownPrompt = visible && hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
+  const shownPrompt = hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
   const promptShown = useCallback((prompt: number) => { void api.promptShown(prompt).catch(() => {}); }, []);
   const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
@@ -672,13 +665,13 @@ export default function RecorderPanel() {
   const actions: PanelActions = {
     view: navigate,
     toggleAsk: () => {
-      if (!prompting) { setOpened(true); setStepped(false); setPromptFailure(null); return; }
+      if (!prompting) { setOpened(snapshot.sessionKey ?? null); setStepped(null); setPromptFailure(null); return; }
       cancelPrompt();
     },
-    askDiscard: () => setStepped(true),
+    askDiscard: () => setStepped(asked?.sessionKey ?? null),
     cancelDiscard,
     stop: discard => {
-      if (!asked) return;
+      if (!asked || discard !== discarding) return;
       clearError();
       const { sessionKey: key } = asked;
       const stop = () => answerPrompt(discard ? 'Couldn’t discard the session.' : 'Couldn’t save the recording.', () => api.stopRecording(discard, key), stop);

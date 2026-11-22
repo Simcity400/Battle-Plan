@@ -311,10 +311,14 @@ export function pendingFailure(opened: PanelFailure | null, fit: PromptFailure |
   return opened ?? (fit && { title: fit.text, detail: fit.detail || fit.text, retry: fit.retry });
 }
 
-export function askedPrompt(snapshot: Snapshot | null, opened: boolean): AskedPrompt | null {
+export function askedPrompt(snapshot: Snapshot | null, opened: number | null): AskedPrompt | null {
   if (!snapshot || snapshot.phase !== 'recording' || snapshot.stopping || snapshot.sessionKey == null) return null;
   if (snapshot.prompt) return snapshot.prompt;
-  return opened ? { quitting: false, discarding: false, sessionKey: snapshot.sessionKey } : null;
+  return opened === snapshot.sessionKey ? { quitting: false, discarding: false, sessionKey: snapshot.sessionKey } : null;
+}
+
+export function promptDiscards(asked: AskedPrompt | null, stepped: number | null): boolean {
+  return asked !== null && (asked.discarding || stepped === asked.sessionKey);
 }
 
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {

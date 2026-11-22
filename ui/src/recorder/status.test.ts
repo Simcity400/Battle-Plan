@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
@@ -275,11 +275,24 @@ test('trying the status again listens again before reading, and the attempt it r
 
 test('the stop prompt asks what the recorder asked about the live session, or what the panel’s own Stop asked, and nothing once it stops', () => {
   const live = recording({ sessionKey: 3, prompt: null });
-  assert.equal(askedPrompt(live, false), null);
-  assert.deepEqual(askedPrompt(live, true), { quitting: false, discarding: false, sessionKey: 3 }, 'the panel’s own Stop asks about the session it shows');
+  assert.equal(askedPrompt(live, null), null);
+  assert.deepEqual(askedPrompt(live, 3), { quitting: false, discarding: false, sessionKey: 3 }, 'the panel’s own Stop asks about the session it shows');
   const asked = { id: 7, quitting: true, discarding: false, sessionKey: 3 };
-  assert.deepEqual(askedPrompt({ ...live, prompt: asked }, false), asked, 'the tray’s question stays until the recorder retires it');
-  assert.equal(askedPrompt({ ...live, prompt: asked, stopping: true }, true), null, 'a stopping session asks nothing');
-  assert.equal(askedPrompt({ ...live, sessionKey: null }, true), null, 'without a live session there is nothing to stop');
-  assert.equal(askedPrompt(null, true), null);
+  assert.deepEqual(askedPrompt({ ...live, prompt: asked }, null), asked, 'the tray’s question stays until the recorder retires it');
+  assert.equal(askedPrompt({ ...live, prompt: asked, stopping: true }, 3), null, 'a stopping session asks nothing');
+  assert.equal(askedPrompt({ ...live, sessionKey: null }, 3), null, 'without a live session there is nothing to stop');
+  assert.equal(askedPrompt(null, 3), null);
+});
+
+test('a Stop and its Discard step confirm only the session they were opened for, so a new session’s status never inherits them', () => {
+  const first = recording({ sessionKey: 3, prompt: null });
+  const next = recording({ sessionKey: 4, prompt: null });
+  assert.equal(promptDiscards(askedPrompt(first, 3), 3), true, 'the Discard step stands for the session it was taken in');
+  assert.equal(askedPrompt(next, 3), null, 'a Stop opened for one session asks nothing about the next');
+  const quit = { id: 8, quitting: true, discarding: false, sessionKey: 4 };
+  const carried = askedPrompt({ ...next, prompt: quit }, 3);
+  assert.deepEqual(carried, quit);
+  assert.equal(promptDiscards(carried, 3), false, 'the Quit asked again about the new session asks to save, not to discard');
+  assert.equal(promptDiscards({ ...quit, discarding: true }, null), true, 'the tray’s Discard is its own confirmation step');
+  assert.equal(promptDiscards(null, 3), false);
 });
