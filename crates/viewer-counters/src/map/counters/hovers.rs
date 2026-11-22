@@ -40,7 +40,7 @@ pub(super) fn presented(
     };
     let mut bounds = Vec::<(u64, [f32; 4])>::new();
     for quad in quads {
-        let rect = quad.rect;
+        let rect = quad.screen_bounds();
         if rect[2] <= 0.0 || rect[3] <= 0.0 {
             continue;
         }

@@ -4322,7 +4322,7 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     let tints = allegiance::Tints::VANILLA;
     let countries = Countries {
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0])]),
+            colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0])), (6, None)]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()
@@ -4341,9 +4341,15 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     assert_eq!(color(country, Some(4)), Ok([0.5, 0.25, 0.125, 1.0]));
     assert!(color(country, None).unwrap_err().contains("logical owner"));
     assert!(color(country, Some(9)).is_err());
+    let non_finite = color(country, Some(6)).unwrap_err();
+    assert!(non_finite.contains("non-finite"), "{non_finite}");
+    assert!(non_finite.contains("slot 6"), "{non_finite}");
     let undecided = Countries {
         ui_colors: UiColors {
-            colors: BTreeMap::from([(3, [0.5, 0.25, 0.125, 1.0]), (5, [1.0; 4])]),
+            colors: BTreeMap::from([
+                (3, Some([0.5, 0.25, 0.125, 1.0])),
+                (5, Some([1.0; 4])),
+            ]),
             inheritance: viewer_foundation::map::color_inheritance::Inheritance {
                 undecided: BTreeMap::from([(5, "Subjects is truncated".to_owned())]),
                 ..Default::default()
@@ -4959,14 +4965,38 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     batch.scaled(&plate, 0, [10.0, 20.0], [66.0, 27.0], [1.0; 4]);
     assert_eq!(batch.quads[0].rect, [10.0, 20.0, 66.0, 27.0]);
     let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 8.5, [1.0; 4]);
-    assert_eq!(batch.quads[1].rect, [24.0, 28.0, 8.0, 3.0]);
-    assert_eq!(batch.quads[1].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 0.0, [1.0; 4]);
+    batch.bar(
+        &bar,
+        [24.0, 28.0],
+        [17.0, 3.0],
+        8.5,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
+    assert_eq!(batch.quads[1].rotation, std::f32::consts::FRAC_PI_2);
+    assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
+    batch.bar(
+        &bar,
+        [24.0, 28.0],
+        [17.0, 3.0],
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
     assert_eq!(batch.quads.len(), 2);
-    batch.bar(&bar, [24.0, 28.0], [17.0, 3.0], 30.0, [1.0; 4]);
-    assert_eq!(batch.quads[2].rect, [24.0, 28.0, 18.0, 3.0]);
+    batch.bar(
+        &bar,
+        [24.0, 28.0],
+        [17.0, 3.0],
+        30.0,
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 1.0]);
+    let bounds = batch.quads[2].screen_bounds();
+    for (got, want) in bounds.iter().zip([24.0, 28.0, 18.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
 }
 
 #[test]
@@ -5663,4 +5693,97 @@ fn unknown_relations_keep_distinct_foreign_owners_apart_in_land_and_naval_groupi
         &countries,
         &context
     ));
+}
+
+#[test]
+fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
+    let layouts = layouts();
+    let bar_org = &layouts.land.as_ref().unwrap().bar_org;
+    let patterned = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
+    let mut batch = Batch::default();
+    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 0.5);
+    assert_eq!(batch.quads.len(), 1);
+    let partial = &batch.quads[0];
+    assert_eq!(partial.rotation, bar_org.rotation);
+    assert_eq!(partial.uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
+    let bounds = partial.screen_bounds();
+    for (got, want) in bounds.iter().zip([957.0, 861.0, 10.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
+    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 1.0);
+    assert_eq!(batch.quads.len(), 2);
+    let full = &batch.quads[1];
+    assert_eq!(full.rotation, bar_org.rotation);
+    assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
+    let bounds = full.screen_bounds();
+    for (got, want) in bounds.iter().zip([957.0, 861.0, 18.0, 3.0]) {
+        assert!((got - want).abs() < 1e-4, "{bounds:?}");
+    }
+    let upright = Child {
+        sprite: "GFX_horizontal_bar".into(),
+        at: [14.0, 8.0],
+        scale: 1.0,
+        frame: 0,
+        rotation: 0.0,
+        centered: false,
+        order: 0,
+    };
+    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
+    draw_bar(&mut batch, &horizontal, &upright, [943.0, 846.0], 0.5);
+    assert_eq!(batch.quads[2].rotation, 0.0);
+    assert_eq!(batch.quads[2].rect, [957.0, 854.0, 10.0, 3.0]);
+    assert_eq!(batch.quads[2].uv, [0.0, 0.0, 10.0 / 17.0, 1.0]);
+}
+
+#[test]
+fn land_stack_refuses_non_finite_group_marker_and_preserves_valid_ones() {
+    let countries = Arc::new(Countries::default());
+    let templates = Arc::new(TemplateIcons::default());
+    let vision = Arc::new(Vision::sharing(1, []));
+    let abilities = AbilityInputs::default();
+    let mut orders = counter_inputs::OrdersIndex::default();
+    orders.groups.insert(
+        10,
+        counter_inputs::GroupFacts {
+            parent: 20,
+            army_group: false,
+        },
+    );
+    orders.colors.insert(10, None);
+    orders.colors.insert(20, Some([0.2, 0.6, 0.8, 1.0]));
+    let tables = CounterTables {
+        type_tints: &Default::default(),
+        countries: &countries,
+        icons: &templates,
+        status: &Default::default(),
+        movement: &Default::default(),
+        actions: &Default::default(),
+        vision: &vision,
+        order: None,
+        native: &Default::default(),
+        orders: &orders,
+        guns: &Default::default(),
+        abilities: &abilities,
+        task_forces: &Default::default(),
+        hq_providers: &Default::default(),
+        portraits: &Default::default(),
+        icon_inputs: &Default::default(),
+    };
+    let mut bad_own = land_unit(1, 1, 10, 10, true);
+    bad_own.orders_group = 10;
+    bad_own.parent_branch = Some(false);
+    let stack = land::land_stack(&[&bad_own], &tables, &Default::default(), false, &|_| false, false);
+    let err = stack.marker.expect_err("non-finite land group colour must be refused");
+    assert!(err.contains("non-finite") && err.contains("10"), "{err}");
+
+    let mut good_parent = bad_own.clone();
+    good_parent.parent_branch = Some(true);
+    let stack =
+        land::land_stack(&[&good_parent], &tables, &Default::default(), false, &|_| false, false);
+    assert_eq!(stack.marker, Ok(Some([0.2, 0.6, 0.8, 1.0])));
+
+    let mut foreign = bad_own;
+    foreign.owner = 2;
+    let stack = land::land_stack(&[&foreign], &tables, &Default::default(), false, &|_| false, false);
+    assert_eq!(stack.marker, Ok(None));
 }

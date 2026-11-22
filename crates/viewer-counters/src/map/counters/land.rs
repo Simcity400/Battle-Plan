@@ -847,7 +847,7 @@ pub(super) struct Stack {
     pub(super) grouping_unknown: Option<SharingUnknown>,
     pub(super) moving: Option<Movement>,
     pub(super) action: counter_action::Action,
-    pub(super) marker: Option<[f32; 4]>,
+    pub(super) marker: Result<Option<[f32; 4]>, String>,
     pub(super) leader_en_route: Option<bool>,
     pub(super) defending_area: bool,
     pub(super) gun: Option<GunStack>,
@@ -2403,9 +2403,18 @@ pub(super) fn land_stack(
                 .skip(1)
                 .map(|unit| (unit.sight == Sight::Full, unit.action)),
         ),
-        marker: (rep.owner == land.vision.ours())
-            .then(|| land.orders.marker(rep.orders_group, rep.parent_branch))
-            .flatten(),
+        marker: if rep.owner == land.vision.ours() {
+            land.orders
+                .marker(rep.orders_group, rep.parent_branch)
+                .map_err(|group| {
+                    format!(
+                        "group_marker is refused: orders group {group}'s colour \
+                         (OrdersGroupPlans) has non-finite components"
+                    )
+                })
+        } else {
+            Ok(None)
+        },
         leader_en_route: Some(false),
         defending_area: false,
         gun: rep.gun.as_ref().map(|gun| GunStack {
@@ -2555,7 +2564,7 @@ pub(super) fn draw_land_counter(
     priority: i8,
 ) -> io::Result<hovers::Presented> {
     let first = batch.quads.len();
-    let type_refusal = draw_land_children(inputs, batch, origin, land, member)?;
+    let child_refusals = draw_land_children(inputs, batch, origin, land, member)?;
     let mut controls = hovers::presented(
         inputs,
         &land.stacks[member],
@@ -2563,7 +2572,7 @@ pub(super) fn draw_land_counter(
         origin,
         &batch.quads[first..],
     );
-    controls.refused.extend(type_refusal);
+    controls.refused.extend(child_refusals);
     rank_children(batch, first, priority, icon)?;
     Ok(controls)
 }
@@ -2609,7 +2618,7 @@ fn draw_land_children(
     origin: [f32; 2],
     land: &PreparedLand,
     member: usize,
-) -> io::Result<Option<String>> {
+) -> io::Result<Vec<String>> {
     let stack = &land.stacks[member];
     if let (Some(gun), Ok(layout)) = (&stack.gun, &inputs.assets.layouts.gun) {
         return Ok(draw_gun_children(
@@ -2619,7 +2628,7 @@ fn draw_land_children(
     let style = &land.styles[member];
     let (countries, icons_of) = (&land.countries, &land.templates);
     let Ok(plate) = stack.plate else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let layout = inputs
         .assets
@@ -2683,8 +2692,9 @@ fn draw_land_children(
                 [1.0; 4],
             );
         }
-        return Ok(None);
+        return Ok(Vec::new());
     }
+    let mut refused = Vec::new();
     let hq_sprite = stack.hq.then_some("GFX_onmap_unit_counter_empty");
     let plate_drawn = pointed_plate(
         inputs,
@@ -2727,11 +2737,15 @@ fn draw_land_children(
             [1.0; 4],
         );
     }
-    if let Some(color) = stack.marker
-        && let Some(sheet) = assets.sheet(&layout.group_marker.sprite)
-    {
-        batch.at_layer(u64::from(layout.group_marker.order));
-        draw_child(batch, sheet, &layout.group_marker, origin, 0, color);
+    match &stack.marker {
+        Ok(Some(color)) => {
+            if let Some(sheet) = assets.sheet(&layout.group_marker.sprite) {
+                batch.at_layer(u64::from(layout.group_marker.order));
+                draw_child(batch, sheet, &layout.group_marker, origin, 0, *color);
+            }
+        }
+        Ok(None) => {}
+        Err(reason) => refused.push(reason.clone()),
     }
     if let Some(content) = &assets.land_action
         && let Ok(Some(frame)) = content.frame(
@@ -2851,7 +2865,8 @@ fn draw_land_children(
             }
         }
     }
-    Ok(type_refusal)
+    refused.extend(type_refusal);
+    Ok(refused)
 }
 
 pub(super) fn ability_rect(
@@ -2931,12 +2946,12 @@ fn draw_gun_children(
     member: usize,
     gun: &GunStack,
     layout: &GunCounter,
-) -> Option<String> {
+) -> Vec<String> {
     let stack = &land.stacks[member];
     let style = &land.styles[member];
     let assets = inputs.assets;
     let Ok(plate) = stack.plate else {
-        return None;
+        return Vec::new();
     };
     let plate_drawn = pointed_plate(
         inputs,
@@ -2997,16 +3012,19 @@ fn draw_gun_children(
                 [1.0; 4],
             );
         }
-        return None;
+        return Vec::new();
     }
+    let mut refused = Vec::new();
     if !plate_drawn {
         draw(&layout.plate, layout.plate.frame_index(0), plate);
     }
     if stack.selected && !stack.members.is_empty() {
         draw(&layout.selected, layout.selected.frame_index(0), [1.0; 4]);
     }
-    if let Some(color) = stack.marker {
-        draw(&layout.group_marker, 0, color);
+    match &stack.marker {
+        Ok(Some(color)) => draw(&layout.group_marker, 0, *color),
+        Ok(None) => {}
+        Err(reason) => refused.push(reason.clone()),
     }
     draw(&layout.overlay, 0, [1.0; 4]);
     if style.glyphs.no_orders == Some(true) {
@@ -3063,7 +3081,8 @@ fn draw_gun_children(
         batch.at_layer(u64::from(layout.action.order));
         draw_child(batch, sheet, &layout.action, origin, frame, [1.0; 4]);
     }
-    type_refusal
+    refused.extend(type_refusal);
+    refused
 }
 
 fn place_in(

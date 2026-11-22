@@ -584,6 +584,34 @@ pub fn measure(font: &Font, text: &str) -> f32 {
     width
 }
 
+fn apply_ellipsis(font: &Font, fitted: &mut Vec<StyledChar>, room: f32) {
+    if fitted.len() <= 2 {
+        return;
+    }
+    let Some(dot_advance) = GlyphMetrics::advance(font, '.') else {
+        return;
+    };
+    let mut remaining = room;
+    let mut needed = (dot_advance + 1.0) * 3.0 - GlyphMetrics::kerning(font, '.', '.');
+    let mut replaced = 0usize;
+    while replaced < 3 && remaining < needed {
+        let at = fitted.len() - 1 - replaced;
+        let old_advance = GlyphMetrics::advance(font, fitted[at].ch).unwrap_or(0.0);
+        remaining += old_advance - dot_advance;
+        needed -= dot_advance;
+        fitted[at].ch = '.';
+        replaced += 1;
+    }
+    let color = fitted.last().and_then(|item| item.color);
+    for _ in 0..(3 - replaced) {
+        fitted.push(StyledChar {
+            ch: '.',
+            color,
+            reset_kerning: false,
+        });
+    }
+}
+
 pub fn layout(
     font: &Font,
     text: &str,
@@ -592,9 +620,35 @@ pub fn layout(
     max_width: Option<f32>,
 ) -> Vec<TextGlyph> {
     let runs = color_runs(text, |code| font.text_color(code));
-    let mut width = 0.0f32;
+    let limit = max_width.unwrap_or(f32::INFINITY);
+    let mut fitted = Vec::with_capacity(runs.len());
+    let mut line_width = 0.0f32;
     let mut previous: Option<char> = None;
-    for item in &runs {
+    let mut truncated = false;
+    for item in runs {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(advance) = GlyphMetrics::advance(font, item.ch) else {
+            continue;
+        };
+        let kern = previous.map_or(0.0, |p| GlyphMetrics::kerning(font, p, item.ch));
+        if line_width + kern + advance > limit {
+            truncated = true;
+            break;
+        }
+        line_width += kern + advance;
+        fitted.push(item);
+        previous = Some(item.ch);
+    }
+    if truncated
+        && let Some(limit) = max_width
+    {
+        apply_ellipsis(font, &mut fitted, limit - line_width);
+    }
+    let mut laid_width = 0.0f32;
+    let mut previous: Option<char> = None;
+    for item in &fitted {
         if item.reset_kerning {
             previous = None;
         }
@@ -602,22 +656,21 @@ pub fn layout(
             continue;
         };
         if let Some(p) = previous {
-            width += GlyphMetrics::kerning(font, p, item.ch);
+            laid_width += GlyphMetrics::kerning(font, p, item.ch);
         }
-        width += advance;
+        laid_width += advance;
         previous = Some(item.ch);
     }
-    let limit = max_width.unwrap_or(f32::INFINITY);
-    let slack = (max_width.unwrap_or(0.0) - width).max(0.0);
+    let slack = max_width.map_or(0.0, |limit| (limit - laid_width).max(0.0));
     let start = match align {
         Align::Left => origin[0],
         Align::Centre => origin[0] + slack * 0.5,
         Align::Right => origin[0] + slack,
     };
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(fitted.len());
     let mut pen = 0.0f32;
     let mut previous: Option<char> = None;
-    for item in runs {
+    for item in fitted {
         if item.reset_kerning {
             previous = None;
         }
@@ -626,9 +679,6 @@ pub fn layout(
         };
         if let Some(p) = previous {
             pen += GlyphMetrics::kerning(font, p, item.ch);
-        }
-        if pen + advance > limit {
-            break;
         }
         if let (Some(glyph), Some(page)) =
             (GlyphMetrics::glyph(font, item.ch), font.page_of(item.ch))
@@ -1170,6 +1220,144 @@ path=\"{art}\"
         let spaced = layout(&font, "A B", [0.0, 0.0], Align::Left, None);
         assert_eq!(spaced.len(), 2);
         assert_eq!(spaced[1].rect[0], 14.0);
+    }
+
+    #[test]
+    fn width_limited_layout_draws_native_ellipsis_with_kerning_and_ink_spacing() {
+        let mut font = font();
+        font.glyphs.glyphs.insert(
+            '.' as u32,
+            Glyph {
+                x: 24,
+                y: 0,
+                width: 2,
+                height: 3,
+                xoffset: 1,
+                yoffset: 9,
+                xadvance: 4,
+                page: 0,
+                kernings: [('.' as u32, -1)].into_iter().collect(),
+            },
+        );
+        font.glyphs
+            .glyphs
+            .get_mut(&('B' as u32))
+            .unwrap()
+            .kernings
+            .insert('.' as u32, -1);
+        font.glyphs.glyphs.insert(
+            'W' as u32,
+            Glyph {
+                x: 32,
+                y: 0,
+                width: 18,
+                height: 12,
+                xoffset: 1,
+                yoffset: 2,
+                xadvance: 20,
+                page: 0,
+                kernings: BTreeMap::new(),
+            },
+        );
+        let dot_uv = GlyphMetrics::glyph(&font, '.').unwrap().uv;
+        let a_uv = GlyphMetrics::glyph(&font, 'A').unwrap().uv;
+        let b_uv = GlyphMetrics::glyph(&font, 'B').unwrap().uv;
+
+        let replaced_two = layout(&font, "ABABAB", [10.0, 20.0], Align::Left, Some(40.0));
+        assert_eq!(
+            replaced_two.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv, dot_uv, dot_uv, dot_uv]
+        );
+        assert_eq!(
+            replaced_two.iter().map(|g| g.rect).collect::<Vec<_>>(),
+            vec![
+                [11.0, 22.0, 8.0, 12.0],
+                [18.0, 22.0, 8.0, 12.0],
+                [28.0, 29.0, 2.0, 3.0],
+                [31.0, 29.0, 2.0, 3.0],
+                [34.0, 29.0, 2.0, 3.0],
+            ]
+        );
+
+        let appended = layout(&font, "ABAW", [0.0, 0.0], Align::Left, Some(44.0));
+        assert_eq!(
+            appended.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv, a_uv, dot_uv, dot_uv, dot_uv]
+        );
+
+        let replaced_one = layout(&font, "ABAW", [0.0, 0.0], Align::Left, Some(40.0));
+        assert_eq!(
+            replaced_one.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv, dot_uv, dot_uv, dot_uv]
+        );
+
+        let short = layout(&font, "ABW", [0.0, 0.0], Align::Left, Some(20.0));
+        assert_eq!(
+            short.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv]
+        );
+
+        let replaced_three = layout(&font, "A B A", [0.0, 0.0], Align::Left, Some(24.0));
+        assert_eq!(
+            replaced_three.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![dot_uv, dot_uv, dot_uv]
+        );
+        assert_eq!(
+            replaced_three.iter().map(|g| g.rect).collect::<Vec<_>>(),
+            vec![
+                [1.0, 9.0, 2.0, 3.0],
+                [4.0, 9.0, 2.0, 3.0],
+                [7.0, 9.0, 2.0, 3.0],
+            ]
+        );
+
+        let centered = layout(&font, "ABABAB", [10.0, 20.0], Align::Centre, Some(40.0));
+        assert_eq!(centered.len(), 5);
+        assert_eq!(centered[0].rect[0], 10.0 + (40.0 - 27.0) * 0.5 + 1.0);
+        let right = layout(&font, "ABABAB", [10.0, 20.0], Align::Right, Some(40.0));
+        assert_eq!(right[0].rect[0], 10.0 + (40.0 - 27.0) + 1.0);
+
+        let mut colored = font.clone();
+        let yellow = [0.9, 0.8, 0.1, 1.0];
+        colored.text_colors.insert(b'Y', yellow);
+        let tinted_replaced = layout(&colored, "A\u{11}YBAW", [0.0, 0.0], Align::Left, Some(44.0));
+        let expected_yellow = super::super::native_text::packed(yellow);
+        assert_eq!(
+            tinted_replaced.iter().map(|g| g.color).collect::<Vec<_>>(),
+            vec![
+                None,
+                Some(expected_yellow),
+                Some(expected_yellow),
+                Some(expected_yellow),
+                Some(expected_yellow),
+            ]
+        );
+        let tinted_appended = layout(&colored, "A\u{11}YBAW", [0.0, 0.0], Align::Left, Some(46.0));
+        assert_eq!(
+            tinted_appended.iter().map(|g| g.color).collect::<Vec<_>>(),
+            vec![
+                None,
+                Some(expected_yellow),
+                Some(expected_yellow),
+                Some(expected_yellow),
+                Some(expected_yellow),
+                Some(expected_yellow),
+            ]
+        );
+
+        let mut without_dot = font.clone();
+        without_dot.glyphs.glyphs.remove(&('.' as u32));
+        let no_dot = layout(&without_dot, "ABABAB", [0.0, 0.0], Align::Left, Some(40.0));
+        assert_eq!(
+            no_dot.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv, a_uv, b_uv]
+        );
+
+        let unbounded = layout(&font, "ABABAB", [0.0, 0.0], Align::Left, None);
+        assert_eq!(
+            unbounded.iter().map(|g| g.uv).collect::<Vec<_>>(),
+            vec![a_uv, b_uv, a_uv, b_uv, a_uv, b_uv]
+        );
     }
 
     #[test]

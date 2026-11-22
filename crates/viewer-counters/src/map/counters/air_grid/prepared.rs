@@ -219,35 +219,7 @@ impl<'a> Census<'a> {
                     capacity: capacities,
                     mut refused,
                 } = summary(item.group, &members);
-                let group_color = if item.group == 0 {
-                    None
-                } else {
-                    let value = self
-                        .frame
-                        .complete::<tables::OrdersGroupPlans>()
-                        .ok()
-                        .and_then(|plans| {
-                            plans
-                                .binary_search_by_key(&item.group, |row| row.group)
-                                .ok()
-                                .map(|at| &plans[at])
-                        })
-                        .map(|color| {
-                            viewer_foundation::map::counter_inputs::color(
-                                color.red,
-                                color.green,
-                                color.blue,
-                                color.alpha,
-                            )
-                        });
-                    if value.is_none() {
-                        refused.insert(
-                            "Air grid group marker: current group colour is unavailable".into(),
-                            1,
-                        );
-                    }
-                    value
-                };
+                let group_color = group_color(self.frame, item.group, &mut refused);
                 let hover = hover(inputs, self.frame, &item, representative, capacities);
                 let marker_hovers = std::array::from_fn(|index| {
                     let key = match index {
@@ -297,6 +269,49 @@ impl<'a> Census<'a> {
                 })
             })
             .collect()
+    }
+}
+
+fn group_color(
+    frame: &DecodedFrame,
+    group: u64,
+    refused: &mut BTreeMap<String, usize>,
+) -> Option<[f32; 4]> {
+    if group == 0 {
+        return None;
+    }
+    let row = frame
+        .complete::<tables::OrdersGroupPlans>()
+        .ok()
+        .and_then(|plans| {
+            plans
+                .binary_search_by_key(&group, |row| row.group)
+                .ok()
+                .map(|at| &plans[at])
+        });
+    match row {
+        None => {
+            refused.insert(
+                "Air grid group marker: current group colour is unavailable".into(),
+                1,
+            );
+            None
+        }
+        Some(row) => match viewer_foundation::map::counter_inputs::color(
+            row.red, row.green, row.blue, row.alpha,
+        ) {
+            Some(rgba) => Some(rgba),
+            None => {
+                refused.insert(
+                    format!(
+                        "Air grid group marker: orders group {group}'s colour \
+                         (OrdersGroupPlans) has non-finite components"
+                    ),
+                    1,
+                );
+                None
+            }
+        },
     }
 }
 
@@ -756,6 +771,92 @@ mod tests {
         };
         assert_eq!(carrier_bases(&ships, &[8, 4, 8]), [91, 92, 93, 91, 92]);
         assert!(carrier_bases(&ships, &[]).is_empty());
+    }
+
+    #[test]
+    fn group_color_refuses_non_finite_components_and_preserves_valid_colors() {
+        use replay_data::{rows::OrdersGroupPlanRow, rows::TableId, rows::TableRows};
+        use replay_frame::{frame::Metrics, frame::TableView};
+        let frame_with = |rows: Vec<OrdersGroupPlanRow>| {
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour: 1,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "fixture".into(),
+                    }
+                    .into()
+                }),
+            };
+            *frame.tables[TableId::OrdersGroupPlans.index()] =
+                TableView::Complete(TableRows::OrdersGroupPlans(rows));
+            frame
+        };
+        let valid = [0.2f32, 0.4, 0.6, 1.0];
+        let frame = frame_with(vec![
+            OrdersGroupPlanRow {
+                group: 7,
+                red: valid[0].to_bits(),
+                green: valid[1].to_bits(),
+                blue: valid[2].to_bits(),
+                alpha: valid[3].to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 8,
+                red: f32::NAN.to_bits(),
+                green: 0.4f32.to_bits(),
+                blue: 0.6f32.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 9,
+                red: 0.2f32.to_bits(),
+                green: f32::INFINITY.to_bits(),
+                blue: 0.6f32.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 10,
+                red: 0.2f32.to_bits(),
+                green: 0.4f32.to_bits(),
+                blue: f32::NEG_INFINITY.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 11,
+                red: 0.2f32.to_bits(),
+                green: 0.4f32.to_bits(),
+                blue: 0.6f32.to_bits(),
+                alpha: f32::NAN.to_bits(),
+                ..Default::default()
+            },
+        ]);
+        let mut refused = BTreeMap::new();
+        assert_eq!(group_color(&frame, 0, &mut refused), None);
+        assert!(refused.is_empty());
+        assert_eq!(group_color(&frame, 7, &mut refused), Some(valid));
+        assert!(refused.is_empty());
+        for group in [8, 9, 10, 11] {
+            let mut refused = BTreeMap::new();
+            assert_eq!(group_color(&frame, group, &mut refused), None);
+            assert!(
+                refused
+                    .keys()
+                    .any(|key| key.contains("non-finite") && key.contains(&group.to_string())),
+                "{refused:?}"
+            );
+        }
+        let mut absent = BTreeMap::new();
+        assert_eq!(group_color(&frame, 99, &mut absent), None);
+        assert!(
+            absent
+                .contains_key("Air grid group marker: current group colour is unavailable")
+        );
     }
 
     #[test]

@@ -141,6 +141,26 @@ pub struct Quad {
     pub present: Option<Present>,
 }
 
+impl Quad {
+    pub fn screen_bounds(&self) -> [f32; 4] {
+        if self.rotation == 0.0 {
+            return self.rect;
+        }
+        let corners = plain_quad_corners(self, 1.0);
+        let min_x = corners.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
+        let min_y = corners.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+        let max_x = corners
+            .iter()
+            .map(|c| c[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners
+            .iter()
+            .map(|c| c[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        [min_x, min_y, max_x - min_x, max_y - min_y]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exact {
     pub native: Option<Arc<super::native_shader::draw::Quad>>,
@@ -506,6 +526,7 @@ impl Batch {
         at: [f32; 2],
         size: [f32; 2],
         pixels: f32,
+        rotation: f32,
         color: [f32; 4],
     ) {
         let width = pixels.clamp(0.0, size[0] + 1.0).floor();
@@ -514,12 +535,30 @@ impl Batch {
         }
         let fill = (width / size[0]).min(1.0);
         let [u0, v0, u1, v1] = sheet.frame_uv(0);
+        let (sin, cos) = rotation.sin_cos();
+        let (rect, uv) = if sin.abs() > cos.abs() {
+            let cx = at[0] + width * 0.5;
+            let cy = at[1] + size[1] * 0.5;
+            let uv = if sin >= 0.0 {
+                [u0, v0, u1, v0 + (v1 - v0) * fill]
+            } else {
+                [u0, v1 - (v1 - v0) * fill, u1, v1]
+            };
+            ([cx - size[1] * 0.5, cy - width * 0.5, size[1], width], uv)
+        } else {
+            let uv = if cos >= 0.0 {
+                [u0, v0, u0 + (u1 - u0) * fill, v1]
+            } else {
+                [u1 - (u1 - u0) * fill, v0, u1, v1]
+            };
+            ([at[0], at[1], width, size[1]], uv)
+        };
         self.quads.push(Quad {
             texture: sheet.texture,
-            rect: [at[0], at[1], width, size[1]],
-            uv: [u0, v0, u0 + (u1 - u0) * fill, v1],
+            rect,
+            uv,
             color,
-            rotation: 0.0,
+            rotation,
             layer: self.layer,
             shade: 0.0,
             exact: None,
@@ -2676,25 +2715,31 @@ static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::
     ]
 });
 
+fn plain_quad_corners(quad: &Quad, ui_scale: f32) -> [[f32; 2]; 4] {
+    if quad.rotation == 0.0 {
+        let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    }
+    let x0 = quad.rect[0] * ui_scale;
+    let y0 = quad.rect[1] * ui_scale;
+    let x1 = (quad.rect[0] + quad.rect[2]) * ui_scale;
+    let y1 = (quad.rect[1] + quad.rect[3]) * ui_scale;
+    let centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+    let (sin, cos) = quad.rotation.sin_cos();
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|[x, y]| {
+        let (dx, dy) = (x - centre[0], y - centre[1]);
+        [
+            centre[0] + dx * cos + dy * sin,
+            centre[1] + dy * cos - dx * sin,
+        ]
+    })
+}
+
 fn plain_corners(quad: &Quad, placement: fade::Placement, ui_scale: f32) -> [Vertex; 6] {
-    let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-    let spin = (quad.rotation != 0.0).then(|| {
-        let (sin, cos) = quad.rotation.sin_cos();
-        ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
-    });
+    let corners = plain_quad_corners(quad, ui_scale);
     let filter = filter_mode(ui_scale * placement.scale);
     let [out_width, out_height] = placement.out.map(|v| v as f32);
-    let corner = |x: f32, y: f32, u: f32, v: f32| {
-        let (x, y) = match spin {
-            Some((centre, sin, cos)) => {
-                let (dx, dy) = (x - centre[0], y - centre[1]);
-                (
-                    centre[0] + dx * cos - dy * sin,
-                    centre[1] + dx * sin + dy * cos,
-                )
-            }
-            None => (x, y),
-        };
+    let corner = |[x, y]: [f32; 2], u: f32, v: f32| {
         let [x, y] = placement.point([x, y]);
         Vertex {
             position: [x / out_width * 2.0 - 1.0, 1.0 - y / out_height * 2.0],
@@ -2707,12 +2752,12 @@ fn plain_corners(quad: &Quad, placement: fade::Placement, ui_scale: f32) -> [Ver
     };
     let [u0, v0, u1, v1] = quad.uv;
     [
-        corner(x0, y0, u0, v0),
-        corner(x1, y0, u1, v0),
-        corner(x1, y1, u1, v1),
-        corner(x0, y0, u0, v0),
-        corner(x1, y1, u1, v1),
-        corner(x0, y1, u0, v1),
+        corner(corners[0], u0, v0),
+        corner(corners[1], u1, v0),
+        corner(corners[2], u1, v1),
+        corner(corners[0], u0, v0),
+        corner(corners[2], u1, v1),
+        corner(corners[3], u0, v1),
     ]
 }
 
@@ -2733,23 +2778,7 @@ fn quad_bounds(quad: &Quad, size: [u32; 2], ui_scale: f32) -> Option<[f32; 4]> {
                 ]
             })
         }
-        None => {
-            let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-            let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-            if quad.rotation == 0.0 {
-                corners
-            } else {
-                let (sin, cos) = quad.rotation.sin_cos();
-                let centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
-                corners.map(|[x, y]| {
-                    let (dx, dy) = (x - centre[0], y - centre[1]);
-                    [
-                        centre[0] + dx * cos - dy * sin,
-                        centre[1] + dx * sin + dy * cos,
-                    ]
-                })
-            }
-        }
+        None => plain_quad_corners(quad, ui_scale),
     };
     let [x, y] = corners[0];
     let mut bounds = [x, y, x, y];
@@ -2911,6 +2940,7 @@ mod tests {
         each_fade_page_draws_this_upload_s_icons_alone(device.clone(), queue.clone());
         fade_pages_follow_each_upload_s_demand(device.clone(), queue.clone());
         every_upload_draws_its_own_fading_icons_alone(device.clone(), queue.clone());
+        patterned_bar_renders_rotated_and_unrotated_fills_with_overrun(device, queue);
     }
 
     fn a_gui_draw_refused_before_the_stream_is_recorded(device: wgpu::Device, queue: wgpu::Queue) {
@@ -3557,6 +3587,215 @@ mod tests {
             device_corners([0.0, 0.0, 2048.0, 1152.0], 1.25),
             [0.0, 0.0, 2560.0, 1440.0]
         );
+    }
+
+    #[test]
+    fn bar_preserves_authored_rotation_fill_and_overrun() {
+        let vertical = SpriteSheet {
+            name: "GFX_bar_v".into(),
+            texture: 0,
+            frames: 1,
+            size: [3, 17],
+        };
+        let mut batch = Batch::default();
+        batch.bar(
+            &vertical,
+            [24.0, 28.0],
+            [17.0, 3.0],
+            8.5,
+            std::f32::consts::FRAC_PI_2,
+            [1.0; 4],
+        );
+        let partial = &batch.quads[0];
+        assert_eq!(partial.rotation, std::f32::consts::FRAC_PI_2);
+        assert_eq!(partial.uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
+        let bounds = partial.screen_bounds();
+        for (got, want) in bounds.iter().zip([24.0, 28.0, 8.0, 3.0]) {
+            assert!((got - want).abs() < 1e-4, "{bounds:?}");
+        }
+        batch.bar(
+            &vertical,
+            [24.0, 28.0],
+            [17.0, 3.0],
+            30.0,
+            std::f32::consts::FRAC_PI_2,
+            [1.0; 4],
+        );
+        let full = &batch.quads[1];
+        assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
+        let bounds = full.screen_bounds();
+        for (got, want) in bounds.iter().zip([24.0, 28.0, 18.0, 3.0]) {
+            assert!((got - want).abs() < 1e-4, "{bounds:?}");
+        }
+        batch.bar(
+            &vertical,
+            [24.0, 28.0],
+            [17.0, 3.0],
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+            [1.0; 4],
+        );
+        assert_eq!(batch.quads.len(), 2);
+        let horizontal = SpriteSheet {
+            name: "GFX_bar_h".into(),
+            texture: 1,
+            frames: 1,
+            size: [17, 3],
+        };
+        batch.bar(&horizontal, [24.0, 28.0], [17.0, 3.0], 8.5, 0.0, [1.0; 4]);
+        assert_eq!(batch.quads[2].rotation, 0.0);
+        assert_eq!(batch.quads[2].rect, [24.0, 28.0, 8.0, 3.0]);
+        assert_eq!(batch.quads[2].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
+    }
+
+    fn patterned_bar_renders_rotated_and_unrotated_fills_with_overrun(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) {
+        let mut vertical_pixels = Vec::with_capacity(3 * 17 * 4);
+        for row in 0..17u8 {
+            for col in 0..3u8 {
+                vertical_pixels.extend_from_slice(&[col * 80 + 40, row * 14 + 10, 200, 255]);
+            }
+        }
+        let mut horizontal_pixels = Vec::with_capacity(17 * 3 * 4);
+        for row in 0..3u8 {
+            for col in 0..17u8 {
+                horizontal_pixels.extend_from_slice(&[row * 80 + 40, col * 14 + 10, 150, 255]);
+            }
+        }
+        let pages = [
+            dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
+                width: 3,
+                height: 17,
+                pixels: vertical_pixels,
+            }),
+            dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
+                width: 17,
+                height: 3,
+                pixels: horizontal_pixels,
+            }),
+        ];
+        let vertical = SpriteSheet {
+            name: "GFX_pattern_v".into(),
+            texture: 0,
+            frames: 1,
+            size: [3, 17],
+        };
+        let horizontal = SpriteSheet {
+            name: "GFX_pattern_h".into(),
+            texture: 1,
+            frames: 1,
+            size: [17, 3],
+        };
+        let target = [24u32, 12];
+        let pixel = |pixels: &[u8], x: usize, y: usize| -> [u8; 4] {
+            let at = (y * target[0] as usize + x) * 4;
+            pixels[at..at + 4].try_into().unwrap()
+        };
+        let near = |got: [u8; 4], want: [u8; 3]| {
+            (0..3).all(|i| got[i].abs_diff(want[i]) <= 2)
+        };
+
+        let mut batch = Batch::default();
+        batch.bar(
+            &vertical,
+            [2.0, 4.0],
+            [17.0, 3.0],
+            8.0,
+            15708.0_f32 / 10_000.0,
+            [1.0; 4],
+        );
+        let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
+        for dx in 0..8usize {
+            for dy in 0..3usize {
+                let got = pixel(&pixels, 2 + dx, 4 + dy);
+                let want = [((2 - dy) as u8) * 80 + 40, (dx as u8) * 14 + 10, 200];
+                assert!(near(got, want), "rot partial ({dx},{dy}): {got:?} vs {want:?}");
+            }
+        }
+        assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
+
+        batch.clear();
+        batch.bar(
+            &vertical,
+            [2.0, 4.0],
+            [17.0, 3.0],
+            18.0,
+            std::f32::consts::FRAC_PI_2,
+            [1.0; 4],
+        );
+        let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
+        assert!(
+            near(pixel(&pixels, 2, 4), [200, 10, 200]),
+            "{:?}",
+            pixel(&pixels, 2, 4)
+        );
+        assert!(
+            near(pixel(&pixels, 2, 6), [40, 10, 200]),
+            "{:?}",
+            pixel(&pixels, 2, 6)
+        );
+        assert!(
+            near(pixel(&pixels, 19, 4), [200, 234, 200]),
+            "{:?}",
+            pixel(&pixels, 19, 4)
+        );
+        assert!(
+            near(pixel(&pixels, 19, 6), [40, 234, 200]),
+            "{:?}",
+            pixel(&pixels, 19, 6)
+        );
+        assert!(near(pixel(&pixels, 20, 4), [0, 0, 0]));
+
+        batch.clear();
+        batch.bar(
+            &vertical,
+            [2.0, 4.0],
+            [17.0, 3.0],
+            8.0,
+            -std::f32::consts::FRAC_PI_2,
+            [1.0; 4],
+        );
+        let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
+        assert!(
+            near(pixel(&pixels, 2, 4), [40, 234, 200]),
+            "{:?}",
+            pixel(&pixels, 2, 4)
+        );
+        assert!(
+            near(pixel(&pixels, 9, 6), [200, 136, 200]),
+            "{:?}",
+            pixel(&pixels, 9, 6)
+        );
+        assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
+
+        batch.clear();
+        batch.bar(&horizontal, [2.0, 4.0], [17.0, 3.0], 8.0, 0.0, [1.0; 4]);
+        let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
+        for dx in 0..8usize {
+            for dy in 0..3usize {
+                let got = pixel(&pixels, 2 + dx, 4 + dy);
+                let want = [(dy as u8) * 80 + 40, (dx as u8) * 14 + 10, 150];
+                assert!(near(got, want), "unrot partial ({dx},{dy}): {got:?} vs {want:?}");
+            }
+        }
+        assert!(near(pixel(&pixels, 10, 4), [0, 0, 0]));
+
+        batch.clear();
+        batch.bar(&horizontal, [2.0, 4.0], [17.0, 3.0], 18.0, 0.0, [1.0; 4]);
+        let (pixels, _) = render_presented_at(&device, &queue, &batch, &pages, target);
+        assert!(
+            near(pixel(&pixels, 2, 4), [40, 10, 150]),
+            "{:?}",
+            pixel(&pixels, 2, 4)
+        );
+        assert!(
+            near(pixel(&pixels, 19, 6), [200, 234, 150]),
+            "{:?}",
+            pixel(&pixels, 19, 6)
+        );
+        assert!(near(pixel(&pixels, 20, 4), [0, 0, 0]));
     }
 }
 
