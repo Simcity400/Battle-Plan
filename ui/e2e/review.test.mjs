@@ -170,21 +170,35 @@ async function rasterProof() {
         await page.locator('img').evaluate(img => img.decode());
         const lists = [{ complete: true, total: 5000, rows: Array.from({ length: 5000 }, (_, index) => ({ index, key: String(index), value: index * 2 })) }];
         const real = app.createApp(page, {});
-        const settle = async locator => {
-          await page.evaluate(() => {
-            const fallback = document.querySelector('[data-parity-loading]');
-            if (!fallback) return;
-            let frames = 0;
-            const step = () => {
-              if (++frames < 2) { requestAnimationFrame(step); return; }
-              fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
-            };
-            requestAnimationFrame(step);
-          });
-          await real.settle(locator);
-        };
+        let settled = false, settling;
+        const started = new Promise(resolve => { settling = resolve; });
+        const settle = async locator => { settling(); await real.settle(locator); settled = true; };
         const driver = { ...real, settle, prepare: async () => {}, install: async () => {}, widget: () => page.locator('.dash-widget'), prepareFullRows: async () => {}, fullRows: async () => lists };
-        const item = await captureWidget({ page, app: driver, kind: 'synthetic', directory });
+        await page.evaluate(() => {
+          let samples = 0;
+          Object.defineProperty(window, '__hoi4ParityBrowserErrors', { configurable: true, get: () => { samples++; return []; } });
+          window.__settleSamples = () => samples;
+        });
+        await page.clock.install();
+        await page.clock.pauseAt(Date.now() + 1_000);
+        const capturing = captureWidget({ page, app: driver, kind: 'synthetic', directory });
+        await started;
+        const samples = () => page.evaluate(() => window.__settleSamples());
+        for (let tick = 0; await samples() === 0; tick++) {
+          assert.ok(tick < 10_000, 'the capture never sampled the widget');
+          await page.clock.runFor(16);
+        }
+        const before = await samples();
+        await page.clock.runFor(1_000);
+        await page.evaluate(() => 0);
+        assert.equal(settled, false, 'a loading marker holds the capture past a full stability interval');
+        assert.ok(await samples() - before >= 50, 'the capture sampled the widget through a full stability interval');
+        await page.evaluate(() => {
+          const fallback = document.querySelector('[data-parity-loading]');
+          fallback.removeAttribute('data-parity-loading'); fallback.textContent = 'Rows';
+        });
+        await page.clock.resume();
+        const item = await capturing;
         assert.equal(item.status, 'captured'); assert.equal(item.model.lists[0].rows.length, 5000);
         assert.match(item.model.text, /Rows/); assert.doesNotMatch(item.model.text, /Loading widget/);
         assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]), [1440, 1000, 1]);

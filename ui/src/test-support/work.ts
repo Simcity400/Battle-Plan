@@ -57,14 +57,14 @@ export function measureWork<T>(input: T, run: (input: T) => void): Work {
     return index < 0 ? Math.max(0, length + index) : Math.min(index, length);
   };
   patch(array, 'splice', original => function (...args) {
-    const length = (this as { length: number }).length, start = at(args[0], length, length);
+    const length = (this as { length: number }).length, start = args.length ? at(args[0], length, 0) : length;
     const removed = args.length < 2 ? length - start : Math.min(Math.max(0, Math.trunc(Number(args[1])) || 0), length - start);
     const added = Math.max(0, args.length - 2);
     work.copied += removed + added + (removed === added ? 0 : length - start - removed);
     return original.apply(this, args);
   });
   patch(array, 'unshift', original => function (...args) {
-    work.copied += (this as { length: number }).length + args.length;
+    work.copied += args.length ? (this as { length: number }).length + args.length : 0;
     return original.apply(this, args);
   });
   patch(array, 'shift', original => function (...args) {
