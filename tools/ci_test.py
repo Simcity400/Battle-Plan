@@ -404,9 +404,9 @@ class Sharding(unittest.TestCase):
         self.assertEqual(ci.load_weights(crates(a=[]), ""), {"a": (1.0, 1.0)})
 
     def test_a_cold_runs_timings_and_test_report_give_each_crate_its_build_and_test(self):
-        units = [{"name": "app", "target": "", "duration": 10}, {"name": "app", "target": " build script (run)", "duration": 1},
-                 {"name": "app", "target": " lib (test)", "duration": 20}, {"name": "app", "target": ' bin "x" (test)', "duration": 5},
-                 {"name": "app", "target": ' example "e"', "duration": 2}, {"name": "serde", "target": "", "duration": 99}]
+        units = [{"name": "app", "target": "", "duration": 10}, {"name": "app", "target": " build-script (run)", "duration": 1},
+                 {"name": "app", "target": ' app "lib" (test)', "duration": 20}, {"name": "app", "target": ' x "bin" (test)', "duration": 5},
+                 {"name": "app", "target": ' e "example"', "duration": 2}, {"name": "serde", "target": "", "duration": 99}]
         timings = f"<script>const UNIT_DATA = {ci.json.dumps(units)};\nconst CONCURRENCY_DATA = [];</script>"
         report = ('<testsuites><testsuite name="app"><testcase name="a" time="1.5"/></testsuite>'
                   '<testsuite name="app::bin/x"><testcase name="b" time="0.5"/></testsuite></testsuites>')

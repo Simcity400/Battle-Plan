@@ -941,7 +941,7 @@ def warm(name, target, github_output=None):
     return 0
 
 
-LIBRARY_UNITS = ("", " build script", " build script (run)")
+LIBRARY_UNITS = ("", " build-script", " build-script (run)")
 
 
 def measured_costs(timings, report, crates):
@@ -975,7 +975,8 @@ def write_weights(timings, report, out):
         table = {}
     table = {name: cost for name, cost in table.items() if name in crates}
     table.update({name: {"build": round(build, 1), "test": round(test, 1)} for name, (build, test) in measured.items()})
-    Path(out).write_text(json.dumps({"crates": table}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rows = ",\n".join(f"    {json.dumps(name)}: {json.dumps(table[name], sort_keys=True)}" for name in sorted(table))
+    Path(out).write_text('{\n  "crates": {\n' + rows + "\n  }\n}\n", encoding="utf-8")
     print(f"{len(measured)} crates measured, {len(table)} in {out}; {len(crates) - len(table)} take the median")
     return 0
 
