@@ -381,12 +381,16 @@ fn has_tokens_after_end(tokens: &[SmallToken], next: usize, texts: &[&[u8]]) -> 
         .any(|token| token.kind != Kind::End || !texts[token.text as usize].is_empty())
 }
 
-fn scan_keyless_eligible(tokens: &[SmallToken], start: usize, texts: &[&[u8]]) -> bool {
+fn scan_keyless_eligible(
+    tokens: &[SmallToken],
+    ends: &[usize],
+    start: usize,
+    texts: &[&[u8]],
+) -> bool {
     let start = start.min(tokens.len());
-    let end = tokens[start..]
-        .iter()
-        .position(|token| token.kind == Kind::End)
-        .map_or(tokens.len(), |offset| start + offset);
+    let end = ends
+        .get(ends.partition_point(|&at| at < start))
+        .map_or(tokens.len(), |&at| at);
     let slice = &tokens[start..end];
     let mut at = 0;
     let mut keyless = false;
@@ -621,6 +625,7 @@ where
     let mut text_map: HashMap<&[u8], u32> = HashMap::new();
     text_map.insert(b"", 0);
     let mut tokens = Vec::with_capacity(lexed.tokens.len());
+    let mut ends = Vec::new();
     let mut last_var_mention: HashMap<u32, usize> = HashMap::new();
 
     for (index, token) in lexed.tokens.iter().enumerate() {
@@ -633,6 +638,9 @@ where
             text_map.insert(slice, next_id);
             next_id
         };
+        if token.kind == Kind::End {
+            ends.push(index);
+        }
         if let Some(var) = slice.strip_prefix(b"@") {
             last_var_mention.insert(crate::parser::variable_hash(var), index);
         }
@@ -1023,7 +1031,8 @@ where
                     } else {
                         state.next
                     };
-                    let balanced_eligible = !meta && scan_keyless_eligible(&tokens, scan_start, &texts);
+                    let balanced_eligible =
+                        !meta && scan_keyless_eligible(&tokens, &ends, scan_start, &texts);
                     apply_decl_name(
                         decl_policy,
                         state.stack.last_mut().expect("active frame"),

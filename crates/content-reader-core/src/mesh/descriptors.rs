@@ -1019,6 +1019,12 @@ const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparti
 const ANIMATION_NAME: usize = 63;
 const ENTITY_NAME: usize = 255;
 
+struct ParsedFile {
+    document: parser::Document,
+    items: Vec<parser::Item>,
+    overlay_fallback_names: Option<BTreeSet<String>>,
+}
+
 impl Roster {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut roster = Self::default();
@@ -1026,14 +1032,17 @@ impl Roster {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         let mut objects = BTreeMap::new();
         for path in crate::particles::object_file_order(&interface, &gfx) {
-            if let Some((_, items)) = roster.parse(
+            if let Some(parsed) = roster.parse(
                 layers,
                 &path,
                 &OBJECTS,
                 read_object_items,
                 recover_object_names,
             )? {
-                add_objects(&items, &mut objects);
+                let registered = add_objects(&parsed.items, &mut objects);
+                if let Some(overlay_names) = parsed.overlay_fallback_names {
+                    roster.record_overlay_refusals(overlay_names, &registered, &path.text());
+                }
             }
         }
         roster.descriptors.meshes = objects
@@ -1043,7 +1052,7 @@ impl Roster {
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
         for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
-            let Some((document, entity_items)) = roster.parse(
+            let Some(parsed) = roster.parse(
                 layers,
                 &file,
                 &["entity", "animation", "light"],
@@ -1055,7 +1064,8 @@ impl Roster {
             };
             let path = file.text();
             let directory = file.folder_text();
-            for item in &document.items {
+            let mut registered = BTreeSet::new();
+            for item in &parsed.document.items {
                 if item.keyword_is("animation") {
                     let Some(animation) =
                         animation_definition(&item.value, directory.unwrap_or_default())
@@ -1074,6 +1084,7 @@ impl Roster {
                             animation.name
                         )));
                     }
+                    registered.insert(animation.name.clone());
                     animations
                         .entry(animation.name.clone())
                         .or_default()
@@ -1087,13 +1098,21 @@ impl Roster {
                             "{path}: light {name} is longer than the {ANIMATION_NAME} bytes the engine keeps"
                         )));
                     }
+                    if !name.is_empty() {
+                        registered.insert(name.clone());
+                    }
                     roster.lights.insert(name, fields.to_vec());
                 }
             }
-            for item in entity_items {
-                if item.keyword_is("entity") {
-                    entities.declare(&item.value, &file, &mut roster)?;
+            for item in parsed.items {
+                if item.keyword_is("entity")
+                    && let Some(name) = entities.declare(&item.value, &file, &mut roster)?
+                {
+                    registered.insert(name);
                 }
+            }
+            if let Some(overlay_names) = parsed.overlay_fallback_names {
+                roster.record_overlay_refusals(overlay_names, &registered, &path);
             }
         }
         for (name, declarations) in animations {
@@ -1108,6 +1127,21 @@ impl Roster {
         Ok(roster)
     }
 
+    fn record_overlay_refusals(
+        &mut self,
+        overlay_names: BTreeSet<String>,
+        registered: &BTreeSet<String>,
+        path: &str,
+    ) {
+        for name in overlay_names {
+            if !registered.contains(&name) {
+                self.unreadable_names
+                    .entry(name)
+                    .or_insert_with(|| path.to_owned());
+            }
+        }
+    }
+
     fn parse(
         &mut self,
         layers: &ResolvedLayers,
@@ -1115,7 +1149,7 @@ impl Roster {
         words: &[&str],
         native: fn(&[u8], &str) -> io::Result<(Vec<parser::Item>, Vec<String>)>,
         recover: fn(&[u8]) -> BTreeSet<String>,
-    ) -> io::Result<Option<(parser::Document, Vec<parser::Item>)>> {
+    ) -> io::Result<Option<ParsedFile>> {
         let text = file.text();
         let path: &str = &text;
         let bytes = match file.read_uncovered(layers) {
@@ -1143,7 +1177,11 @@ impl Roster {
             Ok(document) => match validate(&bytes, &document) {
                 Ok((items, misreads)) => {
                     self.logged.extend(misreads);
-                    return Ok(Some((document, items)));
+                    return Ok(Some(ParsedFile {
+                        document,
+                        items,
+                        overlay_fallback_names: None,
+                    }));
                 }
                 Err(error) => (error, Some(document)),
             },
@@ -1156,7 +1194,6 @@ impl Roster {
             && let Ok((items, misreads)) = validate(&recorded_bytes, &document)
         {
             layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
-            let recorded_names = declared_names_from(&items, &document, words);
             let overlay_names = match &parsed {
                 Some(_) => recover(&bytes),
                 None => {
@@ -1165,15 +1202,12 @@ impl Roster {
                     overlay_names
                 }
             };
-            for name in overlay_names {
-                if !recorded_names.contains(&name) {
-                    self.unreadable_names
-                        .entry(name)
-                        .or_insert_with(|| path.to_owned());
-                }
-            }
             self.logged.extend(misreads);
-            return Ok(Some((document, items)));
+            return Ok(Some(ParsedFile {
+                document,
+                items,
+                overlay_fallback_names: Some(overlay_names),
+            }));
         }
         let names = match &parsed {
             Some(_) => recover(&bytes),
@@ -1255,7 +1289,8 @@ impl Roster {
 fn add_objects(
     items: &[parser::Item],
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
-) {
+) -> BTreeSet<String> {
+    let mut registered = BTreeSet::new();
     for item in items {
         if !item.keyword_is("objectTypes") {
             continue;
@@ -1263,6 +1298,7 @@ fn add_objects(
         for object in item.value.items().unwrap_or(&[]) {
             if object.keyword_is(OBJECTS[0]) {
                 if let Some(mesh) = mesh_definition(&object.value) {
+                    registered.insert(mesh.name.clone());
                     objects.insert(mesh.name.clone(), Some(mesh));
                 }
             } else if OBJECTS[1..].iter().any(|kind| object.keyword_is(kind))
@@ -1271,10 +1307,14 @@ fn add_objects(
                     .items()
                     .and_then(|fields| last_text(fields, "name"))
             {
+                if !name.is_empty() {
+                    registered.insert(name.clone());
+                }
                 objects.insert(name, None);
             }
         }
     }
+    registered
 }
 
 fn loaded_animation(
@@ -1309,12 +1349,12 @@ impl Entities {
         value: &parser::Value,
         path: &ScriptPath,
         roster: &mut Roster,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         let Some(fields) = value.items() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty()) else {
-            return Ok(());
+            return Ok(None);
         };
         let clone = last_text(fields, "clone").filter(|parent| !parent.is_empty());
         let mesh = last_text(fields, "pdxmesh");
@@ -1346,17 +1386,17 @@ impl Entities {
                     roster.logged.push(format!(
                         "{name} in {path}: the engine drops it, finding no entity {parent} to clone yet"
                     ));
-                    return Ok(());
+                    return Ok(None);
                 }
             },
         };
         let registered = self.0.get(&name);
         let stored = registered.map(|(_, stored)| *stored);
         if stored.is_some_and(|stored| version < stored) {
-            return Ok(());
+            return Ok(None);
         }
         let Some(mut definition) = entity_definition(value) else {
-            return Ok(());
+            return Ok(None);
         };
         roster
             .logged
@@ -1397,8 +1437,8 @@ impl Entities {
             Some(parent) => roster.clones.insert(name.clone(), parent),
             None => roster.clones.remove(&name),
         };
-        self.0.insert(name, entry);
-        Ok(())
+        self.0.insert(name.clone(), entry);
+        Ok(Some(name))
     }
 }
 
@@ -1455,59 +1495,6 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .find(|item| item.keyword_is(key))
         .and_then(|item| item.value.scalar_str())
         .map(unquote)
-}
-
-fn declared_names_from(
-    native_items: &[parser::Item],
-    document: &parser::Document,
-    words: &[&str],
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for item in native_items {
-        if item.keyword_is("objectTypes") {
-            for block in item.value.items().unwrap_or(&[]) {
-                if block.keyword_is(OBJECTS[0]) && words.contains(&OBJECTS[0]) {
-                    if let Some(mesh) = mesh_definition(&block.value) {
-                        names.insert(mesh.name);
-                    }
-                } else if OBJECTS[1..]
-                    .iter()
-                    .any(|kind| words.contains(kind) && block.keyword_is(kind))
-                    && let Some(name) = block
-                        .value
-                        .items()
-                        .and_then(|fields| last_text(fields, "name"))
-                        .filter(|name| !name.is_empty())
-                {
-                    names.insert(name);
-                }
-            }
-        } else if words.contains(&"entity")
-            && item.keyword_is("entity")
-            && let Some(name) = item
-                .value
-                .items()
-                .and_then(|fields| last_text(fields, "name"))
-                .filter(|name| !name.is_empty())
-        {
-            names.insert(name);
-        }
-    }
-    for item in &document.items {
-        if words.contains(&"animation")
-            && item.keyword_is("animation")
-            && let Some(animation) = animation_definition(&item.value, "")
-        {
-            names.insert(animation.name);
-        } else if words.contains(&"light")
-            && item.keyword_is("light")
-            && let Some(fields) = item.value.items()
-            && let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty())
-        {
-            names.insert(name);
-        }
-    }
-    names
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

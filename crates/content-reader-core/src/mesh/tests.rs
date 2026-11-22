@@ -2946,3 +2946,110 @@ fn recovery_handles_astra_r2_edge_cases() {
         Some("gfx/models/no_file_mesh.gfx")
     );
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn recovery_handles_astra_r3_edge_cases() {
+    use crate::content::{ResolveOptions, visual};
+    use std::sync::atomic::AtomicBool;
+
+    let root = std::env::temp_dir().join(format!(
+        "content-reader-astra-r3-overlay-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    };
+    let game_dir = root.join("game");
+    let user_dir = root.join("user");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("mod")).unwrap();
+    write(
+        "base/gfx/models/m.gfx",
+        b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+    );
+    write(
+        "base/gfx/entities/0_other.asset",
+        br#"entity = { name = "dropped_clone_target" pdxmesh = "m" }"#,
+    );
+    write(
+        "base/gfx/entities/1_clone.asset",
+        br#"entity = { name = "dropped_clone_target" clone = "absent_parent" }"#,
+    );
+    let overlay_dir = root.join("overlay");
+    write(
+        "overlay/gfx/entities/1_clone.asset",
+        br#"entity = { name = "dropped_clone_target" pdxmesh = "m" game_data = { atlas_size = { @u = 1 } } }"#,
+    );
+    let descriptor = format!(
+        "name=\"VisualOverride\"\npath=\"{}\"\n",
+        overlay_dir.display().to_string().replace('\\', "/")
+    );
+    write("user/mod/visual_override.mod", descriptor.as_bytes());
+    let base = root.join("base");
+    let mut layers = crate::ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: root.join("cache"),
+    };
+    visual::apply(
+        &mut layers,
+        &options,
+        &[visual::Choice {
+            id: "mod/visual_override.mod".into(),
+            name: "VisualOverride".into(),
+        }],
+        &[],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let overlay_roster = Roster::read(layers.presentation()).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("dropped_clone_target")
+            .map(String::as_str),
+        Some("gfx/entities/1_clone.asset"),
+        "dropped recorded clone must not exempt overlay declaration; refused={:?}",
+        overlay_roster.unreadable_names
+    );
+    assert!(
+        overlay_roster
+            .refused_declaration("dropped_clone_target")
+            .is_some()
+    );
+
+    let mut many_short_positions =
+        String::from("entity = { name = \"many_short_positions\" pdxmesh = \"m\"\n");
+    for _ in 0..4_000 {
+        many_short_positions.push_str("locator = { position = { x = 1 } }\n");
+    }
+    many_short_positions.push_str("game_data = { atlas_size = { @u = 1 } }\n}\n");
+    let perf_roster = roster_of(
+        "astra-r3-many-short-positions",
+        &[
+            (
+                "gfx/models/m.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+            ),
+            (
+                "gfx/entities/many_positions.asset",
+                many_short_positions.as_bytes(),
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(
+        perf_roster
+            .unreadable_names
+            .get("many_short_positions")
+            .map(String::as_str),
+        Some("gfx/entities/many_positions.asset")
+    );
+}
