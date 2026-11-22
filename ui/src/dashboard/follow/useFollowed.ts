@@ -142,7 +142,8 @@ export function liveOf(map: LiveMap | null | undefined): LiveValues<number> {
   let values = lives.get(map);
   if (!values) {
     values = {
-      get: key => { const value = map.get(key); return typeof value === 'number' ? value : undefined; },
+      get: key => { const value = map.get(key); return typeof value === 'number' ? value : typeof value === 'bigint' ? Number(value) : undefined; },
+      raw: key => { const value = map.get(key); return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined; },
       missing: key => { const value = map.get(key); return typeof value === 'string' ? value : 'Not recorded'; },
     };
     lives.set(map, values);

@@ -5,7 +5,7 @@ import type { Picture } from '../../dashboard/follow/facts';
 import type { LaneView, Painted, Scene, Value } from '../lane.ts';
 
 export type Structure = (panel: FollowedPanel, hour: number) => string | undefined;
-export type LiveMap = Map<string, number | string>;
+export type LiveMap = Map<string, number | bigint | string>;
 
 export interface ModelField { bytes: Uint8Array | null; data?: unknown; refused: string | null; structure?: string }
 
@@ -36,7 +36,8 @@ export function liveValues(picture: Picture<Value>): LiveMap | null {
   const out: LiveMap = new Map();
   for (let i = 0; i < section.cells.length; i += 3 + section.cells[i + 2]! * 3) {
     const key = liveKey(section.rows[section.cells[i]!]!, section.kinds[section.cells[i + 1]!]!.id);
-    out.set(key, live.get(key) ?? live.missing(key));
+    const raw = live.raw?.(key);
+    out.set(key, raw !== undefined && !Number.isSafeInteger(Number(raw)) ? raw : live.get(key) ?? live.missing(key));
   }
   return out;
 }

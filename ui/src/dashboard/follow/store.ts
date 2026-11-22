@@ -22,7 +22,7 @@ export interface FollowEntry {
   readonly reason?: string;
   readonly answer: FollowedAnswer | undefined;
   readonly panel?: FollowedPanel;
-  readonly values?: Map<string, number | string>;
+  readonly values?: Map<string, number | bigint | string>;
   readonly structure?: string;
   readonly hour: number;
   readonly through: number;

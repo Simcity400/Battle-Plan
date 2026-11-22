@@ -261,10 +261,11 @@ impl StepProduct {
                     Ok(id) => {
                         out.insert("follow".into(), id.into());
                         let exact = || out.get("values").and_then(Value::as_array).is_some_and(|values| values.iter().all(|value| value.as_i64().is_none_or(|n| n.unsigned_abs() < 1 << 53)));
-                        if (new || seed) && fresh && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); }
+                        if (new || seed) && fresh && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); out.remove("rawValues"); }
                     }
                     Err(reason) => {
                         out.remove("values");
+                        out.remove("rawValues");
                         out.insert("unavailable".into(), reason.into());
                     }
                 }

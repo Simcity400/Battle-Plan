@@ -8,7 +8,8 @@ import { tableView } from './table.ts';
 export type PanelTexts = Map<string, string>;
 
 const liveOf = (map: LiveMap | null) => map && {
-  get: (key: string) => { const value = map.get(key); return typeof value === 'number' ? value : undefined; },
+  get: (key: string) => { const value = map.get(key); return typeof value === 'number' ? value : typeof value === 'bigint' ? Number(value) : undefined; },
+  raw: (key: string) => { const value = map.get(key); return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined; },
   missing: (key: string) => { const value = map.get(key); return typeof value === 'string' ? value : 'Not recorded'; },
 };
 

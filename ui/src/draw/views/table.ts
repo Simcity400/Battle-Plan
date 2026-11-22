@@ -44,7 +44,7 @@ function valuesOf(scene: Scene, model: TableSurfaceModel): TableValues | null {
     const picture = at < 0 ? undefined : scene.pictures[at];
     if (picture?.parts[0]!.value.kind !== 'panel') return null;
     const live = liveValues(picture);
-    return live && { get: key => { const v = live.get(key); return typeof v === 'number' ? v : undefined; }, missing: key => { const v = live.get(key); return typeof v === 'string' ? v : 'Not recorded'; } };
+    return live && { get: key => { const v = live.get(key); return typeof v === 'number' || typeof v === 'bigint' ? v : undefined; }, missing: key => { const v = live.get(key); return typeof v === 'string' ? v : 'Not recorded'; } };
   }
   if (!model.values) return null;
   const values = model.values, missing = model.missingValues ?? {};

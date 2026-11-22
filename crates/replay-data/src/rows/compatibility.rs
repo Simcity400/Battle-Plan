@@ -3725,6 +3725,16 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "power ledger day log",
         )
     };
+    history[TableId::EquipmentLossCoverage.index()] = appended_at(
+        TableId::EquipmentLossCoverage,
+        EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+        "equipment losses startup coverage",
+        &[AppendedField {
+            index: 15,
+            name: "drain_state",
+            introduced: EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+        }],
+    );
     history
 };
 
@@ -4062,6 +4072,9 @@ mod tests {
                     (TableId::FactionTheatres, 4),
                     (TableId::WeatherProvinces, 16),
                 ]);
+            }
+            if format < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT {
+                fewer.push((TableId::EquipmentLossCoverage, 15));
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4639,7 +4652,8 @@ mod tests {
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
         assert_eq!(POWER_LEDGER_DAY_LOG_FORMAT, 143);
         assert_eq!(VARIANT_STAT_WITNESS_FORMAT, 144);
-        assert_eq!(FORMAT_VERSION, VARIANT_STAT_WITNESS_FORMAT);
+        assert_eq!(EQUIPMENT_DESTRUCTION_STARTUP_FORMAT, 145);
+        assert_eq!(FORMAT_VERSION, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT);
         assert_eq!(TableId::PowerSpendTotals.field_count(), 32);
         let spend_days = TableId::PowerSpendDays.last_change();
         assert_eq!(spend_days.introduced, POWER_LEDGER_DAY_LOG_FORMAT);
@@ -4647,6 +4661,12 @@ mod tests {
         assert_eq!(spend_days.kind, ChangeKind::Layout);
         assert!(spend_days.table_gap(TableId::PowerSpendDays, CAPTURE_ADDITIONS_FORMAT).is_some());
         assert!(spend_days.table_gap(TableId::PowerSpendDays, POWER_LEDGER_DAY_LOG_FORMAT).is_none());
+        let coverage = TableId::EquipmentLossCoverage.last_change();
+        assert_eq!(coverage.format, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT);
+        assert_eq!(coverage.kind, ChangeKind::AppendedOnly);
+        assert!(coverage.gap(TableId::EquipmentLossCoverage, VARIANT_STAT_WITNESS_FORMAT).is_none());
+        assert_eq!(coverage.fields(TableId::EquipmentLossCoverage, VARIANT_STAT_WITNESS_FORMAT), 15);
+        assert_eq!(coverage.fields(TableId::EquipmentLossCoverage, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT), 16);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

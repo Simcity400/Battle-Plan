@@ -1033,7 +1033,7 @@ typed_codec!(EquipmentDestructionRow, 104,
     match (&row.coverage, &row.unavailable_reason) {
         (Recorded::NotRecorded, Recorded::NotRecorded) if row.amount_raw > 0 => Ok(()),
         (Recorded::Value(EquipmentDestructionCoverage::Complete), Recorded::Value(reason)) if row.key() != 0 && row.amount_raw != 0 && reason.is_empty() => Ok(()),
-        (Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable), Recorded::Value(reason)) if row.key() == 0 && row.amount_raw == 0 && !reason.is_empty() => Ok(()),
+        (Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable | EquipmentDestructionCoverage::PartialInterval), Recorded::Value(reason)) if row.key() == 0 && row.amount_raw == 0 && !reason.is_empty() => Ok(()),
         _ => Err(invalid("invalid equipment destruction amount or availability marker")),
     }
 });
