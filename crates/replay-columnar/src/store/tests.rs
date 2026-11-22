@@ -1114,7 +1114,11 @@ fn put_rows_rejects_duplicate_live_keys_by_name() {
     let mut unindexed = TableState::new(&KINDS);
     unindexed.insert_at(0, 0x88).unwrap();
     unindexed.insert_at(2, 0x88).unwrap();
+    assert_eq!(unindexed.slot(0x88), Some(0));
     let refused = unindexed.try_index_keys().unwrap_err().to_string();
     assert!(refused.contains("0x88") && refused.contains("already held"), "{refused}");
-    assert_eq!(unindexed.slot(0x88), Some(0));
+    assert_eq!(unindexed.delete(0).unwrap(), 0x88);
+    assert_eq!(unindexed.find(0x88), Some(2));
+    assert_eq!(unindexed.slot(0x88), Some(2));
+    unindexed.try_index_keys().unwrap();
 }

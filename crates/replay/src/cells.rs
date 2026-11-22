@@ -312,12 +312,14 @@ impl TableReader {
         let (restored, entry, first) = self.restore_before(recording, block)?;
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (cells, meta) = unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns).map_err(|error| self.damaged(restored, error))?;
+        let (cells, meta) = if self.keyed {
+            unit::reader::restore_keyed(source, &entry, &self.kinds[..self.held], &self.columns)
+        } else {
+            unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns)
+        }
+        .map_err(|error| self.damaged(restored, error))?;
         self.cells = cells;
         self.restores += 1;
-        if self.keyed {
-            self.cells.try_index_keys()?;
-        }
         self.strings = Strings::default();
         for (id, text) in meta.strings {
             self.strings.pin(id, &text)?;

@@ -1132,6 +1132,20 @@ impl KeyIndex {
         }
     }
 
+    fn reserve(&mut self, additional: usize, keys: &Keys) {
+        let needed = self.held.saturating_add(additional);
+        if needed == 0 || needed * 4 <= self.buckets.len() * 3 {
+            return;
+        }
+        let _label = label("store: index grown");
+        let size = (needed * 4 / 3 + 1).next_power_of_two().max(16);
+        let old = std::mem::replace(&mut self.buckets, vec![0; size]);
+        self.held = 0;
+        for held in old.into_iter().filter(|&held| held != 0) {
+            self.place(keys.get(held - 1), held);
+        }
+    }
+
     fn insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<()> {
         if let Some(held) = self.find(key, keys) {
             return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {held}")));
@@ -1350,15 +1364,8 @@ impl TableState {
     }
 
     pub fn slot(&mut self, key: u128) -> Option<u32> {
-        if self.index.is_none() {
-            let mut index = KeyIndex::with_capacity(self.live.count());
-            for slot in self.live.ones() {
-                let held = self.keys.get(slot);
-                if index.find(held, &self.keys).is_none() {
-                    index.insert(held, slot, &self.keys);
-                }
-            }
-            self.index = Some(index);
+        if self.index.is_none() && self.try_index_keys().is_err() {
+            return self.live.ones().find(|&slot| self.keys.get(slot) == key);
         }
         let index = self.index.as_mut().expect("built");
         index.lookups += 1;
@@ -1409,6 +1416,12 @@ impl TableState {
     pub(crate) fn check_unique_keys(&self) -> io::Result<()> {
         let _ = self.build_index()?;
         Ok(())
+    }
+
+    pub(crate) fn enable_index(&mut self) {
+        if self.index.is_none() {
+            self.index = Some(KeyIndex::default());
+        }
     }
 
     pub(crate) fn clear_index(&mut self) {
@@ -1539,6 +1552,9 @@ impl TableState {
         }
         if count != keys.len() {
             return Err(invalid("A restore's rows hold another count of keys than live slots"));
+        }
+        if let Some(index) = &mut self.index {
+            index.reserve(keys.len(), &self.keys);
         }
         let mut keys = keys.iter();
         let (high, low) = (self.keys.high.width(), self.keys.low.width());

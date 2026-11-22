@@ -433,4 +433,23 @@ fn a_restore_with_duplicate_live_keys_is_refused_by_name() {
     };
     let refused = restore(&multi_bytes, &multi, &[Kind::I32], &[]).unwrap_err().to_string();
     assert!(refused.contains("0xbeef") && refused.contains("already held"), "{refused}");
+    let refused_keyed = restore_keyed(&multi_bytes, &multi, &[Kind::I32], &[]).unwrap_err().to_string();
+    assert!(refused_keyed.contains("0xbeef") && refused_keyed.contains("already held"), "{refused_keyed}");
+
+    let mut clean_bytes = Vec::new();
+    let meta = push_frame(&mut clean_bytes, META, &encode_meta(3));
+    let rows = push_frame(&mut clean_bytes, ROWS, &encode_rows(&[0b101], &[0x11, 0x22]));
+    let clean = RestoreEntry {
+        whole: true,
+        streams: vec![
+            (META, vec![Chunk { first: 0, frame: meta, prefix: None }]),
+            (ROWS, vec![Chunk { first: 0, frame: rows, prefix: None }]),
+        ],
+        log: false,
+    };
+    let (unkeyed, _) = restore(&clean_bytes, &clean, &[Kind::I32], &[]).unwrap();
+    assert_eq!(unkeyed.bytes().index, 0);
+    let (keyed, _) = restore_keyed(&clean_bytes, &clean, &[Kind::I32], &[]).unwrap();
+    assert!(keyed.bytes().index > 0);
+    assert_eq!((keyed.find(0x11), keyed.find(0x22), keyed.find(0x33)), (Some(0), Some(2), None));
 }

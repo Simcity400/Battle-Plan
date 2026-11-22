@@ -566,16 +566,17 @@ impl Lane {
         {
             self.state_reads += 1;
         }
-        let (cells, meta) = reader::restore(pages.extents(self.run), entry, &self.kinds, &self.columns)?;
+        let (cells, meta) = if self.keyed {
+            reader::restore_keyed(pages.extents(self.run), entry, &self.kinds, &self.columns)?
+        } else {
+            reader::restore(pages.extents(self.run), entry, &self.kinds, &self.columns)?
+        };
         let restore_ns = started.elapsed().as_nanos() as u64;
         if let Some(under) = self.under.take() {
             add(&mut self.spent, &under.cursor.spent);
         }
         let before = self.spent;
         self.cells = cells;
-        if self.keyed {
-            self.cells.try_index_keys()?;
-        }
         self.ahead.clear();
         self.retired.clear();
         self.texts.clear();
