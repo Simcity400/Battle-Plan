@@ -83,8 +83,23 @@ impl WorkerStart {
     }
 
     #[cfg(feature = "worker_sampler")]
+    pub fn sampler_join(&self) -> Option<SamplerJoin> {
+        self.live.then_some(SamplerJoin(()))
+    }
+
+    #[cfg(feature = "worker_sampler")]
     pub(crate) fn is_live(&self) -> bool {
         self.live
+    }
+}
+
+#[cfg(feature = "worker_sampler")]
+pub struct SamplerJoin(());
+
+#[cfg(feature = "worker_sampler")]
+impl SamplerJoin {
+    pub fn before_join(self) {
+        worker_sampler_state::stop_before_thread_exit();
     }
 }
 

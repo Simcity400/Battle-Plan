@@ -3008,7 +3008,7 @@ impl Processor {
             return HistoryAttempt::Fenced;
         }
         *fence = Default::default();
-        HistoryAttempt::Ready(self.history_request(request))
+        HistoryAttempt::Ready(self.handle_history_request(request))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3017,10 +3017,10 @@ impl Processor {
         request: &str,
     ) -> io::Result<Option<(HistoryReply, Option<File>)>> {
         assert!(self.owner.is_fixture());
-        self.history_request(request)
+        self.handle_history_request(request)
     }
 
-    fn history_request(
+    fn handle_history_request(
         &mut self,
         request: &str,
     ) -> io::Result<Option<(HistoryReply, Option<File>)>> {

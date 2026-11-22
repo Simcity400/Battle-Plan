@@ -81,6 +81,15 @@ pub struct HookGuard {
 
 impl HookGuard {
     pub fn install(_owner: &crate::Owner) -> Result<Self, &'static str> {
+        Self::install_exclusive()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_for_test() -> Result<Self, &'static str> {
+        Self::install_exclusive()
+    }
+
+    fn install_exclusive() -> Result<Self, &'static str> {
         let installation = INSTALLED
             .try_lock()
             .map_err(|_| "collector panic hook already installed")?;

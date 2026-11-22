@@ -439,8 +439,8 @@ fn attach_refused() {
     let unbind = || unsafe {
         collector_observers::doctrine_changes::bind(0, collector_slow_tables::doctrines::observe);
     };
-    // SAFETY: the fixture owns the binding and no doctrine callbacks are installed.
     let lifecycle = crate::runtime::test_lifecycle_owner();
+    // SAFETY: the fixture owns the binding and no doctrine callbacks are installed.
     drop(unsafe { crate::runtime::attach_capture_state(&lifecycle, 0, 0, 1, &sizing) }.unwrap());
     let stores = {
         let guard = NullGuard::new(usize::MAX);

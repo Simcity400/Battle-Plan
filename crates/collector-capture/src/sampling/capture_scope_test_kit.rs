@@ -110,7 +110,7 @@ pub unsafe fn capture(
     sizing.core[3] = 8;
     sizing.core[4] = 64;
     sizing.core[5] = 64;
-    let mut shared = Shared::with_sizing(0, 0, 10_000_000, &sizing).unwrap();
+    let mut shared = Shared::with_sizing_for_test(0, 0, 10_000_000, &sizing).unwrap();
     shared.capture_mode = mode;
     shared.prepare_roster(&Traced {
         world: &world,

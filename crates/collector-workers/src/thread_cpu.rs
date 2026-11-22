@@ -487,10 +487,8 @@ mod tests {
 
     #[test]
     fn registered_threads_appear_in_live_status() {
-        // SAFETY: this test owns the thread registry and starts no sampler.
         record_id(Role::Runtime, unsafe { GetCurrentThreadId() });
         let me = unsafe { GetCurrentThreadId() };
-        // SAFETY: this test registers its own unsampled capture thread.
         record_id(Role::Capture, me);
         let status: Value = serde_json::to_value(status(&[me])).unwrap();
         let threads = status["threads"].as_array().unwrap();

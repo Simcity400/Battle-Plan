@@ -74,7 +74,7 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
-    let _hook = PanicHook::install();
+    let _hook = PanicHook::install_for_test().unwrap();
     let shared = Shared::new(0, 0, 1);
     let interrupted = shared.frames.pop().unwrap();
     let queued = shared.frames.pop().unwrap();
@@ -157,7 +157,7 @@ fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
-    let _hook = PanicHook::install();
+    let _hook = PanicHook::install_for_test().unwrap();
     let shared = Shared::new(0, 0, 1);
     let index = shared.frames.pop().unwrap();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -217,7 +217,7 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     failure::reset();
-    let _hook = PanicHook::install();
+    let _hook = PanicHook::install_for_test().unwrap();
     let shared = Shared::new(0, 0, 1);
     let index = shared.frames.pop().unwrap();
     push(&shared, bare_job(index, 10, 20, 30));

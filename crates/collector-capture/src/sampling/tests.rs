@@ -2704,7 +2704,7 @@ fn campaign_clock_memory(len: usize) -> CampaignClockMemory {
     CampaignClockMemory { bytes }
 }
 fn campaign_shared() -> Shared {
-    Shared::with_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)).unwrap()
+    Shared::with_sizing_for_test(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)).unwrap()
 }
 
 #[test]

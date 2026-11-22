@@ -244,6 +244,7 @@ method:as_deref
 method:as_micros
 method:as_mut
 method:as_ref
+method:before_join
 method:bind
 method:build_warning
 method:builder_id
@@ -338,6 +339,7 @@ method:release
 method:release_after_quiet
 method:retain
 method:round
+method:sampler_join
 method:saturating_add
 method:saturating_mul
 method:sentinel

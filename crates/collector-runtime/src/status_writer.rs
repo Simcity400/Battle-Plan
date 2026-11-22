@@ -93,6 +93,8 @@ impl StatusHandle {
 pub(crate) struct StatusWriter {
     handle: StatusHandle,
     thread: Option<JoinHandle<()>>,
+    #[cfg(feature = "worker_sampler")]
+    sampler: Option<collector_workers::SamplerJoin>,
 }
 impl StatusWriter {
     pub(crate) fn start(
@@ -104,6 +106,8 @@ impl StatusWriter {
             wake: Condvar::new(),
         });
         let worker = inner.clone();
+        #[cfg(feature = "worker_sampler")]
+        let sampler = start.sampler_join();
         let thread = std::thread::Builder::new()
             .name("collector-status".into())
             .spawn(move || {
@@ -115,6 +119,8 @@ impl StatusWriter {
         Ok(Self {
             handle: StatusHandle { inner },
             thread: Some(thread),
+            #[cfg(feature = "worker_sampler")]
+            sampler,
         })
     }
     pub(crate) fn handle(&self) -> StatusHandle {
@@ -129,7 +135,9 @@ impl StatusWriter {
             return;
         };
         #[cfg(feature = "worker_sampler")]
-        collector_workers::worker_sampler_state::stop_before_thread_exit();
+        if let Some(sampler) = self.sampler.take() {
+            sampler.before_join();
+        }
         self.handle.inner.lock().stop = true;
         self.handle.inner.wake.notify_one();
         let _ = thread.join();

@@ -5035,6 +5035,8 @@ struct SizingThread {
     sizing: Arc<SizingShared>,
     thread: Option<std::thread::JoinHandle<()>>,
     builder: Option<std::thread::JoinHandle<()>>,
+    #[cfg(feature = "worker_sampler")]
+    sampler: Option<collector_workers::SamplerJoin>,
 }
 
 impl SizingThread {
@@ -5080,6 +5082,8 @@ impl SizingThread {
         };
         let worker = Arc::clone(&sizing);
         let start = owner.worker();
+        #[cfg(feature = "worker_sampler")]
+        let sampler = start.sampler_join();
         let thread = std::thread::Builder::new()
             .name("hoi4-spool-sizing".into())
             .stack_size(BACKGROUND_STACK_BYTES)
@@ -5097,6 +5101,8 @@ impl SizingThread {
             sizing,
             thread,
             builder,
+            #[cfg(feature = "worker_sampler")]
+            sampler,
         }
     }
 
@@ -5176,8 +5182,10 @@ impl SizingThread {
 impl Drop for SizingThread {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
-        if self.thread.is_some() {
-            collector_workers::worker_sampler_state::stop_before_thread_exit();
+        if self.thread.is_some()
+            && let Some(sampler) = self.sampler.take()
+        {
+            sampler.before_join();
         }
         self.sizing.stop.store(true, Ordering::Release);
         for thread in [self.thread.take(), self.builder.take()]
@@ -6793,6 +6801,8 @@ mod tests {
             sizing: Arc::new(SizingShared::new(&shared, capacities, None, None)),
             thread: None,
             builder: None,
+            #[cfg(feature = "worker_sampler")]
+            sampler: None,
         };
         (shared, thread)
     }
