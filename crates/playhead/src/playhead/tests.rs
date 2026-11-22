@@ -2562,6 +2562,8 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
         assert!(consumer.wait_step_after(before, mid).unwrap(), "playhead stopped before step {mid}");
     }
     playhead.wait_until(|| playhead.ring_len() == 4);
+    let published = super::lock(&playhead.shared.ring).next_seq();
+    playhead.wait_until(|| playhead.step_state().1 >= published);
     assert!(playhead.newest().is_some_and(|newest| newest > mid));
     let paused_dropped = playhead.consumer(reader);
     let paused_id = paused_dropped.id;
