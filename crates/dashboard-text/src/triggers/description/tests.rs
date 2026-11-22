@@ -417,6 +417,25 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
         .unwrap(),
         "[no]Never\n[no]Never\n"
     );
+    for source in [
+        "OR={check_variable={temp_var:x=0} hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=0}} always=no}",
+        "OR={ROOT={check_variable={temp_var:x=1} hidden_trigger={add_to_temp_variable={x=1}}} always=yes} if={limit={check_variable={temp_var:x=0}} always=no}",
+        "OR={check_variable={temp_var:x=1} hidden_trigger={add_to_temp_variable={x=1}}} if={limit={check_variable={temp_var:x=1}} always=no}",
+    ] {
+        let display_refused = run_synthetic(source).unwrap_err();
+        assert!(
+            display_refused.contains("check_variable"),
+            "{source}: {display_refused}"
+        );
+        assert!(
+            display_refused.contains("[no]Never\n"),
+            "{source}: {display_refused}"
+        );
+        assert!(
+            !display_refused.contains("session is uncertain"),
+            "{source}: {display_refused}"
+        );
+    }
     let or_refused = run_synthetic("OR={always=no synthetic_unported_trigger=yes}").unwrap_err();
     assert!(or_refused.contains("   Never\n"), "{or_refused}");
     assert!(

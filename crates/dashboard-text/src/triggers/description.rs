@@ -321,23 +321,27 @@ impl<'a> Formatter<'_, '_, 'a> {
         inverted: bool,
         indent: usize,
         mode: u8,
-    ) -> Result<(String, Option<Eval>), String> {
+    ) -> (Result<String, String>, Option<Eval>) {
         let mut text = "   ".repeat(indent);
-        let mut evaluated = None;
-        if Self::checks_prefix(indent, mode) {
-            let value = self.evaluator.unit(unit, scopes);
-            let fulfilled = value.clone().decided()? != inverted;
-            evaluated = Some(value);
-            text.push_str(&self.localised(
-                if fulfilled {
+        if !Self::checks_prefix(indent, mode) {
+            return (Ok(text), None);
+        }
+        let value = self.evaluator.unit(unit, scopes);
+        let prefix = value.clone().decided().and_then(|fulfilled| {
+            self.localised(
+                if fulfilled != inverted {
                     b"TRIGGER_FULLFILLED_PREFIX"
                 } else {
                     b"TRIGGER_UNFULLFILLED_PREFIX"
                 },
                 &[],
-            )?);
-        }
-        Ok((text, evaluated))
+            )
+            .map(|mark| {
+                text.push_str(&mark);
+                text
+            })
+        });
+        (prefix, Some(value))
     }
 
     fn isolated_prefix(
@@ -349,9 +353,7 @@ impl<'a> Formatter<'_, '_, 'a> {
         mode: u8,
     ) -> Result<String, String> {
         let session = self.evaluator.variable_session();
-        let result = self
-            .prefix_eval(unit, scopes, inverted, indent, mode)
-            .map(|(text, _)| text);
+        let (result, _) = self.prefix_eval(unit, scopes, inverted, indent, mode);
         self.evaluator.restore_variable_session(&session);
         result
     }
@@ -608,25 +610,55 @@ impl<'a> Formatter<'_, '_, 'a> {
                     ))
                 }
                 _ => {
-                    let own = self.own(item, child, scopes, inverted)?;
                     let custom = item.keyword_is("custom_trigger_tooltip")
                         || item.keyword_is("custom_override_tooltip");
                     let has_children = !custom && !children(item).is_empty();
+                    let own = match self.own(item, child, scopes, inverted) {
+                        Ok(own) => own,
+                        Err(why) => {
+                            sink.push_err(key_text(item), why);
+                            let value = self.evaluator.unit(unit, scopes);
+                            if let Err(why) = value.clone().decided() {
+                                self.evaluator.taint_temps(
+                                    crate::triggers::Failure::from(why).context(|why| {
+                                        format!("trigger tooltip session is uncertain: {why}")
+                                    }),
+                                );
+                            }
+                            return Ok(value);
+                        }
+                    };
                     let mut evaluated = None;
                     if !own.is_empty() {
-                        let mut line = if has_children {
-                            self.isolated_prefix(unit, scopes, inverted, indent, mode)?
+                        let prefix = if has_children {
+                            self.isolated_prefix(unit, scopes, inverted, indent, mode)
                         } else {
-                            let (line, value) =
-                                self.prefix_eval(unit, scopes, inverted, indent, mode)?;
+                            let (prefix, value) =
+                                self.prefix_eval(unit, scopes, inverted, indent, mode);
                             evaluated = value;
-                            line
+                            prefix
                         };
-                        line.push_str(&own);
-                        if !own.ends_with('\n') {
-                            line.push('\n');
+                        match prefix {
+                            Ok(mut line) => {
+                                line.push_str(&own);
+                                if !own.ends_with('\n') {
+                                    line.push('\n');
+                                }
+                                sink.push_ok(key_text(item), line);
+                            }
+                            Err(why) => {
+                                sink.push_err(key_text(item), why);
+                                if let Some(value) = &evaluated
+                                    && let Err(why) = value.clone().decided()
+                                {
+                                    self.evaluator.taint_temps(
+                                        crate::triggers::Failure::from(why).context(|why| {
+                                            format!("trigger tooltip session is uncertain: {why}")
+                                        }),
+                                    );
+                                }
+                            }
                         }
-                        sink.push_ok(key_text(item), line);
                     }
                     if custom {
                         let value = evaluated.unwrap_or_else(|| self.evaluator.unit(unit, scopes));

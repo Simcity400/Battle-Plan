@@ -1382,5 +1382,25 @@ mod tests {
                 "{source}: {short_circuit_lines:?}"
             );
         }
+        for source in [
+            "OR = { check_variable = { temp_var:x = 0 } hidden_trigger = { add_to_temp_variable = { x = 1 } } } if = { limit = { check_variable = { temp_var:x = 0 } } always = no }",
+            "OR = { FROM = { check_variable = { temp_var:x = 1 } hidden_trigger = { add_to_temp_variable = { x = 1 } } } always = yes } if = { limit = { check_variable = { temp_var:x = 0 } } always = no }",
+        ] {
+            kind.launchable = parse(source);
+            let (result, short_circuit_lines) =
+                context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+            assert_eq!(result, Eval::False, "{source}");
+            assert!(
+                short_circuit_lines.iter().any(|(key, entry)| {
+                    key == "raid launchable: check_variable" && entry.is_err()
+                }),
+                "{source}: {short_circuit_lines:?}"
+            );
+            assert_eq!(
+                short_circuit_lines.last(),
+                Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+                "{source}: {short_circuit_lines:?}"
+            );
+        }
     }
 }

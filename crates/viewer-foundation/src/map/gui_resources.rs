@@ -243,47 +243,22 @@ pub fn observer_hit_rectangles(
                 .into_iter()
                 .collect();
         }
-        let mut region_counts: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut part_counts: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut out = Vec::new();
-        for background in &container.backgrounds {
-            let duplicate = container
-                .backgrounds
-                .iter()
-                .filter(|other| other.path == background.path)
-                .count()
-                > 1;
-            let (region_occurrence, part_occurrence) = if duplicate {
-                let (regions, parts) = native_gui::background_emitted_counts(background, resources);
-                let region_occurrence = *region_counts.get(background.path.as_str()).unwrap_or(&0);
-                let part_base = *part_counts.get(background.path.as_str()).unwrap_or(&0);
-                if regions > 0 {
-                    *region_counts.entry(background.path.as_str()).or_default() += regions;
-                }
-                if parts > 0 {
-                    *part_counts.entry(background.path.as_str()).or_default() += parts;
-                }
-                if regions == 0 && parts == 0 {
-                    continue;
-                }
-                (region_occurrence, part_base + parts.saturating_sub(1))
-            } else {
-                (0, 0)
-            };
-            if let Some(hit) = observer_hit_rectangle_at(
-                background,
-                layout,
-                origin,
-                resources,
-                notes,
-                mode,
-                region_occurrence,
-                part_occurrence,
-            ) {
-                out.push(hit);
-            }
-        }
-        return out;
+        return container
+            .backgrounds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, background)| {
+                observer_hit_rectangle_for(
+                    background,
+                    layout,
+                    origin,
+                    resources,
+                    notes,
+                    mode,
+                    Some(index),
+                )
+            })
+            .collect();
     }
     observer_hit_rectangle(control, layout, origin, resources, notes, mode)
         .into_iter()
@@ -298,22 +273,17 @@ pub fn observer_hit_rectangle(
     notes: &mut BTreeMap<String, usize>,
     mode: HitMode,
 ) -> Option<HitRectangle> {
-    observer_hit_rectangle_at(control, layout, origin, resources, notes, mode, 0, 0)
+    observer_hit_rectangle_for(control, layout, origin, resources, notes, mode, None)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Matches repeated unnamed background elements to their own region and part occurrence"
-)]
-fn observer_hit_rectangle_at(
+fn observer_hit_rectangle_for(
     control: &native::Element,
     layout: &Layout,
     origin: [i32; 2],
     resources: &dyn native_gui::Resources,
     notes: &mut BTreeMap<String, usize>,
     mode: HitMode,
-    region_occurrence: usize,
-    part_occurrence: usize,
+    background_index: Option<usize>,
 ) -> Option<HitRectangle> {
     if control
         .button()
@@ -326,12 +296,27 @@ fn observer_hit_rectangle_at(
     {
         return None;
     }
-    let region = layout
-        .regions
-        .iter()
-        .enumerate()
-        .filter(|(_, region)| region.path == control.path)
-        .nth(region_occurrence);
+    let matches_part = |part: &native_gui::Part| {
+        part.path == control.path
+            && background_index.is_none_or(|index| part.background_index == Some(index))
+            && native_gui::part_rect(&part.kind).is_some()
+    };
+    let find_part = || {
+        let mut matching = layout
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| matches_part(part));
+        if background_index.is_some() {
+            matching.next_back()
+        } else {
+            matching.next()
+        }
+    };
+    let region = layout.regions.iter().enumerate().find(|(_, region)| {
+        region.path == control.path
+            && background_index.is_none_or(|index| region.background_index == Some(index))
+    });
     if let Some((order, region)) = region.filter(|_| mode == HitMode::NativeGeometry)
         && let Some(geometry) = &region.hit
     {
@@ -348,12 +333,8 @@ fn observer_hit_rectangle_at(
                 ))
                 .or_default() += 1;
         }
-        let mut rect = layout
-            .parts
-            .iter()
-            .filter(|part| part.path == control.path && native_gui::part_rect(&part.kind).is_some())
-            .nth(part_occurrence)
-            .and_then(|part| native_gui::part_rect(&part.kind))
+        let mut rect = find_part()
+            .and_then(|(_, part)| native_gui::part_rect(&part.kind))
             .unwrap_or(region.rect);
         if let Some([left, top, right, bottom]) = region.clip {
             let end = [
@@ -380,14 +361,7 @@ fn observer_hit_rectangle_at(
             geometry: Some(geometry),
         });
     }
-    let (order, part) = layout
-        .parts
-        .iter()
-        .enumerate()
-        .filter(|(_, part)| {
-            part.path == control.path && native_gui::part_rect(&part.kind).is_some()
-        })
-        .nth(part_occurrence)?;
+    let (order, part) = find_part()?;
     let sprite = match &part.kind {
         native_gui::PartKind::Sprite { sprite, .. }
         | native_gui::PartKind::Tiles { sprite, .. }
@@ -491,6 +465,15 @@ mod tests {
                 background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
             containerWindowType = { name = split_text_sprite size = { width = 80 height = 20 } clipping = no
                 background = { position = { x = 0 y = 0 } spriteType = GFX_text_bg alwaystransparent = yes }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_line_chart size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_line_chart }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even alwaystransparent = yes } }
+            containerWindowType = { name = split_line_chart_opaque size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_line_chart }
+                background = { position = { x = 40 y = 0 } spriteType = GFX_even } }
+            containerWindowType = { name = split_refused_effect size = { width = 80 height = 20 } clipping = no
+                background = { position = { x = 0 y = 0 } spriteType = GFX_bad_effect alwaystransparent = yes }
                 background = { position = { x = 40 y = 0 } spriteType = GFX_even } } }"#,
         );
         let resources = gui::fixture();
@@ -543,10 +526,17 @@ mod tests {
         let mut text_sprite = special.sprites["GFX_even"].clone();
         text_sprite.kind = native_gui::SpriteKind::Text { textured: false };
         special.sprites.insert("GFX_text_bg", text_sprite);
+        let mut line_chart = special.sprites["GFX_even"].clone();
+        line_chart.kind = native_gui::SpriteKind::LineChart { size: [20, 10] };
+        special.sprites.insert("GFX_line_chart", line_chart);
+        let mut bad_effect = special.sprites["GFX_even"].clone();
+        bad_effect.effect = Err("custom effect is refused".into());
+        special.sprites.insert("GFX_bad_effect", bad_effect);
         for name in [
             b"split_unloaded".as_slice(),
             b"split_unloaded_opaque".as_slice(),
             b"split_text_sprite".as_slice(),
+            b"split_line_chart_opaque".as_slice(),
         ] {
             let panel = windows.gui_type(name).unwrap();
             let mut instance = Instance::construct(panel, [200, 100], &special).unwrap();
@@ -561,5 +551,35 @@ mod tests {
                 String::from_utf8_lossy(name)
             );
         }
+        let line_panel = windows.gui_type(b"split_line_chart").unwrap();
+        let mut instance = Instance::construct(line_panel, [200, 100], &special).unwrap();
+        instance.gui_show(line_panel, line_panel).unwrap();
+        let layout = instance
+            .layout_with_regions(line_panel, &special, None, true)
+            .unwrap()
+            .unwrap();
+        let hits = hit_rectangles(line_panel, &layout, [10, 5], &special, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(
+            hits.is_empty(),
+            "line chart must not steal transparent sibling: {:?}",
+            hits.iter().map(|hit| hit.rect).collect::<Vec<_>>()
+        );
+
+        let refused_panel = windows.gui_type(b"split_refused_effect").unwrap();
+        let (layout, refusals) =
+            native_gui::partial_layout_for_tests(refused_panel, [200, 100], &special);
+        assert!(
+            refusals
+                .iter()
+                .any(|refusal| refusal.kind == native_gui::RefusalKind::CustomEffect),
+            "{refusals:?}"
+        );
+        let hits = hit_rectangles(refused_panel, &layout, [10, 5], &special, &mut notes);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            hits.iter().map(|hit| hit.rect).collect::<Vec<_>>(),
+            [[50.0, 5.0, 20.0, 10.0]]
+        );
     }
 }
