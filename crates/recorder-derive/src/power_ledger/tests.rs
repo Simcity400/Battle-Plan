@@ -620,16 +620,21 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (unlinked, _) = through(0..=UNLINKED);
     assert_eq!(holders(&unlinked), [NONE].into());
     let (linked, _) = through(0..=LINKED_DELETED);
-    assert_eq!(holders(&linked), [NONE].into(), "a deletion opens no part under a holder its costs were never published under");
+    assert_eq!(holders(&linked), [30].into(), "linking a country that published while unlinked withdraws its batch from NONE and reads the survivor under its new holder");
     let shared = |store: &Store, ordinal: u32| cell::<Part>(store, TableId::PowerDayParts, part_key(30, POLITICAL, ordinal), "spent");
     let (published, _) = through(0..=SHARED_PUBLISHED);
     assert_eq!((shared(&published, 0), shared(&published, 1)), (Some(Q / 2), Some(Q / 10)));
     let (shared_deleted, _) = through(0..=SHARED_DELETED);
-    assert_eq!((shared(&shared_deleted, 0), shared(&shared_deleted, 1)), (Some(Q / 2), None), "on a shared holder a deletion withdraws the dropped cost and keeps the survivor as published");
+    assert_eq!(shared(&shared_deleted, 0), Some(Q / 2), "on a shared holder a deletion keeps the survivor as published");
+    assert!(!keys(&shared_deleted, TableId::PowerDayParts).contains(&part_key(30, POLITICAL, 1)), "and withdraws the dropped cost of that country's own batch");
     let (other, _) = through(0..=OTHER_PUBLISHED);
-    assert_eq!(shared(&other, 0), Some(Q / 4));
+    assert_eq!(
+        (shared(&other, 0), cell::<Part>(&other, TableId::PowerDayParts, part_key(30, POLITICAL, 0), "payments")),
+        (Some(Q / 2 + Q / 4), Some(2)),
+        "a second country paying the same item on a shared holder sums into the part rather than overwriting"
+    );
     let (unshared, _) = through(0..=UNSHARED_DELETED);
-    assert!(!keys(&unshared, TableId::PowerDayParts).contains(&part_key(30, POLITICAL, 0)), "a country leaving a shared holder takes the part only its application holds");
+    assert_eq!(shared(&unshared, 0), Some(Q / 2), "a country leaving a shared holder takes only its own batch and leaves the staying country's part intact");
     assert_eq!(cell::<Part>(&unshared, TableId::PowerDayParts, part_key(40, POLITICAL, 0), "spent"), Some(Q / 4), "and its batch is read again under its new holder");
     let gains = part_key(10, POLITICAL, Total::GAINS);
     let (unmatched, _) = through(0..=UNMATCHED);
@@ -705,7 +710,11 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     assert_eq!(held(&deleted, 10), Vec::<u128>::new());
     let (next, _) = through(0..=240);
     for ordinal in cost_items(&store) {
-        assert_eq!(spend(&next, 10, POLITICAL, ordinal, "days"), spend(&store, 10, POLITICAL, ordinal, "days"), "day 216 settles nothing under the old holder");
+        let days = |store: &Store| {
+            let view = store.view(TableId::PowerSpendTotals.index());
+            view.slot(total_key(10, POLITICAL, ordinal)).and_then(|slot| view.number(column::<Total>("days"), slot))
+        };
+        assert_eq!(days(&next), days(&store), "day 216 settles nothing under the old holder");
     }
     assert!(next.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "nor the deleted cost under the new one");
     assert_eq!((spend(&next, 50, POLITICAL, 0, "days"), spend(&next, 50, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 2)));
@@ -841,16 +850,330 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
 }
 
 #[test]
-fn its_blob_holds_two_hours_the_links_and_a_due_recovery_and_a_damaged_one_is_refused() {
-    let ledger = PowerLedger { last: Some(5), run_first: Some(-3), recover: true, links: [(1, 10), (2, 10), (3, 20)].into(), ..PowerLedger::default() };
+fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damaged_one_is_refused() {
+    let key = BatchKey { raw: 1, epoch: 1, day: 24, sequence: 50 };
+    let batch = CostBatch {
+        holder: 10,
+        unmatched: false,
+        parts: [(0, CostPart { spent: Recorded::Value(-Q / 4), payments: 2, covered: true, cost_ordinal: 0, read: 25 }), (1, CostPart { spent: Recorded::NotRecorded, payments: 1, covered: false, cost_ordinal: 1, read: 26 })].into(),
+    };
+    let ledger = PowerLedger {
+        last: Some(5),
+        run_first: Some(-3),
+        recover: true,
+        links: [(1, 10), (2, 10), (3, 20)].into(),
+        settled: [(1, 0), (2, 24)].into(),
+        batches: [(key, batch)].into(),
+        ..PowerLedger::default()
+    };
     let mut blob = Bytes::new();
     ledger.save(&mut blob).unwrap();
-    assert!(blob.bytes().len() <= 18, "two hours, a flag and three links, nothing of an input's rows");
+    assert!(blob.bytes().len() <= 50, "two hours, a flag, three links, two settled days and one open batch");
     let mut loaded = PowerLedger::default();
     loaded.load(blob.bytes()).unwrap();
     assert!(loaded.rebuild && loaded.recover);
     assert_eq!((loaded.last, loaded.run_first), (Some(5), Some(-3)));
     assert_eq!(loaded.links, ledger.links);
+    assert_eq!(loaded.settled, ledger.settled);
+    assert_eq!(loaded.batches, ledger.batches);
+    assert_eq!(loaded.raw_batches(1), [key]);
+    assert_eq!(loaded.holder_batches(10), [key]);
     assert_eq!((loaded.sole(10, 1), loaded.sole(20, 3)), (false, true), "the holders are rebuilt from the links");
     assert!(loaded.load(&blob.bytes()[..blob.bytes().len() - 1]).is_err());
+}
+
+fn step_with(store: &mut Store, writers: &mut Writers, hour: i32, f: impl FnOnce(&mut Store, i32)) {
+    store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
+    f(store, hour);
+    store.settle();
+    writers.hour(1, hour, hour == 0, store).unwrap();
+    store.end_hour(&mut Discard).unwrap();
+}
+
+fn setup_base(store: &mut Store, hour: i32, countries: &[(u32, u32)], witnessed: &[u32]) {
+    let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+    if hour == 0 {
+        for table in [TableId::Countries, TableId::CountryLinks, TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts, TableId::CountryCommandPower, TableId::CountryPowerChanges] {
+            complete(store, table);
+        }
+        for &(id, slot) in countries {
+            testing::put(store, TableId::Countries, &CountryRow { id, canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
+        }
+    }
+    complete(store, TableId::PoliticsCaptureCoverage);
+    for &country in witnessed {
+        let witness = Streams { country, epoch: 1, since_hour: 0, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
+        testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
+    }
+}
+
+fn run_custom(end: i32, f: impl Fn(&mut Store, i32)) -> (Store, Writers) {
+    let (mut store, mut writers) = (testing::store(), writers());
+    for at in 0..=end {
+        step_with(&mut store, &mut writers, at, |s, h| f(s, h));
+    }
+    (store, writers)
+}
+
+fn assert_resumes_match(stops: &[i32], end: i32, f: impl Fn(&mut Store, i32)) {
+    let (unbroken, _) = run_custom(end, &f);
+    for &stop in stops {
+        let (stopped, before) = run_custom(stop, &f);
+        let saved = before.save().unwrap();
+        let mut resumed = testing::resumed(&stopped, TEXTS);
+        let mut after = writers();
+        after.load(&saved, &mut resumed).unwrap();
+        after.prime(&resumed, 1, stop);
+        for at in stop + 1..=end {
+            step_with(&mut resumed, &mut after, at, |s, h| f(s, h));
+        }
+        for table in TABLES.iter().map(|output| output.table()) {
+            assert_eq!(testing::rows(&resumed, table), testing::rows(&unbroken, table), "{table:?} resumed after hour {stop}");
+        }
+    }
+}
+
+#[test]
+fn late_revision_of_a_settled_day_does_not_settle_again() {
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10), (2, 20)], &[1, 2]);
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        match hour {
+            24 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+            }
+            48 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 4, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 4, 50), TEXTS).unwrap();
+            }
+            49 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 3, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 3, 50), TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 2, 60) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 60) }, TEXTS).unwrap();
+            }
+            50 => {
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 4, 60) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 4, 60) }, TEXTS).unwrap();
+            }
+            72 => {
+                put_daily(store, hour, &daily(72, 3 * Q, Q / 2, 72));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 2, 72), TEXTS).unwrap();
+            }
+            95 => {
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+                put_daily(store, hour, &daily(72, 3 * Q, Q / 3, 72));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 3, 72), TEXTS).unwrap();
+            }
+            96 => {
+                complete(store, TableId::CountryLinks);
+                store.status(TableId::CountryPowerDailyCosts.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+            }
+            97 => {
+                complete(store, TableId::CountryPowerDailyCosts);
+                put_daily(store, hour, &daily(72, 3 * Q, Q / 4, 72));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 4, 72), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (midnight_revised, _) = run_custom(48, scenario);
+    assert_eq!(
+        (spend(&midnight_revised, 10, POLITICAL, 0, "days"), spend(&midnight_revised, 10, POLITICAL, 0, "day_payments"), spend(&midnight_revised, 10, POLITICAL, 0, "day_charge")),
+        (Some(1), Some(1), Some(Q / 2)),
+        "a late revision written on the midnight roll hour does not settle day 24 a second time"
+    );
+    let (later_revised, _) = run_custom(49, scenario);
+    assert_eq!(
+        (spend(&later_revised, 10, POLITICAL, 0, "days"), spend(&later_revised, 10, POLITICAL, 0, "day_payments"), spend(&later_revised, 10, POLITICAL, 0, "day_charge")),
+        (Some(1), Some(1), Some(Q / 2)),
+        "a late revision written after midnight does not settle day 24 a second time"
+    );
+    assert_eq!(
+        (spend(&later_revised, 20, POLITICAL, 0, "days"), spend(&later_revised, 20, POLITICAL, 0, "day_payments"), spend(&later_revised, 20, POLITICAL, 0, "day_charge")),
+        (Some(1), Some(1), Some(Q / 2)),
+        "a closed day never settled before settles once on its first late publication"
+    );
+    let (twice_late, _) = run_custom(50, scenario);
+    assert_eq!(
+        (spend(&twice_late, 20, POLITICAL, 0, "days"), spend(&twice_late, 20, POLITICAL, 0, "day_payments"), spend(&twice_late, 20, POLITICAL, 0, "day_charge")),
+        (Some(1), Some(1), Some(Q / 2)),
+        "a second late revision of that closed day does not settle it again"
+    );
+    let (withheld, _) = run_custom(96, scenario);
+    assert_eq!(
+        (spend(&withheld, 10, POLITICAL, 0, "days"), spend(&withheld, 10, POLITICAL, 0, "day_payments"), spend(&withheld, 10, POLITICAL, 0, "day_unknown"), spend(&withheld, 10, POLITICAL, 0, "day_charge")),
+        (Some(2), Some(2), Some(1), Some(Q / 2)),
+        "day 72 closes as unknown while recovery waits for daily costs"
+    );
+    let (after_deferred, _) = run_custom(97, scenario);
+    for name in ["days", "day_payments", "day_unknown", "day_charge"] {
+        assert_eq!(
+            spend(&after_deferred, 10, POLITICAL, 0, name),
+            spend(&withheld, 10, POLITICAL, 0, name),
+            "a late revision after unknown-withheld settlement does not settle day 72 again ({name})"
+        );
+    }
+    assert_resumes_match(&[48, 49, 96], 97, scenario);
+}
+
+#[test]
+fn no_holder_identity_is_followed_across_unlink_publish_and_relink() {
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1, 2]);
+        match hour {
+            24 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2 + Q / 10, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 1, PowerDailyCostKind::MioResearch, Q / 10, 50), TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 2, 60) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 60) }, TEXTS).unwrap();
+            }
+            25 => {
+                testing::remove(store, TableId::CountryLinks, 1).unwrap();
+                testing::put(store, TableId::Countries, &CountryRow { id: 2, canonical_slot: 20, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 2, canonical_slot: 20 }, TEXTS).unwrap();
+            }
+            26 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 4 + Q / 10, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 4, 50), TEXTS).unwrap();
+            }
+            27 => {
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 10 }, TEXTS).unwrap();
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 5 + Q / 10, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 5, 50), TEXTS).unwrap();
+            }
+            48 => {
+                testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+                put_daily(store, hour, &daily(48, 3 * Q, Q / 2, 80));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap();
+            }
+            49 => {
+                testing::remove(store, TableId::CountryLinks, 1).unwrap();
+            }
+            50 => {
+                put_daily(store, hour, &daily(48, 3 * Q, Q / 3, 80));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 3, 80), TEXTS).unwrap();
+            }
+            51 => {
+                testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 30, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 30 }, TEXTS).unwrap();
+            }
+            52 => {
+                put_daily(store, hour, &daily(48, 3 * Q, Q / 4, 80));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 4, 80), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let held = |store: &Store, holder: u32| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == holder).collect::<Vec<_>>();
+    let totals_of = |store: &Store, holder: u32| keys(store, TableId::PowerSpendTotals).into_iter().filter(|&key| (key >> 40) as u32 == holder && key as u32 != Total::GAINS).collect::<Vec<_>>();
+    let (h25, _) = run_custom(25, scenario);
+    assert!(held(&h25, NONE).is_empty(), "country 2 moved from NONE to 20 and country 1's link loss opened nothing under NONE");
+    assert_eq!(cell::<Part>(&h25, TableId::PowerDayParts, part_key(20, POLITICAL, 0), "spent"), Some(Q / 2), "country 2's batch moved from NONE to 20 without republishing");
+    assert_eq!(cell::<Part>(&h25, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), None, "country 1's link loss marks holder 10's parts unknown");
+    let (h26, _) = run_custom(26, scenario);
+    assert!(held(&h26, 10).is_empty(), "publishing while unlinked withdraws the old unknown copy from holder 10");
+    assert_eq!(cell::<Part>(&h26, TableId::PowerDayParts, part_key(NONE, POLITICAL, 0), "spent"), Some(Q / 4));
+    let (h27, _) = run_custom(27, scenario);
+    assert!(held(&h27, NONE).is_empty(), "relinking and publishing withdraws the copy under NONE");
+    assert_eq!(cell::<Part>(&h27, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), Some(Q / 5));
+    let (h48, _) = run_custom(48, scenario);
+    assert!(totals_of(&h48, NONE).is_empty(), "nothing settles under NONE once both countries linked");
+    assert_eq!((spend(&h48, 10, POLITICAL, 0, "days"), spend(&h48, 10, POLITICAL, 0, "day_payments"), spend(&h48, 10, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 5)));
+    assert_eq!((spend(&h48, 20, POLITICAL, 0, "days"), spend(&h48, 20, POLITICAL, 0, "day_payments"), spend(&h48, 20, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 2)));
+    let (h51, _) = run_custom(51, scenario);
+    assert!(held(&h51, NONE).is_empty(), "relinking to a different holder moves the unlinked batch from NONE");
+    assert_eq!(cell::<Part>(&h51, TableId::PowerDayParts, part_key(30, POLITICAL, 0), "spent"), Some(Q / 3));
+    let (h72, _) = run_custom(72, scenario);
+    assert!(totals_of(&h72, NONE).is_empty(), "nothing settles under NONE for day 48 either");
+    assert_eq!((spend(&h72, 10, POLITICAL, 0, "days"), spend(&h72, 10, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 5)), "holder 10 did not settle day 48");
+    assert_eq!((spend(&h72, 30, POLITICAL, 0, "days"), spend(&h72, 30, POLITICAL, 0, "day_payments"), spend(&h72, 30, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 4)));
+    assert_resumes_match(&[24, 26, 50], 72, scenario);
+}
+
+#[test]
+fn two_applications_on_one_holder_keep_independent_parts_normally_and_across_moves() {
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10), (2, 10), (3, 10)], &[1, 2, 3]);
+        match hour {
+            24 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+            }
+            25 => {
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 4, 50) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 4, 50) }, TEXTS).unwrap();
+            }
+            48 => {
+                testing::put(store, TableId::Countries, &CountryRow { id: 2, canonical_slot: 20, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 2, canonical_slot: 20 }, TEXTS).unwrap();
+                put_daily(store, hour, &daily(48, 3 * Q, Q / 2, 80));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(48, 0, PowerDailyCostKind::Relation, Q / 2, 80), TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(48, 3 * Q, Q / 3, 90) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(48, 0, PowerDailyCostKind::Relation, Q / 3, 90) }, TEXTS).unwrap();
+            }
+            49 => {
+                testing::put(store, TableId::Countries, &CountryRow { id: 2, canonical_slot: 10, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 2, canonical_slot: 10 }, TEXTS).unwrap();
+            }
+            50 => {
+                testing::put(store, TableId::Countries, &CountryRow { id: 2, canonical_slot: 30, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 2, canonical_slot: 30 }, TEXTS).unwrap();
+            }
+            72 => {
+                put_daily(store, hour, &daily(72, 3 * Q, Q / 2 + Q / 10, 100));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::MioResearch, Q / 10, 100), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 1, PowerDailyCostKind::Relation, Q / 2, 100), TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(72, 3 * Q, Q / 4, 101) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(72, 0, PowerDailyCostKind::Relation, Q / 4, 101) }, TEXTS).unwrap();
+            }
+            73 => {
+                testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+                put_daily(store, hour, &daily(72, 3 * Q, Q / 10, 100));
+            }
+            _ => {}
+        }
+    };
+    let held = |store: &Store, holder: u32| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == holder).collect::<Vec<_>>();
+    let (h25, _) = run_custom(25, scenario);
+    assert_eq!(
+        (cell::<Part>(&h25, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), cell::<Part>(&h25, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "payments")),
+        (Some(Q / 2 + Q / 4), Some(2)),
+        "two countries publishing the same item on one holder sum into its open part instead of overwriting"
+    );
+    let (h48, _) = run_custom(48, scenario);
+    assert_eq!(
+        (spend(&h48, 10, POLITICAL, 0, "days"), spend(&h48, 10, POLITICAL, 0, "day_payments"), spend(&h48, 10, POLITICAL, 0, "day_charge"), spend(&h48, 10, POLITICAL, 0, "day_unknown")),
+        (Some(1), Some(2), Some(Q / 2 + Q / 4), Some(0)),
+        "both applications on one holder settle at midnight"
+    );
+    let (h49, _) = run_custom(49, scenario);
+    assert!(held(&h49, 20).is_empty(), "country 2 left holder 20");
+    assert_eq!(
+        (cell::<Part>(&h49, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), cell::<Part>(&h49, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "payments")),
+        (Some(Q / 2 + Q / 3), Some(2)),
+        "a holder move onto a holder paying the same item keeps both applications"
+    );
+    let (h50, _) = run_custom(50, scenario);
+    assert_eq!(
+        (cell::<Part>(&h50, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), cell::<Part>(&h50, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "payments")),
+        (Some(Q / 2), Some(1)),
+        "when country 2 moves away, country 1's part stays intact"
+    );
+    assert_eq!(cell::<Part>(&h50, TableId::PowerDayParts, part_key(30, POLITICAL, 0), "spent"), Some(Q / 3));
+    let (h72, _) = run_custom(72, scenario);
+    assert_eq!(spend(&h72, 10, POLITICAL, 0, "day_charge"), Some(Q / 2 + Q / 4 + Q / 2));
+    assert_eq!(spend(&h72, 30, POLITICAL, 0, "day_charge"), Some(Q / 3));
+    let (h73, _) = run_custom(73, scenario);
+    assert_eq!(
+        (cell::<Part>(&h73, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), cell::<Part>(&h73, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "payments")),
+        (Some(Q / 4), Some(1)),
+        "country 1 dropping its shared item leaves country 3's part intact"
+    );
+    assert_eq!(cell::<Part>(&h73, TableId::PowerDayParts, part_key(10, POLITICAL, 1), "spent"), Some(Q / 10));
+    assert_resumes_match(&[25, 49, 72], 96, scenario);
 }
