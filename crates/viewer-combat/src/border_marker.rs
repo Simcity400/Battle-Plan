@@ -1,7 +1,5 @@
-use dashboard_text::{
-    effect_description::{self, Context as EffectContext},
-    scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
-};
+use dashboard_effects::{ScriptedEffects, effect_description::{self, Context as EffectContext}};
+use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
 use content_reader_core::parser::Item;
 use content_reader_events::events::Event;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};

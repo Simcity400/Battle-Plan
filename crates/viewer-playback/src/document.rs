@@ -1977,7 +1977,7 @@ impl Document {
             let h_scripted = content_reader_core::parallel::spawn(prefix, move || {
                 let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
                 let _stage = viewer_foundation::load_record::stage("content.scripted");
-                Arc::new(dashboard_text::scripted_text::ScriptedContent::read(
+                Arc::new(dashboard_base::catalogue::read_scripted_content(
                     scripted_content,
                     scripted_language,
                 ))

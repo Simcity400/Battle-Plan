@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::counter_content;
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
@@ -638,14 +639,14 @@ impl Context<'_> {
         )
         .viewing(self.vision.ours());
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &self.content.localisation,
             self.vision.ours(),
             "common/modifiers",
             effects.view(None),
         );
-        dashboard_text::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
+        dashboard_effects::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
     }
     fn state_name(&self) -> Result<String, String> {
         self.state_name_of(self.province.state)

@@ -35,6 +35,7 @@ replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
 viewer-foundation = { path = "../viewer-foundation" }
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
 engine-heap.workspace = true

@@ -33,6 +33,7 @@ dashboard-politics = { workspace = true }
 dashboard-production = { workspace = true }
 dashboard-query = { workspace = true }
 dashboard-research = { workspace = true }
+dashboard-effects.workspace = true
 dashboard-text = { workspace = true }
 dashboard-wars = { workspace = true }
 dashboard-world = { workspace = true }

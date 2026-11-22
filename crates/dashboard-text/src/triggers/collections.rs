@@ -7,7 +7,7 @@ use content_reader_core::{
 use replay_data::rows::{TableSchema, tables};
 
 impl Evaluator<'_, '_> {
-    pub(crate) fn collection_representative(
+    pub fn collection_representative(
         &self,
         collection: &Collection,
         caller: Scopes,

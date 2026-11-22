@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::counter_content;
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
 use content_reader_core::{occupation_modifiers::Definition, occupation_modifiers::Kind};
@@ -23,7 +24,7 @@ pub fn build(
         let scripted = content.scripted.as_ref().as_ref().map_err(Clone::clone)?;
         let text = ScriptedText::new(frame, &content.localisation, scripted, perspective).viewing(viewer);
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &content.localisation,
             perspective,
@@ -31,7 +32,7 @@ pub fn build(
             effects.view(None),
         );
         Ok::<_, String>(
-            dashboard_text::effect_description::occupation_modifier_description(
+            dashboard_effects::effect_description::occupation_modifier_description(
                 definition,
                 &context,
                 &mut scopes,

@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::inputs::Names;
 use super::{Arg, Tooltip, counter_content};
 use replay_data::{rows::AirCountryRelationRow, rows::tables};
@@ -434,14 +435,14 @@ impl Inputs<'_> {
         )
         .viewing(self.vision.ours());
         let effects = scripted.effects()?;
-        let context = dashboard_text::effect_description::Context::new(
+        let context = dashboard_effects::effect_description::Context::new(
             &text,
             &self.content.localisation,
             self.vision.ours(),
             "common/modifiers",
             effects.view(None),
         );
-        dashboard_text::effect_description::scaled_static_modifiers(
+        dashboard_effects::effect_description::scaled_static_modifiers(
             &context,
             "naval_mines_effect",
             "  ",

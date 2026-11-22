@@ -4,8 +4,8 @@
 static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;
 #[cfg(test)]
 mod test_allocator;
-#[cfg(test)]
-mod test_country_links;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_country_links;
 
 pub mod air_wing_names;
 pub mod artwork;
@@ -13,7 +13,6 @@ pub mod catalogue;
 pub mod character_scope;
 pub mod cryptology;
 pub mod division_history;
-pub mod effect_description;
 pub mod faction_names;
 pub mod flag_choices;
 pub mod idea_names;
