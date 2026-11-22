@@ -2,9 +2,12 @@ use crate::batch_fallback::{self, Batch};
 use crate::memory::{Memory, RecordLayout, RecordSources};
 use std::cell::{Cell, RefCell};
 
-const PENDING: u8 = 0;
-const CACHED: u8 = 1;
-const FAILED: u8 = 2;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldState {
+    Pending,
+    Cached,
+    Failed { offset: usize, len: usize },
+}
 
 fn destinations_disjoint(layout: &RecordLayout<'_>) -> bool {
     let fields = layout.fields();
@@ -30,7 +33,7 @@ pub struct Records<'a> {
     layout: &'a RecordLayout<'a>,
     index: Vec<(usize, usize)>,
     bytes: RefCell<Vec<u8>>,
-    states: RefCell<Vec<u8>>,
+    states: RefCell<Vec<FieldState>>,
     cached_fields: Cell<usize>,
     failed_fields: Cell<usize>,
 }
@@ -66,7 +69,7 @@ impl<'a> Records<'a> {
                 records.index.push((sources.pointer(row)?, row));
             }
             bytes.resize(len, 0);
-            states.resize(total_fields, PENDING);
+            states.resize(total_fields, FieldState::Pending);
             Some(())
         });
         if prepared.is_none() {
@@ -78,7 +81,7 @@ impl<'a> Records<'a> {
         if done != sources.len() {
             batch_fallback::record(batch);
         }
-        states[..done * field_count].fill(CACHED);
+        states[..done * field_count].fill(FieldState::Cached);
         records.index.retain(|&(pointer, _)| pointer != 0);
         records.index.sort_unstable();
         records.index.dedup_by_key(|(pointer, _)| *pointer);
@@ -156,7 +159,7 @@ impl<'a> Records<'a> {
                 if offset >= field.len {
                     break;
                 }
-                if states[row * field_count + fi] == CACHED {
+                if states[row * field_count + fi] == FieldState::Cached {
                     return field.len - offset;
                 }
             }
@@ -189,7 +192,7 @@ impl<'a> Records<'a> {
                 if offset >= field.len {
                     break;
                 }
-                if states[row * field_count + fi] == CACHED {
+                if states[row * field_count + fi] == FieldState::Cached {
                     let start = row * self.layout.stride() + field.destination_offset + offset;
                     let count = (field.len - offset).min(destination.len());
                     destination[..count].copy_from_slice(&bytes[start..start + count]);
@@ -223,7 +226,7 @@ impl<'a> Records<'a> {
                 if start >= end {
                     break;
                 }
-                if states[row * field_count + fi] == CACHED {
+                if states[row * field_count + fi] == FieldState::Cached {
                     let distance = start - address;
                     best = Some(best.map_or(distance, |current| current.min(distance)));
                     break;
@@ -231,6 +234,81 @@ impl<'a> Records<'a> {
             }
         }
         best
+    }
+
+    fn next_pending_boundary(&self, address: usize, limit: usize) -> Option<usize> {
+        if !self.has_pending() || limit == 0 {
+            return None;
+        }
+        let states = self.states.borrow();
+        let field_count = self.layout.field_count();
+        let end = address.saturating_add(limit);
+        let mut best: Option<usize> = None;
+        for (fi, field) in self.layout.fields().iter().enumerate() {
+            if field.len == 0 {
+                continue;
+            }
+            let Some(span) = field.source_offset.checked_add(field.len) else {
+                continue;
+            };
+            let start_idx = match address.checked_sub(span) {
+                Some(pointer) => self.index.partition_point(|&(at, _)| at <= pointer),
+                None => 0,
+            };
+            for &(at, row) in &self.index[start_idx..] {
+                let Some(f_start) = at.checked_add(field.source_offset) else {
+                    break;
+                };
+                let limit_end = best.map_or(end, |distance| address.saturating_add(distance));
+                if f_start >= limit_end {
+                    break;
+                }
+                let Some(f_end) = f_start.checked_add(field.len) else {
+                    break;
+                };
+                if states[row * field_count + fi] == FieldState::Pending {
+                    if f_start > address {
+                        let distance = f_start - address;
+                        best = Some(best.map_or(distance, |current| current.min(distance)));
+                    } else if f_end > address && f_end < limit_end {
+                        let distance = f_end - address;
+                        best = Some(best.map_or(distance, |current| current.min(distance)));
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    fn intersects_pending(&self, address: usize, len: usize) -> bool {
+        if !self.has_pending() || len == 0 {
+            return false;
+        }
+        let end = address.saturating_add(len);
+        let states = self.states.borrow();
+        let field_count = self.layout.field_count();
+        for (fi, field) in self.layout.fields().iter().enumerate() {
+            if field.len == 0 {
+                continue;
+            }
+            let min_at = field
+                .source_offset
+                .checked_add(field.len - 1)
+                .map_or(0, |span| address.saturating_sub(span));
+            let start_idx = self.index.partition_point(|&(at, _)| at < min_at);
+            for &(at, row) in &self.index[start_idx..] {
+                let Some(f_start) = at.checked_add(field.source_offset) else {
+                    break;
+                };
+                if f_start >= end {
+                    break;
+                }
+                if states[row * field_count + fi] == FieldState::Pending {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn mark_copied(&self, address: usize, data: &[u8]) {
@@ -262,11 +340,11 @@ impl<'a> Records<'a> {
                     break;
                 }
                 let slot = row * field_count + fi;
-                if states[slot] == PENDING {
+                if states[slot] == FieldState::Pending {
                     let src = at + field.source_offset - address;
                     let dst = row * self.layout.stride() + field.destination_offset;
                     bytes[dst..dst + field.len].copy_from_slice(&data[src..src + field.len]);
-                    states[slot] = CACHED;
+                    states[slot] = FieldState::Cached;
                     self.cached_fields.set(self.cached_fields.get() + 1);
                 }
             }
@@ -297,8 +375,14 @@ impl<'a> Records<'a> {
                     break;
                 }
                 let slot = row * field_count + fi;
-                if states[slot] == PENDING {
-                    states[slot] = FAILED;
+                if states[slot] == FieldState::Pending {
+                    let f_end = f_start.saturating_add(field.len);
+                    let overlap_start = address.max(f_start);
+                    let overlap_end = end.min(f_end);
+                    states[slot] = FieldState::Failed {
+                        offset: overlap_start - f_start,
+                        len: overlap_end - overlap_start,
+                    };
                     self.failed_fields.set(self.failed_fields.get() + 1);
                 }
             }
@@ -319,10 +403,6 @@ pub struct View<'b, 'a, M> {
 }
 
 impl<M> View<'_, '_, M> {
-    fn has_pending(&self) -> bool {
-        self.records.iter().any(Records::has_pending)
-    }
-
     fn cached_span_len(&self, address: usize) -> usize {
         for records in self.records {
             let len = records.cached_span_len(address);
@@ -376,11 +456,14 @@ impl<M> View<'_, '_, M> {
                     if f_start >= end {
                         break;
                     }
-                    if states[row * field_count + fi] == FAILED {
-                        let f_end = f_start.saturating_add(field.len);
-                        let overlap_start = address.max(f_start);
-                        let overlap_end = end.min(f_end);
-                        if !self.is_range_cached(overlap_start, overlap_end - overlap_start) {
+                    if let FieldState::Failed { offset, len } = states[row * field_count + fi] {
+                        let fail_start = f_start.saturating_add(offset);
+                        let fail_end = fail_start.saturating_add(len);
+                        let overlap_start = address.max(fail_start);
+                        let overlap_end = end.min(fail_end);
+                        if overlap_start < overlap_end
+                            && !self.is_range_cached(overlap_start, overlap_end - overlap_start)
+                        {
                             return true;
                         }
                     }
@@ -400,18 +483,32 @@ impl<M> View<'_, '_, M> {
         0
     }
 
-    fn next_cached(&self, address: usize, limit: usize) -> Option<usize> {
-        self.records
+    fn next_boundary(&self, address: usize, limit: usize) -> Option<usize> {
+        let cached = self
+            .records
             .iter()
             .filter_map(|records| records.next_cached(address, limit))
-            .min()
+            .min();
+        let pending = self
+            .records
+            .iter()
+            .filter_map(|records| records.next_pending_boundary(address, limit))
+            .min();
+        match (cached, pending) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    fn intersects_cached_or_failed(&self, address: usize, len: usize) -> bool {
+    fn intersects_any(&self, address: usize, len: usize) -> bool {
         len != 0
             && (self.cached_span_len(address) != 0
-                || self.next_cached(address, len).is_some()
-                || self.has_uncached_failed(address, len))
+                || self.next_boundary(address, len).is_some()
+                || self.has_uncached_failed(address, len)
+                || self
+                    .records
+                    .iter()
+                    .any(|records| records.intersects_pending(address, len)))
     }
 
     fn mark_copied(&self, address: usize, data: &[u8]) {
@@ -445,7 +542,7 @@ impl<M: Memory> Memory for View<'_, '_, M> {
                 copied += hit;
             } else {
                 let remaining = destination.len() - copied;
-                let count = self.next_cached(at, remaining).unwrap_or(remaining);
+                let count = self.next_boundary(at, remaining).unwrap_or(remaining);
                 let out = &mut destination[copied..copied + count];
                 if !self.source.copy(at, out) {
                     self.mark_failed(at, count);
@@ -471,24 +568,9 @@ impl<M: Memory> Memory for View<'_, '_, M> {
         if !addresses
             .iter()
             .zip(destinations.iter())
-            .any(|(&at, out)| self.intersects_cached_or_failed(at, out.len()))
+            .any(|(&at, out)| self.intersects_any(at, out.len()))
         {
-            let completed = self.source.copy_scattered(addresses, destinations);
-            if self.has_pending() {
-                for (&at, out) in addresses.iter().zip(destinations.iter()).take(completed) {
-                    if !out.is_empty() {
-                        self.mark_copied(at, out);
-                    }
-                }
-                if completed < N {
-                    let at = addresses[completed];
-                    let len = destinations[completed].len();
-                    if len != 0 && at != 0 && at.checked_add(len).is_some() {
-                        self.mark_failed(at, len);
-                    }
-                }
-            }
-            return completed;
+            return self.source.copy_scattered(addresses, destinations);
         }
         for (completed, (address, destination)) in addresses
             .into_iter()
@@ -520,52 +602,19 @@ impl<M: Memory> Memory for View<'_, '_, M> {
         if count == 0 {
             return 0;
         }
-        let pending = self.has_pending();
-        let piecewise = (pending && !destinations_disjoint(layout))
-            || (0..sources.len()).any(|row| {
-                sources.pointer(row).is_some_and(|pointer| {
-                    pointer != 0
-                        && layout.fields().iter().any(|field| {
-                            field.len != 0
-                                && pointer
-                                    .checked_add(field.source_offset)
-                                    .is_some_and(|at| {
-                                        self.intersects_cached_or_failed(at, field.len)
-                                    })
-                        })
-                })
-            });
+        let piecewise = (0..sources.len()).any(|row| {
+            sources.pointer(row).is_some_and(|pointer| {
+                pointer != 0
+                    && layout.fields().iter().any(|field| {
+                        field.len != 0
+                            && pointer
+                                .checked_add(field.source_offset)
+                                .is_some_and(|at| self.intersects_any(at, field.len))
+                    })
+            })
+        });
         if !piecewise {
-            let completed = self.source.copy_records(sources, layout, destination);
-            if pending {
-                let fields = layout.fields();
-                let mut seen = 0;
-                'rows: for row in 0..sources.len() {
-                    let Some(pointer) = sources.pointer(row) else {
-                        break;
-                    };
-                    for field in fields {
-                        if seen == completed {
-                            if field.len != 0
-                                && pointer != 0
-                                && let Some(at) = pointer.checked_add(field.source_offset)
-                                && at.checked_add(field.len).is_some()
-                            {
-                                self.mark_failed(at, field.len);
-                            }
-                            break 'rows;
-                        }
-                        seen += 1;
-                        if field.len != 0
-                            && let Some(at) = pointer.checked_add(field.source_offset)
-                        {
-                            let start = row * layout.stride() + field.destination_offset;
-                            self.mark_copied(at, &destination[start..start + field.len]);
-                        }
-                    }
-                }
-            }
-            return completed;
+            return self.source.copy_records(sources, layout, destination);
         }
         let mut completed = 0;
         for row in 0..sources.len() {
@@ -783,6 +832,35 @@ mod tests {
         assert!(!view.copy(0x1000, &mut page));
         assert_eq!(memory.reads_at(0x1000), 1);
         assert_eq!(memory.reads_at(0x1008), 2);
+        let mut single = [0_u8; 8];
+        assert!(!view.copy(0x1008, &mut single));
+        assert_eq!(memory.reads_at(0x1008), 2);
+        assert!(view.copy(0x1010, &mut single));
+        assert_eq!(u64::from_le_bytes(single), 0x1400);
+        assert_eq!(memory.reads_at(0x1010), 1);
+
+        let memory = CountedFault::new(&bytes, Some(0x1010), false);
+        let pointers = Records::gather(
+            &memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Strided {
+                base: 0x1000,
+                stride: 8,
+                count: 3,
+            },
+            &POINTER_LAYOUT,
+        );
+        let view = pointers.view(&memory);
+        let mut page = [0_u8; 24];
+        assert!(!view.copy(0x1000, &mut page));
+        assert_eq!(memory.reads_at(0x1000), 1);
+        assert_eq!(memory.reads_at(0x1008), 1);
+        assert_eq!(memory.reads_at(0x1010), 2);
+        assert!(view.copy(0x1008, &mut single));
+        assert_eq!(u64::from_le_bytes(single), 0x1300);
+        assert_eq!(memory.reads_at(0x1008), 1);
+        assert!(!view.copy(0x1010, &mut single));
+        assert_eq!(memory.reads_at(0x1010), 2);
 
         let memory = CountedFault::new(&bytes, Some(0x1000), true);
         let pointers = Records::gather(
@@ -998,5 +1076,110 @@ mod tests {
         assert!(view.copy(0x1040, &mut header_bytes));
         assert_eq!(&header_bytes, &bytes[0x40..0x50]);
         assert_eq!(memory.reads_at(0x104c), 2);
+    }
+
+    #[test]
+    fn overlapping_pending_spans_do_not_reread_shared_bytes_in_bulk_or_misattribute_faults() {
+        struct FaultFirstAndThird<'a> {
+            inner: SliceMemory<'a>,
+            fault: usize,
+            reads: RefCell<HashMap<usize, usize>>,
+        }
+        impl<'a> FaultFirstAndThird<'a> {
+            fn new(bytes: &'a [u8], fault: usize) -> Self {
+                Self {
+                    inner: SliceMemory { base: BASE, bytes },
+                    fault,
+                    reads: RefCell::new(HashMap::new()),
+                }
+            }
+            fn reads_at(&self, address: usize) -> usize {
+                self.reads.borrow().get(&address).copied().unwrap_or(0)
+            }
+        }
+        impl Memory for FaultFirstAndThird<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let mut fail = false;
+                {
+                    let mut reads = self.reads.borrow_mut();
+                    for offset in 0..destination.len() {
+                        let at = address + offset;
+                        let count = reads.entry(at).or_insert(0);
+                        *count += 1;
+                        if at == self.fault && (*count == 1 || *count >= 3) {
+                            fail = true;
+                        }
+                    }
+                }
+                if fail {
+                    destination.fill(0xff);
+                    return false;
+                }
+                self.inner.copy(address, destination)
+            }
+        }
+
+        let mut bytes = vec![0_u8; 0x1000];
+        put(&mut bytes, 0x1200, 0x1122_3344_5566_7788);
+        put(&mut bytes, 0x1208, 0x99aa_bbcc_ddee_ff00);
+
+        let memory = FaultFirstAndThird::new(&bytes, 0x1204);
+        let records = Records::gather(
+            &memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Pointers(&[0x1200, 0x1204]),
+            &POINTER_LAYOUT,
+        );
+        let view = records.view(&memory);
+        let mut first = [0_u8; 8];
+        let mut second = [0_u8; 8];
+        assert_eq!(
+            view.copy_scattered([0x1200, 0x1204], &mut [&mut first, &mut second]),
+            2
+        );
+        assert_eq!(&first, &bytes[0x200..0x208]);
+        assert_eq!(&second, &bytes[0x204..0x20c]);
+        assert_eq!(memory.reads_at(0x1204), 2);
+
+        let memory = FaultFirstAndThird::new(&bytes, 0x1204);
+        let records = Records::gather(
+            &memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Pointers(&[0x1200, 0x1204]),
+            &POINTER_LAYOUT,
+        );
+        let view = records.view(&memory);
+        let mut out = [0_u8; 16];
+        assert_eq!(
+            view.copy_records(
+                RecordSources::Pointers(&[0x1200, 0x1204]),
+                &POINTER_LAYOUT,
+                &mut out,
+            ),
+            2
+        );
+        assert_eq!(&out[..8], &bytes[0x200..0x208]);
+        assert_eq!(&out[8..16], &bytes[0x204..0x20c]);
+        assert_eq!(memory.reads_at(0x1204), 2);
+
+        let memory = CountedFault::new(&bytes, Some(0x1200), false);
+        let records = Records::gather(
+            &memory,
+            Batch::GovernanceSlotPointers,
+            RecordSources::Pointers(&[0x1200, 0x1204]),
+            &POINTER_LAYOUT,
+        );
+        let view = records.view(&memory);
+        let mut first = [0_u8; 8];
+        let mut second = [0_u8; 8];
+        assert!(!view.copy(0x1200, &mut first));
+        assert_eq!(memory.reads_at(0x1200), 2);
+        assert!(view.copy(0x1204, &mut second));
+        assert_eq!(&second, &bytes[0x204..0x20c]);
+        assert_eq!(memory.reads_at(0x1204), 2);
+        assert_eq!(memory.reads_at(0x1208), 1);
+        assert!(view.copy(0x1204, &mut second));
+        assert_eq!(memory.reads_at(0x1204), 2);
+        assert_eq!(memory.reads_at(0x1208), 1);
     }
 }
