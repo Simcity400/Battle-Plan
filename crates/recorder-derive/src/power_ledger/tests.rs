@@ -1845,6 +1845,84 @@ fn midnight_recovery_deletion_only_with_unlink_moves_survivor_and_withdraws_dele
 }
 
 #[test]
+fn re_read_unchanged_daily_zero_confirms_empty_when_witness_or_recovery_arrives() {
+    let scenario = |store: &mut Store, hour: i32| {
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        setup_base(store, hour, &[(1, 10), (2, 20), (3, 30)], &[2, 3]);
+        if hour < 25 {
+            let unwitnessed = Streams { country: 1, epoch: 1, since_hour: 24, through_hour: hour, streams: 0, ..Default::default() };
+            testing::put(store, TableId::PoliticsCaptureCoverage, &unwitnessed, TEXTS).unwrap();
+        } else {
+            let witnessed = Streams { country: 1, epoch: 1, since_hour: 25, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
+            testing::put(store, TableId::PoliticsCaptureCoverage, &witnessed, TEXTS).unwrap();
+        }
+        match hour {
+            24 => {
+                put_daily(store, hour, &daily(24, 3 * Q, 0, 50));
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 2, 60) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 60) }, TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 3, ..daily(24, 3 * Q, 0, 70) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 4, 70) }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(24, 1, PowerDailyCostKind::MioResearch, -Q / 4, 70) }, TEXTS).unwrap();
+            }
+            25 => {
+                complete(store, TableId::CountryPowerDaily);
+                complete(store, TableId::CountryPowerDailyCosts);
+            }
+            26 => {
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, 0, 60) }, TEXTS).unwrap();
+            }
+            27 => {
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, 0, 60) });
+            }
+            28 => {
+                complete(store, TableId::CountryLinks);
+                complete(store, TableId::CountryPowerDaily);
+                complete(store, TableId::CountryPowerDailyCosts);
+            }
+            48 => {
+                put_daily(store, hour, &daily(24, 3 * Q, Q / 2, 50));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 50), TEXTS).unwrap();
+                put_daily(store, hour, &CountryPowerDailyRow { country: 2, ..daily(24, 3 * Q, Q / 2, 60) });
+                testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 2, ..cost(24, 0, PowerDailyCostKind::Relation, Q / 2, 60) }, TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (h25, _) = run_custom(25, scenario);
+    assert_eq!(
+        (
+            cell::<Part>(&h25, TableId::PowerDayParts, part_key(30, POLITICAL, 0), "spent"),
+            cell::<Part>(&h25, TableId::PowerDayParts, part_key(30, POLITICAL, 1), "spent"),
+        ),
+        (Some(Q / 4), Some(-Q / 4)),
+        "re-reading unchanged offsetting nonzero costs must not confirm an empty day"
+    );
+    let (h28, _) = run_custom(28, scenario);
+    assert_eq!(
+        (cell::<Coverage>(&h28, TableId::PowerSpendCoverage, 20, "daily_mismatch"), cell::<Coverage>(&h28, TableId::PowerSpendCoverage, 20, "political")),
+        (Some(0), Some(1)),
+        "recovery with unchanged re-read daily zero and matching zero cost row clears the mismatch"
+    );
+    let (h48, _) = run_custom(48, scenario);
+    assert!(
+        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        "an unchanged daily zero confirmed once its witness arrives must block stale post-midnight revisions"
+    );
+    assert!(
+        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(20, POLITICAL, 0)).is_none(),
+        "a staggered daily zero landing during a blocked hour and re-read unchanged on recovery must block stale post-midnight revisions"
+    );
+    assert_eq!(
+        (spend(&h48, 30, POLITICAL, 0, "day_charge"), spend(&h48, 30, POLITICAL, 1, "credits")),
+        (Some(Q / 4), Some(1)),
+        "offsetting nonzero costs still settle at midnight"
+    );
+    assert_resumes_match(&[24, 25, 26, 27, 28], 48, scenario);
+}
+
+#[test]
 fn staggered_zero_confirmation_clears_mismatch_and_blocks_stale_revisions() {
     let scenario = |store: &mut Store, hour: i32| {
         setup_base(store, hour, &[(1, 10)], &[1]);

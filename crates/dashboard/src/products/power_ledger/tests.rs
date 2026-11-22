@@ -473,6 +473,172 @@ fn unavailable_roll_hour_is_withheld_and_named_while_later_available_roll_displa
 }
 
 #[test]
+fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour() {
+    use dashboard_query::{
+        Query,
+        identity::{Holder, HolderRun, Holders},
+        timeline::{Join, Stretch, Timeline},
+    };
+    use replay::lanes::LogGap;
+    use replay_columnar::manifest::Status;
+    let make_frame = |hour: i32| {
+        let mut frame = source_frame(hour);
+        let day = match hour {
+            ..=119 => None,
+            120..=143 => Some((daily(120, 3 * PP, 2 * PP, PP, 50), cost(120, 2 * PP, 50))),
+            _ => Some((daily(144, 5 * PP, 25 * PP / 10, 15 * PP / 10, 80), cost(144, 25 * PP / 10, 80))),
+        };
+        let (days, costs) = day.map_or((Vec::new(), Vec::new()), |(day, cost)| (vec![day], vec![cost]));
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        if (143..=145).contains(&hour) {
+            set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(Vec::new()));
+        }
+        if hour == 144 {
+            frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links unavailable".into() }.into();
+        }
+        frame
+    };
+    let frames = (FIRST..=168).map(make_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-overlap-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let timeline = Timeline {
+        id: 1,
+        first: FIRST,
+        last: 168,
+        stretches: vec![Stretch { run: 0, first: FIRST, last: 168, join: Join::Start }],
+        unheld: Vec::new(),
+    };
+    let holders = Holders::new(
+        [("GER".to_owned(), vec![HolderRun { first: FIRST, last: 168, holder: Holder::Found { slot: SLOT, id: GER }, starts_segment: true }])].into(),
+        Vec::new(),
+    );
+    let held_replay = source.replay();
+    let query = Query { replay: &held_replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+    let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: 168 };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    let at_144 = reply.coverage.iter().find(|run| run.first_hour <= 144 && 144 <= run.last_hour).expect("coverage run for hour 144");
+    assert_eq!((at_144.first_hour, at_144.last_hour, at_144.covered), (144, 144, false), "overlapping day-log gap splits at the affected hour: {:?}", reply.coverage);
+    let reason = at_144.reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("Spending coverage was not recorded") && reason.contains("links unavailable"),
+        "hour 144 must preserve both the coverage fallback and the specific day-log refusal: {reason:?}"
+    );
+    for unaffected in [143, 145] {
+        let run = reply.coverage.iter().find(|run| run.first_hour <= unaffected && unaffected <= run.last_hour).expect("neighbor coverage run");
+        assert!(!run.covered);
+        assert!(
+            !run.reason.as_deref().unwrap_or("").contains("links unavailable"),
+            "adjacent hour {unaffected} outside the day-log gap must keep only its own coverage reason: {:?}",
+            run.reason
+        );
+    }
+
+    let mut runs = vec![
+        SpendCoverage { first_hour: 140, last_hour: 150, covered: false, reason: Some("Spending coverage was not recorded".into()) },
+        SpendCoverage { first_hour: 151, last_hour: 160, covered: true, reason: None },
+    ];
+    let gaps = [
+        LogGap { first: 142, last: 143, status: Status::Unavailable { reason: 1 }, reason: Some("gap a".into()) },
+        LogGap { first: 149, last: 153, status: Status::Unavailable { reason: 2 }, reason: Some("gap b".into()) },
+    ];
+    let mut hours = std::collections::BTreeMap::new();
+    super::apply_day_gaps(&mut runs, 0, &gaps, &mut hours);
+    assert_eq!(
+        runs,
+        [
+            SpendCoverage { first_hour: 140, last_hour: 141, covered: false, reason: Some("Spending coverage was not recorded".into()) },
+            SpendCoverage { first_hour: 142, last_hour: 143, covered: false, reason: Some("Spending coverage was not recorded; Daily spending log unavailable: gap a".into()) },
+            SpendCoverage { first_hour: 144, last_hour: 148, covered: false, reason: Some("Spending coverage was not recorded".into()) },
+            SpendCoverage { first_hour: 149, last_hour: 150, covered: false, reason: Some("Spending coverage was not recorded; Daily spending log unavailable: gap b".into()) },
+            SpendCoverage { first_hour: 151, last_hour: 153, covered: false, reason: Some("Daily spending log unavailable: gap b".into()) },
+            SpendCoverage { first_hour: 154, last_hour: 160, covered: true, reason: None },
+        ],
+        "forward merge splits uncovered and covered runs across overlapping day-log gaps without dropping or hiding reasons"
+    );
+}
+
+#[test]
+fn same_run_stretch_boundary_reads_first_hour_log_event_and_gap() {
+    use dashboard_query::{
+        Query,
+        identity::{Holder, HolderRun, Holders},
+        timeline::{Join, Stretch, Timeline, Unheld},
+    };
+    let build = |unavailable_at_boundary: bool| {
+        let frames: Vec<DecodedFrame> = (FIRST..=168)
+            .map(|hour| {
+                let mut frame = source_frame(hour);
+                if unavailable_at_boundary && hour == 144 {
+                    set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+                    frame.tables[TableId::CountryPowerDailyCosts.index()] = TableView::Unavailable { reason: "boundary costs unavailable".into() }.into();
+                } else {
+                    let day = match hour {
+                        ..=119 => None,
+                        120..=143 => Some((daily(120, 3 * PP, 2 * PP, PP, 50), cost(120, 2 * PP, 50))),
+                        _ => Some((daily(144, 5 * PP, 25 * PP / 10, 15 * PP / 10, 80), cost(144, 25 * PP / 10, 80))),
+                    };
+                    let (days, costs) = day.map_or((Vec::new(), Vec::new()), |(day, cost)| (vec![day], vec![cost]));
+                    set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+                    set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+                }
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(
+            crate::SourceKey { source_id: format!("power-ledger-stretch-{unavailable_at_boundary}"), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let timeline = Timeline {
+            id: 1,
+            first: FIRST,
+            last: 168,
+            stretches: vec![
+                Stretch { run: 0, first: FIRST, last: 140, join: Join::Start },
+                Stretch { run: 0, first: 144, last: 168, join: Join::Break },
+            ],
+            unheld: vec![Unheld { first: 141, last: 143, reason: "gap".into() }],
+        };
+        let run = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: SLOT, id: GER }, starts_segment: true };
+        let holders = Holders::new([("GER".to_owned(), vec![run(FIRST, 140), run(144, 168)])].into(), Vec::new());
+        let replay = source.replay();
+        let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+        let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+        let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: 144, to: 144 };
+        spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap()
+    };
+
+    let available = build(false);
+    let listed: Vec<_> = available.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone())).collect();
+    assert_eq!(
+        listed,
+        [(144, Some(120), 1, 1, Some("200000".into()))],
+        "a 1-hour query on the first hour of a later same-run stretch must still read its PowerSpendDays event"
+    );
+
+    let unavailable = build(true);
+    assert!(unavailable.days.is_empty(), "an unavailable roll at the stretch boundary must be withheld");
+    assert!(
+        unavailable.warnings.iter().any(|warning| warning.contains("boundary costs unavailable")),
+        "a 1-hour query on an unavailable stretch boundary must still report the day-log gap warning: {:?}",
+        unavailable.warnings
+    );
+    assert!(
+        unavailable
+            .coverage
+            .iter()
+            .any(|run| run.first_hour == 144 && run.last_hour == 144 && !run.covered && run.reason.as_deref().is_some_and(|reason| reason.contains("boundary costs unavailable"))),
+        "a 1-hour query on an unavailable stretch boundary must preserve the day-log refusal in coverage: {:?}",
+        unavailable.coverage
+    );
+}
+
+#[test]
 fn daily_credit_carries_its_native_date_separately_from_debits() {
     let make_frame = |hour: i32| {
         let mut frame = source_frame(hour);

@@ -457,8 +457,7 @@ fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut d
 }
 
 fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut dyn FnMut(i32, u32, SpendDay)) -> io::Result<Vec<lanes::LogGap>> {
-    let from = if piece.baseline == Some(piece.first) { piece.first.saturating_add(1) } else { piece.first };
-    if from > piece.last {
+    if piece.first > piece.last {
         return Ok(Vec::new());
     }
     let columns: Vec<usize> = DAYS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendDays, name)).collect::<io::Result<_>>()?;
@@ -466,7 +465,7 @@ fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut
     let high = low | ((1_u128 << 72) - 1);
     let wanted_currency = currency.code();
     let span = dashboard_query::cost::storage(|| {
-        lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendDays, &columns, Keys::Range(low, high), from, piece.last, &mut |hour, key, cells| {
+        lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendDays, &columns, Keys::Range(low, high), piece.first, piece.last, &mut |hour, key, cells| {
             if (key >> 32) as u8 != wanted_currency {
                 return;
             }
@@ -526,6 +525,17 @@ fn push_coverage(out: &mut Vec<SpendCoverage>, run: SpendCoverage) {
     }
 }
 
+fn combine_gap_reason(covered: bool, existing: Option<&str>, day_reason: &str) -> String {
+    if covered {
+        return day_reason.to_owned();
+    }
+    match existing.filter(|reason| !reason.is_empty()) {
+        None => day_reason.to_owned(),
+        Some(existing) if existing.contains(day_reason) => existing.to_owned(),
+        Some(existing) => format!("{existing}; {day_reason}"),
+    }
+}
+
 fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[lanes::LogGap], gap_hours: &mut BTreeMap<String, u64>) {
     if gaps.is_empty() {
         return;
@@ -543,26 +553,25 @@ fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[la
         return;
     }
     let mut next: Vec<SpendCoverage> = Vec::with_capacity(coverage.len().saturating_sub(start_at) + resolved.len());
+    let mut gap_at = 0usize;
     for run in coverage.drain(start_at..) {
-        if !run.covered {
-            push_coverage(&mut next, run);
-            continue;
-        }
         let mut cursor = run.first_hour;
         let mut done = false;
-        for (first, last, reason) in &resolved {
-            if *last < cursor {
-                continue;
-            }
-            if *first > run.last_hour {
-                break;
-            }
-            let a = (*first).max(cursor);
-            let b = (*last).min(run.last_hour);
+        while gap_at < resolved.len() && resolved[gap_at].1 < cursor {
+            gap_at += 1;
+        }
+        while gap_at < resolved.len() && resolved[gap_at].0 <= run.last_hour {
+            let (first, last, ref day_reason) = resolved[gap_at];
+            let a = first.max(cursor);
+            let b = last.min(run.last_hour);
             if cursor < a {
-                push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: a - 1, covered: true, reason: None });
+                push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: a - 1, covered: run.covered, reason: run.reason.clone() });
             }
-            push_coverage(&mut next, SpendCoverage { first_hour: a, last_hour: b, covered: false, reason: Some(reason.clone()) });
+            let reason = combine_gap_reason(run.covered, run.reason.as_deref(), day_reason);
+            push_coverage(&mut next, SpendCoverage { first_hour: a, last_hour: b, covered: false, reason: Some(reason) });
+            if last <= run.last_hour {
+                gap_at += 1;
+            }
             if b >= run.last_hour {
                 done = true;
                 break;
@@ -570,7 +579,7 @@ fn apply_day_gaps(coverage: &mut Vec<SpendCoverage>, start_at: usize, gaps: &[la
             cursor = b + 1;
         }
         if !done && cursor <= run.last_hour {
-            push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: run.last_hour, covered: true, reason: None });
+            push_coverage(&mut next, SpendCoverage { first_hour: cursor, last_hour: run.last_hour, covered: run.covered, reason: run.reason });
         }
     }
     coverage.extend(next);

@@ -788,14 +788,17 @@ impl PowerLedger {
         }
     }
 
+    fn confirms_zero(witnesses: Option<&replay_columnar::store::TableView<'_>>, raw: u32, at: i32, day: i32, epoch: u64, run_first: i32) -> bool {
+        day > run_first && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, at, Streams::PP_DAILY_COSTS, at))
+    }
+
     fn confirms_empty(witnesses: Option<&replay_columnar::store::TableView<'_>>, raw: u32, at: i32, day: i32, run_first: i32, daily: Option<&CountryPowerDailyRow>) -> bool {
-        day > run_first
-            && daily.is_some_and(|daily| {
-                midnight(daily.day_hour) == day
-                    && daily.pp_cost_raw == Some(0)
-                    && daily.pp_sequence.is_some()
-                    && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
-            })
+        daily.is_some_and(|daily| {
+            midnight(daily.day_hour) == day
+                && daily.pp_cost_raw == Some(0)
+                && daily.pp_sequence.is_some()
+                && Self::confirms_zero(witnesses, raw, at, day, daily.epoch, run_first)
+        })
     }
 
     fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, moved: &HashSet<u32>) -> io::Result<()> {
@@ -1157,34 +1160,36 @@ impl PowerLedger {
                     self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs, deleted_only: false })?;
                 }
             }
-            let open: BTreeSet<u32> = self.batches.keys().filter(|key| key.day == today && !published.contains(&key.raw)).map(|key| key.raw).collect();
-            for raw in open {
-                if inputs::holds_no_costs(hour, raw)? {
-                    self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs: Vec::new(), deleted_only: true })?;
-                }
-            }
-            if complete {
-                let daily_candidates: Vec<u32> = pending.daily.iter().copied().collect();
-                for raw in daily_candidates {
-                    if let Some(daily) = inputs::fresh_daily(hour, raw)?
-                        && Self::confirms_empty(witnesses, raw, hour.hour, midnight(daily.day_hour), run_first, Some(&daily))
-                        && inputs::no_nonzero_costs_for(hour, raw, &daily)?
-                    {
-                        let day = midnight(daily.day_hour);
-                        if day == today {
-                            let keys: Vec<BatchKey> = self.raw_batches(raw).into_iter().filter(|key| key.day == today).collect();
-                            for key in keys {
-                                self.remove_batch(key, pending);
-                            }
-                        }
-                        if !self.raw_batches(raw).iter().any(|key| key.day == today) {
-                            self.mismatched.remove(&raw);
-                        }
-                        if !self.raw_batches(raw).iter().any(|key| key.day == day) {
-                            self.record_settled(raw, day);
-                        }
-                        pending.daily.remove(&raw);
+            if complete && witnesses.is_some() {
+                for zero in inputs::fresh_zero_dailies(hour) {
+                    if zero.day <= run_first {
+                        continue;
                     }
+                    let raw = zero.country;
+                    let has_today = self.raw_batches(raw).iter().any(|key| key.day == today);
+                    let already_settled = self.settled.get(&raw).is_some_and(|runs| runs.contains(zero.day));
+                    let needs_clear = (zero.day == today && has_today) || (self.mismatched.contains(&raw) && !has_today);
+                    if already_settled && !needs_clear {
+                        continue;
+                    }
+                    if !Self::confirms_zero(witnesses, raw, hour.hour, zero.day, zero.epoch, run_first)
+                        || !inputs::no_nonzero_costs_for(hour, raw, zero.epoch, zero.day, zero.sequence)?
+                    {
+                        continue;
+                    }
+                    if zero.day == today {
+                        let keys: Vec<BatchKey> = self.raw_batches(raw).into_iter().filter(|key| key.day == today).collect();
+                        for key in keys {
+                            self.remove_batch(key, pending);
+                        }
+                    }
+                    if !self.raw_batches(raw).iter().any(|key| key.day == today) {
+                        self.mismatched.remove(&raw);
+                    }
+                    if !self.raw_batches(raw).iter().any(|key| key.day == zero.day) {
+                        self.record_settled(raw, zero.day);
+                    }
+                    pending.daily.remove(&raw);
                 }
             }
         }
