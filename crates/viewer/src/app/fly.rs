@@ -5,9 +5,9 @@ use crate::controls::{Frame, Pad};
 use crate::document::Document;
 use viewer_foundation::map::camera::Camera;
 use viewer_foundation::map::province_map::HeightField;
-use viewer_world::map::aircraft::PlayerAircraft;
-use viewer_world::map::models::ModelInstance;
-use viewer_world::map::scene::PlayerModel;
+use viewer_aircraft::aircraft::PlayerAircraft;
+use viewer_models::ModelInstance;
+use viewer_world::scene::PlayerModel;
 
 pub(crate) const LABEL: &str = "flying aircraft";
 
@@ -146,7 +146,7 @@ impl Viewer {
 
     pub(super) fn fly_model<'a>(
         flying: Option<(usize, ModelInstance)>,
-        library: &'a viewer_world::map::models::ModelLibrary,
+        library: &'a viewer_models::ModelLibrary,
     ) -> Option<PlayerModel<'a>> {
         flying.map(|(mesh, instance)| PlayerModel {
             library,

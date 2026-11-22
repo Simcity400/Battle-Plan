@@ -28,12 +28,10 @@ use viewer_foundation::map::{
     province_schedule::ProvinceSet,
     unit_rules::STANDSTILL,
 };
-use viewer_world::map::{
-    entity_animation::{ATTACK, DEFEND},
-    map_mode::visibility,
-    unit_history::Target,
-    unit_models::{self, LandStack, Unplaced},
-};
+use viewer_models::entity_animation::{ATTACK, DEFEND};
+use viewer_map_modes::map_mode::visibility;
+use viewer_unit_history::unit_history::Target;
+use viewer_unit_models::unit_models::{self, LandStack, Unplaced};
 
 const NONE: u32 = u32::MAX;
 
@@ -47,7 +45,7 @@ pub trait Ground: Send + Sync {
     fn units_cutoff(&self) -> f32;
     fn ships_cutoff(&self) -> f32;
     fn map(&self) -> (MapSize, MapDefines);
-    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets>;
+    fn unit_models(&self) -> Option<&viewer_unit_models::unit_models::UnitModelAssets>;
 }
 
 impl Ground for crate::document::Content {
@@ -76,7 +74,7 @@ impl Ground for crate::document::Content {
         self.unit_models.gates.ships
     }
 
-    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets> {
+    fn unit_models(&self) -> Option<&viewer_unit_models::unit_models::UnitModelAssets> {
         Some(&self.unit_models)
     }
 
@@ -295,7 +293,7 @@ pub struct Units {
     to_upload: bool,
     models_new: bool,
     uploaded: Vec<Target>,
-    staged: Option<(viewer_world::map::unit_history::Field, Vec<Target>)>,
+    staged: Option<(viewer_unit_history::unit_history::Field, Vec<Target>)>,
     reading: bool,
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
     fresh_vision: AtomicBool,
@@ -440,7 +438,7 @@ impl Units {
         self
     }
 
-    pub fn prepared(&self) -> Option<&Arc<viewer_world::map::unit_models::PreparedModels>> {
+    pub fn prepared(&self) -> Option<&Arc<viewer_unit_models::unit_models::PreparedModels>> {
         self.models.as_ref()?.prepared.as_ref().map(|(_, prepared)| prepared)
     }
 
@@ -1808,7 +1806,7 @@ pub fn of(side: &crate::playhead_host::MapSide) -> Option<&Units> {
     layers.iter().find_map(|layer| layer.any().downcast_ref::<Units>())
 }
 
-pub fn prepared(side: &crate::playhead_host::MapSide) -> Option<&Arc<viewer_world::map::unit_models::PreparedModels>> {
+pub fn prepared(side: &crate::playhead_host::MapSide) -> Option<&Arc<viewer_unit_models::unit_models::PreparedModels>> {
     of(side).and_then(Units::prepared)
 }
 

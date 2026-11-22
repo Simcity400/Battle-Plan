@@ -217,7 +217,7 @@ impl Labels {
         let unreadable: Vec<u32> = self.unreadable.iter().copied().collect();
         let mut out = viewer_foundation::map::tables::Limitations::default();
         map_products::note_unreadable_names(&mut out, &unreadable);
-        viewer_world::map::labels::note_withheld(&mut out, self.withheld.iter().map(|(&state, &why)| (state, why)));
+        viewer_map_icons::labels::note_withheld(&mut out, self.withheld.iter().map(|(&state, &why)| (state, why)));
         self.notes = out.into_lines();
         self.notes_stale = false;
     }
@@ -397,8 +397,8 @@ impl Labels {
         }
         Some(match holders[..] {
             [province] => Ok(province),
-            [] => Err(viewer_world::map::labels::NO_VICTORY_POINTS),
-            _ => Err(viewer_world::map::labels::TIED_VICTORY_POINTS),
+            [] => Err(viewer_map_icons::labels::NO_VICTORY_POINTS),
+            _ => Err(viewer_map_icons::labels::TIED_VICTORY_POINTS),
         })
     }
 

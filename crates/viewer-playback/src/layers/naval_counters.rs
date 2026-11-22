@@ -944,7 +944,7 @@ impl Layer for NavalCounters {
             self.camera = camera;
             self.camera_dirty = true;
         }
-        let shown = viewer_world::map::map_mode::visibility::of(&view.map_mode);
+        let shown = viewer_map_modes::map_mode::visibility::of(&view.map_mode);
         let high = view.camera.is_some_and(|camera| matches!(camera.pose, Pose::Map) && camera.height >= self.waters.icons_cutoff());
         let drawn = view.overlay.counters.naval || view.overlay.counters.ports;
         if !shown.unit_counters || shown.unit_kinds != UnitKinds::All || !drawn || high {

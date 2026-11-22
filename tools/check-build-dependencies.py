@@ -86,14 +86,20 @@ def check(normal, all_targets):
             path = path_to(normal, name, {"replay"})
             if path:
                 failures.append(" -> ".join(path) + ": capture helpers must not pull in recording I/O")
-    viewer, windows = "viewer-foundation", "dashboard-game-window"
+    windows = "dashboard-game-window"
+    viewer = {
+        "viewer-foundation", "viewer-scene-base", "viewer-terrain", "viewer-map-modes",
+        "viewer-map-icons", "viewer-borders", "viewer-map-text", "viewer-models",
+        "viewer-buildings", "viewer-unit-history", "viewer-unit-models", "viewer-rail",
+        "viewer-aircraft", "viewer-weather-effects", "viewer-world",
+    }
     for name in sorted(normal):
         if name.startswith("dashboard") and name not in {windows, "dashboard"}:
-            path = path_to(normal, name, {viewer})
+            path = path_to(normal, name, viewer)
             if path:
-                failures.append(" -> ".join(path) + f": only {windows} may depend on {viewer}")
-    if viewer in normal.get("dashboard", set()):
-        failures.append(f"dashboard -> {viewer}: depend on it through {windows}")
+                failures.append(" -> ".join(path) + f": only {windows} may depend on {path[-1]}")
+    for dependency in sorted(viewer & normal.get("dashboard", set())):
+        failures.append(f"dashboard -> {dependency}: depend on it through {windows}")
     readers = {name for name in normal if name.startswith("engine-")} - {
         "engine-allocation", "engine-reference-values", "engine-heap", "engine-sites", "engine-tga"
     }

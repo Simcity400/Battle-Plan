@@ -3,7 +3,7 @@ use super::ResourceIcons;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::json;
 use std::{io, sync::Arc};
-use viewer_world::map::resource_icons::{HourIcons, hour_icons};
+use viewer_map_icons::resource_icons::{HourIcons, hour_icons};
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(ResourceIcons::new(Arc::clone(&document.content) as Arc<dyn super::Source>))

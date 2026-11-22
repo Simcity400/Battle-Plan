@@ -5,7 +5,7 @@ use playhead::{Step, changes::Changes};
 use replay_columnar::{manifest::Status, store::Value};
 use replay_data::rows::TableId;
 use std::{io, sync::Arc};
-use viewer_world::map::strike_effects::{self, Impact, Impacts};
+use viewer_models::strike_effects::{self, Impact, Impacts};
 
 #[derive(Clone, Copy)]
 struct Columns {

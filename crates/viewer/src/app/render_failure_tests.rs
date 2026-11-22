@@ -3,7 +3,7 @@ use crate::map::scene_failure_tests::Fixture;
 use viewer_foundation::map::camera::Placement;
 #[cfg(test)]
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
-use viewer_world::map::scene_faults::Point;
+use viewer_world::scene_faults::Point;
 
 pub(super) fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView {
     let bounds = dashboard::protocol::ViewBounds {

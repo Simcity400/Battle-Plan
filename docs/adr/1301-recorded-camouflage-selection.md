@@ -6,4 +6,4 @@ The current province can forbid the chosen category. Apply the authored conditio
 
 Cache state membership while province-to-state reads remain valid. Narrow weather and lexical reads to the selected candidate's dependencies so a kept model can be reused if those facts stay equal.
 
-[Camouflage and older-recording behavior](../../crates/viewer-world/src/map/camouflage.rs)
+[Camouflage and older-recording behavior](../../crates/viewer-unit-models/src/camouflage.rs)

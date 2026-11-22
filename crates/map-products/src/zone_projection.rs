@@ -7,10 +7,8 @@ use map_display_data::{province_field::Storage, retained::Retained};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc};
-use viewer_world::map::{
-    demilitarized::{self, Zone},
-    political::Regions,
-};
+use viewer_borders::demilitarized::{self, Zone};
+use map_display_data::landscape::Regions;
 
 #[derive(Default)]
 pub(crate) struct Zones(DependencyIndex<(Operand<MapData>, Operand<Storage>), Retained<Zone>>);

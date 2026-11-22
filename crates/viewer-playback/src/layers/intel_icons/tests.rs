@@ -12,7 +12,7 @@ use std::{
 };
 use viewer_foundation::map::perspective;
 use viewer_raids::map::intel_icons::IntelIcons;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const RECORDING: Recording = Recording { branch: 3 };
 const HOURS: u32 = 400;

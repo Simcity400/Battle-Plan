@@ -1,7 +1,7 @@
 
 use super::{BAND, Changed, Made, RUN, Snow, Target};
 use crate::layers::Layer;
-use map_snow::SnowMud;
+use map_display_data::SnowMud;
 use std::{io, ops::Range, sync::Arc, time::Duration};
 use viewer_foundation::map::presentation::Continuity;
 
