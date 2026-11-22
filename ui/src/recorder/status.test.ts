@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
@@ -296,3 +296,15 @@ test('a Stop and its Discard step confirm only the session they were opened for,
   assert.equal(promptDiscards({ ...quit, discarding: true }, null), true, 'the tray’s Discard is its own confirmation step');
   assert.equal(promptDiscards(null, 3), false);
 });
+
+test('a Save or Discard, and its Try again, acts only while the screen still asks it about that session', () => {
+  const live = recording({ sessionKey: 3, prompt: null });
+  const asked = askedPrompt(live, 3);
+  assert.equal(stopConfirmed(asked, 3, true, 3), true, 'the confirmed Discard step discards');
+  assert.equal(stopConfirmed(asked, null, true, 3), false, 'a Discard whose confirmation was cancelled back to Save or Discard is retired, Try again included');
+  assert.equal(stopConfirmed(asked, null, false, 3), true, 'the Save on that screen still saves');
+  assert.equal(stopConfirmed(asked, 3, false, 3), false, 'the confirmation step offers no Save');
+  assert.equal(stopConfirmed(askedPrompt(recording({ sessionKey: 4, prompt: null }), 4), 4, true, 3), false, 'nor does it act on another session');
+  assert.equal(stopConfirmed(askedPrompt(live, null), 3, true, 3), false, 'nor once the prompt has closed');
+});
+

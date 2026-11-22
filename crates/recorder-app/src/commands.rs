@@ -67,16 +67,17 @@ pub struct PanelOpened {
 #[tauri::command]
 pub fn panel_opened(
     app: AppHandle,
+    window: WebviewWindow,
     recorder: State<'_, Arc<Recorder>>,
     panel: String,
 ) -> PanelOpened {
     recorder.panel_opened(&app);
-    PanelOpened { compact: panel::opening(&app, &panel) }
+    PanelOpened { compact: panel::opening(&app, &window, &panel) }
 }
 
 #[tauri::command]
 pub fn panel_fit(app: AppHandle, window: WebviewWindow, height: f64) -> Result<(), String> {
-    panel::fit(&app, &window, height).map_err(|error| error.to_string())
+    panel::fit(&app, &window, height)
 }
 
 #[tauri::command]
@@ -96,7 +97,7 @@ pub async fn close_panel(
 }
 
 #[tauri::command]
-pub fn prompt_shown(
+pub fn prompt_seen(
     window: WebviewWindow,
     recorder: State<'_, Arc<Recorder>>,
     prompt: u64,
@@ -104,9 +105,10 @@ pub fn prompt_shown(
     if window.label() != panel::LABEL {
         return Err("Only the recorder panel shows its prompts.".into());
     }
-    recorder.prompt_shown(prompt, window.is_visible().unwrap_or(false));
+    recorder.prompt_seen(prompt);
     Ok(())
 }
+
 
 #[tauri::command]
 pub fn start_recording(recorder: State<'_, Arc<Recorder>>) {

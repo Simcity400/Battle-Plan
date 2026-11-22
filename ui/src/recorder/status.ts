@@ -321,6 +321,11 @@ export function promptDiscards(asked: AskedPrompt | null, stepped: number | null
   return asked !== null && (asked.discarding || stepped === asked.sessionKey);
 }
 
+export function stopConfirmed(asked: AskedPrompt | null, stepped: number | null, discard: boolean, sessionKey: number): boolean {
+  return asked !== null && asked.sessionKey === sessionKey && promptDiscards(asked, stepped) === discard;
+}
+
+
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {
   return settings.campaigns[campaign]?.record ?? settings.recordEveryCampaign;
 }

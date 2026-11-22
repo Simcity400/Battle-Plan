@@ -16,7 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use leaving::{Answered, Batch, Closing, Leaving, Lock, Reach, Stop, Unanswered};
+use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -276,7 +276,7 @@ fn watch_close_requests(
 }
 
 #[tauri::command]
-fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64) -> Result<(), String> {
+fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64) -> Result<u64, String> {
     main_page(&webview)?;
     leaving.refresh(document, seq).map_err(str::to_owned)
 }
@@ -354,23 +354,38 @@ fn stop_page(window: WebviewWindow) -> Stop {
     })
 }
 
-fn lock_page(app: tauri::AppHandle, hwnd: isize) -> Lock {
-    Arc::new(move || {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
-        unsafe { EnableWindow(hwnd as *mut std::ffi::c_void, 0) };
-        let unfocused = app.run_on_main_thread(|| {
-            unsafe { SetFocus(std::ptr::null_mut()) };
-        });
-        if let Err(error) = unfocused {
-            eprintln!("BattlePlan couldn’t take keyboard focus from its page while it leaves: {error}");
-        }
-    })
+trait Shut {
+    fn disable(&self);
+    fn hide(&self) -> tauri::Result<()>;
+}
+
+struct MainWindow {
+    window: WebviewWindow,
+    hwnd: isize,
+}
+
+impl Shut for MainWindow {
+    fn disable(&self) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+        unsafe { EnableWindow(self.hwnd as *mut std::ffi::c_void, 0) };
+    }
+
+    fn hide(&self) -> tauri::Result<()> {
+        self.window.hide()
+    }
+}
+
+fn shut(window: &impl Shut) {
+    window.disable();
+    if let Err(error) = window.hide() {
+        eprintln!("BattlePlan couldn’t hide its window while it leaves, so a dialog that closes could let input back into its page: {error}");
+    }
 }
 
 fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
-    let hwnd = window.hwnd()?.0 as isize;
-    app.state::<Leaving>().follow(stop_page(window.clone()), lock_page(app.clone(), hwnd));
+    let main = MainWindow { window: window.clone(), hwnd: window.hwnd()?.0 as isize };
+    app.state::<Leaving>().follow(stop_page(window.clone()), Arc::new(move || shut(&main)));
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -703,7 +718,51 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ExitOrder;
+    use super::{ExitOrder, Shut, shut};
+    use std::cell::Cell;
+
+    struct Window {
+        enabled: Cell<bool>,
+        visible: Cell<bool>,
+    }
+
+    impl Shut for Window {
+        fn disable(&self) {
+            self.enabled.set(false);
+        }
+
+        fn hide(&self) -> tauri::Result<()> {
+            self.visible.set(false);
+            Ok(())
+        }
+    }
+
+    struct Modal {
+        disabled_owner: bool,
+    }
+
+    impl Modal {
+        fn open(owner: &Window) -> Self {
+            Self { disabled_owner: owner.enabled.replace(false) }
+        }
+
+        fn close(self, owner: &Window) {
+            if self.disabled_owner {
+                owner.enabled.set(true);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dialog_that_closes_after_battleplan_commits_to_exit_lets_no_input_back_into_its_window() {
+        let window = Window { enabled: Cell::new(true), visible: Cell::new(true) };
+        let choice = Modal::open(&window);
+        shut(&window);
+        choice.close(&window);
+        assert!(window.enabled.get(), "the dialog re-enables the window it disabled, as Windows does");
+        assert!(!window.visible.get(), "so the window is out of input by a means no dialog undoes");
+    }
+
 
     #[test]
     fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {

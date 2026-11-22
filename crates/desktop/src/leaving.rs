@@ -64,6 +64,7 @@ impl Verdict {
 
 pub const REPLACED: &str = "This page was replaced before it could watch for BattlePlan closing.";
 pub const UNWATCHED: &str = "This page no longer watches for BattlePlan closing, so it can’t ask again what stands.";
+pub const RELOADING: &str = "This page is reloading, so BattlePlan can’t tell it what stands until the reload loads or stops.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unanswered {
@@ -160,16 +161,16 @@ impl State {
         !self.blind && matches!(self.page, Page::Watched { .. }) && self.navigations.is_empty()
     }
 
-    fn send(&mut self) {
+    fn send(&mut self) -> Option<u64> {
         let Page::Watched { reach, .. } = &self.page else {
-            return;
+            return None;
         };
         if !self.navigations.is_empty() {
-            return;
+            return None;
         }
         let reach = Arc::clone(reach);
         if !self.askable() && self.holds.is_empty() {
-            return;
+            return None;
         }
         if self.askable() {
             for at in 0..self.questions.len() {
@@ -190,6 +191,7 @@ impl State {
         }
         self.sent.push((seq, waiting.iter().map(|ask| ask.id).collect()));
         self.outbox.push(Out::Batch(reach, Batch { seq, waiting, holds: self.holds.clone() }));
+        Some(seq)
     }
 
     fn exit(&mut self) {
@@ -218,10 +220,6 @@ impl State {
 
     fn offer(&mut self, why: Unanswered) -> Closing {
         if std::mem::replace(&mut self.offering, true) { Closing::Held } else { Closing::Offer(why) }
-    }
-
-    fn unasked(&self) -> bool {
-        self.questions.iter().any(|question| question.verdict.is_none() && question.asked.is_none())
     }
 }
 
@@ -329,7 +327,7 @@ impl Leaving {
         })
     }
 
-    pub fn refresh(&self, document: u64, seq: u64) -> Result<(), &'static str> {
+    pub fn refresh(&self, document: u64, seq: u64) -> Result<u64, &'static str> {
         self.act(|state| {
             if state.blind {
                 return Err(Verdict::BLIND);
@@ -337,8 +335,7 @@ impl Leaving {
             match state.page {
                 Page::Watched { seq: current, .. } if current == seq && document == state.document => {
                     state.hung = false;
-                    state.send();
-                    Ok(())
+                    state.send().ok_or(RELOADING)
                 }
                 _ => Err(UNWATCHED),
             }
@@ -461,9 +458,7 @@ impl Leaving {
     pub fn navigation_completed(&self, navigation: u64) {
         self.act(|state| {
             state.navigations.remove(&navigation);
-            if state.unasked() || !state.holds.is_empty() {
-                state.send();
-            }
+            state.send();
         });
     }
 
@@ -593,7 +588,7 @@ impl Leaving {
 
 #[cfg(test)]
 mod tests {
-    use super::{About, Answered, Ask, Batch, Closing, Leaving, REPLACED, Reach, UNWATCHED, Unanswered, Verdict};
+    use super::{About, Answered, Ask, Batch, Closing, Leaving, RELOADING, REPLACED, Reach, UNWATCHED, Unanswered, Verdict};
     use std::sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender, channel},
@@ -1021,6 +1016,7 @@ mod tests {
         assert!(page.hears(&leaving).1.holds.is_empty());
         assert!(leaving.navigation_starting(1), "a page that stays may reload");
         leaving.navigation_completed(1);
+        page.hears(&leaving);
 
         let asking = leaving.pose(About::Install);
         let (_, id, _) = heard(&leaving, &page);
@@ -1140,8 +1136,9 @@ mod tests {
         assert_eq!(leaving.refresh(document, 0), Err(UNWATCHED), "a subscription that was replaced can’t ask");
         assert_eq!(leaving.refresh(document + 1, 1), Err(UNWATCHED));
         assert!(page.quiet());
-        assert_eq!(leaving.refresh(document, 1), Ok(()));
+        let refreshed = leaving.refresh(document, 1);
         let (callback, batch) = page.hears(&leaving);
+        assert_eq!(refreshed, Ok(batch.seq), "the page learns which batch answers it");
         let (again, about) = asked(&batch);
         assert_eq!((callback, about), (7, About::Close));
         assert_ne!(again, retired, "the close the native choice kept waiting is asked again, with a fresh id");
@@ -1186,6 +1183,26 @@ mod tests {
         assert_eq!(leaving.answer(again, false, &[]), Answered::Unknown);
         assert!(page.quiet());
         assert_eq!(leaving.close_requested(), Closing::Offer(Unanswered::Close), "the close waits for the new page");
+    }
+
+    #[test]
+    fn a_refresh_during_a_reload_says_so_and_the_page_an_abandoned_reload_leaves_hears_what_stands_even_when_nothing_does() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let document = leaving.document();
+        let asking = leaving.pose(About::Install);
+        let (_, install, _) = heard(&leaving, &page);
+        assert!(leaving.navigation_starting(5));
+        assert_eq!(leaving.wait(asking).0, Verdict::Reloaded, "the reload retires the install the page was locked for");
+        assert_eq!(leaving.refresh(document, 1), Err(RELOADING), "nothing reaches the page while it may be replaced, so Try again isn’t told it did");
+        assert!(page.quiet());
+        leaving.navigation_completed(5);
+        let (_, batch) = page.hears(&leaving);
+        assert!(batch.waiting.is_empty() && batch.holds.is_empty(), "the page that stays learns its install is gone: {batch:?}");
+        assert_eq!(leaving.answer(install, false, &[]), Answered::Unknown);
+        let refreshed = leaving.refresh(document, 1);
+        assert_eq!(refreshed, Ok(page.hears(&leaving).1.seq));
     }
 
     #[test]
@@ -1260,7 +1277,7 @@ mod tests {
     }
 
     mod interleavings {
-        use super::super::{About, Answered, Ask, Batch, Closing, Leaving, Posed, Reach, Verdict};
+        use super::super::{About, Answered, Ask, Batch, Closing, Leaving, Page as Shown, Posed, Reach, Verdict};
         use serde_json::{Value, json};
         use std::collections::{BTreeMap, BTreeSet, VecDeque};
         use std::sync::{Arc, Mutex, Weak};
@@ -1296,11 +1313,10 @@ mod tests {
             by_choice: bool,
             applied: Option<u64>,
             document: Option<u64>,
-            resend: Vec<u64>,
+            resend: Vec<(u64, u64)>,
             committed: BTreeMap<u64, (bool, bool)>,
             judged: BTreeSet<u64>,
             waiting: Vec<Ask>,
-            live: BTreeSet<u64>,
             failures: BTreeMap<String, Failure>,
             shown: Option<Option<bool>>,
         }
@@ -1340,6 +1356,7 @@ mod tests {
             Retry,
             Refresh,
             RefreshLost,
+            RefreshReply,
             Remount,
             Register,
             RegistrationLost,
@@ -1355,7 +1372,7 @@ mod tests {
             Choose,
         }
 
-        const STEPS: [(Step, usize); 29] = [
+        const STEPS: [(Step, usize); 30] = [
             (Step::Edit, 18),
             (Step::Save, 6),
             (Step::Restart, 9),
@@ -1372,6 +1389,7 @@ mod tests {
             (Step::Retry, 9),
             (Step::Refresh, 9),
             (Step::RefreshLost, 2),
+            (Step::RefreshReply, 9),
             (Step::Remount, 6),
             (Step::Register, 18),
             (Step::RegistrationLost, 3),
@@ -1387,7 +1405,7 @@ mod tests {
             (Step::Choose, 3),
         ];
 
-        const AFTER_EXIT: [Step; 14] = [
+        const AFTER_EXIT: [Step; 15] = [
             Step::Edit,
             Step::CloseWindow,
             Step::RunBatch,
@@ -1396,6 +1414,7 @@ mod tests {
             Step::Reply,
             Step::Retry,
             Step::Refresh,
+            Step::RefreshReply,
             Step::Remount,
             Step::Register,
             Step::Reload,
@@ -1404,9 +1423,10 @@ mod tests {
             Step::PageExits,
         ];
 
-        const DRAIN: [Step; 11] = [
+        const DRAIN: [Step; 12] = [
             Step::Register,
             Step::Refresh,
+            Step::RefreshReply,
             Step::RunBatch,
             Step::Answer,
             Step::Reply,
@@ -1422,6 +1442,7 @@ mod tests {
         struct Wire {
             batches: Vec<(usize, usize, Batch)>,
             refused: Vec<bool>,
+            dispatched: Vec<u64>,
             last: Option<(usize, usize)>,
             locks: usize,
         }
@@ -1435,7 +1456,8 @@ mod tests {
             live: usize,
             wire: Arc<Mutex<Wire>>,
             registrations: VecDeque<(usize, usize, Option<u64>)>,
-            refreshes: VecDeque<(usize, usize)>,
+            refreshes: VecDeque<(usize, usize, Option<u64>)>,
+            refreshed_with: VecDeque<(usize, usize, Option<u64>, Option<u64>)>,
             answers: VecDeque<(usize, usize, u64, bool, Vec<u64>, About)>,
             replies: VecDeque<(usize, usize, u64, Option<bool>, (About, bool, Vec<u64>))>,
             posed: Vec<(Pending, Posed)>,
@@ -1473,6 +1495,7 @@ mod tests {
                 "r" => (format!("{} {}", event[2], event[5]), &event[6]),
                 "t" => (format!("{} {}", event[2], event[4].as_str().is_some_and(|key| key.starts_with("answer:"))), &event[5]),
                 "w" => (event[2].to_string(), &event[3]),
+                "f" => (event[2].is_null().to_string(), &event[3]),
                 "l" => (String::new(), &event[2]),
                 _ => return kind.to_owned(),
             };
@@ -1505,6 +1528,7 @@ mod tests {
                     wire: Arc::default(),
                     registrations: VecDeque::new(),
                     refreshes: VecDeque::new(),
+                    refreshed_with: VecDeque::new(),
                     answers: VecDeque::new(),
                     replies: VecDeque::new(),
                     posed: Vec::new(),
@@ -1601,6 +1625,7 @@ mod tests {
                     Arc::new(move |batch: Batch| {
                         let refused = (batch.seq ^ seed).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 61 == 0;
                         wire.lock().unwrap().last = Some((doc, guard));
+                        wire.lock().unwrap().dispatched.push(batch.seq);
                         if !refused {
                             wire.lock().unwrap().batches.push((doc, guard, batch));
                             return;
@@ -1731,28 +1756,50 @@ mod tests {
                 }
                 self.log.push(format!("  doc {doc} guard {guard} hears {batch:?}"));
                 state.applied = Some(batch.seq);
-                state.live = batch.waiting.iter().chain(&batch.holds).map(|ask| ask.id).collect();
-                let live = state.live.clone();
+                state.waiting.clone_from(&batch.waiting);
+                let live: BTreeSet<u64> = batch.waiting.iter().chain(&batch.holds).map(|ask| ask.id).collect();
                 state.committed.retain(|id, _| live.contains(id));
                 state.judged.retain(|id| live.contains(id));
-                state.failures.retain(|key, _| key.strip_prefix("answer:").is_none_or(|id| live.contains(&id.parse().unwrap())));
+                let asked: BTreeSet<u64> = batch.waiting.iter().map(|ask| ask.id).collect();
+                state.failures.retain(|key, _| key.strip_prefix("answer:").is_none_or(|id| asked.contains(&id.parse().unwrap())));
                 for hold in &batch.holds {
                     state.committed.entry(hold.id).and_modify(|(_, accepted)| *accepted = true).or_insert((hold.about != About::Close, true));
                 }
-                state.waiting.clone_from(&batch.waiting);
                 self.show(doc, guard);
-                let state = &mut self.docs[doc].guards[guard];
-                let resent: Vec<(u64, Failure)> = std::mem::take(&mut state.resend)
-                    .into_iter()
-                    .filter_map(|id| Some((id, state.failures.get(&format!("answer:{id}"))?.clone())))
-                    .collect();
-                for (id, failure) in resent {
-                    if let Failure::Answer(about, stays, basis) = failure {
-                        self.send(doc, guard, id, about, stays, basis);
-                    }
-                }
+                self.resend_due(doc, guard);
                 let waiting = self.docs[doc].guards[guard].waiting.clone();
                 self.judge(doc, guard, waiting, true)
+            }
+
+            fn resend_due(&mut self, doc: usize, guard: usize) {
+                let state = &mut self.docs[doc].guards[guard];
+                let applied = state.applied;
+                let (due, later): (Vec<(u64, u64)>, Vec<(u64, u64)>) =
+                    std::mem::take(&mut state.resend).into_iter().partition(|&(_, after)| applied.is_some_and(|applied| applied >= after));
+                state.resend = later;
+                for (id, _) in due {
+                    let state = &self.docs[doc].guards[guard];
+                    let Some(Failure::Answer(about, stays, basis)) = state.failures.get(&format!("answer:{id}")).cloned() else { continue };
+                    if !state.waiting.iter().any(|ask| ask.id == id) {
+                        continue;
+                    }
+                    assert!(!self.leaving.lock().held(id), "{}", self.fail(&format!("Try again resent {id}, which the host already took")));
+                    self.send(doc, guard, id, about, stays, basis);
+                }
+            }
+
+            fn refreshed(&mut self, doc: usize, guard: usize, id: Option<u64>, seq: Option<u64>) {
+                let state = &mut self.docs[doc].guards[guard];
+                if state.ended {
+                    return;
+                }
+                if let (Some(id), Some(after)) = (id, seq) {
+                    match state.resend.iter_mut().find(|(resent, _)| *resent == id) {
+                        Some(entry) => entry.1 = after,
+                        None => state.resend.push((id, after)),
+                    }
+                    self.resend_due(doc, guard);
+                }
             }
 
             fn reply(&mut self, doc: usize, guard: usize, id: u64, reply: Option<bool>, sent: (About, bool, Vec<u64>)) {
@@ -1761,7 +1808,7 @@ mod tests {
                     return;
                 }
                 let Some(heard) = reply else {
-                    if state.live.contains(&id) {
+                    if state.waiting.iter().any(|ask| ask.id == id) {
                         state.failures.insert(format!("answer:{id}"), Failure::Answer(sent.0, sent.1, sent.2));
                     }
                     return;
@@ -1930,16 +1977,12 @@ mod tests {
                             Failure::Watch => self.watch(live, guard),
                             Failure::Judge => {
                                 self.refreshed += 1;
-                                self.refreshes.push_back((live, guard));
+                                self.refreshes.push_back((live, guard, None));
                             }
                             Failure::Answer(..) => {
                                 let id = key.strip_prefix("answer:").and_then(|id| id.parse().ok()).expect("an answer failure names its id");
-                                let state = &mut self.docs[live].guards[guard];
-                                if !state.resend.contains(&id) {
-                                    state.resend.push(id);
-                                }
                                 self.refreshed += 1;
-                                self.refreshes.push_back((live, guard));
+                                self.refreshes.push_back((live, guard, Some(id)));
                             }
                         }
                         let trace = self.docs[live].guards[guard].trace;
@@ -1947,15 +1990,34 @@ mod tests {
                         self.record(json!(["t", trace, dirty, confirmed, key, out]));
                     }
                     Step::Refresh | Step::RefreshLost => {
-                        let Some((doc, guard)) = self.refreshes.pop_front() else { return false };
-                        let (document, seq) = (self.docs[doc].guards[guard].document, self.docs[doc].guards[guard].seq);
-                        if matches!(step, Step::Refresh)
-                            && self.docs[doc].alive
-                            && let Some(document) = document
-                        {
-                            let refreshed = self.leaving.refresh(document, seq);
-                            self.log.push(format!("  doc {doc} guard {guard} asks again what stands: {refreshed:?}"));
+                        let Some((doc, guard, id)) = self.refreshes.pop_front() else { return false };
+                        if !self.docs[doc].alive {
+                            return true;
                         }
+                        let (document, seq) = (self.docs[doc].guards[guard].document, self.docs[doc].guards[guard].seq);
+                        let answered = match document {
+                            Some(document) if matches!(step, Step::Refresh) => {
+                                let refreshed = self.leaving.refresh(document, seq);
+                                self.log.push(format!("  doc {doc} guard {guard} asks again what stands: {refreshed:?}"));
+                                if let Ok(sent) = refreshed {
+                                    assert!(self.wire.lock().unwrap().dispatched.contains(&sent), "{}", self.fail("a refresh said it sent a batch it never dispatched"));
+                                }
+                                refreshed.ok()
+                            }
+                            _ => None,
+                        };
+                        self.refreshed_with.push_back((doc, guard, id, answered));
+                    }
+                    Step::RefreshReply => {
+                        let Some((doc, guard, id, answered)) = self.refreshed_with.pop_front() else { return false };
+                        if !self.docs[doc].alive {
+                            return true;
+                        }
+                        self.begin();
+                        self.refreshed(doc, guard, id, answered);
+                        let trace = self.docs[doc].guards[guard].trace;
+                        let out = self.out(doc, guard);
+                        self.record(json!(["f", trace, answered, out]));
                     }
                     Step::Remount if alive => self.mount(),
                     Step::Register | Step::RegistrationLost => {
@@ -2019,8 +2081,16 @@ mod tests {
                             return false;
                         }
                         let navigation = self.navigations.remove(self.rng.below(self.navigations.len()));
+                        let before = self.wire.lock().unwrap().dispatched.len();
                         self.leaving.navigation_completed(navigation);
+                        let owed = {
+                            let state = self.leaving.lock();
+                            matches!(state.page, Shown::Watched { .. }) && !state.blind && state.navigations.is_empty()
+                        };
+                        let sent = self.wire.lock().unwrap().dispatched.len() > before;
+                        assert!(sent || !owed, "{}", self.fail("an abandoned reload left its page without what stands"));
                     }
+
                     Step::PageExits if alive => {
                         self.docs[live].alive = false;
                         if self.leaving.page_gone() {

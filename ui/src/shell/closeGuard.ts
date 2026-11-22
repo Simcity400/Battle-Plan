@@ -7,7 +7,7 @@ export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
   watch(): Promise<void>;
-  refresh(): Promise<void>;
+  refresh(): Promise<number>;
 }
 
 export interface CloseGuardHost {
@@ -46,10 +46,10 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
   const judged = new Set<number>();
-  const resend = new Map<number, () => void>();
+  const resend = new Map<number, { after: number; again: () => void }>();
   let waiting: readonly CloseAsk[] = [];
   const failures = new Map<string, CloseGuardFailure>();
-  let live = new Set<number>();
+  const asked = (id: number) => waiting.some(ask => ask.id === id);
   const publish = () => { if (!ended) report([...failures.values()]); };
   const clear = (key: string) => { if (failures.delete(key)) publish(); };
   const fail = (key: string, message: string, cause: unknown, again: () => void) => {
@@ -58,8 +58,15 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     publish();
   };
 
-  const refresh = (key: string, message: string, again: () => void) => {
-    requests.refresh().catch(cause => { if (!ended && failures.has(key)) fail(key, message, cause, again); });
+  const refresh = (key: string, message: string, again: () => void, fresh?: (seq: number) => void) => {
+    requests.refresh().then(seq => { if (!ended) fresh?.(seq); }, cause => { if (!ended && failures.has(key)) fail(key, message, cause, again); });
+  };
+  const resendDue = () => {
+    for (const [id, { after, again }] of [...resend]) {
+      if (after > applied) continue;
+      resend.delete(id);
+      if (failures.has(`answer:${id}`) && asked(id)) again();
+    }
   };
   const rejudge = () => refresh('judge', UNJUDGED, rejudge);
 
@@ -85,12 +92,12 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       show();
       if (!failures.has('judge')) judge(waiting, true);
     }, cause => {
-      if (ended || !live.has(id)) return;
+      if (ended || !asked(id)) return;
       const message = unanswered(about, stays);
-      const again = () => {
-        resend.set(id, () => send(id, about, stays, basis));
-        refresh(key, message, again);
-      };
+      const again = () => refresh(key, message, again, after => {
+        resend.set(id, { after, again: () => send(id, about, stays, basis) });
+        resendDue();
+      });
       fail(key, message, cause, again);
     });
   };
@@ -143,22 +150,20 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     if (ended) return false;
     if (batch.seq <= applied) return judge(batch.waiting.filter(ask => waiting.some(({ id }) => id === ask.id)), false);
     applied = batch.seq;
-    live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
+    waiting = batch.waiting;
+    const live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
     for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
-    const retired = [...failures.keys()].filter(key => key.startsWith('answer:') && !live.has(Number(key.slice('answer:'.length))));
-    for (const key of retired) failures.delete(key);
-    if (retired.length) publish();
+    const settled = [...failures.keys()].filter(key => key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length))));
+    for (const key of settled) failures.delete(key);
+    if (settled.length) publish();
     for (const hold of batch.holds) {
       const commitment = committed.get(hold.id);
       if (commitment) commitment.accepted = true;
       else committed.set(hold.id, { leaving: leavingFor(hold.about), accepted: true });
     }
-    waiting = batch.waiting;
     show();
-    const resent = [...resend].filter(([id]) => failures.has(`answer:${id}`));
-    resend.clear();
-    for (const [, again] of resent) again();
+    resendDue();
     return judge(waiting, true);
   });
   const watch = () => {

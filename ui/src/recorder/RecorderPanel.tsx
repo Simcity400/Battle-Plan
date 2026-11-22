@@ -13,7 +13,7 @@ import { AUTO_COMPRESS_HIGH } from '../shell/RecordingCompressionSetting';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, recordingName,
+import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName,
   recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion,
   whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PromptFailure, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
@@ -71,18 +71,13 @@ export interface PanelViewProps {
   promptBusy?: boolean;
   promptFailure?: PromptFailure | null;
   shownPrompt?: number | null;
-  onPromptShown?: (prompt: number) => void;
+  onPromptSeen?: (prompt: number) => void;
   windowFailures?: readonly PromptFailure[];
   update?: PanelUpdate;
 }
 
 const PANEL_UNSHOWN = 'Couldn’t show the recorder panel.';
 const PANEL_UNCLOSED = 'Couldn’t close the recorder panel.';
-
-function PromptShown({ prompt, onShown }: { prompt: number; onShown(prompt: number): void }) {
-  useEffect(() => { onShown(prompt); }, [prompt, onShown]);
-  return null;
-}
 
 export interface PanelUpdate {
   state: UpdateState | null;
@@ -168,7 +163,7 @@ export function PanelPending({ failure, title = PANEL_UNOPENED, retry, root }: {
 const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
 
 export function PanelView({ snapshot, settings, view, asking, error, errorDetail = null, errorCaveat = false, now, actions, root, compact = false, recordings = null, relisting = false, quitting = false,
-  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, shownPrompt = null, onPromptShown, windowFailures = [], update }: PanelViewProps) {
+  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, shownPrompt = null, onPromptSeen, windowFailures = [], update }: PanelViewProps) {
   const [disclosed, setDisclosed] = useState<string | null>(null);
   const shown = head(snapshot);
   const files = snapshot.session != null && snapshot.problem?.failed === true;
@@ -195,8 +190,8 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
   const length = sessionLength(snapshot.startedAt, now);
   const promptFailureLine = promptFailure && <FailureLine className="recorder-failure" message={promptFailure.text} detail={promptFailure.detail}
     onRetry={promptFailure.retry} retryDisabled={promptBusy} />;
+  const acted = () => { if (shownPrompt !== null) onPromptSeen?.(shownPrompt); };
   const promptActions = <>{promptFailureLine}
-    {shownPrompt !== null && onPromptShown && <PromptShown prompt={shownPrompt} onShown={onPromptShown} />}
     <div className="recorder-prompt-actions">{discarding ? <>
     <button key="cancel-discard" type="button" className="button small quiet" autoFocus disabled={promptBusy} onClick={actions.cancelDiscard}>Cancel</button>
     <button key="confirm-discard" type="button" className="button small is-danger" disabled={promptBusy} onClick={() => actions.stop(true)}>Discard</button>
@@ -209,7 +204,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
   if (compact) return <div ref={root} className="recorder recorder-compact">
     {error && notice}{windowLines}
     {!prompt && promptFailureLine}
-    {prompt && <div className="recorder-prompt" role="alertdialog" aria-labelledby="recorder-prompt-title"
+    {prompt && <div className="recorder-prompt" role="alertdialog" aria-labelledby="recorder-prompt-title" onPointerDownCapture={acted} onKeyDownCapture={acted}
       aria-describedby={discarding ? 'recorder-prompt-question recorder-prompt-consequence' : 'recorder-prompt-question'}>
       <strong id="recorder-prompt-title">{promptTitle(quitting, discarding)}</strong>
       <p id="recorder-prompt-question" className="recorder-prompt-lead">{discarding ? discardDetail(snapshot.name, snapshot.startedAt, now)
@@ -341,7 +336,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
     {notice}{windowLines}
     {preparationNotice}
     <div className="recorder-body">
-      {prompt && <div className="recorder-ask" role="alertdialog" aria-labelledby="recorder-ask-question">
+      {prompt && <div className="recorder-ask" role="alertdialog" aria-labelledby="recorder-ask-question" onPointerDownCapture={acted} onKeyDownCapture={acted}>
         <p id="recorder-ask-question" className="recorder-ask-question">{askQuestion(quitting, discarding, length)}</p>
         {discarding && <p className="recorder-ask-detail">{discardConsequence(snapshot.continued)}</p>}
         {promptActions}
@@ -599,6 +594,7 @@ export default function RecorderPanel() {
   const cancelDiscard = () => {
     if (asked === null || stepped !== asked.sessionKey) { cancelPrompt(); return; }
     setStepped(null);
+    setPromptFailure(null);
     refocus.current = '[data-focus="discard"]';
   };
   const askDiscardWaiting = (recording: UnsavedRecording | null) => {
@@ -637,6 +633,8 @@ export default function RecorderPanel() {
     return () => clearTimeout(timer);
   }, [prompting, startedAt]);
 
+  const screen = useRef({ asked, stepped });
+  useEffect(() => { screen.current = { asked, stepped }; });
   const sessionKey = snapshot?.sessionKey ?? null;
   const askedSession = useRef(sessionKey);
   useEffect(() => {
@@ -645,7 +643,7 @@ export default function RecorderPanel() {
   }, [sessionKey]);
 
   const shownPrompt = hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
-  const promptShown = useCallback((prompt: number) => { void api.promptShown(prompt).catch(() => {}); }, []);
+  const promptSeen = useCallback((prompt: number) => { void api.promptSeen(prompt).catch(() => {}); }, []);
   const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
     if (compact && snapshot && settled) closeSelf(snapshot.revision);
@@ -671,12 +669,16 @@ export default function RecorderPanel() {
     askDiscard: () => setStepped(asked?.sessionKey ?? null),
     cancelDiscard,
     stop: discard => {
-      if (!asked || discard !== discarding) return;
+      if (!asked || !stopConfirmed(asked, stepped, discard, asked.sessionKey)) return;
       clearError();
       const { sessionKey: key } = asked;
-      const stop = () => answerPrompt(discard ? 'Couldn’t discard the session.' : 'Couldn’t save the recording.', () => api.stopRecording(discard, key), stop);
+      const stop = () => {
+        if (!stopConfirmed(screen.current.asked, screen.current.stepped, discard, key)) { setPromptFailure(null); return; }
+        answerPrompt(discard ? 'Couldn’t discard the session.' : 'Couldn’t save the recording.', () => api.stopRecording(discard, key), stop);
+      };
       stop();
     },
+
     record: () => run('Couldn’t start recording.', api.startRecording),
     open: recording => run(recording ? 'Couldn’t open the recording in BattlePlan.' : 'Couldn’t open BattlePlan.', () => api.openReplay(recording)),
     showFiles: () => run('Couldn’t show the session’s files.', api.showSessionFiles),
@@ -721,6 +723,7 @@ export default function RecorderPanel() {
   return <PanelView snapshot={snapshot} settings={settings} view={view} asking={prompting} error={failure?.text ?? null} errorDetail={failure?.detail}
     errorCaveat={failure?.caveat} now={Date.now()}
     actions={actions} root={root} compact={compact} recordings={recordings} relisting={relisting} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting}
-    promptBusy={promptAction} promptFailure={promptFailure} shownPrompt={shownPrompt} onPromptShown={promptShown}
+    promptBusy={promptAction} promptFailure={promptFailure} shownPrompt={shownPrompt} onPromptSeen={promptSeen}
+
     windowFailures={[fitFailure, closeFailure].filter((failure): failure is PromptFailure => failure !== null)} update={updatesAvailable ? update : undefined} />;
 }

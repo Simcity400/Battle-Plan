@@ -15,15 +15,22 @@ const actions = new Proxy({}, { get: () => () => {} }) as PanelActions;
 
 const host = document.body.appendChild(document.createElement('div'));
 const root = createRoot(host);
-const shown: number[] = [];
-const onPromptShown = (prompt: number) => { shown.push(prompt); };
+const seen: number[] = [];
+const onPromptSeen = (prompt: number) => { seen.push(prompt); };
 
 export const fixture = {
   async render(view: View, prompt: number, compact = false) {
     root.render(<PanelView snapshot={recording} settings={settings} view={view} asking error={null} now={0} actions={actions} compact={compact}
-      shownPrompt={prompt} onPromptShown={onPromptShown} />);
+      shownPrompt={prompt} onPromptSeen={onPromptSeen} />);
     await settle();
   },
-  shown: () => [...shown],
+  press(selector: string) {
+    host.querySelector(selector)?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  },
+  key(selector: string) {
+    host.querySelector(selector)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+  },
+  seen: () => [...seen],
 };
+
 (window as unknown as { recorderPanelFixture: typeof fixture }).recorderPanelFixture = fixture;

@@ -16,6 +16,7 @@ const OPENING_HEIGHT: f64 = 120.0;
 const MARGIN: f64 = 12.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 const REPLAY_IDENTIFIER: &str = "local.battleplan.replay";
+const CLOSED: &str = "This recorder panel has closed.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,11 +79,36 @@ struct State {
     dialog: bool,
     focused: bool,
     shown: bool,
+    fitted: bool,
     unseen: bool,
     declined: bool,
     opening: bool,
     instance: u64,
+    live: Option<(u64, isize)>,
     recordings_panel: Option<String>,
+}
+
+impl State {
+    fn live(&self, instance: u64) -> bool {
+        self.live.is_some_and(|(live, _)| live == instance)
+    }
+
+    fn showed(&mut self, instance: u64) {
+        let live = self.live(instance);
+        self.shown |= live;
+    }
+
+    fn retire(&mut self, instance: u64) -> bool {
+        let live = self.live(instance);
+        if live {
+            self.live = None;
+        }
+        live
+    }
+
+    fn opening_height(&self, instance: u64) -> Option<f64> {
+        (self.live(instance) && !self.fitted).then_some(OPENING_HEIGHT)
+    }
 }
 
 #[derive(Default)]
@@ -135,8 +161,8 @@ enum Unseen {
     Close,
 }
 
-fn answered(asked: u64, current: u64, retry: bool) -> Unseen {
-    if asked != current {
+fn answered(live: bool, retry: bool) -> Unseen {
+    if !live {
         Unseen::Gone
     } else if retry {
         Unseen::Show
@@ -180,7 +206,9 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
             return;
         }
         (Reopen::Show, Some(window)) => {
-            if let Err(error) = show(app, &window) {
+            if let Some(instance) = instance_of(app, &window)
+                && let Err(error) = show(app, &window, instance)
+            {
                 eprintln!("The recorder panel still couldn’t be shown: {error}");
             }
             return;
@@ -191,7 +219,7 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
         app.tray_by_id(TRAY_ID)
             .and_then(|tray| tray.rect().ok().flatten())
     });
-    {
+    let instance = {
         let mut state = state(app);
         if state.opening {
             return;
@@ -204,12 +232,13 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, prompted: bool) {
             instance: state.instance + 1,
             ..State::default()
         };
-    }
+        state.instance
+    };
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
         .name("recorder-panel".into())
         .spawn(move || {
-            if let Err(error) = build(&handle) {
+            if let Err(error) = build(&handle, instance) {
                 eprintln!("The recorder panel could not open: {error}");
             }
             state(&handle).opening = false;
@@ -249,7 +278,7 @@ fn builder(
     }
 }
 
-fn build(app: &AppHandle) -> tauri::Result<()> {
+fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
     let window = match builder(app, replay_webview_data(app)).build() {
         Ok(window) => window,
         Err(error) => {
@@ -257,29 +286,51 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
             builder(app, None).build()?
         }
     };
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => hwnd.0 as isize,
+        Err(error) => {
+            let _ = window.destroy();
+            return Err(error);
+        }
+    };
+    {
+        let mut state = state(app);
+        if state.instance == instance {
+            state.live = Some((instance, hwnd));
+        }
+    }
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Focused(true) => state(&handle).focused = true,
+        WindowEvent::Focused(true) => {
+            let mut state = state(&handle);
+            let live = state.live(instance);
+            state.focused |= live;
+        }
         WindowEvent::Moved(position) => {
             let mut state = state(&handle);
-            if state.shown && !state.compact && state.placed != Some(*position) {
+            if state.live(instance) && state.shown && !state.compact && state.placed != Some(*position) {
                 state.moved = Some(*position);
             }
         }
         WindowEvent::Focused(false) => {
             let close = {
                 let mut state = state(&handle);
-                let close = closes_on_focus_loss(state.shown, state.focused, state.dialog);
-                state.focused = false;
+                let live = state.live(instance);
+                let close = live && closes_on_focus_loss(state.shown, state.focused, state.dialog);
+                state.focused &= !live;
                 close
             };
             if close && let Some(window) = handle.get_webview_window(LABEL) {
                 let _ = window.destroy();
             }
+
         }
         WindowEvent::Destroyed => {
             let (panel, declined) = {
                 let mut state = state(&handle);
+                if !state.retire(instance) {
+                    return;
+                }
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
@@ -292,17 +343,30 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
         }
         _ => {}
     });
-    let shown = state(app).shown;
-    if !shown && let Err(error) = reveal(false, || place(app, &window, OPENING_HEIGHT), || show(app, &window)) {
-        eprintln!("The recorder panel couldn’t be placed as it opened: {error}");
+    let handle = app.clone();
+    let opened = window.clone();
+    let placed = app.run_on_main_thread(move || {
+        let Some(height) = state(&handle).opening_height(instance) else { return };
+        if let Err(error) = reveal(false, || place(&handle, &opened, height), || show(&handle, &opened, instance)) {
+            eprintln!("The recorder panel couldn’t be placed as it opened: {error}");
+        }
+    });
+    if let Err(error) = placed {
+        eprintln!("The recorder panel couldn’t be placed as it opened, so it waits for its page to size it: {error}");
     }
     Ok(())
 }
 
-pub fn opening(app: &AppHandle, panel: &str) -> bool {
+fn instance_of(app: &AppHandle, window: &WebviewWindow) -> Option<u64> {
+    let hwnd = window.hwnd().ok()?.0 as isize;
+    state(app).live.filter(|&(_, live)| live == hwnd).map(|(instance, _)| instance)
+}
+
+pub fn opening(app: &AppHandle, window: &WebviewWindow, panel: &str) -> bool {
+    let live = instance_of(app, window).is_some();
     let (compact, registered, previous) = {
         let mut state = state(app);
-        let registered = state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel);
+        let registered = live && state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel);
         let previous = if registered { state.recordings_panel.replace(panel.to_owned()) } else { None };
         (state.compact, registered, previous)
     };
@@ -316,9 +380,14 @@ pub fn opening(app: &AppHandle, panel: &str) -> bool {
     compact
 }
 
-pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
-    let shown = state(app).shown;
-    reveal(shown, || place(app, window, height), || show(app, window))
+pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> Result<(), String> {
+    let instance = instance_of(app, window).ok_or(CLOSED)?;
+    let shown = {
+        let mut state = state(app);
+        state.fitted = true;
+        state.shown
+    };
+    reveal(shown, || place(app, window, height), || show(app, window, instance)).map_err(|error| error.to_string())
 }
 
 fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
@@ -329,25 +398,23 @@ fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOn
     placed
 }
 
-fn show(app: &AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
+fn show(app: &AppHandle, window: &WebviewWindow, instance: u64) -> tauri::Result<()> {
     if let Err(error) = window.show() {
-        unseen(app, window, &error);
+        unseen(app, window, instance, &error);
         return Err(error);
     }
-    state(app).shown = true;
-    app.state::<Arc<Recorder>>().panel_visible();
+    state(app).showed(instance);
     window.set_focus()
 }
 
-fn unseen(app: &AppHandle, window: &WebviewWindow, error: &tauri::Error) {
+fn unseen(app: &AppHandle, window: &WebviewWindow, instance: u64, error: &tauri::Error) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDRETRY, MB_ICONWARNING, MB_RETRYCANCEL, MessageBoxW};
-    let instance = {
+    {
         let mut state = state(app);
-        if std::mem::replace(&mut state.unseen, true) {
+        if !state.live(instance) || std::mem::replace(&mut state.unseen, true) {
             return;
         }
-        state.instance
-    };
+    }
     let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let text = wide(&format!(
         "BattlePlan Recorder couldn’t show its panel: {error}\n\nChoose Retry to show it again, or Cancel to close it. The tray icon opens it again."
@@ -359,7 +426,7 @@ fn unseen(app: &AppHandle, window: &WebviewWindow, error: &tauri::Error) {
         let retry = unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_RETRYCANCEL | MB_ICONWARNING) } == IDRETRY;
         let answer = {
             let mut state = state(&handle);
-            let answer = answered(instance, state.instance, retry);
+            let answer = answered(state.live(instance), retry);
             if answer != Unseen::Gone {
                 state.unseen = false;
                 state.declined = answer == Unseen::Close;
@@ -372,7 +439,7 @@ fn unseen(app: &AppHandle, window: &WebviewWindow, error: &tauri::Error) {
                 let _ = window.destroy();
             }
             Unseen::Show => {
-                if show(&handle, &window).is_err() {
+                if show(&handle, &window, instance).is_err() {
                     eprintln!("The recorder panel still couldn’t be shown.");
                 }
             }
@@ -821,12 +888,54 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_to_a_panel_that_couldnt_be_shown_acts_only_on_that_panel() {
-        assert_eq!(answered(3, 4, false), Unseen::Gone, "Cancel doesn’t close the panel the tray opened in its place");
-        assert_eq!(answered(3, 4, true), Unseen::Gone, "nor does Retry show it");
-        assert_eq!(answered(3, 3, false), Unseen::Close);
-        assert_eq!(answered(3, 3, true), Unseen::Show);
+    fn the_answer_to_a_panel_that_couldnt_be_shown_acts_only_on_that_panel_while_it_lives() {
+        let mut state = State { instance: 3, live: Some((3, 30)), ..State::default() };
+        assert_eq!(answered(state.live(3), false), Unseen::Close);
+        assert_eq!(answered(state.live(3), true), Unseen::Show);
+        assert!(state.retire(3), "the panel is destroyed while its message is open");
+        assert_eq!(answered(state.live(3), true), Unseen::Gone, "Retry doesn’t show a panel that has gone, though none has opened since");
+        assert_eq!(answered(state.live(3), false), Unseen::Gone);
+        state.showed(3);
+        assert!(!state.shown, "a show that reaches the dead window marks nothing shown");
+        assert!(!state.retire(3), "its destruction is taken once");
+
+        let mut state = State { instance: 4, live: Some((4, 30)), ..State::default() };
+        assert_eq!(answered(state.live(3), true), Unseen::Gone, "nor the panel the tray opened in its place");
+        state.showed(3);
+        assert!(!state.shown, "so the panel opened in its place inherits nothing");
+        assert!(!state.retire(3), "and the old window’s destruction doesn’t close it");
+        assert!(state.live(4));
     }
+
+    #[test]
+    fn the_page_sizes_its_panel_whichever_runs_first_on_the_main_thread_its_fit_or_the_opening_placement() {
+        let opened = |state: &State, height: &mut f64| {
+            if let Some(opening) = state.opening_height(1) {
+                *height = opening;
+            }
+        };
+        let fitted = |state: &mut State, height: &mut f64| {
+            state.fitted = true;
+            *height = 300.0;
+        };
+        let mut state = State { instance: 1, live: Some((1, 10)), ..State::default() };
+        let mut height = 0.0;
+        fitted(&mut state, &mut height);
+        opened(&state, &mut height);
+        assert_eq!(height, 300.0, "the opening size never lands over the page’s");
+
+        let mut state = State { instance: 1, live: Some((1, 10)), ..State::default() };
+        let mut height = 0.0;
+        opened(&state, &mut height);
+        assert_eq!(height, OPENING_HEIGHT);
+        fitted(&mut state, &mut height);
+        assert_eq!(height, 300.0);
+
+        let mut state = State { instance: 1, live: Some((1, 10)), ..State::default() };
+        state.retire(1);
+        assert_eq!(state.opening_height(1), None, "a panel gone before its placement runs isn’t placed");
+    }
+
 
     #[test]
     fn focus_lost_before_the_panel_shows_does_not_close_it() {

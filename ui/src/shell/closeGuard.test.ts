@@ -46,6 +46,7 @@ function desktop(judge?: () => boolean) {
         refresh: async () => {
           host.refreshes++;
           if (host.refreshFails) throw lost;
+          return host.seq + 1;
         },
       };
     },
@@ -430,6 +431,26 @@ test('Try again never resends an answer whose question the host has retired sinc
   assert.deepEqual([host.answers, shown()], [[[4, false]], []], 'the batch shows the question gone, so its answer and its failure go with it');
 });
 
+test('Try again resends only on the batch its own request brought, and only while that batch still waits on the answer', async () => {
+  const { host, start, batch, deliver, send, ask, hold, shown, locked } = desktop();
+  start();
+  await flush();
+  host.answerFails = true;
+  ask(4, 'leave');
+  await flush();
+  assert.deepEqual([host.answers, shown().map(({ message }) => message), locked()], [[[4, false]], [UNANSWERED_SAVED], 'update']);
+  host.answerFails = false;
+  const queued = batch();
+  shown()[0]!.retry();
+  await flush();
+  hold(4, 'leave');
+  assert.equal(deliver(queued), true);
+  assert.equal(host.answers.length, 1, 'a batch the host queued before the request isn’t its answer');
+  send();
+  await flush();
+  assert.deepEqual([host.answers.length, shown(), locked()], [1, [], 'update'], 'the host took the answer whose reply was lost, so nothing is sent again and nothing stays to retry');
+});
+
 test('an answer that fails says which way it failed', async () => {
   const { host, start, ask, shown } = desktop();
   start();
@@ -449,7 +470,7 @@ async function replay(seed: number, trace: Traced[]) {
   interface Entry {
     guard?: CloseGuard; onBatch?: (batch: CloseBatch) => boolean; watches: { resolve(): void; reject(cause: unknown): void }[];
     answers: { id: number; resolve(heard: boolean): void; reject(cause: unknown): void }[]; failures: readonly CloseGuardFailure[]; locked: LeavingFor | null; prompts: number;
-    refreshes: number;
+    refreshes: number; refreshing: { resolve(seq: number): void; reject(cause: unknown): void }[];
   }
   const guards: Entry[] = [];
   let emitted: [number, boolean, number[]][] = [];
@@ -459,12 +480,15 @@ async function replay(seed: number, trace: Traced[]) {
     const [kind, index] = event as [string, number];
     emitted = [];
     if (kind === 'm') {
-      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0, refreshes: 0 };
+      const entry: Entry = { watches: [], answers: [], failures: [], locked: null, prompts: 0, refreshes: 0, refreshing: [] };
       guards[index] = entry;
       entry.guard = closeGuard({
         requests: onBatch => {
           entry.onBatch = onBatch;
-          return { watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }), refresh: () => { entry.refreshes++; return Promise.resolve(); } };
+          return {
+            watch: () => new Promise<void>((resolve, reject) => { entry.watches.push({ resolve, reject }); }),
+            refresh: () => { entry.refreshes++; return new Promise<number>((resolve, reject) => { entry.refreshing.push({ resolve, reject }); }); },
+          };
         },
         answer: (id, stays, basis) => {
           emitted.push([id, stays, [...basis].sort((a, b) => a - b)]);
@@ -500,7 +524,15 @@ async function replay(seed: number, trace: Traced[]) {
       if (reply === null) pending!.reject(lost); else pending!.resolve(reply);
       await flush();
       out = expected;
+    } else if (kind === 'f') {
+      const [, , seq, expected] = event as [string, number, number | null, Out];
+      const pending = entry.refreshing.shift();
+      assert.ok(pending, `${where}: the guard asked again what stands`);
+      if (seq === null) pending.reject(lost); else pending.resolve(seq);
+      await flush();
+      out = expected;
     } else if (kind === 't') {
+
       const [, , dirty, confirmed, key, expected] = event as [string, number, boolean | null, boolean, string, Out];
       Object.assign(facts, { dirty, confirmed });
       const failure = entry.failures.find(shown => shown.key === key);
