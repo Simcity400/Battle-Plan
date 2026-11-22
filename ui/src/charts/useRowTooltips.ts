@@ -24,10 +24,11 @@ export function useRowTooltips<K extends string | number>({ owner, active, held 
     onPointerLeave: () => setHovered(null),
     onFocus: (event: { currentTarget: HTMLElement }) => setHovered({ key, ...rowPoint(event.currentTarget.getBoundingClientRect()) }),
     onBlur: () => setHovered(null),
-    onContextMenu: (event: { preventDefault: () => void; clientX: number; clientY: number }) => { event.preventDefault(); onMenu(key, event.clientX, event.clientY); },
+    onContextMenu: (event: { preventDefault: () => void; clientX: number; clientY: number }) => { event.preventDefault(); if (!held) onMenu(key, event.clientX, event.clientY); },
     onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
       if (isMenuKey(event)) {
         event.preventDefault();
+        if (held) return;
         const point = rowPoint(event.currentTarget.getBoundingClientRect());
         onMenu(key, point.x, point.y);
       } else if (event.key === 'Escape') setHovered(null);

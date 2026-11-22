@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
@@ -7,7 +7,7 @@ import type { ProductState } from './products';
 import type { Failure } from './queryError';
 import { followStore } from './follow/connection.ts';
 import { panelReply } from './follow/panel.ts';
-import { observeOnScreen, useFallbackHour, useFollow } from './follow/useFollow.ts';
+import { observeOnScreen, screenHolder, useFallbackHour, useFollow } from './follow/useFollow.ts';
 import type { FollowedAnswer } from './follow/message';
 import type { FollowEntry, FollowStore, Landed } from './follow/store';
 import { canonical } from './follow/canonical.ts';
@@ -127,7 +127,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const following = active && follows && !prepared && !!track && !!params;
   const paramsKey = params ? canonical(params) : null;
   const [element, setElement] = useState<Element | null>(null);
-  const root = useCallback((next: Element | null) => { if (next) setElement(next); }, []);
+  const root = useCallback((next: Element | null) => { if (next) setElement(screenHolder(next)); }, []);
   const target = useMemo(() => ({ current: element }), [element]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
@@ -145,6 +145,10 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     if (data !== undefined) return latest.current.paint?.(data);
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
+  const bounded = !!track && !!params;
+  const watchClock = useCallback((changed: () => void) => bounded ? runtime.clock.subscribe(changed) : () => {}, [bounded, runtime.clock]);
+  const outsideNow = () => bounded && hourAt(runtime.clock.getHour()) === null;
+  const outside = useSyncExternalStore(watchClock, outsideNow, outsideNow);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
   const idle = source === 'idle';
@@ -170,8 +174,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const heldData = landed ? panelReply(landed.panel, validate).data : undefined;
   const heldReading = useMemo(() => heldData !== undefined && landed && heldLive ? { data: heldData, hour: landed.hour, through: landed.through, live: heldLive } : undefined,
     [heldData, landed, heldLive]);
-  const kept = held.current ?? undefined;
-  const data = pushed ? fromPanel.data : kept?.data;
+  const kept = outside ? undefined : held.current ?? undefined;
+  const data = outside ? undefined : pushed ? fromPanel.data : kept?.data;
   const dataAt = kept?.hour ?? null;
   const error: Failure | undefined = pushed ? fromPanel.error : asked.error;
   const askedData = pushed ? undefined : data;
@@ -189,14 +193,14 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   } : undefined);
   return {
     data, error, retry: asked.retry, root, hour, live,
-    exactRead, held: heldReading,
+    exactRead, held: outside ? undefined : heldReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
-    at: pushed ? entry?.panel ? entry.hour : null : dataAt,
-    atNow: pushed && entry ? () => entry.panel ? entry.hour : null : () => dataAt,
-    shownAt: pushed && entry ? () => entry.panel ? entry.through : null : () => data === undefined ? null : dataAt,
-    current: pushed && entry ? () => panelReply(entry.panel, latest.current.validate).data
+    at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,
+    atNow: outside ? () => null : pushed && entry ? () => entry.panel ? entry.hour : null : () => dataAt,
+    shownAt: outside ? () => null : pushed && entry ? () => entry.panel ? entry.through : null : () => data === undefined ? null : dataAt,
+    current: outside ? () => undefined : pushed && entry ? () => panelReply(entry.panel, latest.current.validate).data
       : () => follows && dataAt !== null && dataAt > runtime.clock.getHour() + (track?.axisOffset ?? 0) ? undefined : data,
-    read: pushed ? 'followed' : fallback || idle ? 'fallback' : hour === null ? 'off' : 'asked',
+    read: outside ? 'off' : pushed ? 'followed' : fallback || idle ? 'fallback' : hour === null ? 'off' : 'asked',
     ...(followed.status === 'unavailable' && followed.reason ? { reason: followed.reason } : {}),
   };
 }

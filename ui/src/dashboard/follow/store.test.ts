@@ -682,7 +682,7 @@ test('a changing value stays in the worker until interaction requests its dated 
   const land = (packet: Uint8Array, hour: number) => {
     followed.land([decoder.item(packet.slice().buffer)]);
     followed.drain(hour);
-    return [...followed.structures(true)];
+    return [...followed.structures(null)];
   };
   assert.equal(land(datedPanel(3, 10, { live }), 10)[0]?.values?.get(liveKey('1', 'progress')), 7);
   const full = datedStep(11, [{ id: group, hour: 10, answer: one(1n, 8n) }], 1);
@@ -753,6 +753,27 @@ test('a staged product computes its structural result only once', () => {
     panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }], () => {});
   const prepared = validations;
   followed.drain(1);
-  [...followed.structures(true)];
+  [...followed.structures(null)];
   assert.ok(prepared > 0); assert.equal(validations, prepared);
+});
+
+test('a paused reading short of the paused hour is published once when its coverage reaches it, though nothing it shows changed', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch');
+  followed.add(4, 'branch');
+  followed.bind('branch', 9, 1);
+  const step = (completed: number | undefined, panels: { id: number; hour: number; stepped: boolean; panel: { data: unknown; refused: null } }[]) =>
+    followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed, panels } }]);
+  const published = (paused: number) => [...followed.structures(paused)].map(r => [r.id, r.coverage?.start, r.coverage?.through]);
+  step(undefined, [{ id: 3, hour: 23, stepped: true, panel: { data: { rows: [1] }, refused: null } }]);
+  followed.land([decoder.item(datedStep(23, [{ id: 4, answer: one(1n, 7n) }], 1).slice().buffer)]);
+  followed.drain(24);
+  assert.deepEqual(published(24).sort(), [[3, 23, 23], [4, 23, 23]], 'each reading is sent, though neither covers the paused hour');
+  assert.deepEqual(published(24), [], 'nothing moved');
+  step(24, []);
+  followed.land([decoder.item(datedStep(24, [], 1).slice().buffer)]);
+  followed.drain(24);
+  assert.deepEqual(published(24).sort(), [[3, 23, 24], [4, 23, 24]], 'the panel and the unchanged answer each publish when their coverage reaches the paused hour');
+  assert.deepEqual(published(24), [], 'and only once');
 });

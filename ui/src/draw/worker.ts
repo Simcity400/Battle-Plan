@@ -444,7 +444,7 @@ function frame(at: number) {
   }
   followed.drain(head);
   if (lane === 0) {
-    const updates = [...followed.structures(anchor.playing)];
+    const updates = [...followed.structures(anchor.playing ? null : Math.floor(head))];
     if (updates.length) post({ type: 'structure', updates });
   }
   while (scheduledChanges.length && scheduledChanges.at(-1)!.at <= head) dirty.add(scheduledChanges.pop()!.surface);

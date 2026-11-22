@@ -5,7 +5,7 @@ import { withNativePage } from '../../../tools/native-page.ts';
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
-  warned: string[]; aces: string | null; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
+  warned: string[]; aces: string | null; shortAces: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
   panel: Surface; race: Surface; headed: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
@@ -41,7 +41,14 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
       `with the followed reply for 24:00 still pending, the head's data is empty and only the drawn host holds 23:00, dimmed on its surface: ${show(pending)}`);
     assert.ok(pending.aces === 'loading' && pending.noDoctrines === 'loading',
       `while 24:00 is read, Aces shows loading, not a time outside the recording, and Doctrine mastery holding 23:00 shows loading, not 23:00's status: ${show(pending)}`);
+    assert.deepEqual(mounted.menus, ['pointer', 'keyboard'], 'a current Doctrine mastery row opens its menu by pointer and by keyboard');
     assert.ok(pending.tip === null && !pending.described, `while Doctrine mastery holds 23:00, its row tooltip and description are withheld: ${show(pending)}`);
+    assert.ok(mounted.focused?.raceDescribed && mounted.focused.raceLive.includes('at 23'),
+      `a focused Nuclear arsenal race is described by its ranking and announces 23:00: ${show(mounted.focused)}`);
+    const speaking = [...midnight, pending].find(state => state.raceLive.includes('at 23') || dim(state.race, 23) && (state.raceDescribed || state.raceRanking !== ''));
+    assert.ok(dim(held.race, 23) && speaking === undefined,
+      `while Nuclear arsenal holds 23:00, it is described by no ranking and announces nothing of 23:00: ${show(speaking ?? held)}`);
+    assert.deepEqual(pending.menus, [], 'while Doctrine mastery holds 23:00, its row opens no menu to jump to 23:00, by pointer or keyboard');
     assert.deepEqual(pending.warned, [], 'while 24:00 is read, Nuclear arsenal reports no warning of 23:00, though its race holds 23:00');
     const framed = midnight.slice(1);
     assert.ok(pending.listed === null && framed.every(state => state.listed !== '23'),
@@ -53,6 +60,7 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     assert.equal(between, undefined, `every sample shows the previous day dimmed or the next day at full strength, on the surfaces it mounted with: ${show(between)}`);
     const midnightEnd = midnight.at(-1)!;
     assert.ok(at(midnightEnd, 24) && midnightEnd.strict === 24, `the next day is painted at full strength: ${show(midnightEnd)}`);
+    assert.ok(midnightEnd.raceDescribed, `the Nuclear arsenal race is described again once 24:00 is painted: ${show(midnightEnd)}`);
     assert.ok(midnightEnd.aces === 'empty' && midnightEnd.tip !== null && midnightEnd.tip !== mounted.tip && midnightEnd.described && midnightEnd.warned.join() === 'read at 24',
       `24:00 lands in every widget, and the row tooltip returns with its day: ${show(midnightEnd)}`);
     const sameDay = await act<Shown[]>('step()');
@@ -82,5 +90,8 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     mounts = back.mounts;
     assert.ok(at(back, 30) && back.strict === 30 && back.listed === '30', `30:00 is painted at full strength: ${show(back)}`);
     assert.equal(back.asks, asks, 'every move after the first push was read from pushes: no widget dropped its follow while it had nothing to show');
+    const { before: atEnd, after: pastEnd } = await act<{ before: Shown; after: Shown }>('pastShortEnd()');
+    assert.ok(atEnd.shortAces === 'empty' && pastEnd.aces === 'empty' && pastEnd.shortAces === 'unavailable',
+      `a step past the end of one track's branch, while another runs on, shows that track's Aces outside the recording, never loading: ${show(pastEnd)}`);
   }, 120_000));
 });

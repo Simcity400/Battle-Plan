@@ -25,6 +25,7 @@ export class Followed {
   private readonly entries = new Map<number, FollowEntry>();
   private readonly routes = new Map<string, number>();
   private readonly upcoming = new Map<number, string>();
+  private readonly short = new Set<number>();
   private staged = new WeakMap<FollowedPanel, string>();
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
@@ -46,7 +47,7 @@ export class Followed {
     this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
-    this.upcoming.delete(id);
+    this.upcoming.delete(id); this.short.delete(id);
     if (branch && ![...this.branches.values()].includes(branch)) { this.seeks.delete(branch); this.routes.delete(branch); }
   }
   private resetLead(branch: string) {
@@ -122,7 +123,9 @@ export class Followed {
     catch (error) { return String(error); }
   }
 
-  *structures(playing: boolean): Iterable<PageReading> {
+  *structures(paused: number | null): Iterable<PageReading> {
+    const playing = paused === null;
+    if (playing) this.short.clear();
     for (const entry of this.dirty) {
       const { id, panel, answer, hour } = entry;
       const last = this.sent.get(id);
@@ -134,9 +137,24 @@ export class Followed {
         shape = JSON.stringify(Array.from({ length: answer.rows }, (_, row) => String(rowKey(answer, row))).sort());
       } else shape = answer?.reason ?? 'pending';
       this.sent.set(id, { shape, panel, answer });
-      if (!playing || last?.shape !== shape && !(panel && this.staged.has(panel))) yield this.snapshot(id)!;
+      if (playing) {
+        if (last?.shape !== shape && !(panel && this.staged.has(panel))) yield this.snapshot(id)!;
+        continue;
+      }
+      if (this.showsAt(entry, paused)) this.short.delete(id); else this.short.add(id);
+      yield this.snapshot(id)!;
+    }
+    if (!playing) for (const id of this.short) {
+      const entry = this.entries.get(id)!;
+      if (this.dirty.has(entry) || !this.showsAt(entry, paused)) continue;
+      this.short.delete(id);
+      yield this.snapshot(id)!;
     }
     this.dirty.clear();
+  }
+
+  private showsAt(entry: FollowEntry, paused: number) {
+    return !entry.panel && !entry.answer || this.covers(entry.id, paused + this.store.offset(entry));
   }
 
   paused() { for (const entry of this.entries.values()) this.dirty.add(entry); }

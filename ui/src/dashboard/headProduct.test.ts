@@ -4,7 +4,7 @@ import { headRead, headSource, headSubject, heldPanel, momentHour, retain, whenD
 import type { HeadProduct } from './headProduct';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { FollowEntry } from './follow/store';
-import { observeOnScreen } from './follow/useFollow.ts';
+import { observeOnScreen, screenHolder } from './follow/useFollow.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
@@ -22,8 +22,11 @@ test('content scrolled inside a visible widget, or replaced inside a pop-out, is
     watched = undefined;
     const stop = observeOnScreen(inside(container), () => {});
     assert.equal(watched, placement, `content inside ${container} is watched by it`);
+    assert.equal(screenHolder(inside(container)), placement, `a head keeps ${container} as its target, not content that may be replaced`);
     stop();
   }
+  const loose = inside('nothing');
+  assert.equal(screenHolder(loose), loose, 'content in no container is its own target');
 });
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {

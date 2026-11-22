@@ -36,10 +36,12 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (ready !== show) perfLog?.ink(id, show);
       ready = show;
     };
-    const settle = () => { resolve?.(); resolve = undefined; hideTooltip(owner); };
-    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; settle();
+    const describe = (on: boolean) => { if (on) canvas.setAttribute('aria-describedby', owner + '-ranking'); else canvas.removeAttribute('aria-describedby'); };
+    const silence = () => { resolve?.(); resolve = undefined; hideTooltip(owner);
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
-    const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, settle);
+    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; silence(); };
+    const hold = () => { describe(false); silence(); };
+    const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, hold);
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
       if (!width || !height) { clear(); return; }
@@ -82,7 +84,11 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       const ahead = latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour);
       if (m.hour === null && m.waiting && held.stale && !ahead) return;
       if (m.hour === null || ahead || m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
-      else { held.present(m.holdsThrough); visible(true); }
+      else {
+        const restored = held.stale;
+        held.present(m.holdsThrough); visible(true); describe(true);
+        if (restored && document.activeElement === canvas) void act(undefined, 'read', 0, 0);
+      }
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
       resolve?.(); if (!ready || held.stale) { done(undefined); return; }

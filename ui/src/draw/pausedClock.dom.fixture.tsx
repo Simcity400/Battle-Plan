@@ -29,6 +29,7 @@ import type { PageReading } from './followed';
 
 document.documentElement.dataset.motion = 'reduced';
 const HOURS = 100_000;
+const SHORT_END = 100;
 const reply: NuclearArsenalReply = { types: [{ ordinal: 0, token: 'nuke', name: 'Nuclear bomb' }],
   countries: [{ tag: 'GER', countryId: 1, total: 3, counts: [{ ordinal: 0, value: 3, ready: 3 }] }], missing: null, warnings: [] };
 const arsenalAt = (hour: number): NuclearArsenalReply => ({ ...reply,
@@ -44,7 +45,7 @@ const clock = new PlaybackController(new FrameEngine({ request() {} }));
 clock.setBounds({ firstHour: 0, lastHour: HOURS - 1 });
 clock.seek(23);
 
-const gate = { armed: false, held: [] as { message: FromWorker; deliver: () => void }[] };
+const gate = { holds: null as ((message: FromWorker) => boolean) | null, held: [] as { message: FromWorker; deliver: () => void }[] };
 const offscreens = new WeakMap<OffscreenCanvas, HTMLCanvasElement>(), surfaces = new WeakMap<HTMLCanvasElement, number>(), owners = new Map<number, number>();
 const transferred = HTMLCanvasElement.prototype.transferControlToOffscreen;
 HTMLCanvasElement.prototype.transferControlToOffscreen = function (this: HTMLCanvasElement) {
@@ -63,7 +64,7 @@ class GatedWorker extends Worker {
 }
 Object.defineProperty(GatedWorker.prototype, 'onmessage', { configurable: true, set(this: Worker, heard: (event: MessageEvent<FromWorker>) => void) {
   this.addEventListener('message', (event: MessageEvent<FromWorker>) => {
-    if (!gate.armed || event.data.type !== 'structure' && event.data.type !== 'inspection') { heard(event); return; }
+    if (!gate.holds?.(event.data)) { heard(event); return; }
     gate.held.push({ message: event.data, deliver: () => heard(event) });
     wake();
   });
@@ -79,7 +80,7 @@ function push() {
   if (!asked) return;
   const at = `${asked.seek}:${asked.hour}`;
   for (const [id, query] of followed) {
-    if (pushedAt.get(id) === at) continue;
+    if (pushedAt.get(id) === at || query.branchId === shortTrack.branch.id && asked.hour > SHORT_END) continue;
     pushedAt.set(id, at);
     const item = decoder.item(datedPanel(id, asked.hour, replies[String(query.panel)]!(asked.hour, query), asked.seek).buffer);
     for (const port of ports) port.postMessage([item]);
@@ -117,12 +118,14 @@ const client = {
 };
 const track = { id: 'main', axisOffset: 0, selectedTag: 'GER', source: { id: 'paused', revision: '1', metadata: { countries: [] } },
   branch: { id: '1', firstHour: 0, lastHour: HOURS - 1, gaps: [] } };
-const runtime = { tracks: [track], clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} } as unknown as WidgetRuntime;
-const spec = (id: string, kind: string, countries: unknown, options: Record<string, unknown> = {}) =>
-  ({ id, kind, configVersion: 1, trackIds: ['main'], countries, time: { mode: 'follow' }, options }) as unknown as WidgetSpec;
+const shortTrack = { ...track, id: 'short', branch: { id: '2', firstHour: 0, lastHour: SHORT_END, gaps: [] } };
+const runtime = { tracks: [track, shortTrack], clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} } as unknown as WidgetRuntime;
+const spec = (id: string, kind: string, countries: unknown, options: Record<string, unknown> = {}, trackId = 'main') =>
+  ({ id, kind, configVersion: 1, trackIds: [trackId], countries, time: { mode: 'follow' }, options }) as unknown as WidgetSpec;
 const headed = spec('headed', 'nuclear-arsenal', { kind: 'tags', tags: ['GER'] });
 const widgetProps = (widget: WidgetSpec) => ({ widget, runtime, active: true, headerSlot: null, onDiagnostics() {} }) as unknown as WidgetProps;
 const aces = widgetProps(spec('aces', 'aces', { kind: 'all' }));
+const shortAces = widgetProps(spec('short-aces', 'aces', { kind: 'all' }, {}, shortTrack.id));
 const doctrines = widgetProps(spec('doctrine', 'doctrine-mastery', { kind: 'tags', tags: ['GER'] }));
 const noDoctrines = widgetProps(spec('no-doctrines', 'doctrine-mastery', { kind: 'tags', tags: ['ENG'] }));
 const arsenalWarnings = { told: [] as string[] };
@@ -207,7 +210,7 @@ const removalSeen = () => removal.seen && probe.commits > removal.after;
 
 function Race() {
   return <div id="race" style={{ width: '480px', height: '160px', display: 'flex' }}>
-    <DatedArsenal label="Nuclear arsenal" items={[]} slots={5} name={key => key} active clock={clock}
+    <DatedArsenal label="Nuclear arsenal" items={[]} slots={5} name={key => key} active clock={clock} tooltip={key => ({ title: `${key} at ${clock.getHour()}`, rows: [] })}
       model={{ offset: 0, reply, date, top: 10, tags: ['GER'], split: false, tokens: readTokens(), slots: 5, overlay: true,
         colours: new Map([['GER', '#808080']]), looks: new Map([['GER', { name: 'Germany', color: '#808080' }]]) }} />
   </div>;
@@ -240,7 +243,9 @@ function shown() {
   const ink1 = inkOf('panel'), ink2 = inkOf('headed'), race = raceCanvas();
   return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks, listedRead,
     listed: document.querySelector('#listed')?.textContent ?? null, warned: arsenalWarnings.told.filter(warning => warning.startsWith('read at ')),
-    aces: stateOf('#aces .widget-state'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
+    aces: stateOf('#aces .widget-state'), shortAces: stateOf('#short-aces .widget-state'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
+    raceDescribed: !!raceCanvas()?.getAttribute('aria-describedby'), raceRanking: document.querySelector('#race p[id$="-ranking"]')?.textContent ?? '',
+    raceLive: document.querySelector('#race p[aria-live]')?.textContent ?? '',
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(surfaceOf(ink1) ?? -1)),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent()?.hour),
@@ -284,11 +289,27 @@ const landed = (hour: number) => {
   return current() && painted() && headedPresent()?.readHour === hour && now.listed === String(hour) && now.aces === 'empty' && now.noDoctrines === 'empty';
 };
 
+const openMenus = () => [...document.querySelectorAll<HTMLElement>('.context-menu')].filter(menu => menu.matches(':popover-open'));
+function menuOpens() {
+  const row = document.querySelector<HTMLElement>('#doctrine [data-track]');
+  if (!row) return null;
+  const opened: string[] = [];
+  const tried = (how: string, event: Event) => {
+    row.dispatchEvent(event);
+    if (openMenus().length) opened.push(how);
+    for (const menu of openMenus()) menu.hidePopover();
+  };
+  tried('pointer', new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+  tried('keyboard', new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }));
+  row.focus();
+  return opened;
+}
+
 async function heldSeek(hour: number, settled: () => boolean, done: () => boolean = () => true) {
-  let pending: ReturnType<typeof shown>[] = [];
+  let pending: (ReturnType<typeof shown> & { menus: string[] | null })[] = [];
   const seen = await watch(() => { native.hold = true; watchRemoval(); clock.seek(hour); }, async () => {
     await until(() => settled() && removalSeen());
-    pending = [shown()];
+    pending = [{ ...shown(), menus: menuOpens() }];
     native.hold = false; push();
     if (pending[0]!.listedRead === 'followed') await until(() => landed(hour) && strict === hour && done());
   });
@@ -299,9 +320,10 @@ async function staleStep() {
   const hour = clock.getHour(), store = followStore(runtime.client, runtime.tracks[0]!.source, clock, track.axisOffset);
   const readings = (message: FromWorker): readonly (PageReading | undefined)[] =>
     message.type === 'structure' ? message.updates : message.type === 'inspection' ? [message.reading] : [];
-  const said = (type: 'structure' | 'inspection', hours: number) => gate.held.some(({ message }) =>
-    message.type === type && readings(message).some(reading => reading?.id === native.id && !!reading.panel && reading.hour === hours));
-  gate.armed = true;
+  const carries = (message: FromWorker, type: 'structure' | 'inspection', hours: number) =>
+    message.type === type && readings(message).some(reading => reading?.id === native.id && !!reading.panel && reading.hour === hours);
+  const said = (type: 'structure' | 'inspection', hours: number) => gate.held.some(({ message }) => carries(message, type, hours));
+  gate.holds = message => carries(message, 'structure', hour + 1) || carries(message, 'inspection', hour + 1);
   clock.step(1);
   await until(() => said('structure', hour + 1));
   void inspectFollow(native.id);
@@ -315,7 +337,7 @@ async function staleStep() {
     return { type: message.type, hour: entry?.panel ? entry.hour : null };
   });
   const pending = shown();
-  gate.armed = false;
+  gate.holds = null;
   for (const { deliver } of gate.held.splice(0)) deliver();
   native.hold = false; push();
   if (taken.every(reply => reply.hour === null)) await until(() => landed(hour + 2) && strict === hour + 2);
@@ -327,18 +349,32 @@ export const fixture = {
     pop.showPopover();
     createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed />{createPortal(<Listed />, pop)}<Probe />
       <div style={{ display: 'flex', gap: '8px' }}><div id="aces" style={box}><AcesWidget {...aces} /></div>
+        <div id="short-aces" style={box}><AcesWidget {...shortAces} /></div>
         <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div>
         <div id="no-doctrines" style={box}><DoctrineMasteryWidget {...noDoctrines} /></div></div>
       <div id="arsenal-widget" style={{ width: '480px', height: '160px', overflow: 'hidden' }}><NuclearArsenalWidget {...arsenal} /></div></>);
     await until(() => followedSurface && listedRead === 'followed' && landed(23) && !!document.querySelector('#doctrine [data-track]'));
+    raceCanvas()!.focus();
+    raceCanvas()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+    await until(() => !!shown().raceRanking && !!shown().raceLive);
+    const focused = shown();
     document.querySelector<HTMLElement>('#doctrine [data-track]')!.focus();
+    const menus = menuOpens();
     await until(() => shown().tip === dayLabel(23) && shown().described);
-    return shown();
+    return { ...shown(), menus, focused };
   },
   speed: (hoursPerSecond: number) => watch(() => clock.setSpeed(hoursPerSecond)),
   heldSeek: (hour: number) => heldSeek(hour, () => current() && readEmptied(), () => shown().tip === dayLabel(hour) && shown().warned.join() === `read at ${hour}`),
   heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent()) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => landed(clock.getHour()))),
+  async pastShortEnd() {
+    clock.seek(SHORT_END);
+    await until(() => landed(SHORT_END) && shown().shortAces === 'empty');
+    const before = shown();
+    clock.step(1);
+    await until(() => landed(SHORT_END + 1));
+    return { before, after: shown() };
+  },
   staleStep,
   async playFor(milliseconds: number) {
     const start = Math.ceil(performance.now());
