@@ -10,15 +10,15 @@ pub const FADE_START: f32 = 0.7;
 pub const MAX_SPACES: usize = 19;
 pub const RUN_NEAR_BIAS: f32 = 1.4;
 
-const MAX_LINE_POINTS: usize = 1 << 16;
-
-const MAX_COORD: f32 = 1.0e7;
-
 const TANGENT_STEP: f32 = 0.01;
+const MIN_PIXEL: f32 = i64::MIN as f32;
 
 #[cfg(test)]
 use viewer_foundation::map::text::GlyphBox;
-use viewer_foundation::map::{native_text::CURRENCY, text::GlyphMetrics};
+use viewer_foundation::map::{
+    native_text::CURRENCY,
+    text::{GlyphMetrics, StyledChar, color_runs},
+};
 
 const CURRENCY_ADVANCE: f32 = viewer_foundation::map::native_text::CURRENCY_ADVANCE as f32;
 
@@ -74,6 +74,7 @@ pub struct GlyphQuad {
     pub ch: char,
     pub corners: [[f32; 2]; 4],
     pub uv: [f32; 4],
+    pub color: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,7 +142,18 @@ pub fn place_name(input: &NameInput<'_>, metrics: &dyn GlyphMetrics) -> Option<P
     if !text_height.is_finite() || text_height <= 0.0 {
         return None;
     }
-    let chars: Vec<char> = input.text.to_uppercase().chars().collect();
+    let mut chars: Vec<StyledChar> = Vec::new();
+    for item in color_runs(input.text, |code| metrics.text_color(code)) {
+        let mut reset = item.reset_kerning;
+        for ch in item.ch.to_uppercase() {
+            chars.push(StyledChar {
+                ch,
+                color: item.color,
+                reset_kerning: reset,
+            });
+            reset = false;
+        }
+    }
     if chars.is_empty() {
         return None;
     }
@@ -187,7 +199,11 @@ pub fn place_name(input: &NameInput<'_>, metrics: &dyn GlyphMetrics) -> Option<P
     let mut straight = Vec::new();
     let mut gaps = Vec::new();
     let mut space_run = false;
-    for &ch in &laid {
+    for item in &laid {
+        let ch = item.ch;
+        if item.reset_kerning {
+            previous = None;
+        }
         let Some(glyph) = metrics.glyph(ch) else {
             previous = None;
             continue;
@@ -216,6 +232,7 @@ pub fn place_name(input: &NameInput<'_>, metrics: &dyn GlyphMetrics) -> Option<P
                 point(left, bottom),
             ],
             uv: glyph.uv,
+            color: item.color,
         };
         let gap = if space_run {
             straight.last().map_or(0.0, |prev: &GlyphQuad| {
@@ -312,6 +329,7 @@ pub fn place_name(input: &NameInput<'_>, metrics: &dyn GlyphMetrics) -> Option<P
             ch: quad.ch,
             corners,
             uv: quad.uv,
+            color: quad.color,
         });
     }
     if glyphs.is_empty() {
@@ -331,29 +349,40 @@ pub fn place_name(input: &NameInput<'_>, metrics: &dyn GlyphMetrics) -> Option<P
     })
 }
 
-fn insert_spaces(chars: &[char], spaces: usize) -> Vec<char> {
+fn insert_spaces(chars: &[StyledChar], spaces: usize) -> Vec<StyledChar> {
     let mut out = Vec::with_capacity(chars.len() + spaces * chars.len().saturating_sub(1));
-    for (index, &ch) in chars.iter().enumerate() {
+    for (index, &item) in chars.iter().enumerate() {
         if index > 0 {
-            out.extend(std::iter::repeat_n(' ', spaces));
+            out.extend(std::iter::repeat_n(
+                StyledChar {
+                    ch: ' ',
+                    color: item.color,
+                    reset_kerning: false,
+                },
+                spaces,
+            ));
         }
-        out.push(ch);
+        out.push(item);
     }
     out
 }
 
-fn measure(chars: &[char], metrics: &dyn GlyphMetrics) -> f32 {
+fn measure(chars: &[StyledChar], metrics: &dyn GlyphMetrics) -> f32 {
     run_width(chars, metrics, true)
 }
 
-fn glyph_width(chars: &[char], metrics: &dyn GlyphMetrics) -> f32 {
+fn glyph_width(chars: &[StyledChar], metrics: &dyn GlyphMetrics) -> f32 {
     run_width(chars, metrics, false)
 }
 
-fn run_width(chars: &[char], metrics: &dyn GlyphMetrics, special: bool) -> f32 {
+fn run_width(chars: &[StyledChar], metrics: &dyn GlyphMetrics, special: bool) -> f32 {
     let mut width = 0.0;
     let mut previous: Option<char> = None;
-    for &ch in chars {
+    for item in chars {
+        let ch = item.ch;
+        if item.reset_kerning {
+            previous = None;
+        }
         if special && ch == CURRENCY {
             width += CURRENCY_ADVANCE;
             previous = None;
@@ -374,12 +403,12 @@ fn run_width(chars: &[char], metrics: &dyn GlyphMetrics, special: bool) -> f32 {
 
 #[derive(Clone, Copy, Debug)]
 struct MaskScan {
-    n: i64,
-    sx: i64,
-    sy: i64,
-    sxy: i64,
-    sxx: i64,
-    syy: i64,
+    n: i128,
+    sx: i128,
+    sy: i128,
+    sxy: i128,
+    sxx: i128,
+    syy: i128,
     min_x: f64,
     max_x: f64,
     min_y: f64,
@@ -410,8 +439,8 @@ fn scan_area(
     let half = map.width / 2;
     let wrap = max_origin - min_origin > half;
 
-    let mut n = 0i64;
-    let (mut sx, mut sy, mut sxy, mut sxx, mut syy) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut n = 0i128;
+    let (mut sx, mut sy, mut sxy, mut sxx, mut syy) = (0i128, 0i128, 0i128, 0i128, 0i128);
     let (mut min_x, mut max_x) = (f64::MAX, f64::MIN);
     let (mut min_y, mut max_y) = (f64::MAX, f64::MIN);
     for (id, b) in &boxes {
@@ -421,18 +450,20 @@ fn scan_area(
                 if map.ids[row + x as usize] != *id {
                     continue;
                 }
-                let xs = if wrap && x < half {
-                    (x + map.width) as f64
+                let x_coord = if wrap && x < half {
+                    i128::from(x) + i128::from(map.width)
                 } else {
-                    x as f64
+                    i128::from(x)
                 };
-                let ys = (map.height - 1 - y) as f64;
+                let y_coord = i128::from(map.height - 1 - y);
+                let xs = x_coord as f64;
+                let ys = y_coord as f64;
                 n += 1;
-                sx += xs as i64;
-                sy += ys as i64;
-                sxy += xs as i64 * ys as i64;
-                sxx += xs as i64 * xs as i64;
-                syy += ys as i64 * ys as i64;
+                sx += x_coord;
+                sy += y_coord;
+                sxy += x_coord * y_coord;
+                sxx += x_coord * x_coord;
+                syy += y_coord * y_coord;
                 min_x = min_x.min(xs);
                 max_x = max_x.max(xs);
                 min_y = min_y.min(ys);
@@ -457,18 +488,12 @@ fn scan_area(
     })
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, reason = "returns the horizontal and vertical regression segments")]
 fn regressions(scan: &MaskScan) -> Option<(([f32; 2], [f32; 2]), ([f32; 2], [f32; 2]))> {
     let n = scan.n;
-    let numerator = n
-        .wrapping_mul(scan.sxy)
-        .wrapping_sub(scan.sx.wrapping_mul(scan.sy));
-    let denominator_h = n
-        .wrapping_mul(scan.sxx)
-        .wrapping_sub(scan.sx.wrapping_mul(scan.sx));
-    let denominator_v = n
-        .wrapping_mul(scan.syy)
-        .wrapping_sub(scan.sy.wrapping_mul(scan.sy));
+    let numerator = n.checked_mul(scan.sxy)?.checked_sub(scan.sx.checked_mul(scan.sy)?)?;
+    let denominator_h = n.checked_mul(scan.sxx)?.checked_sub(scan.sx.checked_mul(scan.sx)?)?;
+    let denominator_v = n.checked_mul(scan.syy)?.checked_sub(scan.sy.checked_mul(scan.sy)?)?;
     if denominator_h == 0 || denominator_v == 0 {
         return None;
     }
@@ -589,25 +614,27 @@ fn best_run(
         Some(point) => Some(to_pixel(point)?),
         None => None,
     };
-    let all = bresenham(a, b)?;
-    let inside = |point: &(i32, i32)| {
-        map.id_at(point.0, map.height as i32 - 1 - point.1)
-            .is_some_and(|id| area.contains(&id) && !bridged.contains(&id))
+    let all = bresenham(map, a, b)?;
+    let lookup = |point: &(i64, i64)| {
+        let x = point.0.rem_euclid(i64::from(map.width)) as i32;
+        let y = i32::try_from(i64::from(map.height) - 1 - point.1).ok()?;
+        map.id_at(x, y)
     };
+    let inside =
+        |point: &(i64, i64)| lookup(point).is_some_and(|id| area.contains(&id) && !bridged.contains(&id));
     let head = all.iter().position(inside).unwrap_or(0);
     let tail = all.iter().rposition(inside).unwrap_or(all.len() - 1);
     let points = &all[head..=tail];
 
     let mut best_start = 0usize;
     let mut best_len = 0usize;
-    let mut best_distance = i64::MAX;
+    let mut best_distance = i128::MAX;
     let mut run_start = 0usize;
     let mut run_len = 0usize;
     for index in 0..=points.len() {
-        let carries = points.get(index).is_some_and(|point| {
-            map.id_at(point.0, map.height as i32 - 1 - point.1)
-                .is_some_and(|id| area.contains(&id) || bridged.contains(&id))
-        });
+        let carries = points
+            .get(index)
+            .is_some_and(|point| lookup(point).is_some_and(|id| area.contains(&id) || bridged.contains(&id)));
         if carries {
             if run_len == 0 {
                 run_start = index;
@@ -622,12 +649,12 @@ fn best_run(
                     let distance = points[run_start..run_start + run_len]
                         .iter()
                         .map(|p| {
-                            let dx = i64::from(p.0 - point.0);
-                            let dy = i64::from(p.1 - point.1);
+                            let dx = i128::from(p.0) - i128::from(point.0);
+                            let dy = i128::from(p.1) - i128::from(point.1);
                             dx * dx + dy * dy
                         })
                         .min()
-                        .unwrap_or(i64::MAX);
+                        .unwrap_or(i128::MAX);
                     let mut candidate = run_len as f32;
                     if distance < best_distance {
                         candidate *= RUN_NEAR_BIAS;
@@ -662,18 +689,23 @@ fn best_run(
     ))
 }
 
-fn to_pixel(p: [f32; 2]) -> Option<(i32, i32)> {
+fn to_pixel(p: [f32; 2]) -> Option<(i64, i64)> {
     if !p[0].is_finite() || !p[1].is_finite() {
         return None;
     }
-    if p[0].abs() > MAX_COORD || p[1].abs() > MAX_COORD {
+    if p[0] < MIN_PIXEL || p[0] >= -MIN_PIXEL || p[1] < MIN_PIXEL || p[1] >= -MIN_PIXEL {
         return None;
     }
-    Some((p[0] as i32, p[1] as i32))
+    Some((p[0] as i64, p[1] as i64))
 }
 
-fn bresenham(a: (i32, i32), b: (i32, i32)) -> Option<Vec<(i32, i32)>> {
-    let steep = (b.0 - a.0).abs() < (b.1 - a.1).abs();
+fn bresenham(map: &ProvinceMap<'_>, a: (i64, i64), b: (i64, i64)) -> Option<Vec<(i64, i64)>> {
+    if !map.is_well_formed() {
+        return None;
+    }
+    let dx = (i128::from(b.0) - i128::from(a.0)).abs();
+    let dy = (i128::from(b.1) - i128::from(a.1)).abs();
+    let steep = dx < dy;
     let (mut a, mut b) = if steep {
         ((a.1, a.0), (b.1, b.0))
     } else {
@@ -682,20 +714,66 @@ fn bresenham(a: (i32, i32), b: (i32, i32)) -> Option<Vec<(i32, i32)>> {
     if a.0 > b.0 {
         std::mem::swap(&mut a, &mut b);
     }
-    let span = b.0 - a.0;
-    if span as usize >= MAX_LINE_POINTS {
+    let span = i128::from(b.0) - i128::from(a.0);
+    let minor_span = (i128::from(b.1) - i128::from(a.1)).abs();
+    let step: i128 = if a.1 < b.1 { 1 } else { -1 };
+    let height = i128::from(map.height);
+    let (k_lo, k_hi) = if steep {
+        let lo = (0 - i128::from(a.0)).max(0);
+        let hi = (height - 1 - i128::from(a.0)).min(span);
+        (lo, hi)
+    } else if minor_span == 0 {
+        let y = i128::from(a.1);
+        if y < 0 || y >= height {
+            return None;
+        }
+        (0, span)
+    } else {
+        let (q_lo, q_hi) = if step > 0 {
+            (
+                (0 - i128::from(a.1)).max(0),
+                (height - 1 - i128::from(a.1)).min(minor_span),
+            )
+        } else {
+            (
+                (i128::from(a.1) - (height - 1)).max(0),
+                i128::from(a.1).min(minor_span),
+            )
+        };
+        if q_lo > q_hi {
+            return None;
+        }
+        let two_m = 2 * minor_span;
+        let lo = if q_lo == 0 {
+            0
+        } else {
+            ((2 * q_lo - 1) * span + two_m - 1) / two_m
+        };
+        let hi = (((2 * q_hi + 1) * span - 1) / two_m).min(span);
+        (lo.max(0), hi)
+    };
+    if k_lo > k_hi {
         return None;
     }
-    let minor_span = (b.1 - a.1).abs();
-    let step = if a.1 < b.1 { 1 } else { -1 };
-    let mut minor = a.1;
-    let mut error = 0;
-    let mut out = Vec::with_capacity(span as usize + 1);
-    for major in a.0..=b.0 {
+    let count = k_hi - k_lo + 1;
+    let limit = i128::from(map.width) + height;
+    if count > limit {
+        return None;
+    }
+    let q = if span == 0 {
+        0
+    } else {
+        (2 * k_lo * minor_span + span) / (2 * span)
+    };
+    let mut minor = i128::from(a.1) + step * q;
+    let mut error = k_lo * minor_span - q * span;
+    let mut out = Vec::with_capacity(count as usize);
+    for k in k_lo..=k_hi {
+        let major = i128::from(a.0) + k;
         out.push(if steep {
-            (minor, major)
+            (minor as i64, major as i64)
         } else {
-            (major, minor)
+            (major as i64, minor as i64)
         });
         error += minor_span;
         if 2 * error >= span {

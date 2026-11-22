@@ -1,18 +1,11 @@
 use super::{
     entity_animation::Event,
     pointlights::Light,
-    weather_effects::{block, curve, get, number, text, tokens},
+    weather_effects::{Curve, block, get, text, tokens},
 };
 use content_reader_core::{ResolvedLayers, parser};
 use std::{collections::BTreeMap, io};
 
-struct Curve {
-    start: f32,
-    duration: f32,
-    repeat: bool,
-    op: String,
-    knots: Vec<[f32; 2]>,
-}
 struct Parameter {
     base: f32,
     curve: Option<String>,
@@ -45,18 +38,7 @@ impl Parameter {
         let Some(c) = self.curve.as_ref().and_then(|name| curves.get(name)) else {
             return self.base;
         };
-        let time = (age - c.start) / c.duration.max(0.0001);
-        let t = if c.repeat {
-            time.rem_euclid(1.0)
-        } else {
-            time.clamp(0.0, 1.0)
-        };
-        let value = curve(&c.knots, t);
-        match c.op.as_str() {
-            "ADD" => self.base + value,
-            "ABS" => value,
-            _ => self.base * value,
-        }
+        c.apply(self.base, age)
     }
 }
 
@@ -83,22 +65,7 @@ impl Lights {
                 .filter(|i| i.key.as_deref() == Some(b"animation"))
                 .filter_map(|i| i.value.items())
             {
-                let values = get(a, "curve")
-                    .map(tokens)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|v| v.parse::<f32>().ok())
-                    .collect::<Vec<_>>();
-                curves.insert(
-                    text(a, "name").to_owned(),
-                    Curve {
-                        start: number(a, "start", 0.0),
-                        duration: number(a, "duration", 1.0),
-                        repeat: content_reader_core::parser::read_bool_field(a, "repeat", false),
-                        op: text(a, "op").to_owned(),
-                        knots: values.chunks_exact(2).map(|v| [v[0], v[1]]).collect(),
-                    },
-                );
+                curves.insert(text(a, "name").to_owned(), Curve::parse(a)?);
             }
             definitions.insert(
                 text(v, "name").to_owned(),
@@ -148,19 +115,90 @@ mod tests {
     fn a_spaced_curve_reference_expires_the_flash() {
         let document = parser::parse(b"intensity = 1.5, fade radius = 5.7").unwrap();
         let parameter = Parameter::read(&document.items, "intensity", 1.0);
-        let curves = BTreeMap::from([(
-            "fade".into(),
-            Curve {
-                start: 0.0,
-                duration: 0.5,
-                repeat: false,
-                op: "MUL".into(),
-                knots: vec![[0.0, 0.0], [0.1, 1.0], [0.6, 0.0], [1.0, 0.0]],
-            },
-        )]);
+        let animation = parser::parse(
+            b"name = fade start = 0 duration = 0.5 repeat = no op = MUL \
+              minValue = 0 maxValue = 1 curve = { 0 0  0.1 1  0.6 0  1 0 }",
+        )
+        .unwrap();
+        let curve = Curve::parse(&animation.items).unwrap();
+        let expected_peak = 1.5 * curve.sample(0.05);
+        let curves = BTreeMap::from([("fade".into(), curve)]);
         assert_eq!(parameter.at(&curves, 0.0), 0.0);
-        assert_eq!(parameter.at(&curves, 0.05), 1.5);
+        assert!((parameter.at(&curves, 0.05) - expected_peak).abs() < 1e-6);
+        assert!(parameter.at(&curves, 0.05) > 1.4);
         assert_eq!(parameter.at(&curves, 0.5), 0.0);
         assert_eq!(parameter.at(&curves, 100.0), 0.0);
+    }
+
+    #[test]
+    fn light_curves_use_native_catmull_rom_lut_repeat_and_operations() {
+        let parse_curve = |src: &[u8]| Curve::parse(&parser::parse(src).unwrap().items);
+        let plateau = parse_curve(
+            b"name = plateau start = 0 duration = 1 op = mul \
+              minValue = 0 maxValue = 1 curve = { 0 0  0.25 1  0.75 1  1 0 }",
+        )
+        .unwrap();
+        let curves = BTreeMap::from([("plateau".into(), plateau)]);
+        let parameter = Parameter {
+            base: 1.0,
+            curve: Some("plateau".into()),
+        };
+        assert!(parameter.at(&curves, 0.5) > 1.12);
+
+        let remapped = parse_curve(
+            b"name = remap start = 0 duration = 4 repeat = yes op = MUL \
+              minValue = 0.8 maxValue = 1.0 curve = { 0 0.8  0.4 1.0  1 0.8 }",
+        )
+        .unwrap();
+        let curves = BTreeMap::from([("remap".into(), remapped)]);
+        let parameter = Parameter {
+            base: 3.0,
+            curve: Some("remap".into()),
+        };
+        assert!((parameter.at(&curves, 0.0) - 3.0 * (0.8 + 0.8 * 0.2)).abs() < 1e-5);
+        assert!((parameter.at(&curves, 4.0) - parameter.at(&curves, 0.0)).abs() < 1e-5);
+
+        let repeated = parse_curve(
+            b"name = rep start = 1 duration = 2 repeat = yes op = add \
+              minValue = 0 maxValue = 1 curve = { 0 0  1 1 }",
+        )
+        .unwrap();
+        let curves = BTreeMap::from([("rep".into(), repeated)]);
+        let parameter = Parameter {
+            base: 10.0,
+            curve: Some("rep".into()),
+        };
+        assert!((parameter.at(&curves, 3.5) - 10.0).abs() < 1e-6);
+        assert!((parameter.at(&curves, 5.0) - (10.0 + 32.0 / 63.0)).abs() < 1e-5);
+
+        let replaced = parse_curve(
+            b"name = abs_curve start = 0 duration = 0 op = abs \
+              minValue = 0 maxValue = 2 curve = { 0 0.5  1 0.5 }",
+        )
+        .unwrap();
+        let curves = BTreeMap::from([("abs_curve".into(), replaced)]);
+        let parameter = Parameter {
+            base: 10.0,
+            curve: Some("abs_curve".into()),
+        };
+        assert!((parameter.at(&curves, 0.5) - 1.0).abs() < 1e-6);
+
+        let short = parse_curve(b"name = short op = mul curve = { 0 1 }").unwrap();
+        let curves = BTreeMap::from([("short".into(), short)]);
+        let parameter = Parameter {
+            base: 10.0,
+            curve: Some("short".into()),
+        };
+        assert_eq!(parameter.at(&curves, 0.5), 0.0);
+
+        let bad_op = parse_curve(b"name = bad op = sub curve = { 0 0  1 1 }")
+            .unwrap_err()
+            .to_string();
+        assert!(bad_op.contains("bad") && bad_op.contains("sub"), "{bad_op}");
+
+        let bad_domain = parse_curve(b"name = dup op = mul curve = { 0.5 0  0.5 1 }")
+            .unwrap_err()
+            .to_string();
+        assert!(bad_domain.contains("dup"), "{bad_domain}");
     }
 }

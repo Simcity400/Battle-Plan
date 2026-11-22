@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
+    pub color: [f32; 4],
 }
 
 fn refuse(pass: &str, reason: impl Into<String>) -> io::Error {
@@ -97,6 +98,7 @@ impl Names {
             let (offset, format, width) = match input.semantic.as_str() {
                 "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Float32x3, 3),
                 "TEXCOORD" | "TEXCOORD0" => (12, wgpu::VertexFormat::Float32x2, 2),
+                "COLOR" | "COLOR0" => (20, wgpu::VertexFormat::Float32x4, 4),
                 _ => return Err(refuse(format!("native glyph cannot supply {input:?}"))),
             };
             if input.kind != ScalarKind::Float || input.components > width {
@@ -109,7 +111,7 @@ impl Names {
             });
         }
         pass.vertices = vec![gpu::VertexLayout {
-            stride: 20,
+            stride: size_of::<Vertex>() as u64,
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
@@ -194,7 +196,9 @@ impl Names {
             ]),
             &BTreeMap::from([(binding(0, Stage::Pixel), page.clone())]),
         );
-        retained.stream.bind_vertex_stride(0, 20);
+        retained
+            .stream
+            .bind_vertex_stride(0, size_of::<Vertex>() as u64);
     }
 
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {

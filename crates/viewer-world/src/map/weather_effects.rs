@@ -91,7 +91,7 @@ impl Parameter {
         self.animate(self.base + (random * 2.0 - 1.0) * self.spread, age)
     }
     fn animate(&self, value: f32, age: f32) -> f32 {
-        value * self.curve.as_ref().map_or(1.0, |c| c.sample(age))
+        self.curve.as_ref().map_or(value, |c| c.apply(value, age))
     }
     fn at(&self, seed: &mut u64, time: f32) -> f32 {
         let base = match &self.curve {
@@ -107,35 +107,26 @@ impl Parameter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Op {
+pub(super) enum Op {
     Add,
     Mul,
     Abs,
 }
 
-pub(super) fn curve(knots: &[[f32; 2]], x: f32) -> f32 {
-    for p in knots.windows(2) {
-        if x <= p[1][0] {
-            let t = ((x - p[0][0]) / (p[1][0] - p[0][0]).max(1e-6)).clamp(0.0, 1.0);
-            return p[0][1] + t * (p[1][1] - p[0][1]);
-        }
-    }
-    knots.last().map_or(1.0, |p| p[1])
-}
-
 #[derive(Debug, Clone)]
-struct Curve {
+pub(super) struct Curve {
     samples: [f32; 64],
     start: f32,
     duration: f32,
-    op: Op,
+    pub(super) op: Op,
     spawn: bool,
-    repeat: bool,
+    pub(super) repeat: bool,
 }
 impl Curve {
-    fn apply(&self, value: f32, time: f32) -> f32 {
-        let time = if self.repeat {
-            time % (self.start + self.duration)
+    pub(super) fn apply(&self, value: f32, time: f32) -> f32 {
+        let end = self.start + self.duration;
+        let time = if self.repeat && end != 0.0 {
+            time % end
         } else {
             time
         };
@@ -147,7 +138,56 @@ impl Curve {
         }
     }
 
-    fn new(knots: &[[f32; 2]], start: f32, duration: f32, min: f32, max: f32) -> Self {
+    pub(super) fn parse(items: &[Item]) -> io::Result<Self> {
+        let name = text(items, "name");
+        let values = get(items, "curve")
+            .map(tokens)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| s.parse::<f32>().ok())
+            .collect::<Vec<_>>();
+        let knots: Vec<[f32; 2]> = values.chunks_exact(2).map(|p| [p[0], p[1]]).collect();
+        for pair in knots.windows(2) {
+            if !(pair[0][0].is_finite()
+                && pair[1][0].is_finite()
+                && pair[0][1].is_finite()
+                && pair[1][1].is_finite()
+                && pair[1][0] > pair[0][0])
+            {
+                return Err(invalid(format!(
+                    "animation curve {name:?} has a non-increasing or non-finite knot domain"
+                )));
+            }
+        }
+        let op = match text(items, "op").to_ascii_lowercase().as_str() {
+            "" | "mul" => Op::Mul,
+            "add" => Op::Add,
+            "abs" => Op::Abs,
+            other => {
+                return Err(invalid(format!(
+                    "animation curve {name:?} has unsupported op {other:?}"
+                )));
+            }
+        };
+        let mut curve = Self::new(
+            &knots,
+            number(items, "start", 0.0),
+            number(items, "duration", 1.0),
+            number(items, "minValue", 0.0),
+            number(items, "maxValue", 1.0),
+        );
+        curve.op = op;
+        curve.spawn = !matches!(text(items, "time"), "life" | "life_abs" | "system");
+        curve.repeat = parser::read_bool_field(items, "repeat", false);
+        Ok(curve)
+    }
+
+    pub(super) fn new(knots: &[[f32; 2]], start: f32, duration: f32, min: f32, max: f32) -> Self {
+        let duration = if duration.is_finite() && duration > 0.0 {
+            duration
+        } else {
+            1.0
+        };
         let mut controls = Vec::new();
         if knots.len() >= 2 {
             controls.push(std::array::from_fn(|i| 2.0 * knots[0][i] - knots[1][i]));
@@ -185,10 +225,16 @@ impl Curve {
             repeat: false,
         }
     }
-    fn sample(&self, age: f32) -> f32 {
-        let x = ((age - self.start) / self.duration * 64.0).clamp(0.0, 63.0);
-        let i = (x as usize).min(62);
-        self.samples[i] + (self.samples[i + 1] - self.samples[i]) * (x - i as f32)
+    pub(super) fn sample(&self, age: f32) -> f32 {
+        let x = (age - self.start) * 64.0 / self.duration;
+        if x <= 0.0 {
+            self.samples[0]
+        } else if x >= 63.0 {
+            self.samples[63]
+        } else {
+            let i = x as usize;
+            self.samples[i] + (self.samples[i + 1] - self.samples[i]) * (x - i as f32)
+        }
     }
 }
 #[derive(Debug, Clone)]
@@ -543,31 +589,7 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
         .filter(|i| i.key.as_deref() == Some(b"animation"))
     {
         let a = a.value.items().unwrap_or(&[]);
-        let values = get(a, "curve")
-            .map(tokens)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect::<Vec<_>>();
-        let mut curve = Curve::new(
-            &values
-                .chunks_exact(2)
-                .map(|p| [p[0], p[1]])
-                .collect::<Vec<_>>(),
-            number(a, "start", 0.0),
-            number(a, "duration", 1.0),
-            number(a, "minValue", 0.0),
-            number(a, "maxValue", 1.0),
-        );
-        match text(a, "op").to_ascii_lowercase().as_str() {
-            "add" => curve.op = Op::Add,
-            "mul" => curve.op = Op::Mul,
-            "abs" => curve.op = Op::Abs,
-            _ => {}
-        }
-        curve.spawn = !matches!(text(a, "time"), "life" | "life_abs" | "system");
-        curve.repeat = parser::read_bool_field(a, "repeat", false);
-        curves.insert(text(a, "name").to_owned(), curve);
+        curves.insert(text(a, "name").to_owned(), Curve::parse(a)?);
     }
     let system = system_forces(root, &curves);
     let turbulence: Vec<usize> = system

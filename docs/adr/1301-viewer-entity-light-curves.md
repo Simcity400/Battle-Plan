@@ -2,6 +2,8 @@
 
 An entity's light reads authored curves on the event clock and applies the event transform to the resulting position. A hidden event emits no light. The render pass combines linear RGB and evaluated intensity. All registered light definitions come through the content descriptor roster.
 
+Light and weather curves share the 64-sample Catmull-Rom lookup table with extrapolated virtual endpoints and `minValue`/`maxValue` remapping, zero-filling tables with fewer than two knots, normalizing non-positive durations to 1.0, wrapping repeating times modulo `start + duration`, and applying case-insensitive `add`, `mul`, and `abs` operations. Unsupported curve operations or non-increasing knot domains fail with a named refusal.
+
 Light parameters accept both joined and spaced curve references. The shared parser returns the spaced curve name as the next anonymous scalar, so the light reader takes that operand when the value ends at the comma.
 
-[Entity light loader and evaluation](../../crates/viewer-world/src/map/entity_effects.rs)
+[Entity light loader and evaluation](../../crates/viewer-world/src/map/entity_effects.rs) · [Shared curve table](../../crates/viewer-world/src/map/weather_effects.rs)

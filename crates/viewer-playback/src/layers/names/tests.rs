@@ -63,6 +63,7 @@ impl Atlas for Stub {
             pages: Vec::new(),
             corners: component.iter().map(|&id| [id as f32, 0.0, 0.0]).collect(),
             uvs: Vec::new(),
+            colors: Vec::new(),
             aabb: [0.0; 4],
             wrapped: false,
             font_size: 1.0,

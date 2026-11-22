@@ -64,6 +64,18 @@ pub struct Interface {
     pub decode: Decode,
 }
 
+impl Interface {
+    pub fn load(layers: &ResolvedLayers, decode: Decode) -> io::Result<Self> {
+        let registry = resources::Registry::load(layers)?;
+        let sprites = gfx::SpriteSet::new(&registry.files);
+        Ok(Self {
+            registry,
+            sprites,
+            decode,
+        })
+    }
+}
+
 pub fn gui_refusal(draw: &super::native_shader::draw::Quad) -> String {
     format!(
         "GUI shader {:?}: effect {:?} technique {:?}",
@@ -521,7 +533,9 @@ impl Batch {
             texture: glyph.page,
             rect: glyph.rect,
             uv: glyph.uv,
-            color,
+            color: glyph
+                .color
+                .map_or(color, |run| [run[0], run[1], run[2], run[3] * color[3]]),
             rotation: 0.0,
             layer: self.layer,
             shade: 0.0,

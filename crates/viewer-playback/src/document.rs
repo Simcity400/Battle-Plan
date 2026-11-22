@@ -2247,9 +2247,17 @@ impl Document {
                 })
             };
             let h_rivers = {
+                let (defines, art_defines) = (&defines, &art_defines);
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || {
                     let _stage = viewer_foundation::load_record::stage("wave2.rivers");
+                    let river_defines = crate::map_assets::graphics_define(
+                        layers,
+                        "rivers",
+                        &art_defines,
+                        &defines,
+                        rivers::RiverDefines::load,
+                    )?;
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2265,6 +2273,7 @@ impl Document {
                             indices: &assets.rivers.indices,
                         },
                         &heights,
+                        river_defines,
                     )?;
                     Ok((river_mesh, river_trace, started.elapsed()))
                 })

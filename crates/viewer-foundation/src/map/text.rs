@@ -2,7 +2,10 @@
 use std::cell::RefCell;
 #[cfg(test)]
 use std::path::PathBuf;
-use std::{collections::BTreeSet, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use content_reader_core::{
     ResolvedLayers, gui::native::fonts, gui::native::fonts::GlyphSet, gui::native::resources,
@@ -32,6 +35,11 @@ pub trait GlyphMetrics {
         let _ = (a, b);
         0.0
     }
+
+    fn text_color(&self, code: char) -> Option<[f32; 4]> {
+        let _ = code;
+        None
+    }
 }
 
 pub const MAP_FONT: &str = "tahoma_60";
@@ -48,6 +56,8 @@ pub struct Font {
     pages: Vec<Option<Page>>,
     pub logged: Vec<String>,
     color: [f32; 4],
+    text_colors: BTreeMap<u8, [f32; 4]>,
+    global_colors: BTreeMap<u8, [f32; 4]>,
 }
 
 fn next_font_id() -> u64 {
@@ -70,6 +80,8 @@ impl Font {
             pages: Vec::new(),
             logged: Vec::new(),
             color: [0.0; 4],
+            text_colors: BTreeMap::new(),
+            global_colors: BTreeMap::new(),
         }
     }
 
@@ -87,6 +99,14 @@ impl Font {
 
     pub fn color(&self) -> [f32; 4] {
         self.color
+    }
+
+    pub fn text_color(&self, code: char) -> Option<[f32; 4]> {
+        let byte = (u32::from(code) & 0xFF) as u8;
+        self.text_colors
+            .get(&byte)
+            .or_else(|| self.global_colors.get(&byte))
+            .copied()
     }
 
     pub fn line_height(&self) -> f32 {
@@ -161,6 +181,10 @@ impl GlyphMetrics for Font {
             .get(&(a as u32))
             .and_then(|glyph| glyph.kernings.get(&(b as u32)))
             .map_or(0.0, |amount| *amount as f32)
+    }
+
+    fn text_color(&self, code: char) -> Option<[f32; 4]> {
+        Font::text_color(self, code)
     }
 }
 
@@ -270,6 +294,8 @@ pub fn load(
         pages,
         logged,
         color: [red, green, blue, alpha].map(|channel| f32::from(channel) / 255.0),
+        text_colors: font.facts.text_colors.clone(),
+        global_colors: interface.registry.text_colors.clone(),
     })
 }
 
@@ -465,10 +491,57 @@ pub enum Align {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StyledChar {
+    pub ch: char,
+    pub color: Option<[f32; 4]>,
+    pub reset_kerning: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyph {
     pub page: usize,
     pub rect: [f32; 4],
     pub uv: [f32; 4],
+    pub color: Option<[f32; 4]>,
+}
+
+pub fn color_runs(text: &str, lookup: impl Fn(char) -> Option<[f32; 4]>) -> Vec<StyledChar> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut color: Option<[f32; 4]> = None;
+    let mut stack: Vec<Option<[f32; 4]>> = Vec::new();
+    let mut reset_kerning = false;
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == COLOR_CODE {
+            reset_kerning = true;
+            match chars.next() {
+                Some('!') if stack.len() > 1 => {
+                    color = stack[stack.len() - 2];
+                    stack.pop();
+                }
+                Some('!') => {
+                    color = None;
+                    stack.push(None);
+                }
+                Some(code) => {
+                    if let Some(found) = lookup(code) {
+                        let packed = super::native_text::packed(found);
+                        color = Some(packed);
+                        stack.push(Some(packed));
+                    }
+                }
+                None => {}
+            }
+            continue;
+        }
+        out.push(StyledChar {
+            ch,
+            color,
+            reset_kerning,
+        });
+        reset_kerning = false;
+    }
+    out
 }
 
 pub fn strip_color_codes(text: &str) -> String {
@@ -495,15 +568,18 @@ pub fn unsupported_control(text: &str) -> Option<String> {
 pub fn measure(font: &Font, text: &str) -> f32 {
     let mut width = 0.0f32;
     let mut previous: Option<char> = None;
-    for ch in strip_color_codes(text).chars() {
-        let Some(advance) = GlyphMetrics::advance(font, ch) else {
+    for item in color_runs(text, |_| None) {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(advance) = GlyphMetrics::advance(font, item.ch) else {
             continue;
         };
         if let Some(p) = previous {
-            width += GlyphMetrics::kerning(font, p, ch);
+            width += GlyphMetrics::kerning(font, p, item.ch);
         }
         width += advance;
-        previous = Some(ch);
+        previous = Some(item.ch);
     }
     width
 }
@@ -515,8 +591,22 @@ pub fn layout(
     align: Align,
     max_width: Option<f32>,
 ) -> Vec<TextGlyph> {
-    let stripped = strip_color_codes(text);
-    let width = measure(font, &stripped);
+    let runs = color_runs(text, |code| font.text_color(code));
+    let mut width = 0.0f32;
+    let mut previous: Option<char> = None;
+    for item in &runs {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(advance) = GlyphMetrics::advance(font, item.ch) else {
+            continue;
+        };
+        if let Some(p) = previous {
+            width += GlyphMetrics::kerning(font, p, item.ch);
+        }
+        width += advance;
+        previous = Some(item.ch);
+    }
     let limit = max_width.unwrap_or(f32::INFINITY);
     let slack = (max_width.unwrap_or(0.0) - width).max(0.0);
     let start = match align {
@@ -527,17 +617,21 @@ pub fn layout(
     let mut out = Vec::new();
     let mut pen = 0.0f32;
     let mut previous: Option<char> = None;
-    for ch in stripped.chars() {
-        let Some(advance) = GlyphMetrics::advance(font, ch) else {
+    for item in runs {
+        if item.reset_kerning {
+            previous = None;
+        }
+        let Some(advance) = GlyphMetrics::advance(font, item.ch) else {
             continue;
         };
         if let Some(p) = previous {
-            pen += GlyphMetrics::kerning(font, p, ch);
+            pen += GlyphMetrics::kerning(font, p, item.ch);
         }
         if pen + advance > limit {
             break;
         }
-        if let (Some(glyph), Some(page)) = (GlyphMetrics::glyph(font, ch), font.page_of(ch))
+        if let (Some(glyph), Some(page)) =
+            (GlyphMetrics::glyph(font, item.ch), font.page_of(item.ch))
             && glyph.width > 0.0
             && glyph.height > 0.0
         {
@@ -550,10 +644,11 @@ pub fn layout(
                     glyph.height,
                 ],
                 uv: glyph.uv,
+                color: item.color,
             });
         }
         pen += advance;
-        previous = Some(ch);
+        previous = Some(item.ch);
     }
     out
 }
@@ -620,6 +715,8 @@ mod tests {
             pages: vec![Some((7, [64.0, 32.0]))],
             logged: Vec::new(),
             color: [1.0, 1.0, 1.0, 1.0],
+            text_colors: BTreeMap::new(),
+            global_colors: BTreeMap::new(),
         }
     }
 
@@ -1041,6 +1138,7 @@ path=\"{art}\"
         assert_eq!(measure(&font, "A B"), 24.0);
         assert_eq!(measure(&font, "AZB"), 18.0);
         assert_eq!(measure(&font, "\u{11}YAB\u{11}!"), 18.0);
+        assert_eq!(measure(&font, "A\u{11}GB\u{11}!"), 20.0);
     }
 
     #[test]
@@ -1086,5 +1184,133 @@ path=\"{art}\"
         assert_eq!(GlyphMetrics::kerning(&font, 'B', 'A'), 0.0);
         assert_eq!(font.page_of('A'), Some(7));
         assert_eq!(font.page_of('Z'), None);
+    }
+
+    #[test]
+    fn color_runs_preserve_nested_open_and_close_matching_native_screen_labels() {
+        let mut font = font();
+        let green = [0.2, 0.8, 0.3, 1.0];
+        let yellow = [0.9, 0.8, 0.1, 1.0];
+        font.text_colors.insert(b'G', green);
+        font.global_colors.insert(b'Y', yellow);
+        font.glyphs.glyphs.insert(
+            'C' as u32,
+            Glyph {
+                x: 16,
+                y: 0,
+                width: 8,
+                height: 12,
+                xoffset: 0,
+                yoffset: 2,
+                xadvance: 10,
+                page: 0,
+                kernings: BTreeMap::new(),
+            },
+        );
+        let loc: content_reader_localisation::localisation::Localisation =
+            [("K".to_owned(), "A§YB§GC§!B§!A".to_owned())]
+                .into_iter()
+                .collect();
+        let authored = loc.get("K").unwrap();
+        assert_eq!(measure(&font, authored), 50.0);
+        let glyphs = layout(&font, authored, [0.0, 0.0], Align::Left, None);
+        assert_eq!(glyphs.len(), 5);
+        let expected_yellow = super::super::native_text::packed(yellow);
+        let expected_green = super::super::native_text::packed(green);
+        assert_eq!(
+            glyphs.iter().map(|g| g.color).collect::<Vec<_>>(),
+            vec![
+                None,
+                Some(expected_yellow),
+                Some(expected_green),
+                Some(expected_yellow),
+                None,
+            ]
+        );
+
+        struct NativeGlyphs<'a>(&'a Font);
+        impl super::super::native_text::Glyphs for NativeGlyphs<'_> {
+            fn own(&self, ch: char) -> Option<super::super::native_text::Glyph> {
+                let (glyph, _) = self.0.glyph_of(ch)?;
+                Some(super::super::native_text::Glyph {
+                    ch,
+                    advance: glyph.xadvance,
+                    width: glyph.width,
+                    height: glyph.height,
+                    xoffset: glyph.xoffset,
+                    yoffset: glyph.yoffset,
+                })
+            }
+            fn kerning(&self, a: char, b: char) -> i32 {
+                GlyphMetrics::kerning(self.0, a, b) as i32
+            }
+            fn line_height(&self) -> i32 {
+                self.0.line_height() as i32
+            }
+        }
+        let own = [1.0, 1.0, 1.0, 1.0];
+        let native_glyphs = NativeGlyphs(&font);
+        let chars: Vec<char> = authored.chars().collect();
+        let laid = super::super::native_text::lay_out(
+            &native_glyphs,
+            &|_| None,
+            &chars,
+            super::super::native_text::Limits {
+                width: 200,
+                height: 40,
+                border: [0, 0],
+                newlines: false,
+                preserve_indent: false,
+                ellipsis: false,
+                multiline: false,
+                special: true,
+                icons_add_height: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(laid.widths, vec![50]);
+        let colors = super::super::native_text::Colors {
+            own,
+            font: &font.text_colors,
+            global: &font.global_colors,
+        };
+        let pieces = super::super::native_text::draw(
+            &native_glyphs,
+            &|_| None,
+            &laid,
+            true,
+            &super::super::native_text::Placement {
+                top: 0,
+                start: &|_, _| 0,
+            },
+            &colors,
+        )
+        .unwrap();
+        let screen_colors: Vec<[f32; 4]> = pieces
+            .into_iter()
+            .filter_map(|piece| match piece {
+                super::super::native_text::Piece::Glyph { color, .. } => Some(color),
+                _ => None,
+            })
+            .collect();
+        let map_colors: Vec<[f32; 4]> = glyphs
+            .iter()
+            .map(|g| g.color.unwrap_or(super::super::native_text::packed(own)))
+            .collect();
+        assert_eq!(map_colors, screen_colors);
+
+        let mut batch = super::super::sprites::Batch::default();
+        batch.text(&glyphs, [0.5, 0.5, 0.5, 0.5]);
+        let batch_colors: Vec<[f32; 4]> = batch.quads.iter().map(|q| q.color).collect();
+        assert_eq!(
+            batch_colors,
+            vec![
+                [0.5, 0.5, 0.5, 0.5],
+                [expected_yellow[0], expected_yellow[1], expected_yellow[2], 0.5],
+                [expected_green[0], expected_green[1], expected_green[2], 0.5],
+                [expected_yellow[0], expected_yellow[1], expected_yellow[2], 0.5],
+                [0.5, 0.5, 0.5, 0.5],
+            ]
+        );
     }
 }

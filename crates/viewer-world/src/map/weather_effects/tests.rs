@@ -265,6 +265,39 @@ fn native_curve_bake_smooths_knots_and_reads_sixty_four_intervals() {
 }
 
 #[test]
+fn particle_life_curves_apply_operation_and_repeat_boundaries() {
+    let mut add = Curve::new(&[[0.0, 2.0], [1.0, 2.0]], 0.0, 1.0, 0.0, 1.0);
+    add.op = Op::Add;
+    add.spawn = false;
+    let added = Parameter {
+        base: 5.0,
+        spread: 0.0,
+        curve: Some(add),
+    };
+    assert!((added.animate(5.0, 0.5) - 7.0).abs() < 1e-5);
+
+    let mut abs = Curve::new(&[[0.0, 3.0], [1.0, 3.0]], 0.0, 1.0, 0.0, 1.0);
+    abs.op = Op::Abs;
+    abs.spawn = false;
+    let replaced = Parameter {
+        base: 5.0,
+        spread: 0.0,
+        curve: Some(abs),
+    };
+    assert!((replaced.animate(5.0, 0.5) - 3.0).abs() < 1e-5);
+
+    let mut rep = Curve::new(&[[0.0, 0.0], [1.0, 1.0]], 1.0, 2.0, 0.0, 1.0);
+    rep.repeat = true;
+    rep.spawn = false;
+    let repeating = Parameter {
+        base: 10.0,
+        spread: 0.0,
+        curve: Some(rep),
+    };
+    assert!((repeating.animate(10.0, 3.5) - 0.0).abs() < 1e-5);
+}
+
+#[test]
 fn native_emitter_basis_preserves_rain_direction_and_rotates_spawn_plane() {
     let local = [
         30.0_f32.to_radians().cos(),
