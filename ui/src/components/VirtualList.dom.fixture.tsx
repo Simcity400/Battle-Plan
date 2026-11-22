@@ -1,4 +1,5 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { StrictMode, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { VirtualList } from './VirtualList';
 import { createTabFixture } from './VirtualList.tab.fixture';
@@ -61,7 +62,8 @@ document.body.replaceChildren(host);
 document.body.style.margin = '0';
 const root = createRoot(host);
 let mount = 0;
-let mounted: HistoryProps | null = null;
+let mounted: HistoryProps | null = null, strict = false;
+const show = (node: ReactNode) => root.render(strict ? <StrictMode>{node}</StrictMode> : node);
 function watchedScroller() {
   const node = document.createElement('div');
   node.style.cssText = 'height:300px;overflow:auto;width:700px';
@@ -79,14 +81,14 @@ let rebinding: { move(): void; dispose(): void; listeners(): number[]; oldScroll
 let sparse: HistoryProps | null = null;
 export const fixture = {
   tab: createTabFixture(node => { rebinding?.dispose(); rebinding = null; root.render(node); }),
-  async mount(columns = 1, deferChildren = false, controls: RowControls = 'nested', noninteractive: readonly number[] = []) {
+  async mount(columns = 1, deferChildren = false, controls: RowControls = 'nested', noninteractive: readonly number[] = [], strictly = false) {
     rebinding?.dispose(); rebinding = null;
     rowHeights.clear();
-    mounted = { columns, deferChildren, controls, noninteractive };
-    root.render(<Histories key={++mount} {...mounted} />);
+    mounted = { columns, deferChildren, controls, noninteractive }; strict = strictly;
+    show(<Histories key={++mount} {...mounted} />);
     await settle();
   },
-  async rerender() { root.render(<Histories key={mount} {...mounted!} rows={[...items]} />); await settle(); },
+  async rerender() { show(<Histories key={mount} {...mounted!} rows={[...items]} />); await settle(); },
   observations(reset = false) {
     const kept = (targets: Element[]) => targets.filter(target => target.isConnected).length;
     const seen = { observed: observations.observed.length, unobserved: observations.unobserved.length,

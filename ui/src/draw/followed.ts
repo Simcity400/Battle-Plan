@@ -29,12 +29,16 @@ export class Followed {
   private readonly routes = new Map<string, number>();
   private readonly upcoming = new Map<number, string>();
   private readonly generations = new Map<number, number>();
+  private readonly landed = new Map<number, number>();
   private staged = new WeakMap<FollowedPanel, string>();
   private generation = 0;
   private sequence = 0;
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
-    this.store = new DatedStore(entry => { this.dirty.add(entry); changed?.(entry.id); }, release);
+    this.store = new DatedStore(entry => {
+      if (this.entries.get(entry.id) === entry) this.landed.set(entry.id, this.generations.get(entry.id)!);
+      this.dirty.add(entry); changed?.(entry.id);
+    }, release);
   }
 
   get size() { return this.entries.size; }
@@ -44,13 +48,13 @@ export class Followed {
     const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
     this.branches.set(id, branch);
     this.entries.set(id, entry);
-    this.generations.set(id, this.generation);
+    this.generations.set(id, this.generation); this.landed.set(id, this.generation);
     this.store.add(entry, branch);
   }
   remove(id: number) {
     const entry = this.entries.get(id);
     if (entry) this.dirty.delete(entry);
-    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id); this.generations.delete(id);
+    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id); this.generations.delete(id); this.landed.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
     this.upcoming.delete(id);
@@ -58,14 +62,13 @@ export class Followed {
   }
   private resetLead(branch: string) {
     const generation = ++this.generation;
-    for (const [id, key] of this.branches) if (key === branch) { this.upcoming.delete(id); this.generations.set(id, generation); }
+    for (const [id, key] of this.branches) if (key === branch) { this.upcoming.delete(id); this.sent.delete(id); this.generations.set(id, generation); }
     this.staged = new WeakMap();
   }
-  private order(id: number, from: number): ReadingOrder {
-    return { generation: this.generations.get(id) ?? 0, from, sequence: ++this.sequence };
+  private order(generation: number, from: number): ReadingOrder {
+    return { generation, from, sequence: ++this.sequence };
   }
   seek(branch: string, seek: number, retainThrough?: number) {
-    for (const [id, key] of this.branches) if (key === branch) this.sent.delete(id);
     this.resetLead(branch); this.seeks.set(branch, seek); this.store.seek(branch, seek, retainThrough);
   }
   bind(branch: string, route: number, seek: number) {
@@ -75,10 +78,10 @@ export class Followed {
   }
   land(items: readonly FollowItem[], lead?: (message: FromWorker) => void) {
     for (const item of items) {
-      if (lead && item.kind === 'followed' && item.message.reset) {
+      if (item.kind === 'followed' && item.message.reset) {
         const { route, seek, hour } = item.message;
         for (const [name, id] of this.routes) if (id === route && this.seeks.get(name) === seek) this.resetLead(name);
-        lead({ type: 'resetStructures', route, seek, from: hour });
+        lead?.({ type: 'resetStructures', route, seek, from: hour });
       }
       if (lead && item.kind === 'panels') {
         const updates: OrderedReading[] = [];
@@ -91,7 +94,7 @@ export class Followed {
           const shape = this.panelShape(id, panel, hour);
           this.staged.set(panel, shape);
           if ((this.upcoming.get(id) ?? this.sent.get(id)?.shape) !== shape)
-            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel), order: this.order(id, hour) });
+            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel), order: this.order(this.generations.get(id)!, hour) });
           this.upcoming.set(id, shape);
         }
         if (updates.length) lead({ type: 'structureLead', updates });
@@ -111,7 +114,7 @@ export class Followed {
     if (!entry) return;
     const { hour, panel, answer } = entry;
     return { id, hour, through: this.store.eligibleThrough(entry), coverage: this.store.coverage(entry) ?? undefined, seek: this.seeks.get(this.branches.get(id)!) ?? 0,
-      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel), order: this.order(id, panel || answer ? hour : -Infinity) };
+      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel), order: this.order(this.landed.get(id)!, panel || answer ? hour : -Infinity) };
   }
 
   private values(id: number, panel?: FollowedPanel) {

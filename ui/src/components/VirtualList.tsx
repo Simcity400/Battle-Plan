@@ -117,13 +117,15 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   restoreLatest.current = restoreDetails;
   const rowRefs = useRef(new Map<string, (node: HTMLLIElement | null) => void>());
   const rowRef = (key: string) => {
-    let ref = rowRefs.current.get(key);
-    if (!ref) rowRefs.current.set(key, ref = node => {
+    const ref = rowRefs.current.get(key);
+    if (ref) return ref;
+    const attach = (node: HTMLLIElement | null) => {
       const old = nodes.current.get(key); if (old) observer.current?.unobserve(old);
-      if (node) { nodes.current.set(key, node); observer.current?.observe(node); restoreLatest.current(node); }
-      else { nodes.current.delete(key); rowRefs.current.delete(key); }
-    });
-    return ref;
+      if (node) { rowRefs.current.set(key, attach); nodes.current.set(key, node); observer.current?.observe(node); restoreLatest.current(node); }
+      else { nodes.current.delete(key); if (rowRefs.current.get(key) === attach) rowRefs.current.delete(key); }
+    };
+    rowRefs.current.set(key, attach);
+    return attach;
   };
   const gapShown = useRef(0);
   const index = useMemo(() => {

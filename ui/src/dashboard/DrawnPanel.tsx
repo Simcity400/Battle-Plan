@@ -60,17 +60,36 @@ function geometry(root: HTMLElement, fields: HTMLElement[], layout: PanelGeometr
   return cells;
 }
 
+interface Attached {
+  node: HTMLElement; clock: PlaybackController; widget: ReturnType<typeof measuredWidget>; view: PanelFeed['view'];
+  inputs: readonly unknown[]; reconcile: (rebinding: boolean) => void; close: () => void;
+}
+
 export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: PlaybackController, feed: PanelFeed | null, active: boolean) {
   const widget = measuredWidget(), latest = useRef(feed);
   latest.current = feed;
-  const element = root.current;
-  const reconcile = useRef<(rebinding: boolean) => void>(undefined);
+  const attached = useRef<Attached | null>(null);
   const binding = feed && `${feed.follow}|${feed.fixed}|${feed.offset}`;
-  const bound = useRef(binding);
+  const inputs = [binding, feed?.structure, feed?.reply, feed?.follow === undefined ? feed?.date?.through : undefined];
   useLayoutEffect(() => {
-    const node = root.current;
-    if (!node || !active || !latest.current) return;
-    const view = latest.current.view;
+    const node = active && feed ? root.current : null, view = feed?.view;
+    const held = attached.current;
+    const kept = held?.node === node && held.clock === clock && held.widget === widget && held.view === view ? held : null;
+    if (held && !kept) { held.close(); attached.current = null; }
+    if (!kept) {
+      if (!node || !view) return;
+      attached.current = { node, clock, widget, view, inputs, ...attachRoot(node, view) };
+      attached.current.reconcile(false);
+      return;
+    }
+    if (inputs.every((input, at) => input === kept.inputs[at])) return;
+    const rebinding = kept.inputs[0] !== binding;
+    kept.inputs = inputs;
+    kept.reconcile(rebinding);
+  });
+  useLayoutEffect(() => () => { attached.current?.close(); attached.current = null; }, []);
+
+  function attachRoot(node: HTMLElement, view: PanelFeed['view']) {
     const layout = panelViews[view]?.geometry ?? {};
     const owned = layout.owns ?? (() => true);
     const fieldsSelector = layout.extraFields ? commonFields + ',' + layout.extraFields : commonFields;
@@ -112,7 +131,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
         for (const f of fields) delete f.dataset.rowInk;
       } });
     };
-    reconcile.current = rebinding => {
+    const reconcile = (rebinding: boolean) => {
       const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].filter(owned).map(layer));
       for (const [content, handle] of handles) {
         if (!contents.has(content)) { handle.close(); handles.delete(content); }
@@ -159,14 +178,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     });
     node.addEventListener('pointermove', inspect, true); node.addEventListener('focusin', inspect, true);
     node.addEventListener('focusout', cancel); node.addEventListener('pointerleave', cancel);
-    return () => { cancel(); stop(); node.removeEventListener('pointermove', inspect, true); node.removeEventListener('focusin', inspect, true);
+    return { reconcile, close() {
+      cancel(); stop(); node.removeEventListener('pointermove', inspect, true); node.removeEventListener('focusin', inspect, true);
       node.removeEventListener('focusout', cancel); node.removeEventListener('pointerleave', cancel);
-      reconcile.current = undefined; handles.forEach(handle => handle.close()); };
-  }, [element, !!feed, active, clock, widget, root, feed?.view]);
-  useLayoutEffect(() => {
-    const rebinding = bound.current !== binding;
-    bound.current = binding;
-    reconcile.current?.(rebinding);
-  }, [element, !!feed, active, clock, widget, root, feed?.view, binding, feed?.structure, feed?.reply,
-    feed?.follow === undefined ? feed?.date?.through : undefined]);
+      handles.forEach(handle => handle.close());
+    } };
+  }
 }

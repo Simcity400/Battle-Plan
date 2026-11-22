@@ -37,10 +37,13 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
       });
       await context.test('a render that keeps the row keys keeps every row observed: none that stays is released or observed again', async () => {
         type Seen = { observed: number; unobserved: number; keptObserved: number; keptUnobserved: number };
-        await act('mount()'); await act('observations(true)');
-        await act('rerender()');
-        const kept = await act('observations(true)') as Seen;
-        assert.deepEqual([kept.observed, kept.keptUnobserved], [0, 0], `a render with the same keys mounts no row and releases none that stays: ${JSON.stringify(kept)}`);
+        for (const strict of [true, false]) {
+          await act(`mount(1, false, 'nested', [], ${strict})`); await act('observations(true)');
+          await act('rerender()');
+          const kept = await act('observations(true)') as Seen;
+          assert.deepEqual([kept.observed, kept.keptUnobserved], [0, 0],
+            `a render with the same keys${strict ? ' under StrictMode' : ''} mounts no row and releases none that stays: ${JSON.stringify(kept)}`);
+        }
         await act('scroll(3000)');
         const scrolled = await act('observations()') as Seen;
         assert.ok(scrolled.keptObserved > 0 && scrolled.unobserved > scrolled.keptUnobserved,

@@ -40,8 +40,10 @@ const clock = new PlaybackController();
 clock.setBounds({ firstHour: 0, lastHour: 100_000 });
 const reply: NuclearArsenalReply = { missing: null, types: [], warnings: [], countries: [] };
 
+let commits = 0;
 function Arsenal({ fixed }: { fixed: number }) {
   const root = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { commits++; });
   useDrawnPanel(root, clock, { view: 'nuclear-arsenal', offset: 0, structure: arsenalStructure(reply), fixed,
     date: { since: fixed, through: fixed }, reply }, true);
   return <div ref={root} style={{ width: '480px', padding: '8px', font: '16px sans-serif' }}>
@@ -66,13 +68,13 @@ export const fixture = {
   async rebind(first: number, second: number) {
     const host = place(), root = createRoot(host);
     const canvas = () => host.querySelector<HTMLCanvasElement>('canvas.draw-panel-ink');
-    root.render(<Arsenal fixed={first} />);
-    await frames(2);
+    commits = 0;
     root.render(<Arsenal fixed={first} />);
     const shown = await until(() => !!canvas() && !canvas()!.hidden);
-    const before = canvas()!;
+    const before = canvas()!, firstCommits = commits;
     holding = true;
     flushSync(() => root.render(<Arsenal fixed={second} />));
+    const secondCommit = commits === firstCommits + 1 ? commits : null;
     const hiddenAtOnce = before.hidden, sameCanvas = canvas() === before, canvases = host.querySelectorAll('canvas').length;
     await until(() => held.length > 0);
     const surface = held[0]?.message as Extract<ToWorker, { type: 'surface' }> | undefined;
@@ -86,9 +88,9 @@ export const fixture = {
     holding = false;
     for (const { worker, message, transfer } of held.splice(0)) worker.postMessage(message, transfer);
     const revealed = await until(() => !before.hidden);
-    const newOwnerPresents = presents().filter(p => p.owner === surface?.owner).length;
+    const newOwnerPresents = presents().filter(p => p.owner === surface?.owner).length, keptCanvas = canvas() === before;
     root.unmount(); host.remove();
-    return { shown, hiddenAtOnce, sameCanvas, canvases, heldSurfaces, oldOwnerPresents, hiddenAfterOldOwner, revealed, newOwnerPresents,
+    return { shown, secondCommit, hiddenAtOnce, sameCanvas, keptCanvas, canvases, heldSurfaces, oldOwnerPresents, hiddenAfterOldOwner, revealed, newOwnerPresents,
       fixed: surface?.model.fixed ?? null };
   },
   async due(at: number) {
