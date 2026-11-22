@@ -133,6 +133,7 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
     nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
     geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
+      barVariable: { host: '[data-project]', name: '--project-progress' },
       knob: field => !!field.closest('.special-project-progress') && !field.closest('.is-paused,.is-unknown') },
     values(raw, _live, hour, shape) {
       const reply = projectHistory(raw);

@@ -33,7 +33,7 @@ interface RouteState { page: number; native: number | null; key: string; source:
 interface WidgetState {
   id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  failure?: string;
+  failure?: string; held: Map<string, unknown>;
 }
 
 export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string }
@@ -61,9 +61,10 @@ export class Pipeline {
   private framing = false;
   private stopPublish: (() => void) | null = null;
   private stopClock: (() => void) | null = null;
+  private rate: number;
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost) {
-    this.clock = clock; this.client = client; this.host = host;
+    this.clock = clock; this.client = client; this.host = host; this.rate = host.rate();
     const count = host.lanes.length;
     this.loads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
@@ -93,6 +94,8 @@ export class Pipeline {
   }
 
   private published(previous: PlaybackSnapshot, next: PlaybackSnapshot) {
+    const rate = this.host.rate();
+    if (rate !== this.rate) { this.rate = rate; for (const lane of this.host.lanes) lane.postMessage({ type: 'options', rate }); }
     const step = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
     this.page.publish(next.hour, { playing: next.playing, seek: next.seekSequence, step, speed: next.hoursPerSecond });
     this.dated = true;
@@ -153,7 +156,7 @@ export class Pipeline {
     const lane = this.place(options.key), id = this.nextWidget++;
     this.loads[lane]!++;
     const widget: WidgetState = { id, lane, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [] }, surfaces: [] };
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget) });
     return id;
@@ -259,23 +262,28 @@ export class Pipeline {
   private remount(widget: WidgetState) {
     const subs = [...new Set(widget.subs.values())];
     this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.model });
-    this.page.rebind(widget.id, { subscription: true, ...subs.length ? {} : {} });
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: { ...widget.binding, generation: this.generation(widget) } });
+    this.page.rebind(widget.id, { subscription: true });
+    widget.binding = this.timed(widget, widget.binding);
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
     const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
     if (refused) this.page.name(widget.id, 'failed', refused.reason);
     this.flush();
   }
 
-  private generation(widget: WidgetState) { return (this.page.widgets.get(widget.id)?.binding ?? 1); }
+  private timed(widget: WidgetState, binding: Omit<Binding, 'generation' | 'offset' | 'pin'>): Binding {
+    const shown = this.page.widgets.get(widget.id);
+    return { ...binding, generation: shown?.binding ?? 1, offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+  }
 
-  bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation'>, change: RebindChange = {}, model?: unknown) {
+  bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (surfaces !== widget.surfaces) { widget.surfaces = surfaces; this.page.remount(id, surfaces); }
+    const same = surfaces.length === widget.surfaces.length && surfaces.every((surface, at) => surface === widget.surfaces[at]);
+    if (!same) { widget.surfaces = surfaces; this.page.remount(id, surfaces); }
     else this.page.rebind(id, change);
     if (model !== undefined) widget.model = model;
-    widget.binding = { ...binding, generation: this.generation(widget) };
+    widget.binding = this.timed(widget, binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model } : {} });
     this.flush();
   }
@@ -285,14 +293,25 @@ export class Pipeline {
     if (!widget || widget.view === view && model === undefined) return;
     widget.view = view;
     if (model !== undefined) widget.model = model;
-    this.remount(widget);
+    this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: id, subs: [...new Set(widget.subs.values())], view, model: widget.model });
+    this.page.rebind(id);
+    widget.binding = this.timed(widget, widget.binding);
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding });
+    this.flush();
+  }
+
+  held<T>(id: number, kind: string, make: () => T): T | null {
+    const widget = this.widgets.get(id);
+    if (!widget) return null;
+    if (!widget.held.has(kind)) widget.held.set(kind, make());
+    return widget.held.get(kind) as T;
   }
 
   retime(id: number, change: RebindChange) {
     const widget = this.widgets.get(id);
     if (!widget) return;
     this.page.rebind(id, change);
-    widget.binding = { ...widget.binding, generation: this.generation(widget) };
+    widget.binding = this.timed(widget, widget.binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding });
     this.flush();
   }
@@ -340,7 +359,7 @@ export class Pipeline {
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         sub.status = 'followed';
         sub.route.native = data.route!;
-        this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek });
+        this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek, offset: sub.route.offset });
         for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
         sub.route.told = null;
         this.anchor();

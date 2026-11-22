@@ -145,7 +145,7 @@ export function carriedValues(rows: readonly TableRowModel[], now: TableValues, 
 export const cellText = (cell: TableCellModel, values: TableValues | null, hour?: number) => valueText(cell, values, hour).text;
 
 const changeHours = new WeakMap<readonly TableRowModel[], number[]>();
-function nextChange(rows: readonly TableRowModel[], hour: number): number | undefined {
+export function nextChange(rows: readonly TableRowModel[], hour: number): number | undefined {
   let hours = changeHours.get(rows);
   if (!hours) {
     const found = new Set<number>(), walked = new Set<readonly CountryLook[]>();
@@ -552,9 +552,9 @@ function drawEmpty(ctx: TableCanvasContext, text: string, width: number, height:
 }
 
 export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now: number, scrollLeft = state.model.scrollLeft,
-  icons?: ReadonlyMap<string, ImageBitmap | null>, picture?: TablePicture, dpr = 1): void {
+  icons?: ReadonlyMap<string, ImageBitmap | null>, picture?: TablePicture, dpr = 1): boolean {
   const { model, layout, rows, values } = state, theme = model.theme;
-  if (!theme) return;
+  if (!theme) return false;
   freshPen(ctx);
   const rowHeight = ROW_HEIGHT[model.settings.density], bounds = scrollBounds(layout, model.width, scrollLeft), rank = model.rankShown ? model.rankWidth ?? 28 : 0;
   const scrollTop = model.scrollTop ?? 0;
@@ -583,7 +583,7 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
     : null;
   if (picture && frame !== null && picture.frame === frame) {
     const settled = picture.state === state && picture.hour === state.hour;
-    let x = rank - bounds.left;
+    let x = rank - bounds.left, drew = false;
     for (const column of layout.columns) {
       const slot = column.display === 'track' ? trackSlot(ctx, rows, column.key, first, last, values, theme) : 0, maximum = state.maxima.get(column.key);
       let drawn = picture.cells.get(column.key);
@@ -598,20 +598,21 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
         cellGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, false, state.hoverKey === row.key);
         drawCell(ctx, cell, column, x, y, rowHeight, theme, look, slot, icons);
         drawn[index] = look.key;
+        drew = true;
       }
       x += column.width;
     }
     if (rank) for (let index = first; index < last; index++) {
       const inputs = rankInputs(index);
-      if (picture.ranks[index] !== inputs) { rankCell(index, -bounds.left, index * rowHeight - scrollTop); picture.ranks[index] = inputs; }
+      if (picture.ranks[index] !== inputs) { rankCell(index, -bounds.left, index * rowHeight - scrollTop); picture.ranks[index] = inputs; drew = true; }
     }
     for (let index = first; index < last; index++) { picture.rows[index] = rows[index]!.key; picture.refs[index] = rows[index]; }
     picture.state = state; picture.hour = state.hour;
-    return;
+    return drew;
   }
   if (picture) { picture.frame = frame; picture.rows = []; picture.refs = []; picture.cells = new Map(); picture.ranks = []; picture.state = state; picture.hour = state.hour; }
   ctx.clearRect(0, 0, model.width, model.height); fillWith(ctx, theme.surface); ctx.fillRect(0, 0, model.width, model.height);
-  if (!rows.length && model.empty) { drawEmpty(ctx, model.empty, model.width, model.height, theme); return; }
+  if (!rows.length && model.empty) { drawEmpty(ctx, model.empty, model.width, model.height, theme); return true; }
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, model.width, model.height); ctx.clip();
   const ranks = (x: number) => {
     if (!rank) return;
@@ -650,6 +651,6 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
     fillWith(ctx, edge); ctx.fillRect(pinnedWidth - 1, 0, 13, model.height);
   } else ranks(-bounds.left);
   ctx.restore(); freshPen(ctx);
-  void bounds;
+  return true;
 }
 

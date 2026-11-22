@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
-import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
+import type { HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Segmented } from '../../components/Segmented';
@@ -90,7 +90,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
     {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
       const { run, info } = card;
       return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-        style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
+        {...item(card)}>
         <ProjectTile icon={info.icon} />
         <span className="special-project-now-text"><strong>{info.name}</strong><span>
           {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}

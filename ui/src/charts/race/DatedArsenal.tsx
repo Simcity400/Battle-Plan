@@ -20,15 +20,20 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   const owner = useId(), widgetKey = useWidgetKey();
   latest.current = props;
   const pipeline = pipelineOf(pageClock(props.clock));
-  const pipe = useFollowedWidget(pipeline, pipeline && props.active ? `${widgetKey}|${props.model.offset}` : null, { offset: props.model.offset, pin: null });
+  const pinned = props.model.follow === undefined && props.model.fixed !== undefined ? props.model.fixed + props.model.offset : null;
+  const pipe = useFollowedWidget(pipeline, pipeline && props.active ? `${widgetKey}|${props.model.offset}` : null, { offset: props.model.offset, pin: pinned });
   useLayoutEffect(() => {
     const scroller = container.current, region = root.current;
     if (!scroller || !region || !props.active || !pipeline || pipe === null) return;
-    const canvas = document.createElement('canvas');
-    canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-describedby', owner + '-ranking');
-    canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
+    const drawn = pipeline.held(pipe, 'race', () => {
+      const canvas = document.createElement('canvas');
+      canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
+      canvas.dataset.surface = 'race';
+      return { canvas, surface: bitmapSurface(canvas) };
+    })!;
+    const { canvas, surface } = drawn;
+    canvas.setAttribute('aria-describedby', owner + '-ranking');
     scroller.prepend(canvas);
-    const surface = bitmapSurface(canvas);
     let point: { x: number; y: number } | undefined, action: { kind: string; x: number; y: number } | undefined, selected = -1;
     const items = (): readonly RaceItem[] => (pipeline.view(pipe)?.fields?.items as readonly RaceItem[] | undefined) ?? [];
     const send = () => {
@@ -94,6 +99,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     send();
     return () => {
       stop(); resize.disconnect(); scroller.removeEventListener('scroll', send); hideTooltip(owner); holdElement(region, false);
+      canvas.removeEventListener('pointermove', pointer); canvas.removeEventListener('click', pointer); canvas.removeEventListener('contextmenu', pointer);
+      canvas.removeEventListener('focus', focus); canvas.removeEventListener('blur', blur); canvas.removeEventListener('pointerleave', leave); canvas.removeEventListener('keydown', key);
       canvas.remove(); update.current = undefined;
     };
   }, [owner, pipeline, pipe, props.active, props.resetKey]);

@@ -22,6 +22,16 @@ export interface ArsenalModel extends ArsenalFeed {
 export interface RaceInspection { items: readonly RaceItem[]; item?: RaceItem; hour: number; position: number }
 export type RaceTarget = { x: number; y: number } | { index: number } | { key: string };
 
+export function arsenalNext(model: Pick<ArsenalModel, 'overlay' | 'membership' | 'top' | 'tags' | 'split'>, reply: NuclearArsenalReply | undefined, hour: number): number {
+  let next = Infinity;
+  if (reply && (model.overlay || !reply.missing && !arsenalRows(reply, hour, model).length)) next = (Math.floor(hour / 24) + 1) * 24;
+  for (const spans of model.membership?.values() ?? []) for (const span of spans) {
+    if (span.firstHour > hour) next = Math.min(next, span.firstHour);
+    else if (span.lastHour >= hour) next = Math.min(next, span.lastHour + 1);
+  }
+  return next;
+}
+
 export class ArsenalPicture {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly flags = new Map<string, ImageBitmap | null>();
@@ -175,6 +185,11 @@ export class ArsenalPicture {
     ctx.restore(); ctx.restore();
     if (this.point) this.hover(this.point);
     return this.position;
+  }
+
+  hitTest(): (point: { x: number; y: number }) => RaceItem | undefined {
+    const { state, layout } = this;
+    return point => state && layout ? rowAt(state.rows, layout, point, state.min, state.max)?.item : undefined;
   }
 
   inspect(target?: RaceTarget): RaceInspection | undefined {

@@ -188,7 +188,7 @@ impl Follow {
             return Err(crate::invalid(format!("No followed query {id} to window")));
         }
         control.ops.push(Op::Window(id, window));
-        Ok(())
+        redeclare(&mut control, true)
     }
 
     pub fn unfollow(&self, id: u32) -> io::Result<()> {

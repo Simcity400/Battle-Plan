@@ -180,9 +180,23 @@ export function rowKeys(answer: FollowedAnswer | undefined): string {
 
 export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean }
 
+export const DATED_PANEL_VERSION = 6;
+
+export function parseDatedPanelRecord(record: Uint8Array): DatedPanel {
+  const data = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  if (record.byteLength < 16) throw new Error('Invalid dated panel record.');
+  const id = data.getUint32(0, true), hour = data.getInt32(4, true), kind = data.getUint8(8), length = data.getUint32(12, true), end = 16 + length;
+  if (end > record.length || ![0, 1, 3, 5].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+  if (kind === 5) return { id, hour, panel: null, waiting: true };
+  const body = record.subarray(16, end);
+  const panel: DatedPanel = { id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null, bytes: body } };
+  if (data.getUint8(9) & 1) panel.stepped = true;
+  return panel;
+}
+
 export function parseDatedPanels(bytes: Uint8Array) {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== 6) throw new Error('Invalid dated panel header.');
+  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== DATED_PANEL_VERSION) throw new Error('Invalid dated panel header.');
   const count = data.getUint32(8, true), clock = data.getInt32(12, true), route = data.getUint32(16, true), seek = data.getUint32(20, true);
   const panels: DatedPanel[] = [];
   let completed: number | undefined;
@@ -195,10 +209,7 @@ export function parseDatedPanels(bytes: Uint8Array) {
       if (id !== 0 || i !== count - 1) throw new Error('Invalid completed product step.');
       completed = hour; at = aligned(end); continue;
     }
-    if (kind === 5) { panels.push({ id, hour, panel: null, waiting: true }); at = aligned(end); continue; }
-    const body = bytes.subarray(at + 16, end);
-    panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null, bytes: body } });
-    if (data.getUint8(at + 9) & 1) panels.at(-1)!.stepped = true;
+    panels.push(parseDatedPanelRecord(bytes.subarray(at, end)));
     at = aligned(end);
   }
   if (at !== bytes.length) throw new Error('Unexpected bytes after dated panels.');

@@ -304,9 +304,10 @@ fn main() {
             }
             match request.uri().path() {
                 "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
-                "/credit" => match pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<usize>().ok()) {
+                "/credit" => match pull::param(&request, "bytes").and_then(|bytes| bytes.parse::<i64>().ok()) {
                     Some(bytes) => {
-                        dashboard_follow::registry::registry().credit(bytes);
+                        let registry = dashboard_follow::registry::registry();
+                        if bytes < 0 { registry.charge(bytes.unsigned_abs() as usize) } else { registry.credit(bytes as usize) }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
                     }
                     None => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its bytes"),

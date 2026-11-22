@@ -84,7 +84,7 @@ pub struct PushCounters {
 enum Stream {
     Notice,
     Steps { route: u32, seek: u32, due: i32 },
-    Panels { route: u32, seek: u32 },
+    Panels { route: u32, seek: u32, due: i32 },
 }
 
 impl Stream {
@@ -100,7 +100,14 @@ impl Stream {
             }
             Self::Steps { route: word(4) >> 1, seek: word(16), due }
         } else if kind == PANEL && let Some((route, seek)) = panel::dated::stamp(bytes) {
-            Self::Panels { route, seek }
+            let mut due = i32::MIN;
+            let mut at = 24;
+            while let Some(header) = bytes.get(at..).and_then(|tail| tail.get(..16)) {
+                due = due.max(i32::from_le_bytes(header[4..8].try_into().expect("panel hour")));
+                let size = u32::from_le_bytes(header[12..16].try_into().expect("panel length")) as usize;
+                at += (16 + size).next_multiple_of(8);
+            }
+            Self::Panels { route, seek, due }
         } else {
             Self::Notice
         }
@@ -110,7 +117,7 @@ impl Stream {
         match self {
             Self::Notice => None,
             Self::Steps { route, seek, .. } => Some((route, seek)),
-            Self::Panels { route, seek } => Some((route, seek)),
+            Self::Panels { route, seek, .. } => Some((route, seek)),
         }
     }
 }
@@ -163,12 +170,31 @@ impl State {
         }
     }
 
+    fn reached(&self, stream: Stream) -> bool {
+        match stream {
+            Stream::Steps { route, due, .. } | Stream::Panels { route, due, .. } => self.heads.get(&route).is_some_and(|&head| due <= head),
+            Stream::Notice => false,
+        }
+    }
+
     fn charged(&mut self) -> io::Result<()> {
         self.charge.resize(self.bytes + self.in_flight)
     }
 
     fn sendable(&self) -> bool {
-        self.queue.front().is_some_and(|front| self.in_flight == 0 || self.in_flight + front.bytes.len() <= self.credit)
+        self.queue.front().is_some_and(|front| self.in_flight == 0 || self.in_flight + front.bytes.len() <= self.credit || self.reached(front.stream))
+    }
+
+    fn overflow(&mut self, reason: &str, sequence: u32) {
+        self.in_flight = 0;
+        self.charge.resize(0).expect("releasing the failed queue");
+        let bytes = failure(reason);
+        self.counters.unwritten += self.queue.len() as u64;
+        self.queue.clear();
+        self.bytes = bytes.len();
+        self.queue.push_back(Queued { stream: Stream::Notice, kind: FOLLOW, bytes, sequence, offered: Instant::now(), kept: false });
+        self.failed = Some(reason.to_owned());
+        self.stopped = true;
     }
 
     fn merge_passed(&mut self) {
@@ -268,16 +294,7 @@ impl Push {
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false });
         state.compact(stream);
         if let Err(error) = state.charged() {
-            let reason = error.to_string();
-            state.in_flight = 0;
-            state.charge.resize(0).expect("releasing the failed queue");
-            let bytes = failure(&reason);
-            state.counters.unwritten += state.queue.len() as u64;
-            state.queue.clear();
-            state.bytes = bytes.len();
-            state.queue.push_back(Queued { stream: Stream::Notice, kind: FOLLOW, bytes, sequence, offered: Instant::now(), kept: false });
-            state.failed = Some(reason);
-            state.stopped = true;
+            state.overflow(&error.to_string(), sequence);
         }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
@@ -293,6 +310,19 @@ impl Push {
         state.in_flight = state.in_flight.saturating_sub(bytes);
         state.charged().expect("returning credit releases bytes");
         state.counters.credited += bytes as u64;
+        drop(state);
+        self.ready.notify_all();
+    }
+
+    pub fn charge(&self, bytes: usize) {
+        let mut state = lock(&self.state);
+        if state.stopped { return; }
+        state.in_flight += bytes;
+        if let Err(error) = state.charged() {
+            let sequence = state.next;
+            state.next = state.next.wrapping_add(1);
+            state.overflow(&error.to_string(), sequence);
+        }
         drop(state);
         self.ready.notify_all();
     }

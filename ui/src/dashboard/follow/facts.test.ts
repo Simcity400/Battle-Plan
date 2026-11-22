@@ -452,6 +452,7 @@ test('addendum 3: a widget over several subscriptions joins with the latest hour
   f.followed(R, 0, msg(40, [{ id: 1, hour: 35, value: 'a2' }], { limited: new Map([[2, 30]]) }));
   const at = (target: number) => joinComponents([1, 2].map(id => ({ picture: f.select(id, target)!, window: f.window(id, target)! })));
   assert.deepEqual(at(25), { h: 20, c: 30, window: [20, 34] }, 'shown through min(t, 30) until the first subscription changes at 35');
+  assert.equal(at(40), null, 'A of 35 and B confirmed only through 30 share no certified hour: nothing new installs, the previous complete picture stays');
   assert.equal(joinComponents([
     { picture: f.select(1, 25)!, window: [10, 15] }, { picture: f.select(2, 25)!, window: [20, 30] }]), null, 'an empty intersection is not installable');
 });

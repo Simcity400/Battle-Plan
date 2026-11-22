@@ -1,46 +1,72 @@
 import type { LaneView, Painted, PaintInput, Scene, Value } from '../lane.ts';
-import { advanceTableState, cellIcons, drawTable, fitState, rankMarkers, tablePicture, tableReading, tableState,
+import { advanceTableState, cellIcons, drawTable, fitState, nextChange, rankMarkers, tablePicture, tableReading, tableState,
   type RankMarker, type TablePicture, type TableReading, type TableRowModel, type TableSurfaceModel, type TableSurfaceState, type TableValues } from '../tables/surface.ts';
 import { sourceValues } from '../tables/sources.ts';
 import { hitTable, preserveRevealTimes, ROW_HEIGHT, SORT_GLIDE_MS } from '../tables/logic.ts';
-import { buildDetail, buildStretch, buildTable } from '../tables/builders.ts';
+import { buildDetail, buildNext, buildStretch, buildTable, type BuiltTable } from '../tables/builders.ts';
 import { liveValues, fieldsOf, type Structure } from './fields.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
+import type { TableBuild } from '../tables/builders';
 
 export interface TableBinding { model: TableSurfaceModel; tooltipKeys?: Readonly<Record<string, readonly string[]>>; window?: { first: number; count: number } }
 
 interface Held {
   canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; picture: TablePicture; state?: TableSurfaceState; content: string;
   icons: Map<string, ImageBitmap | null>; order?: { sort: string; keys: string[] }; markers: Map<string, RankMarker>; floor: Map<string, number>;
-  measures: Map<string, number>; fitted?: TableSurfaceModel; built?: { reply: unknown; stretch: number; rows: TableRowModel[]; empty: string | undefined };
-  painted?: string; widths?: string; rows?: string; wake?: () => void;
+  measures: Map<string, number>; fitted?: TableSurfaceModel; mirror?: { text: string; content: string }; tooltip?: { text: string; content: string };
+  wake?: () => void;
 }
 
-const GLIDE_MAX_SPEED = 24;
 const answerOf = (value: Value): FollowedAnswer | undefined => value.kind === 'answer' ? value.answer : undefined;
 
-function valuesOf(scene: Scene, model: TableSurfaceModel): { values: TableValues | null; reply: unknown } {
+function replyOf(scene: Scene, model: TableSurfaceModel): unknown {
+  if (model.sources) return undefined;
+  if (model.follow !== undefined) {
+    const at = scene.subs.findIndex(sub => sub.id === model.follow);
+    const head = at < 0 ? undefined : scene.pictures[at]?.parts[0]!.value;
+    return head?.kind === 'panel' ? head.data : undefined;
+  }
+  return model.reply;
+}
+
+function valuesOf(scene: Scene, model: TableSurfaceModel): TableValues | null {
   if (model.sources) {
     const answers = new Map<string, FollowedAnswer | undefined>();
     for (const [name, id] of Object.entries(model.sources)) {
       const at = scene.subs.findIndex(sub => sub.id === id);
       answers.set(name, at < 0 ? undefined : answerOf(scene.pictures[at]!.parts[0]!.value));
     }
-    return { values: sourceValues(answers), reply: undefined };
+    return sourceValues(answers);
   }
   if (model.follow !== undefined) {
     const at = scene.subs.findIndex(sub => sub.id === model.follow);
     const picture = at < 0 ? undefined : scene.pictures[at];
-    const head = picture?.parts[0]!.value;
-    if (head?.kind === 'panel' && picture) {
-      const live = liveValues(picture);
-      return { values: live ? { get: key => { const v = live.get(key); return typeof v === 'number' ? v : undefined; }, missing: key => { const v = live.get(key); return typeof v === 'string' ? v : 'Not recorded'; } } : null,
-        reply: head.data };
-    }
+    if (picture?.parts[0]!.value.kind !== 'panel') return null;
+    const live = liveValues(picture);
+    return live && { get: key => { const v = live.get(key); return typeof v === 'number' ? v : undefined; }, missing: key => { const v = live.get(key); return typeof v === 'string' ? v : 'Not recorded'; } };
   }
-  if (!model.values) return { values: null, reply: model.reply };
+  if (!model.values) return null;
   const values = model.values, missing = model.missingValues ?? {};
-  return { values: { get: key => values[key], missing: key => missing[key] ?? 'Not recorded' }, reply: model.reply };
+  return { get: key => values[key], missing: key => missing[key] ?? 'Not recorded' };
+}
+
+const built = new WeakMap<object, WeakMap<TableBuild, { stretch: number; table: BuiltTable | null }>>();
+function builtAt(build: TableBuild, reply: unknown, hour: number): BuiltTable | null {
+  if (!reply || typeof reply !== 'object') return buildTable(build, reply, hour);
+  let byBuild = built.get(reply);
+  if (!byBuild) built.set(reply, byBuild = new WeakMap());
+  const stretch = buildStretch(build, hour), held = byBuild.get(build);
+  if (held && held.stretch === stretch) return held.table;
+  const table = buildTable(build, reply, hour);
+  byBuild.set(build, { stretch, table });
+  return table;
+}
+
+function rowsAt(scene: Scene, model: TableSurfaceModel, hour: number): { rows: readonly TableRowModel[]; empty: string | undefined; reply: unknown } {
+  const reply = replyOf(scene, model);
+  if (!model.build || reply === undefined) return { rows: model.rows, empty: model.empty, reply };
+  const table = builtAt(model.build, reply, hour);
+  return { rows: table?.rows ?? [], empty: table?.empty ?? model.empty, reply };
 }
 
 function measurer(held: Held) {
@@ -60,20 +86,19 @@ function icon(held: Held, url: string) {
   if (held.icons.has(url)) return;
   held.icons.set(url, null);
   void fetch(url).then(response => { if (!response.ok) throw new Error(`icon ${response.status}`); return response.blob(); })
-    .then(blob => createImageBitmap(blob)).then(image => { held.icons.set(url, image); held.painted = undefined; held.wake?.(); }, () => {});
+    .then(blob => createImageBitmap(blob)).then(image => { held.icons.set(url, image); held.picture = tablePicture(); held.wake?.(); }, () => {});
 }
+
+const kept = (held: { text: string; content: string } | undefined, text: string, content: () => string) => held && held.text === text ? held : { text, content: content() };
 
 export function tableView(structureOf: (product: string | undefined) => Structure | undefined, wake: (widget: number) => void): LaneView {
   return {
     next(scene, hour) {
       const bound = scene.model as TableBinding | undefined;
-      const rows = bound?.model.rows ?? [];
-      let next = Infinity;
-      for (const row of rows) if (row.revealAt !== undefined && row.revealAt > hour && row.revealAt < next) next = row.revealAt;
-      if (bound?.model.build) {
-        const stretch = buildStretch(bound.model.build, hour);
-        for (let at = hour + 1; at <= hour + 24 * 366 && at < next; at += 24) if (buildStretch(bound.model.build, at) !== stretch) { next = at; break; }
-      }
+      if (!bound) return Infinity;
+      const model = bound.model, { rows } = rowsAt(scene, model, hour);
+      let next = nextChange(rows, hour) ?? Infinity;
+      if (model.build && replyOf(scene, model) !== undefined) next = Math.min(next, buildNext(model.build, hour));
       return next;
     },
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
@@ -88,21 +113,12 @@ export function tableView(structureOf: (product: string | undefined) => Structur
         state.set('table', held = { canvas, ctx, picture: tablePicture(), content: content(), icons: new Map(), markers: new Map(), floor: new Map(), measures: new Map() });
       }
       held.wake = () => wake(input.widget);
-      if (held.canvas.width !== width || held.canvas.height !== height) { held.canvas.width = width; held.canvas.height = height; held.picture = tablePicture(); held.painted = undefined; }
+      if (held.canvas.width !== width || held.canvas.height !== height) { held.canvas.width = width; held.canvas.height = height; held.picture = tablePicture(); }
       held.ctx.setTransform(surface.dpr, 0, 0, surface.dpr, 0, 0);
-      const model = bound.model, { values, reply } = valuesOf(input, model);
-      let rows = model.rows, empty = model.empty;
-      if (model.build && reply !== undefined) {
-        const stretch = buildStretch(model.build, input.hour);
-        if (!held.built || held.built.reply !== reply || held.built.stretch !== stretch) {
-          const built = buildTable(model.build, reply, input.hour);
-          held.built = { reply, stretch, rows: built?.rows ?? [], empty: built?.empty ?? undefined };
-          for (const row of held.built.rows) for (const key in row.cells) for (const url of cellIcons(row.cells[key]!)) icon(held, url);
-        }
-        rows = held.built.rows; empty = held.built.empty ?? empty;
-      } else for (const row of rows) for (const key in row.cells) for (const url of cellIcons(row.cells[key]!)) icon(held, url);
+      const model = bound.model, values = valuesOf(input, model), { rows, empty, reply } = rowsAt(input, model, input.hour);
+      for (const row of rows) for (const key in row.cells) for (const url of cellIcons(row.cells[key]!)) icon(held, url);
       const prior = held.state;
-      const made: TableSurfaceModel = { ...model, rows: prior && !model.build ? preserveRevealTimes(rows, prior.model.rows) : rows, empty };
+      const made: TableSurfaceModel = { ...model, rows: prior && !model.build ? preserveRevealTimes(rows as TableRowModel[], prior.model.rows) : rows as TableRowModel[], empty };
       const next = tableState(made, values, input.hour, input.pictures[0]?.h ?? input.hour);
       fitState(next, model !== held.fitted ? measurer(held) : null, held.floor);
       held.fitted = model;
@@ -128,36 +144,31 @@ export function tableView(structureOf: (product: string | undefined) => Structur
       for (const [key, until] of next.highlight) if (until <= now) next.highlight.delete(key);
       if (next.nextChange !== undefined && next.nextChange <= input.hour) advanceTableState(next, input.hour, now);
       held.state = next;
-      drawTable(held.ctx, next, now, model.scrollLeft, held.icons, held.picture, surface.dpr);
+      if (drawTable(held.ctx, next, now, model.scrollLeft, held.icons, held.picture, surface.dpr)) held.content = content();
       const moving = next.glide.size > 0 || next.highlight.size > 0 || [...held.markers.values()].some(marker => marker.until > now);
-      const frame = held.picture.frame ?? '';
-      if (frame !== held.painted) { held.painted = frame; held.content = content(); }
       const widths = Object.fromEntries(next.layout.columns.map(column => [column.key, column.width]));
-      const widthsText = JSON.stringify(widths);
       const rowsInfo = { count: next.rows.length, ...next.rows.length || !next.model.empty ? {} : { empty: next.model.empty } };
-      fields.widths = { value: widths, content: `widths:${widthsText}` };
+      fields.widths = { value: widths, content: `widths:${JSON.stringify(widths)}` };
       fields.rows = { value: rowsInfo, content: `rows:${JSON.stringify(rowsInfo)}` };
       if (bound.window) {
-        const reading = tableReading(next, [], bound.window);
-        fields.mirror = { value: { first: bound.window.first, rows: reading.rows ?? [] }, content: `mirror:${held.content}:${bound.window.first}:${bound.window.count}` };
+        const mirror = { first: bound.window.first, rows: tableReading(next, [], bound.window).rows ?? [] };
+        held.mirror = kept(held.mirror, JSON.stringify(mirror), content);
+        fields.mirror = { value: mirror, content: `mirror:${held.mirror.content}` };
       }
       if (input.inspect?.startsWith('row:')) {
         const row = input.inspect.split(':')[1]!;
         const reading: TableReading = { ...tableReading(next, bound.tooltipKeys?.[row] ?? [], undefined),
           ...model.build && reply !== undefined ? { detail: buildDetail(model.build, reply, row) } : {} };
-        fields.tooltip = { value: { key: input.inspect, text: reading }, content: `tooltip:${input.inspect}:${held.content}` };
+        const text = JSON.stringify(reading, (_key, value: unknown) => typeof value === 'bigint' ? `${value}n` : value);
+        held.tooltip = kept(held.tooltip, `${input.inspect}\u0000${text}`, content);
+        fields.tooltip = { value: { key: input.inspect, text: reading }, content: `tooltip:${held.tooltip.content}` };
       }
-      const point = state.get('pointer') as { point: [number, number] } | null | undefined;
-      let hit: string | null | undefined;
-      if (point !== undefined) {
-        state.delete('pointer');
-        if (point) {
-          const at = hitTable(next.layout, next.rows, { x: point.point[0], y: point.point[1] }, ROW_HEIGHT[model.settings.density], model.headerHeight ?? 0,
-            model.scrollLeft, model.rankShown, model.rankWidth, model.scrollTop ?? 0);
-          hit = at.rowKey ? `${at.kind}:${at.rowKey}${at.column ? `:${at.column}` : ''}` : at.column ? `${at.kind}:${at.column}` : null;
-        } else hit = null;
-      }
-      return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving && input.speed <= GLIDE_MAX_SPEED, ...hit !== undefined ? { hit } : {} };
+      const layout = next.layout, shown = next.rows, rowHeight = ROW_HEIGHT[model.settings.density];
+      const hit = (point: readonly [number, number]) => {
+        const at = hitTable(layout, shown, { x: point[0], y: point[1] }, rowHeight, model.headerHeight ?? 0, model.scrollLeft, model.rankShown, model.rankWidth, model.scrollTop ?? 0);
+        return at.rowKey ? `${at.kind}:${at.rowKey}${at.column ? `:${at.column}` : ''}` : at.column ? `${at.kind}:${at.column}` : null;
+      };
+      return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
     },
   };
 }

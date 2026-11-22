@@ -1460,6 +1460,25 @@ fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_fl
 }
 
 #[test]
+fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_picture_it_replaces() {
+    use crate::push::Push;
+    let packet = one(7, 10, 1);
+    let budget = playhead::ByteBudget::new(packet.len() * 5);
+    let push = Push::with_budget(budget.clone());
+    push.offer(packet.clone());
+    push.offer(one(7, 20, 2));
+    push.offer(one(7, 30, 3));
+    assert!(push.try_take().is_some() && push.try_take().is_some());
+    assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
+    push.head(0, 30);
+    assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
+    push.charge(packet.len());
+    assert_eq!((push.in_flight(), budget.used()), (packet.len() * 4, packet.len() * 4), "a lane's merged table is charged at the size it holds");
+    push.charge(packet.len() * 2);
+    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "holding past the budget is a named failure");
+}
+
+#[test]
 fn only_hours_the_clock_has_passed_merge_into_one_answer() {
     use crate::push::Push;
     let push = Push::default();
@@ -1506,6 +1525,18 @@ fn a_follow_names_lanes_its_id_belongs_to() {
     assert!(wrong.unwrap_err().to_string().contains("not of lane 0 among 3"));
     let right = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 1, "lanes": 3 })).unwrap();
     assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
+}
+
+#[test]
+fn a_window_change_wakes_a_settled_paused_query_as_a_new_follow_does() {
+    let pages = record(quiet);
+    let harness = harness(&pages);
+    let joined = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&joined);
+    harness.follow.bind(move |_, joining| { seen.fetch_add(usize::from(joining), std::sync::atomic::Ordering::Relaxed); Ok(()) }, harness.playhead().log_reads()).unwrap();
+    harness.follow.follow(7, keys(&[105], &[3])).unwrap();
+    harness.follow.window(7, crate::RankWindow { from: 0, count: 1, countries: Vec::new(), version: 2 }).unwrap();
+    assert_eq!(joined.load(std::sync::atomic::Ordering::Relaxed), 2, "the paused query is seeded again, so the new window is answered without a playhead step");
 }
 
 #[test]

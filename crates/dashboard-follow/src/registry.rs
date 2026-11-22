@@ -41,6 +41,7 @@ pub trait Hosted: Send + Sync {
 pub trait Playheads: Send + Sync {
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
     fn credit(&self, _bytes: usize) {}
+    fn charge(&self, _bytes: usize) {}
 }
 
 struct Followed {
@@ -202,6 +203,10 @@ impl Registry {
 
     pub fn credit(&self, bytes: usize) {
         if let Some(playheads) = &self.playheads { playheads.credit(bytes); }
+    }
+
+    pub fn charge(&self, bytes: usize) {
+        if let Some(playheads) = &self.playheads { playheads.charge(bytes); }
     }
 
     pub fn close(&self, path: &Path) {

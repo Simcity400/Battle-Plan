@@ -347,3 +347,43 @@ test('offset and pinned tracks: the target is H + offset or the pinned hour, at 
   pin.offer(entry({ id: 1, h: 40, c: 60, lo: 40, hi: 60 })); pin.p.publish(500);
   assert.deepEqual([pin.view().id, pin.view().through], [1, 50]);
 });
+
+test('astra 6: a rewind keeps a picture only where its painted window holds, not merely its confirmation', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1, h: 96, c: 140, lo: 120, hi: 143 })); p.publish(124);
+  assert.equal(view().id, 1);
+  p.publish(100, { seek: true, playing: false });
+  assert.equal(view().mode, 'reading', 'the day of 120 painted from the fact of 96 is not the picture of hour 100');
+});
+
+test('astra 10: a named failure is never overwritten by a presentation queued before it; a new binding installs again', () => {
+  const { p, offer, view, frames } = page();
+  offer(entry({ id: 1, h: 0, c: 50 }));
+  p.name(1, 'failed', 'The registration was refused');
+  p.publish(10);
+  assert.deepEqual([view().mode, view().reason], ['failed', 'The registration was refused']);
+  assert.deepEqual(frames().at(-1)!.refused.map(r => [r.id, r.reason]), [[1, 'failed']]);
+  p.rebind(1, { subscription: true });
+  offer(entry({ id: 2, binding: 2, h: 0, c: 50 })); p.frame();
+  assert.equal(view().id, 2);
+});
+
+test('astra 14: a clock step tells only widgets whose face changed; a later hour of the same picture is a date', () => {
+  let told = 0;
+  const p = new Page<Fake>({ lanes: 1 });
+  p.mount(1, { route: 9, lane: 0, surfaces: [], changed: () => told++ });
+  p.publish(9, { playing: true });
+  p.offer({ lane: 0, serial: 1, entries: [entry({ id: 1, n: 0, h: 0, c: 100 })] }); p.publish(10);
+  const installed = told;
+  for (let hour = 11; hour < 20; hour++) p.publish(hour);
+  assert.equal(told, installed, 'nothing about the widget but its date changed');
+  p.publish(150, { playing: false, seek: true });
+  assert.equal(told, installed + 1, 'the rewind past its coverage changed what it shows');
+});
+
+test('should-fix b: an entry for a widget that unmounted is refused to its lane, never dropped silently', () => {
+  const { p, offer, frames } = page();
+  p.unmount(1);
+  offer(entry({ id: 7 })); p.frame();
+  assert.deepEqual(frames(0).at(-1)!.refused.map(r => [r.id, r.reason]), [[7, 'unmounted']]);
+});

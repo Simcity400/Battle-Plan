@@ -158,8 +158,8 @@ export class Facts<V> {
     sub.facts = [this.fact(hour, hour, value, refused, 'pinned', bytes)];
   }
 
-  panels(route: number, seek: number, records: readonly PanelRecord<V>[], completed?: number) {
-    if (!this.accept(route, seek, () => this.panels(route, seek, records, completed))) {
+  panels(route: number, seek: number, records: readonly PanelRecord<V>[], completed?: number, only?: ReadonlySet<number>) {
+    if (!this.accept(route, seek, () => this.panels(route, seek, records, completed, only))) {
       if (seek < this.route(route).seek) for (const record of records) if ('bytes' in record) this.freed += record.bytes ?? 0;
       return;
     }
@@ -185,14 +185,14 @@ export class Facts<V> {
         sub.open = false;
       }
     }
-    if (completed !== undefined) for (const sub of this.subs.values()) if (sub.route === route && sub.stepped && sub.open) {
+    if (completed !== undefined) for (const sub of this.subs.values()) if (sub.route === route && sub.stepped && sub.open && (!only || only.has(sub.id))) {
       const last = sub.facts.at(-1);
       if (last && last.c < completed) last.c = completed;
     }
   }
 
-  followed(route: number, seek: number, message: FollowMessage<V>) {
-    if (!this.accept(route, seek, () => this.followed(route, seek, message))) {
+  followed(route: number, seek: number, message: FollowMessage<V>, only?: ReadonlySet<number>) {
+    if (!this.accept(route, seek, () => this.followed(route, seek, message, only))) {
       if (seek < this.route(route).seek) for (const answer of message.answers) this.freed += answer.bytes ?? 0;
       return;
     }
@@ -214,7 +214,7 @@ export class Facts<V> {
         answer.refused ?? null, 'followed', answer.bytes ?? 0));
     }
     for (const owner of this.owners(route)) {
-      if (owner.channel !== 'followed' || answered.has(owner.id) || !owner.open) continue;
+      if (owner.channel !== 'followed' || answered.has(owner.id) || !owner.open || only && !only.has(owner.id)) continue;
       const last = owner.facts.at(-1), confirmed = message.limited?.get(owner.id) ?? message.hour;
       if (last && confirmed > last.c) last.c = confirmed;
     }
@@ -384,5 +384,5 @@ export function joinComponents<V>(components: readonly Component<V>[]): { h: num
     h = Math.max(h, picture.h); c = Math.min(c, picture.c);
     lo = Math.max(lo, window[0]); hi = Math.min(hi, window[1]);
   }
-  return lo <= hi ? { h, c, window: [lo, hi] } : null;
+  return h <= c && lo <= hi ? { h, c, window: [lo, hi] } : null;
 }

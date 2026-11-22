@@ -19,6 +19,7 @@ export interface PanelGeometry {
   knob?: (field: HTMLElement) => boolean;
   owns?: (field: HTMLElement) => boolean;
   extendInline?: string;
+  barVariable?: { host: string; name: string };
 }
 export interface PanelView {
   geometry?: PanelGeometry;

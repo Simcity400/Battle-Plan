@@ -463,6 +463,10 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         self.push.credit(bytes);
     }
 
+    fn charge(&self, bytes: usize) {
+        self.push.charge(bytes);
+    }
+
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         let push = &self.push;
         if let Some(failed) = push.failed() {

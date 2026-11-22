@@ -154,7 +154,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
   latest.current = { model, onHover, tooltipKeys, exactRows, totalWidth, layoutAt, width };
   const widgetKey = useWidgetKey();
   const pipeline = pipelineOf(pageClock(clock));
-  const pipe = useFollowedWidget(pipeline, pipeline ? `${widgetKey}|${offset}` : null, { offset, pin: null });
+  const pipe = useFollowedWidget(pipeline, pipeline ? `${widgetKey}|${offset}` : null, { offset, pin: fixed === undefined ? null : fixed + offset });
   const surface = useRef<{ canvas: HTMLCanvasElement; extent: HTMLDivElement; surface: ReturnType<typeof bitmapSurface> } | null>(null);
   const bind = useCallback(() => {
     const node = body.current, held = surface.current;
@@ -167,16 +167,21 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     const keys = latest.current.tooltipKeys;
     const tips = keys ? Object.fromEntries(made.rows.map(row => [row.key, keys(row.key)])) : undefined;
     pipeline.present(pipe, 'table');
-    pipeline.bind(pipe, [held.surface], { surfaces: [{ width: w, height: h, dpr: devicePixelRatio }], ...followed ? {} : { dated: { h: shownAt + offset, c: shownAt + offset } } },
+    pipeline.bind(pipe, [held.surface], { surfaces: [{ width: w, height: h, dpr: devicePixelRatio }], ...followed ? {} : { dated: { h: shownAt, c: shownAt } } },
       {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, window: view.current });
   }, [pipeline, pipe, followed, shownAt, offset]);
   useLayoutEffect(() => {
     const node = body.current;
     if (!node || !pipeline || pipe === null) return;
-    const extent = document.createElement('div'), canvas = document.createElement('canvas');
-    extent.className = 'tf-extent'; canvas.className = 'tf-canvas'; canvas.setAttribute('aria-hidden', 'true'); extent.append(canvas); node.append(extent);
-    canvas.dataset.surface = 'table';
-    surface.current = { canvas, extent, surface: bitmapSurface(canvas) };
+    const extent = document.createElement('div');
+    const drawn = pipeline.held(pipe, 'table', () => {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'tf-canvas'; canvas.setAttribute('aria-hidden', 'true'); canvas.dataset.surface = 'table';
+      return { canvas, surface: bitmapSurface(canvas) };
+    })!;
+    const canvas = drawn.canvas;
+    extent.className = 'tf-extent'; extent.append(canvas); node.append(extent);
+    surface.current = { canvas, extent, surface: drawn.surface };
     const rowSize = () => ROW_HEIGHT[latest.current.model(pipe, 0, 1, 1).settings.density];
     const install = () => {
       const shown = pipeline.view(pipe), frameNode = frame.current;

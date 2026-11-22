@@ -47,6 +47,7 @@ export interface FrameRequest {
   now: number;
   target: number;
   exact: boolean;
+  seek: number;
   speed: number;
   installed: Ack[];
   refused: Refusal[];
@@ -89,6 +90,7 @@ interface Widget<B extends Bitmap> {
   id: number; route: number; lane: number; offset: number; pin: number | null; bounds: readonly [number, number] | null;
   surfaces: readonly PageSurface<B>[]; binding: number; installed: Installed | null; content: Record<string, string>;
   status: Shown; reason?: string; inspect: string | null; rank?: number; early: Entry<B> | null; changed?: () => void;
+  failed: number | null; face: string;
 }
 
 interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
@@ -139,7 +141,8 @@ export class Page<B extends Bitmap = Bitmap> {
   mount(id: number, mount: Mount<B>) {
     this.route(mount.route);
     this.widgets.set(id, { id, route: mount.route, lane: mount.lane, offset: mount.offset ?? 0, pin: mount.pin ?? null, bounds: mount.bounds ?? null,
-      surfaces: mount.surfaces, binding: 1, installed: null, content: {}, status: 'reading', inspect: null, rank: mount.rank, early: null, changed: mount.changed });
+      surfaces: mount.surfaces, binding: 1, installed: null, content: {}, status: 'reading', inspect: null, rank: mount.rank, early: null, changed: mount.changed,
+      failed: null, face: '' });
   }
 
   unmount(id: number) {
@@ -162,7 +165,7 @@ export class Page<B extends Bitmap = Bitmap> {
       for (const route of this.routes.keys()) this.post('all', { type: 'stream', route, seek: this.seek, target: T });
     }
     this.commit();
-    if (moved || sought) for (const widget of this.widgets.values()) if (widget.pin === null) this.touched.add(widget);
+    if (moved || sought) for (const widget of this.widgets.values()) if (this.face(widget) !== widget.face) this.touched.add(widget);
     this.tell();
     this.request(wake || !playing, wake);
   }
@@ -182,7 +185,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.sent.set(serial, this.publishes);
       const inspect: [number, string][] = [];
       for (const widget of this.widgets.values()) if (widget.lane === lane && widget.inspect !== null) inspect.push([widget.id, widget.inspect]);
-      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
+      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, seek: this.seek, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
     }
     if (this.sent.size > 256) for (const key of [...this.sent.keys()].slice(0, 128)) this.sent.delete(key);
   }
@@ -195,7 +198,7 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private revalidate(widget: Widget<B>) {
     const shown = widget.installed, at = this.target(widget);
-    if (shown && !(shown.h <= at && at <= shown.c)) this.clear(widget, 'reading');
+    if (shown && !(shown.h <= at && at <= shown.c && shown.lo <= at && at <= shown.hi)) this.clear(widget, 'reading');
   }
 
   offer(presentation: Presentation<B>) {
@@ -219,8 +222,8 @@ export class Page<B extends Bitmap = Bitmap> {
       widget.early = null;
       return held ? [held] : [];
     });
-    for (const presentation of queue) for (const entry of presentation.entries) this.install(entry);
-    for (const entry of early) this.install(entry);
+    for (const presentation of queue) for (const entry of presentation.entries) this.install(entry, presentation.lane);
+    for (const entry of early) this.install(entry, -1);
   }
 
   private reject(widget: Widget<B>, entry: Entry<B>): string | null {
@@ -231,6 +234,7 @@ export class Page<B extends Bitmap = Bitmap> {
       if (route.failed && route.failed.seek >= entry.gen.seek) return 'failed stream';
     }
     if (entry.binding !== widget.binding) return 'binding';
+    if (widget.failed !== null && entry.binding <= widget.failed) return 'failed';
     if (entry.rank !== widget.rank) return 'rank window';
     const shown = widget.installed;
     if (shown && shown.binding === entry.binding && entry.id < shown.id) return 'superseded';
@@ -251,9 +255,13 @@ export class Page<B extends Bitmap = Bitmap> {
     closeParts(entry);
   }
 
-  private install(entry: Entry<B>) {
+  private install(entry: Entry<B>, lane: number) {
     const widget = this.widgets.get(entry.widget);
-    if (!widget) { closeParts(entry); return; }
+    if (!widget) {
+      closeParts(entry);
+      if (lane >= 0) { this.stats.rejected.unmounted = (this.stats.rejected.unmounted ?? 0) + 1; this.refusals[lane]!.push({ widget: entry.widget, id: entry.id, reason: 'unmounted' }); }
+      return;
+    }
     const why = this.reject(widget, entry);
     if (why === 'early') {
       const held = widget.early;
@@ -285,15 +293,25 @@ export class Page<B extends Bitmap = Bitmap> {
     widget.installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
       mode: entry.mode, reason: entry.reason, fields };
     widget.status = entry.mode; widget.reason = entry.reason;
+    if (widget.failed !== null && entry.binding > widget.failed) widget.failed = null;
     this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
     this.stats.installs++;
     this.touched.add(widget);
   }
 
+  private face(widget: Widget<B>) {
+    const view = this.view(widget.id);
+    return `${view.mode}|${view.dim}|${view.id ?? ''}|${view.reason ?? ''}`;
+  }
+
   private tell() {
     const touched = this.touched;
     this.touched = new Set();
-    for (const widget of touched) widget.changed?.();
+    for (const widget of touched) {
+      if (!this.widgets.has(widget.id)) continue;
+      widget.face = this.face(widget);
+      widget.changed?.();
+    }
   }
 
   view(id: number): WidgetView {
@@ -325,9 +343,11 @@ export class Page<B extends Bitmap = Bitmap> {
   remount(id: number, surfaces: readonly PageSurface<B>[]) {
     const widget = this.widgets.get(id);
     if (!widget) return;
+    const first = widget.surfaces.length === 0;
     widget.surfaces = surfaces; widget.binding++;
     if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
-    this.clear(widget, 'reading');
+    if (first) this.touched.add(widget);
+    else this.clear(widget, 'reading');
     this.tell();
     this.request(true, false);
   }
@@ -344,7 +364,8 @@ export class Page<B extends Bitmap = Bitmap> {
   name(id: number, status: 'failed' | 'reading', reason?: string) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
+    if (status === 'failed') widget.failed = widget.binding;
+    if (widget.early) { this.refuse(widget, widget.early, status === 'failed' ? 'failed' : 'binding'); widget.early = null; }
     this.clear(widget, status, reason);
     this.tell();
   }

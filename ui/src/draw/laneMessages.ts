@@ -6,7 +6,7 @@ export type ToLane =
   | { type: 'init'; lane: number; lanes: number; port: MessagePort; rate: number }
   | { type: 'options'; rate: number }
   | { type: 'follow'; sub: number; channel: Channel; product?: string }
-  | { type: 'route'; sub: number; route: number; native: number; seek: number }
+  | { type: 'route'; sub: number; route: number; native: number; seek: number; offset: number }
   | { type: 'unfollow'; sub: number }
   | { type: 'rank'; sub: number; version: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
@@ -25,4 +25,4 @@ export type FromLane =
 
 export type FromPull = { kind: 'follow' | 'panels'; bytes: Uint8Array } | { kind: 'failure'; reason: string };
 
-export type ToPull = { release: number };
+export type ToPull = { release: number } | { charge: number };

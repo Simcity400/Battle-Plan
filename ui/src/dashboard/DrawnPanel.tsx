@@ -17,21 +17,33 @@ function identity(field: HTMLElement, { rowAttribute }: PanelGeometry) {
   return { key: row === undefined ? label : row + ':' + label, label };
 }
 
-function write(field: HTMLElement, label: string, value: string) {
-  if (label !== 'bar') { if (field.textContent !== value) field.textContent = value; return; }
-  const meter = field.closest<HTMLElement>('.progress-meter');
-  const ratio = value === '' ? null : Math.min(1, Math.max(0, Number(value)));
-  const vertical = meter?.classList.contains('is-vertical');
-  field.style.setProperty(vertical ? 'height' : 'width', ratio === null ? '0%' : `${ratio * 100}%`);
+const NOT_RECORDED = 'Not recorded';
+
+function write(field: HTMLElement, label: string, value: string | undefined, { barVariable }: PanelGeometry) {
+  if (label !== 'bar') { const text = value ?? NOT_RECORDED; if (field.textContent !== text) field.textContent = text; return; }
+  const ratio = value === undefined || value === '' ? null : Math.min(1, Math.max(0, Number(value)));
+  const host = barVariable ? field.closest<HTMLElement>(barVariable.host) : null;
+  if (barVariable && host) host.style.setProperty(barVariable.name, ratio === null ? '0' : String(ratio));
+  else field.style.setProperty(field.closest('.progress-meter')?.classList.contains('is-vertical') ? 'height' : 'width', ratio === null ? '0%' : `${ratio * 100}%`);
   const aria = field.closest('[role="meter"]');
-  if (ratio === null) { aria?.removeAttribute('aria-valuenow'); aria?.setAttribute('aria-valuetext', 'Not recorded'); }
-  else { aria?.setAttribute('aria-valuenow', value); aria?.removeAttribute('aria-valuetext'); }
+  if (ratio === null) { aria?.removeAttribute('aria-valuenow'); aria?.setAttribute('aria-valuetext', NOT_RECORDED); }
+  else { aria?.setAttribute('aria-valuenow', String(ratio)); aria?.removeAttribute('aria-valuetext'); }
+}
+
+export function paintFields(node: HTMLElement, texts: ReadonlyMap<string, string> | null, layout: PanelGeometry) {
+  const owned = layout.owns ?? (() => true);
+  const selector = layout.extraFields ? commonFields + ',' + layout.extraFields : commonFields;
+  for (const field of node.querySelectorAll<HTMLElement>(selector)) {
+    if (!owned(field)) continue;
+    const { key, label } = identity(field, layout);
+    write(field, label, texts?.get(key), layout);
+  }
 }
 
 export interface DrawnPanel { inspected(): PanelInspection | null | undefined }
 
 export function useDrawnPanel(root: RefObject<HTMLElement | null>, _clock: PlaybackController, feed: PanelFeed | null, active: boolean): DrawnPanel {
-  const latest = useRef(feed);
+  const latest = useRef(feed), painter = useRef<(() => void) | null>(null);
   latest.current = feed;
   const pipeline = feed?.pipeline ?? null, pipe = feed?.pipe, sub = feed?.follow, view = feed?.view;
   useLayoutEffect(() => {
@@ -39,23 +51,18 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, _clock: Playb
     if (!active || !node || !pipeline || pipe === undefined || sub === undefined || !view) return;
     pipeline.present(pipe, 'panel');
     const layout = panelViews[view]?.geometry ?? {};
-    const owned = layout.owns ?? (() => true);
-    const selector = layout.extraFields ? commonFields + ',' + layout.extraFields : commonFields;
     const paint = () => {
       const shown = pipeline.view(pipe);
       if (shown?.dim) node.setAttribute('data-held', 'stale'); else node.removeAttribute('data-held');
-      const texts = shown?.mode === 'picture' ? shown.fields?.[`texts:${sub}`] as Map<string, string> | null | undefined : undefined;
-      if (!texts) return;
-      for (const field of node.querySelectorAll<HTMLElement>(selector)) {
-        if (!owned(field)) continue;
-        const { key, label } = identity(field, layout), value = texts.get(key);
-        if (value !== undefined) write(field, label, value);
-      }
+      if (shown?.mode !== 'picture') return;
+      paintFields(node, (shown.fields?.[`texts:${sub}`] as Map<string, string> | null | undefined) ?? null, layout);
     };
+    painter.current = paint;
     paint();
     const stop = pipeline.onInstall(pipe, paint);
-    return () => { stop(); node.removeAttribute('data-held'); };
+    return () => { stop(); painter.current = null; node.removeAttribute('data-held'); };
   }, [root, active, pipeline, pipe, sub, view, feed?.structure]);
+  useLayoutEffect(() => { painter.current?.(); });
   return useRef<DrawnPanel>({ inspected: () => {
     const held = latest.current;
     if (!held?.pipeline || held.pipe === undefined || held.follow === undefined) return undefined;

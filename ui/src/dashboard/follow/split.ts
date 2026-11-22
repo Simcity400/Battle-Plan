@@ -1,4 +1,4 @@
-import { DATED_FOLLOW, DATED_PANEL, followFailure, wireKind } from './message.ts';
+import { DATED_FOLLOW, DATED_PANEL, DATED_PANEL_VERSION, followFailure, wireKind } from './message.ts';
 
 export const CELL_BIT = 0x8000_0000;
 export const laneOf = (id: number, lanes: number) => ((id & ~CELL_BIT) >>> 0) % lanes;
@@ -18,6 +18,7 @@ export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 24) throw new Error('A followed message ends inside its header.');
   const follow = kind === DATED_FOLLOW;
+  if (!follow && data.getUint16(4, true) !== DATED_PANEL_VERSION) throw new Error(`Dated panels of version ${data.getUint16(4, true)} are not supported; this page reads version ${DATED_PANEL_VERSION}.`);
   const count = data.getUint32(follow ? 12 : 8, true);
   const records: { lane: number | 'all'; start: number; end: number }[] = [];
   let at = 24;
