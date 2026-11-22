@@ -328,6 +328,15 @@ lto = "off"
 [profile.dev.package."*"]
 opt-level = 3
 
+[profile.ci]
+inherits = "dev"
+
+[profile.ci.package."*"]
+opt-level = 1
+
+[profile.ci.package.collector]
+opt-level = 0
+
 [profile.release-lto]
 inherits = "release"
 lto = "fat"

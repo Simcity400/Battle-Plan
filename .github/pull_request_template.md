@@ -12,8 +12,8 @@ Title: plain language led by the area, like the log: "Columnar writer: PATCH kee
 
 ## Verification
 
-<!-- The checks you ran (`tools/ci.py check` and its `ci/check` status, the one test you added)
-and what they showed. State anything you could not check or that `ci check` left to a later tier.
+<!-- The checks you ran (`tools/ci.py check`, the one test you added) and what they showed. State
+anything you could not check. GitHub CI is the gate.
 
 For a UI change, before/after images, and a short recording when motion or timing matters.
 Upload them to GitHub and link them here. Never commit PR-only assets. -->

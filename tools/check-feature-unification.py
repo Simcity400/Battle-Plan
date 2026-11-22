@@ -247,7 +247,7 @@ def write_unify(target, host):
     (UNIFY_DIR / "build.rs").write_text(
         "// Cargo builds this package's build-dependencies, and so unifies their features with every\n"
         "// other build script's and proc-macro's, only for a package with a build script.\n"
-        "fn main() {}\n", encoding="utf-8", newline="\n")
+        "fn main() {\n    println!(\"cargo:rerun-if-changed=build.rs\");\n}\n", encoding="utf-8", newline="\n")
     (UNIFY_DIR / "src" / "lib.rs").write_text(
         "//! Dev-only feature union; see tools/check-feature-unification.py. It has no code.\n",
         encoding="utf-8", newline="\n")
