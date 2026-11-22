@@ -1515,38 +1515,122 @@ impl OrganisationCarry for () {
         Ok(true)
     }
 }
-fn read_organisation(
+#[derive(Clone, Copy)]
+enum OrganisationReadError {
+    Identity(&'static str),
+    Fault(&'static str),
+}
+
+fn verify_live_header(
+    expected_vtable: Option<usize>,
+    header: Option<[u8; 16]>,
+    expected_id: u64,
+    changed_reason: &'static str,
+) -> Result<(), &'static str> {
+    let expected_vtable = expected_vtable.ok_or("variant vtable site unlocated")?;
+    let header = header.ok_or("variant identity unreadable")?;
+    match identity_header(expected_vtable, header) {
+        Ok(live_id) if live_id == expected_id => Ok(()),
+        Ok(_) => Err(changed_reason),
+        Err(reason) => Err(reason),
+    }
+}
+
+fn read_organisation_verified(
     memory: &impl Memory,
     pointer: usize,
+    expected_vtable: Option<usize>,
+    expected_id: u64,
     row: &mut Organisation,
-) -> Result<(), &'static str> {
+) -> Result<(), OrganisationReadError> {
     let mut author = [0_u8; 8];
     let mut marker = [0_u8; 4];
     let mut header = [0_u8; 16];
-    if memory.copy_scattered(
+    let mut live_header = [0_u8; 16];
+    let copied = memory.copy_scattered(
         [
-            at(pointer, INDUSTRIAL_ORGANISATION)?,
-            at(pointer, ORGANISATION_TRAIT_COUNT)?,
-            at(pointer, ORGANISATION_BONUSES)?,
+            at(pointer, INDUSTRIAL_ORGANISATION).map_err(OrganisationReadError::Fault)?,
+            at(pointer, ORGANISATION_TRAIT_COUNT).map_err(OrganisationReadError::Fault)?,
+            at(pointer, ORGANISATION_BONUSES).map_err(OrganisationReadError::Fault)?,
+            pointer,
         ],
-        &mut [&mut author, &mut marker, &mut header],
-    ) != 3
-    {
-        return Err("design MIO fields unreadable");
+        &mut [&mut author, &mut marker, &mut header, &mut live_header],
+    );
+    if copied != 4 {
+        verify_live_header(
+            expected_vtable,
+            read::<[u8; 16]>(memory, pointer),
+            expected_id,
+            "variant identity changed during organisation read",
+        )
+        .map_err(OrganisationReadError::Identity)?;
+        return Err(OrganisationReadError::Fault("design MIO fields unreadable"));
+    }
+    verify_live_header(
+        expected_vtable,
+        Some(live_header),
+        expected_id,
+        "variant identity changed during organisation read",
+    )
+    .map_err(OrganisationReadError::Identity)?;
+    let Some(array) = Array::from_header(header, 16) else {
+        verify_live_header(
+            expected_vtable,
+            read::<[u8; 16]>(memory, pointer),
+            expected_id,
+            "variant identity changed during organisation read",
+        )
+        .map_err(OrganisationReadError::Identity)?;
+        return Err(OrganisationReadError::Fault(
+            "design MIO bonus array invalid",
+        ));
+    };
+    crate::allocation::resize_default(&mut row.bonuses, array.count as usize)
+        .map_err(|_| OrganisationReadError::Fault("design MIO bonus allocation failed"))?;
+    if array.count > 0 {
+        for (index, bonus) in row.bonuses.iter_mut().enumerate() {
+            let address = array
+                .element(index as u32, 16)
+                .ok_or(OrganisationReadError::Fault(
+                    "design MIO bonus address overflow",
+                ))?;
+            let Some(key) = read(memory, address) else {
+                verify_live_header(
+                    expected_vtable,
+                    read::<[u8; 16]>(memory, pointer),
+                    expected_id,
+                    "variant identity changed during organisation read",
+                )
+                .map_err(OrganisationReadError::Identity)?;
+                return Err(OrganisationReadError::Fault(
+                    "design MIO bonus key unreadable",
+                ));
+            };
+            let Some(value_raw) = at(address, 8).ok().and_then(|at| read(memory, at)) else {
+                verify_live_header(
+                    expected_vtable,
+                    read::<[u8; 16]>(memory, pointer),
+                    expected_id,
+                    "variant identity changed during organisation read",
+                )
+                .map_err(OrganisationReadError::Identity)?;
+                return Err(OrganisationReadError::Fault(
+                    "design MIO bonus value unreadable",
+                ));
+            };
+            bonus.key = key;
+            bonus.value_raw = value_raw;
+        }
+        verify_live_header(
+            expected_vtable,
+            read::<[u8; 16]>(memory, pointer),
+            expected_id,
+            "variant identity changed during organisation read",
+        )
+        .map_err(OrganisationReadError::Identity)?;
     }
     row.author = u64::from_le_bytes(author);
     row.trait_count = i32::from_le_bytes(marker);
-    let array = Array::from_header(header, 16).ok_or("design MIO bonus array invalid")?;
-    crate::allocation::resize_default(&mut row.bonuses, array.count as usize)
-        .map_err(|_| "design MIO bonus allocation failed")?;
-    for (index, bonus) in row.bonuses.iter_mut().enumerate() {
-        let address = array
-            .element(index as u32, 16)
-            .ok_or("design MIO bonus address overflow")?;
-        bonus.key = read(memory, address).ok_or("design MIO bonus key unreadable")?;
-        bonus.value_raw =
-            read(memory, at(address, 8)?).ok_or("design MIO bonus value unreadable")?;
-    }
     Ok(())
 }
 
@@ -1808,23 +1892,13 @@ pub fn walk_stats_carried(
             }
             let mut identity_error: [Option<&'static str>; BATCH] = [None; BATCH];
             for (slot, source) in sources.iter().enumerate() {
-                let Some(expected_vtable) = sites.variant_vtable else {
-                    identity_error[slot] = Some("variant vtable site unlocated");
-                    continue;
-                };
-                let Some(header) = headers[slot] else {
-                    identity_error[slot] = Some("variant identity unreadable");
-                    continue;
-                };
-                match identity_header(expected_vtable, header) {
-                    Ok(live_id) if live_id == source.id => {}
-                    Ok(_) => {
-                        identity_error[slot] = Some("variant identity changed before stat read");
-                    }
-                    Err(reason) => {
-                        identity_error[slot] = Some(reason);
-                    }
-                }
+                identity_error[slot] = verify_live_header(
+                    sites.variant_vtable,
+                    headers[slot],
+                    source.id,
+                    "variant identity changed before stat read",
+                )
+                .err();
             }
             let pre_refusal: Option<&'static str> = if !sites.rebuild_located {
                 Some("variant stat rebuild site unlocated")
@@ -1930,6 +2004,46 @@ pub fn walk_stats_carried(
                     }
                     continue;
                 }
+                let fresh = carry.fresh(len, source)? || output[len].variant != source.id;
+                let mut row_refusal: Option<&'static str> = None;
+                if fresh {
+                    let org_before = witness.quiet();
+                    match read_organisation_verified(
+                        memory,
+                        source.pointer(),
+                        sites.variant_vtable,
+                        source.id,
+                        &mut output[len].organisation,
+                    ) {
+                        Ok(()) => {
+                            if batch_refusal.is_none() {
+                                let org_after = witness.quiet();
+                                match (org_before, org_after) {
+                                    (Ok(b), Ok(a)) if b == a => {}
+                                    (Err(reason), _) | (_, Err(reason)) => {
+                                        row_refusal = Some(reason);
+                                    }
+                                    (Ok(_), Ok(_)) => {
+                                        row_refusal = Some("variant stat writer crossed read");
+                                    }
+                                }
+                            }
+                        }
+                        Err(OrganisationReadError::Identity(reason)) => {
+                            row_refusal = Some(reason);
+                        }
+                        Err(OrganisationReadError::Fault(reason)) => {
+                            return Err(reason);
+                        }
+                    }
+                }
+                if let Some(reason) = row_refusal {
+                    output[len].organisation.bonuses.clear();
+                    for lane in 0..STAT_LANE_COUNT {
+                        witness.record_withheld(lane, reason);
+                    }
+                    continue;
+                }
                 let values = if let Some(reason) = batch_refusal {
                     for lane in 0..STAT_LANE_COUNT {
                         witness.record_withheld(lane, reason);
@@ -1943,9 +2057,6 @@ pub fn walk_stats_carried(
                     }
                     candidate_values[slot]
                 };
-                if carry.fresh(len, source)? {
-                    read_organisation(memory, source.pointer(), &mut output[len].organisation)?;
-                }
                 output[len].variant = source.id;
                 output[len].values = values;
                 carry.read(len, source);
