@@ -534,7 +534,16 @@ fn ahead_steps(side: &mut crate::playhead_host::MapSide, mut each: impl FnMut(&m
             assert!(Instant::now() < deadline, "the worker did not make hour {next} within 120 s");
             std::thread::yield_now();
         }
-        let frame = side.frame(next).unwrap();
+        let mut stepped = None;
+        for _ in 0..50_000_000u64 {
+            let frame = side.frame(next).unwrap();
+            if frame.steps > 0 {
+                stepped = Some(frame);
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let frame = stepped.unwrap_or_else(|| panic!("no frame took the step to hour {next}"));
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "a step of four hours a frame");
         if each(side, &frame, next) {
             return;
